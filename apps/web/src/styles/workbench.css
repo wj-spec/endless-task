@@ -74,6 +74,7 @@ textarea:focus-visible {
 .app-shell {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
 }
@@ -321,7 +322,9 @@ textarea:focus-visible {
 .chat-surface {
   display: grid;
   min-width: 0;
+  min-height: 0;
   grid-template-rows: 64px minmax(0, 1fr) auto;
+  overflow: hidden;
   background: var(--paper);
 }
 
@@ -477,8 +480,24 @@ textarea:focus-visible {
   margin-bottom: 0;
 }
 
-.message-copy ul {
+.message-copy ul,
+.message-copy ol {
   padding-left: 20px;
+}
+
+.message-copy blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid #d8d7cf;
+  color: #55554e;
+}
+
+.message-copy blockquote p {
+  margin: 0 0 6px;
+}
+
+.message-copy blockquote p:last-child {
+  margin-bottom: 0;
 }
 
 .message-copy h3,
@@ -525,7 +544,8 @@ textarea:focus-visible {
 
 .code-block pre {
   margin: 0;
-  overflow-x: auto;
+  max-height: 340px;
+  overflow: auto;
   padding: 12px 14px 14px;
 }
 

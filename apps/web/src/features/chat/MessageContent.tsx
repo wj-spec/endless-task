@@ -41,6 +41,8 @@ function TextBlock({ content }: { content: string }) {
   const lines = content.split("\n");
   const nodes: ReactNode[] = [];
   let list: string[] = [];
+  let ordered: string[] = [];
+  let quote: string[] = [];
 
   const flushList = () => {
     if (list.length === 0) return;
@@ -54,13 +56,58 @@ function TextBlock({ content }: { content: string }) {
     list = [];
   };
 
+  const flushOrdered = () => {
+    if (ordered.length === 0) return;
+    nodes.push(
+      <ol key={`ordered-${nodes.length}`}>
+        {ordered.map((item, index) => (
+          <li key={`${index}-${item}`}>{inline(item)}</li>
+        ))}
+      </ol>,
+    );
+    ordered = [];
+  };
+
+  const flushQuote = () => {
+    if (quote.length === 0) return;
+    nodes.push(
+      <blockquote key={`quote-${nodes.length}`}>
+        {quote.map((item, index) => (
+          <p key={`${index}-${item}`}>{inline(item)}</p>
+        ))}
+      </blockquote>,
+    );
+    quote = [];
+  };
+
+  const flushAll = () => {
+    flushList();
+    flushOrdered();
+    flushQuote();
+  };
+
   lines.forEach((line, index) => {
+    const quoteMatch = line.match(/^\s*>\s?(.*)$/);
+    if (quoteMatch) {
+      flushList();
+      flushOrdered();
+      if (quoteMatch[1].trim()) quote.push(quoteMatch[1]);
+      return;
+    }
+    flushQuote();
     const listMatch = line.match(/^\s*[-*]\s+(.+)$/);
     if (listMatch) {
+      flushOrdered();
       list.push(listMatch[1]);
       return;
     }
     flushList();
+    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (orderedMatch) {
+      ordered.push(orderedMatch[1]);
+      return;
+    }
+    flushOrdered();
     if (!line.trim()) {
       nodes.push(<span className="markdown-space" key={`space-${index}`} />);
       return;
@@ -73,7 +120,7 @@ function TextBlock({ content }: { content: string }) {
     }
     nodes.push(<p key={`line-${index}`}>{inline(line)}</p>);
   });
-  flushList();
+  flushAll();
   return nodes;
 }
 
