@@ -84,6 +84,37 @@ def default_data_directory() -> Path:
     )
 
 
+def _load_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
+
+
+def runtime_environment() -> dict[str, str]:
+    """Merge the local .env file under real environment variables."""
+    configured = os.environ.get("ENDLESS_TASK_ENV_FILE")
+    candidates = (
+        [Path(configured).expanduser()] if configured else [Path.cwd() / ".env"]
+    )
+    merged: dict[str, str] = {}
+    for candidate in candidates:
+        merged.update(_load_env_file(candidate))
+    merged.update(os.environ)
+    return merged
+
+
 @dataclass(frozen=True)
 class AppSettings:
     database_path: Path
@@ -134,8 +165,9 @@ class AppSettings:
 
     @classmethod
     def from_environment(cls) -> "AppSettings":
-        configured = os.environ.get("ENDLESS_TASK_DB_PATH")
-        provider_name = os.environ.get("ENDLESS_TASK_PROVIDER", "fake").strip().lower()
+        env = runtime_environment()
+        configured = env.get("ENDLESS_TASK_DB_PATH")
+        provider_name = env.get("ENDLESS_TASK_PROVIDER", "fake").strip().lower()
         defaults = {
             "fake": ("fake-model", None),
             "deepseek": ("deepseek-chat", "https://api.deepseek.com"),
@@ -143,11 +175,11 @@ class AppSettings:
             "openai-compatible": ("", None),
         }
         default_model, default_base_url = defaults.get(provider_name, ("", None))
-        api_key = os.environ.get("ENDLESS_TASK_API_KEY")
+        api_key = env.get("ENDLESS_TASK_API_KEY")
         if api_key is None and provider_name == "deepseek":
-            api_key = os.environ.get("DEEPSEEK_API_KEY")
+            api_key = env.get("DEEPSEEK_API_KEY")
         if api_key is None and provider_name == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY")
+            api_key = env.get("OPENAI_API_KEY")
         database_path = (
             Path(configured).expanduser().resolve()
             if configured
@@ -155,54 +187,54 @@ class AppSettings:
         )
         return cls(
             database_path=database_path,
-            config_version=int(os.environ.get("ENDLESS_TASK_CONFIG_VERSION", "1")),
+            config_version=int(env.get("ENDLESS_TASK_CONFIG_VERSION", "1")),
             provider_name=provider_name,
-            model=os.environ.get("ENDLESS_TASK_MODEL", default_model),
-            base_url=os.environ.get("ENDLESS_TASK_BASE_URL", default_base_url),
+            model=env.get("ENDLESS_TASK_MODEL", default_model),
+            base_url=env.get("ENDLESS_TASK_BASE_URL", default_base_url),
             api_key=api_key,
             provider_timeout_seconds=float(
-                os.environ.get("ENDLESS_TASK_PROVIDER_TIMEOUT_SECONDS", "60")
+                env.get("ENDLESS_TASK_PROVIDER_TIMEOUT_SECONDS", "60")
             ),
-            system_prompt=os.environ.get(
+            system_prompt=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT",
                 "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。",
             ),
-            system_prompt_version=os.environ.get(
+            system_prompt_version=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT_VERSION",
                 "p1-v1",
             ),
             context_window_tokens=int(
-                os.environ.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "32768")
+                env.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "32768")
             ),
             max_output_tokens=int(
-                os.environ.get("ENDLESS_TASK_MAX_OUTPUT_TOKENS", "2048")
+                env.get("ENDLESS_TASK_MAX_OUTPUT_TOKENS", "2048")
             ),
             summary_token_limit=int(
-                os.environ.get("ENDLESS_TASK_SUMMARY_TOKEN_LIMIT", "1024")
+                env.get("ENDLESS_TASK_SUMMARY_TOKEN_LIMIT", "1024")
             ),
             max_concurrent_model_calls=int(
-                os.environ.get("ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS", "2")
+                env.get("ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS", "2")
             ),
             max_agent_iterations=int(
-                os.environ.get("ENDLESS_TASK_MAX_AGENT_ITERATIONS", "4")
+                env.get("ENDLESS_TASK_MAX_AGENT_ITERATIONS", "4")
             ),
             max_tool_calls_per_turn=int(
-                os.environ.get("ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN", "8")
+                env.get("ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN", "8")
             ),
             agent_timeout_seconds=float(
-                os.environ.get("ENDLESS_TASK_AGENT_TIMEOUT_SECONDS", "120")
+                env.get("ENDLESS_TASK_AGENT_TIMEOUT_SECONDS", "120")
             ),
             approval_timeout_seconds=float(
-                os.environ.get("ENDLESS_TASK_APPROVAL_TIMEOUT_SECONDS", "1800")
+                env.get("ENDLESS_TASK_APPROVAL_TIMEOUT_SECONDS", "1800")
             ),
             max_message_characters=int(
-                os.environ.get("ENDLESS_TASK_MAX_MESSAGE_CHARACTERS", "100000")
+                env.get("ENDLESS_TASK_MAX_MESSAGE_CHARACTERS", "100000")
             ),
             max_file_bytes=int(
-                os.environ.get("ENDLESS_TASK_MAX_FILE_BYTES", "1000000")
+                env.get("ENDLESS_TASK_MAX_FILE_BYTES", "1000000")
             ),
             max_files_per_conversation=int(
-                os.environ.get("ENDLESS_TASK_MAX_FILES_PER_CONVERSATION", "10")
+                env.get("ENDLESS_TASK_MAX_FILES_PER_CONVERSATION", "10")
             ),
         )
 

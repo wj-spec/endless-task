@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,9 +16,19 @@ from endless_task.runtime import (
 )
 
 
+@contextmanager
+def isolated_cwd():
+    with tempfile.TemporaryDirectory() as directory:
+        previous = Path.cwd()
+        os.chdir(directory)
+        try:
+            yield Path(directory)
+        finally:
+            os.chdir(previous)
+
 class ProviderConfigurationTest(unittest.TestCase):
     def test_deepseek_environment_defaults_and_secret_repr(self) -> None:
-        with patch.dict(
+        with isolated_cwd(), patch.dict(
             os.environ,
             {
                 "ENDLESS_TASK_PROVIDER": "deepseek",
@@ -33,6 +44,49 @@ class ProviderConfigurationTest(unittest.TestCase):
         self.assertEqual("https://api.deepseek.com", settings.base_url)
         self.assertEqual("secret-value", settings.api_key)
         self.assertNotIn("secret-value", repr(settings))
+
+    def test_env_file_is_loaded_without_overriding_real_environment(self) -> None:
+        with isolated_cwd() as directory:
+            (directory / ".env").write_text(
+                "# local configuration\n"
+                "ENDLESS_TASK_PROVIDER=deepseek\n"
+                "DEEPSEEK_API_KEY=file-key\n"
+                'ENDLESS_TASK_MODEL="file-model"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                settings = AppSettings.from_environment()
+
+            self.assertEqual("deepseek", settings.provider_name)
+            self.assertEqual("file-model", settings.model)
+            self.assertEqual("file-key", settings.api_key)
+
+            with patch.dict(
+                os.environ,
+                {"ENDLESS_TASK_MODEL": "env-model"},
+                clear=True,
+            ):
+                settings = AppSettings.from_environment()
+
+            self.assertEqual("env-model", settings.model)
+            self.assertEqual("file-key", settings.api_key)
+
+    def test_env_file_path_can_be_configured(self) -> None:
+        with isolated_cwd() as directory:
+            env_path = directory / "custom.env"
+            env_path.write_text(
+                "ENDLESS_TASK_PROVIDER=deepseek\nDEEPSEEK_API_KEY=custom-key\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"ENDLESS_TASK_ENV_FILE": str(env_path)},
+                clear=True,
+            ):
+                settings = AppSettings.from_environment()
+
+            self.assertEqual("deepseek", settings.provider_name)
+            self.assertEqual("custom-key", settings.api_key)
 
     def test_fake_is_default_and_needs_no_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

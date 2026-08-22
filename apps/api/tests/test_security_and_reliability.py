@@ -44,15 +44,20 @@ class SecurityAndReliabilityTest(unittest.TestCase):
 
     def test_configuration_is_versioned_and_uses_explicit_data_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            with patch.dict(
-                os.environ,
-                {
-                    "ENDLESS_TASK_CONFIG_VERSION": str(CONFIG_VERSION),
-                    "ENDLESS_TASK_DATA_DIR": directory,
-                },
-                clear=True,
-            ):
-                settings = AppSettings.from_environment()
+            previous_cwd = os.getcwd()
+            os.chdir(directory)
+            try:
+                with patch.dict(
+                    os.environ,
+                    {
+                        "ENDLESS_TASK_CONFIG_VERSION": str(CONFIG_VERSION),
+                        "ENDLESS_TASK_DATA_DIR": directory,
+                    },
+                    clear=True,
+                ):
+                    settings = AppSettings.from_environment()
+            finally:
+                os.chdir(previous_cwd)
 
             self.assertEqual(CONFIG_VERSION, settings.config_version)
             self.assertEqual(Path(directory) / "endless-task.db", settings.database_path)

@@ -88,15 +88,12 @@ uv run endless-task backup /path/to/endless-task-backup.db
 
 ## 使用 DeepSeek
 
-复制示例配置并填写自己的 Key；`.env` 已被 Git 忽略：
+复制示例配置并填写自己的 Key；`.env` 已被 Git 忽略。服务启动时会自动读取当前目录的 `.env`（真实环境变量优先），也可用 `ENDLESS_TASK_ENV_FILE` 指定配置文件路径：
 
 ```bash
 cd apps/api
 cp .env.example .env
 # 编辑 .env 中的 DEEPSEEK_API_KEY
-set -a
-source .env
-set +a
 uv run endless-task-api
 ```
 
@@ -127,7 +124,7 @@ ENDLESS_TASK_API_KEY=...
 ENDLESS_TASK_CONTEXT_WINDOW_TOKENS=32768
 ENDLESS_TASK_MAX_OUTPUT_TOKENS=2048
 ENDLESS_TASK_SUMMARY_TOKEN_LIMIT=1024
-ENDLESS_TASK_SYSTEM_PROMPT_VERSION=p0-v1
+ENDLESS_TASK_SYSTEM_PROMPT_VERSION=p1-v1
 ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS=2
 ENDLESS_TASK_MAX_MESSAGE_CHARACTERS=100000
 ENDLESS_TASK_MAX_AGENT_ITERATIONS=4
