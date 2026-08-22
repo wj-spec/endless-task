@@ -543,6 +543,48 @@ textarea:focus-visible {
   padding-top: 2px;
 }
 
+.activity-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.activity-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #888880;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.activity-line > span {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border: 1px solid #aaa9a2;
+  border-radius: 50%;
+}
+
+.activity-line.is-running > span {
+  border-color: var(--accent);
+  background: var(--accent);
+  animation: breathe 1.2s ease-in-out infinite;
+}
+
+.activity-line.is-completed > span {
+  border-color: #799286;
+  background: #799286;
+}
+
+.activity-line.is-failed {
+  color: #8a4842;
+}
+
+.activity-line.is-failed > span {
+  border-color: #b7665f;
+}
+
 .thinking-line,
 .turn-notice {
   display: flex;
@@ -569,6 +611,51 @@ textarea:focus-visible {
 .turn-notice.is-error {
   border-left-color: #c36d65;
   color: #8a4842;
+}
+
+.approval-prompt {
+  margin-top: 18px;
+  padding: 3px 0 3px 14px;
+  border-left: 2px solid #9cb3a9;
+}
+
+.approval-prompt strong {
+  display: block;
+  color: #30332f;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.approval-prompt p {
+  max-width: 580px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.approval-actions button {
+  border: 0;
+  border-bottom: 1px solid #c5c8c2;
+  background: transparent;
+  padding: 3px 0;
+  color: #555b57;
+  font-size: 12px;
+}
+
+.approval-actions button:first-child {
+  border-bottom-color: #7b9b8d;
+  color: var(--accent);
+}
+
+.approval-actions button:hover:not(:disabled) {
+  border-bottom-color: currentColor;
 }
 
 .response-actions {
@@ -680,17 +767,77 @@ textarea:focus-visible {
 }
 
 .composer {
-  display: grid;
+  display: flex;
   width: min(760px, 100%);
   min-height: 56px;
-  grid-template-columns: minmax(0, 1fr) 38px;
-  align-items: end;
-  gap: 12px;
+  flex-direction: column;
   margin: 0 auto;
   padding: 10px 9px 9px 15px;
   border: 1px solid #d5d4cd;
   border-radius: 10px;
   background: #fff;
+}
+
+.composer-input-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 38px;
+  align-items: end;
+  gap: 10px;
+}
+
+.file-input {
+  display: none;
+}
+
+.attach-button {
+  display: grid;
+  width: 30px;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #77776f;
+  font-size: 21px;
+}
+
+.attach-button:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.composer-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 1px 3px 9px;
+  border-bottom: 1px solid #ecebe6;
+}
+
+.composer-file {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: #595951;
+  font-size: 12px;
+}
+
+.composer-file > span:nth-child(2) {
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-file button {
+  border: 0;
+  background: transparent;
+  color: #9a9991;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.composer-file button:hover:not(:disabled) {
+  color: #9a3f38;
 }
 
 .composer:focus-within {

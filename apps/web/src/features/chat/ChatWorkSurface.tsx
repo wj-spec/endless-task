@@ -23,11 +23,18 @@ type ChatWorkSurfaceProps = {
   onDraftChange: (value: string) => void;
   onMenu: () => void;
   onRegenerate: (turnId: string) => void;
+  onResolveApproval: (
+    turnId: string,
+    approvalId: string,
+    decision: "approve" | "deny",
+  ) => void;
+  onRemoveFile: (fileId: string) => void;
   onRename: (title: string) => void;
   onRestore: () => void;
   onRetry: (turnId: string) => void;
   onSelectVariant: (turnId: string, variantId: string) => void;
   onSend: () => void;
+  onUploadFile: (file: File) => void;
 };
 
 const statusText = {
@@ -61,13 +68,17 @@ export function ChatWorkSurface({
   onDraftChange,
   onMenu,
   onRegenerate,
+  onResolveApproval,
+  onRemoveFile,
   onRename,
   onRestore,
   onRetry,
   onSelectVariant,
   onSend,
+  onUploadFile,
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
@@ -93,6 +104,8 @@ export function ChatWorkSurface({
   const archived = conversation?.conversation.status === "archived";
   const providerUnavailable = health !== null && !health.providerConfigured;
   const composerDisabled = !conversation || archived || providerUnavailable;
+  const attachmentDisabled =
+    !conversation || archived || isGenerating || pendingAction !== null;
 
   return (
     <main className="chat-surface">
@@ -169,6 +182,10 @@ export function ChatWorkSurface({
               : persistedVariant.assistantMessage.content;
             const status = useLive ? live.status : turnSnapshot.turn.status;
             const turnError = useLive ? live.error : undefined;
+            const pendingApproval = useLive ? live.pendingApproval : undefined;
+            const activities = useLive
+              ? live.activities
+              : (turnSnapshot.activities ?? []);
             const isLatest = turnIndex === conversation.turns.length - 1;
             const selectedIndex = turnSnapshot.responseVariants.findIndex(
               (item) => item.variant.id === persistedVariant.variant.id,
@@ -187,10 +204,57 @@ export function ChatWorkSurface({
                   </div>
                   <div className="assistant-content">
                     {content ? <MessageContent content={content} /> : null}
+                    {activities.length ? (
+                      <div className="activity-list" aria-label="操作状态">
+                        {activities.map((activity) => (
+                          <div
+                            className={`activity-line is-${activity.status}`}
+                            key={activity.id}
+                          >
+                            <span aria-hidden="true" />
+                            {activity.message}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     {status === "created" || status === "running" ? (
                       <div className="thinking-line">
                         <span className="thinking-dot" />
-                        {statusText[status]}
+                        {pendingApproval ? "等待你的确认" : statusText[status]}
+                      </div>
+                    ) : null}
+                    {pendingApproval ? (
+                      <div className="approval-prompt" role="group" aria-label="操作确认">
+                        <strong>{pendingApproval.summary}</strong>
+                        <p>{pendingApproval.reason}</p>
+                        <div className="approval-actions">
+                          <button
+                            disabled={pendingAction !== null}
+                            onClick={() =>
+                              onResolveApproval(
+                                turnSnapshot.turn.id,
+                                pendingApproval.id,
+                                "approve",
+                              )
+                            }
+                            type="button"
+                          >
+                            允许一次
+                          </button>
+                          <button
+                            disabled={pendingAction !== null}
+                            onClick={() =>
+                              onResolveApproval(
+                                turnSnapshot.turn.id,
+                                pendingApproval.id,
+                                "deny",
+                              )
+                            }
+                            type="button"
+                          >
+                            不允许
+                          </button>
+                        </div>
                       </div>
                     ) : null}
                     {status === "failed" ? (
@@ -273,49 +337,92 @@ export function ChatWorkSurface({
 
       <footer className="composer-region">
         <div className="composer">
-          <textarea
-            aria-label="给 Endless 发送消息"
-            disabled={composerDisabled || isGenerating}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                onSend();
+          {conversation?.files.length ? (
+            <div className="composer-files" aria-label="当前对话文件">
+              {conversation.files.map((file) => (
+                <span className="composer-file" key={file.id}>
+                  <span aria-hidden="true">⌑</span>
+                  <span title={file.originalName}>{file.originalName}</span>
+                  <button
+                    aria-label={`移除 ${file.originalName}`}
+                    disabled={attachmentDisabled}
+                    onClick={() => onRemoveFile(file.id)}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div className="composer-input-row">
+            <input
+              ref={fileInputRef}
+              accept=".txt,.md,.markdown,.json,.csv,.tsv,.py,.js,.jsx,.ts,.tsx,.html,.css,.yaml,.yml,.toml"
+              className="file-input"
+              disabled={attachmentDisabled}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onUploadFile(file);
+                event.target.value = "";
+              }}
+              type="file"
+            />
+            <button
+              aria-label="添加文本文件"
+              className="attach-button"
+              disabled={attachmentDisabled}
+              onClick={() => fileInputRef.current?.click()}
+              type="button"
+            >
+              <span aria-hidden="true">＋</span>
+            </button>
+            <textarea
+              aria-label="给 Endless 发送消息"
+              disabled={composerDisabled || isGenerating}
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  onSend();
+                }
+              }}
+              placeholder={
+                archived
+                  ? "恢复对话后继续"
+                  : providerUnavailable
+                    ? "请先配置模型服务"
+                    : "给 Endless 发送消息"
               }
-            }}
-            placeholder={
-              archived
-                ? "恢复对话后继续"
-                : providerUnavailable
-                  ? "请先配置模型服务"
-                  : "给 Endless 发送消息"
-            }
-            rows={1}
-            value={draft}
-          />
-          {isGenerating ? (
-            <button
-              aria-label="停止生成"
-              className="send-button stop-button"
-              disabled={pendingAction === "cancel"}
-              onClick={onCancel}
-              type="button"
-            >
-              <span aria-hidden="true" />
-            </button>
-          ) : (
-            <button
-              aria-label="发送消息"
-              className="send-button"
-              disabled={composerDisabled || !draft.trim() || pendingAction !== null}
-              onClick={onSend}
-              type="button"
-            >
-              ↑
-            </button>
-          )}
+              rows={1}
+              value={draft}
+            />
+            {isGenerating ? (
+              <button
+                aria-label="停止生成"
+                className="send-button stop-button"
+                disabled={pendingAction === "cancel"}
+                onClick={onCancel}
+                type="button"
+              >
+                <span aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                aria-label="发送消息"
+                className="send-button"
+                disabled={composerDisabled || !draft.trim() || pendingAction !== null}
+                onClick={onSend}
+                type="button"
+              >
+                ↑
+              </button>
+            )}
+          </div>
         </div>
-        <p className="composer-note">Enter 发送 · Shift + Enter 换行</p>
+        <p className="composer-note">
+          Enter 发送 · Shift + Enter 换行 · 可附加 UTF-8 文本（≤ 1 MB）
+        </p>
       </footer>
     </main>
   );

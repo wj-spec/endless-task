@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Literal, Optional
 
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +25,8 @@ from endless_task.domain.repositories import (
     RepositoryError,
     ValidationError,
 )
+from endless_task.files import FileError
+from endless_task.files.read_tool import ReadTextFileTool
 from endless_task.runtime import (
     AssistantRuntime,
     FakeProvider,
@@ -42,16 +44,20 @@ from endless_task.storage import (
     Database,
     SqliteChatRepository,
     SqliteContextRepository,
+    SqliteTextFileRepository,
     SqliteRuntimeRepository,
 )
+from endless_task.tooling import ApprovalStatus, ToolRegistry
 
 from .serialization import (
+    approval_request_json,
     compact_turn_snapshot_json,
     conversation_json,
     conversation_snapshot_json,
     response_variant_by_id,
     runtime_event_json,
     turn_command_json,
+    uploaded_text_file_json,
 )
 
 
@@ -87,13 +93,19 @@ class AppSettings:
     base_url: Optional[str] = None
     api_key: Optional[str] = field(default=None, repr=False)
     provider_timeout_seconds: float = 60.0
-    system_prompt: str = "你是 Endless Task，一个可靠、简洁的个人助手。"
-    system_prompt_version: str = "p0-v1"
+    system_prompt: str = "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。"
+    system_prompt_version: str = "p1-v1"
     context_window_tokens: int = 32_768
     max_output_tokens: int = 2_048
     summary_token_limit: int = 1_024
     max_concurrent_model_calls: int = 2
+    max_agent_iterations: int = 4
+    max_tool_calls_per_turn: int = 8
+    agent_timeout_seconds: float = 120.0
+    approval_timeout_seconds: float = 1800.0
     max_message_characters: int = 100_000
+    max_file_bytes: int = 1_000_000
+    max_files_per_conversation: int = 10
     heartbeat_seconds: float = 15.0
 
     def __post_init__(self) -> None:
@@ -109,8 +121,16 @@ class AppSettings:
             raise ValueError("Summary token limit cannot be negative")
         if self.max_concurrent_model_calls <= 0:
             raise ValueError("Maximum concurrent model calls must be positive")
+        if self.max_agent_iterations <= 0 or self.max_tool_calls_per_turn <= 0:
+            raise ValueError("Agent loop limits must be positive")
+        if self.agent_timeout_seconds <= 0:
+            raise ValueError("Agent timeout must be positive")
+        if self.approval_timeout_seconds <= 0:
+            raise ValueError("Approval timeout must be positive")
         if self.max_message_characters <= 0:
             raise ValueError("Maximum message characters must be positive")
+        if self.max_file_bytes <= 0 or self.max_files_per_conversation <= 0:
+            raise ValueError("File limits must be positive")
 
     @classmethod
     def from_environment(cls) -> "AppSettings":
@@ -145,11 +165,11 @@ class AppSettings:
             ),
             system_prompt=os.environ.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT",
-                "你是 Endless Task，一个可靠、简洁的个人助手。",
+                "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。",
             ),
             system_prompt_version=os.environ.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT_VERSION",
-                "p0-v1",
+                "p1-v1",
             ),
             context_window_tokens=int(
                 os.environ.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "32768")
@@ -163,8 +183,26 @@ class AppSettings:
             max_concurrent_model_calls=int(
                 os.environ.get("ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS", "2")
             ),
+            max_agent_iterations=int(
+                os.environ.get("ENDLESS_TASK_MAX_AGENT_ITERATIONS", "4")
+            ),
+            max_tool_calls_per_turn=int(
+                os.environ.get("ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN", "8")
+            ),
+            agent_timeout_seconds=float(
+                os.environ.get("ENDLESS_TASK_AGENT_TIMEOUT_SECONDS", "120")
+            ),
+            approval_timeout_seconds=float(
+                os.environ.get("ENDLESS_TASK_APPROVAL_TIMEOUT_SECONDS", "1800")
+            ),
             max_message_characters=int(
                 os.environ.get("ENDLESS_TASK_MAX_MESSAGE_CHARACTERS", "100000")
+            ),
+            max_file_bytes=int(
+                os.environ.get("ENDLESS_TASK_MAX_FILE_BYTES", "1000000")
+            ),
+            max_files_per_conversation=int(
+                os.environ.get("ENDLESS_TASK_MAX_FILES_PER_CONVERSATION", "10")
             ),
         )
 
@@ -175,9 +213,11 @@ class AppContainer:
     database: Database
     chat_repository: SqliteChatRepository
     runtime_repository: SqliteRuntimeRepository
+    file_repository: SqliteTextFileRepository
     broker: RuntimeEventBroker
     provider: ModelProvider
     runtime: AssistantRuntime
+    tool_registry: ToolRegistry
     controller: TurnController
 
 
@@ -192,6 +232,12 @@ class CreateTurnBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str
+
+
+class ResolveApprovalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "deny"]
 
 
 class ApiRequestError(RuntimeError):
@@ -272,13 +318,22 @@ def _parse_last_event_id(turn_id: str, value: Optional[str]) -> int:
 def _build_container(
     settings: AppSettings,
     provider: Optional[ModelProvider],
+    tool_registry: Optional[ToolRegistry],
 ) -> AppContainer:
     database = Database(settings.database_path)
     chat_repository = SqliteChatRepository(database)
     context_repository = SqliteContextRepository(database)
     runtime_repository = SqliteRuntimeRepository(database)
+    file_repository = SqliteTextFileRepository(
+        database,
+        max_file_bytes=settings.max_file_bytes,
+        max_files_per_conversation=settings.max_files_per_conversation,
+    )
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
+    selected_tool_registry = tool_registry or ToolRegistry()
+    if tool_registry is None:
+        selected_tool_registry.register(ReadTextFileTool(file_repository))
     runtime = AssistantRuntime(
         chat_repository=chat_repository,
         runtime_repository=runtime_repository,
@@ -289,13 +344,19 @@ def _build_container(
             max_context_tokens=settings.context_window_tokens,
             summary_token_limit=settings.summary_token_limit,
             context_repository=context_repository,
+            file_repository=file_repository,
         ),
         provider=selected_provider,
         configuration=RuntimeConfiguration(
             model=settings.model,
             max_output_tokens=settings.max_output_tokens,
             max_concurrent_model_calls=settings.max_concurrent_model_calls,
+            max_agent_iterations=settings.max_agent_iterations,
+            max_tool_calls_per_turn=settings.max_tool_calls_per_turn,
+            agent_timeout_seconds=settings.agent_timeout_seconds,
+            approval_timeout_seconds=settings.approval_timeout_seconds,
         ),
+        tool_registry=selected_tool_registry,
         event_publisher=broker,
     )
     controller = TurnController(chat_repository=chat_repository, runtime=runtime)
@@ -304,9 +365,11 @@ def _build_container(
         database=database,
         chat_repository=chat_repository,
         runtime_repository=runtime_repository,
+        file_repository=file_repository,
         broker=broker,
         provider=selected_provider,
         runtime=runtime,
+        tool_registry=selected_tool_registry,
         controller=controller,
     )
 
@@ -332,10 +395,11 @@ def create_app(
     *,
     settings: Optional[AppSettings] = None,
     provider: Optional[ModelProvider] = None,
+    tool_registry: Optional[ToolRegistry] = None,
 ) -> FastAPI:
     selected_settings = settings or AppSettings.from_environment()
     configure_safe_logging(api_key=selected_settings.api_key)
-    container = _build_container(selected_settings, provider)
+    container = _build_container(selected_settings, provider, tool_registry)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -373,6 +437,14 @@ def create_app(
             status_code=error.status_code,
             code=error.code,
             message=error.message,
+        )
+
+    @app.exception_handler(FileError)
+    async def handle_file_error(_: Request, error: FileError) -> JSONResponse:
+        return _error_response(
+            status_code=error.status_code,
+            code=error.code,
+            message=error.safe_message,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -435,7 +507,54 @@ def create_app(
     @app.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str) -> dict[str, object]:
         snapshot = container.chat_repository.get_conversation_snapshot(conversation_id)
-        return conversation_snapshot_json(snapshot)
+        payload = conversation_snapshot_json(
+            snapshot,
+            events_by_turn={
+                turn.turn.id: tuple(
+                    container.runtime_repository.list_events(turn.turn.id)
+                )
+                for turn in snapshot.turns
+            },
+        )
+        payload["files"] = [
+            uploaded_text_file_json(item)
+            for item in container.file_repository.list_files(conversation_id)
+        ]
+        return payload
+
+    @app.post("/conversations/{conversation_id}/files", status_code=201)
+    async def upload_conversation_file(
+        conversation_id: str,
+        request: Request,
+        filename: str = Query(..., min_length=1, max_length=512),
+    ) -> dict[str, object]:
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > container.settings.max_file_bytes:
+                raise FileError(
+                    "file_too_large",
+                    f"文件超过 {container.settings.max_file_bytes} 字节的本地限制。",
+                    status_code=413,
+                )
+            content.extend(chunk)
+        uploaded = container.file_repository.create_file(
+            conversation_id=conversation_id,
+            original_name=filename,
+            media_type=request.headers.get("content-type", "application/octet-stream"),
+            content=bytes(content),
+        )
+        return uploaded_text_file_json(uploaded)
+
+    @app.delete("/conversations/{conversation_id}/files/{file_id}", status_code=204)
+    async def delete_conversation_file(
+        conversation_id: str,
+        file_id: str,
+    ) -> Response:
+        container.file_repository.delete_file(
+            conversation_id=conversation_id,
+            file_id=file_id,
+        )
+        return Response(status_code=204)
 
     @app.patch("/conversations/{conversation_id}")
     async def patch_conversation(
@@ -494,7 +613,11 @@ def create_app(
     async def get_turn(turn_id: str) -> dict[str, object]:
         snapshot = container.chat_repository.get_turn(turn_id)
         events = tuple(container.runtime_repository.list_events(turn_id))
-        return compact_turn_snapshot_json(snapshot, events=events)
+        return compact_turn_snapshot_json(
+            snapshot,
+            events=events,
+            pending_approval=container.runtime_repository.get_pending_approval(turn_id),
+        )
 
     @app.get("/turns/{turn_id}/events")
     async def get_turn_events(
@@ -549,7 +672,27 @@ def create_app(
         await container.controller.cancel(turn_id=turn_id)
         snapshot = container.chat_repository.get_turn(turn_id)
         events = tuple(container.runtime_repository.list_events(turn_id))
-        return compact_turn_snapshot_json(snapshot, events=events)
+        return compact_turn_snapshot_json(
+            snapshot,
+            events=events,
+            pending_approval=container.runtime_repository.get_pending_approval(turn_id),
+        )
+
+    @app.post("/approvals/{approval_id}")
+    async def resolve_approval(
+        approval_id: str,
+        body: ResolveApprovalBody,
+    ) -> dict[str, object]:
+        status = (
+            ApprovalStatus.APPROVED
+            if body.decision == "approve"
+            else ApprovalStatus.DENIED
+        )
+        approval = await container.runtime.resolve_approval(
+            approval_id=approval_id,
+            status=status,
+        )
+        return approval_request_json(approval)
 
     async def create_variant(
         turn_id: str,

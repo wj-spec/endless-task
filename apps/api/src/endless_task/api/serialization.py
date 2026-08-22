@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from endless_task.domain.models import (
     Conversation,
@@ -13,7 +13,9 @@ from endless_task.domain.models import (
     Turn,
     TurnSnapshot,
 )
+from endless_task.files import UploadedTextFile
 from endless_task.runtime.events import RuntimeEvent
+from endless_task.tooling import ApprovalRequest
 
 
 def _camel_key(name: str) -> str:
@@ -39,6 +41,10 @@ def _dataclass_dict(value: Any) -> dict[str, Any]:
 
 def conversation_json(conversation: Conversation) -> dict[str, Any]:
     return _dataclass_dict(conversation)
+
+
+def uploaded_text_file_json(file: UploadedTextFile) -> dict[str, Any]:
+    return _dataclass_dict(file)
 
 
 def message_json(message: Message) -> dict[str, Any]:
@@ -73,10 +79,23 @@ def full_turn_snapshot_json(snapshot: TurnSnapshot) -> dict[str, Any]:
     }
 
 
-def conversation_snapshot_json(snapshot: ConversationSnapshot) -> dict[str, Any]:
+def conversation_snapshot_json(
+    snapshot: ConversationSnapshot,
+    *,
+    events_by_turn: Optional[Mapping[str, tuple[RuntimeEvent, ...]]] = None,
+) -> dict[str, Any]:
+    turns = []
+    for item in snapshot.turns:
+        payload = full_turn_snapshot_json(item)
+        if events_by_turn is not None:
+            payload["activities"] = activity_snapshots_json(
+                events_by_turn.get(item.turn.id, ()),
+                response_variant_id=item.turn.active_response_variant_id,
+            )
+        turns.append(payload)
     return {
         "conversation": conversation_json(snapshot.conversation),
-        "turns": [full_turn_snapshot_json(item) for item in snapshot.turns],
+        "turns": turns,
     }
 
 
@@ -126,6 +145,7 @@ def compact_turn_snapshot_json(
     snapshot: TurnSnapshot,
     *,
     events: tuple[RuntimeEvent, ...],
+    pending_approval: Optional[ApprovalRequest] = None,
 ) -> dict[str, Any]:
     selected = active_variant(snapshot)
     failure = next(
@@ -141,12 +161,66 @@ def compact_turn_snapshot_json(
         "assistantMessageId": selected.assistant_message.id,
         "content": selected.assistant_message.content,
         "lastSequence": events[-1].sequence if events else 0,
+        "activities": activity_snapshots_json(
+            events,
+            response_variant_id=selected.variant.id,
+        ),
     }
     if failure is not None and failure.response_variant_id == selected.variant.id:
         error = failure.data.get("error")
         if isinstance(error, Mapping):
             result["error"] = dict(error)
+    if pending_approval is not None:
+        result["pendingApproval"] = approval_request_json(pending_approval)
     return result
+
+
+def approval_request_json(approval: ApprovalRequest) -> dict[str, Any]:
+    return {
+        "id": approval.id,
+        "toolCallId": approval.tool_call_id,
+        "summary": approval.summary,
+        "reason": approval.reason,
+        "status": approval.status.value,
+        "createdAt": approval.created_at,
+        "resolvedAt": approval.resolved_at,
+        "metadata": dict(approval.metadata),
+    }
+
+
+def activity_snapshots_json(
+    events: tuple[RuntimeEvent, ...],
+    *,
+    response_variant_id: Optional[str],
+) -> list[dict[str, Any]]:
+    activities: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if not event.type.startswith("activity."):
+            continue
+        if event.response_variant_id != response_variant_id:
+            continue
+        activity_id = event.data.get("activityId")
+        status = event.data.get("status")
+        message = event.data.get("message")
+        if not all(isinstance(value, str) for value in (activity_id, status, message)):
+            continue
+        current = activities.get(activity_id)
+        if current is None:
+            current = {
+                "id": activity_id,
+                "status": status,
+                "message": message,
+                "startedAt": event.occurred_at,
+                "updatedAt": event.occurred_at,
+            }
+            activities[activity_id] = current
+        else:
+            current.update(
+                status=status,
+                message=message,
+                updatedAt=event.occurred_at,
+            )
+    return list(activities.values())
 
 
 def turn_command_json(snapshot: TurnSnapshot) -> dict[str, Any]:

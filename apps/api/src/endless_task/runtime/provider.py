@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional, Protocol, Tuple, Union
+from typing import Any, AsyncIterator, Mapping, Optional, Protocol, Tuple, Union
 
 from .cancellation import CancellationToken
 
@@ -10,6 +10,23 @@ from .cancellation import CancellationToken
 class ProviderMessage:
     role: str
     content: str
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
+    tool_calls: Tuple["ProviderToolCall", ...] = ()
+
+
+@dataclass(frozen=True)
+class ProviderToolDefinition:
+    name: str
+    description: str
+    input_schema: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ProviderToolCall:
+    id: str
+    name: str
+    arguments: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -19,6 +36,7 @@ class ProviderRequest:
     messages: Tuple[ProviderMessage, ...]
     max_output_tokens: int
     temperature: Optional[float] = None
+    tools: Tuple[ProviderToolDefinition, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -33,7 +51,7 @@ class ProviderCompleted:
     output_tokens: Optional[int] = None
 
 
-ProviderStreamEvent = Union[ProviderTextDelta, ProviderCompleted]
+ProviderStreamEvent = Union[ProviderTextDelta, ProviderToolCall, ProviderCompleted]
 
 
 class ProviderError(Exception):

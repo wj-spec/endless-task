@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from typing import Optional, Protocol, Sequence, Tuple
 
+from endless_task.tooling import (
+    ApprovalRequest,
+    ApprovalStatus,
+    ToolApprovalPrompt,
+    ToolActivityCopy,
+    ToolCall,
+    ToolDefinition,
+)
+
 from .events import RuntimeEvent
 
 
@@ -63,6 +72,58 @@ class RuntimeRepository(Protocol):
         partial_content: str,
         cancelled_by: str = "user",
     ) -> Optional[RuntimeEvent]:
+        ...
+
+    def prepare_tool_call(
+        self,
+        *,
+        call: ToolCall,
+        definition: ToolDefinition,
+        approval_prompt: Optional[ToolApprovalPrompt] = None,
+    ) -> tuple[Optional[ApprovalRequest], Optional[RuntimeEvent]]:
+        ...
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        status: ApprovalStatus,
+    ) -> tuple[ApprovalRequest, Optional[RuntimeEvent]]:
+        ...
+
+    def get_pending_approval(self, turn_id: str) -> Optional[ApprovalRequest]:
+        ...
+
+    def start_tool_call(
+        self,
+        call: ToolCall,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        ...
+
+    def complete_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        result_truncated: bool,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        ...
+
+    def fail_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        error_code: str,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        ...
+
+    def cancel_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
         ...
 
     def list_events(

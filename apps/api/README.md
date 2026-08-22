@@ -30,6 +30,28 @@ P0 已完成并通过 R0.8 发布验收：
 
 默认仍使用 FakeProvider，未配置密钥时不会访问外部服务。
 
+P1 R1.4 已新增 Provider-neutral 工具协议、受限 Agent Loop、`read_text_file`、一次性审批流程和轻量 Activity。OpenAI-compatible Provider 可以转换流式工具调用，Runtime 会校验参数、限制循环与调用数、传播取消并控制工具超时。文件、ToolCall、审批记录与公开事件均按本地边界保存在 SQLite；当前默认工具仍只有只读文件读取。
+
+文件接口：
+
+```text
+POST   /conversations/{conversationId}/files?filename=notes.md
+DELETE /conversations/{conversationId}/files/{fileId}
+GET    /conversations/{conversationId}
+```
+
+上传请求体是文件原始字节。首版只支持 UTF-8 文本类文件，不支持 PDF、Office、图片或任意本地路径读取。
+
+需要副作用的工具会产生 `approval.requested` SSE 事件，并暂停在当前 Turn。客户端通过以下接口只批准或拒绝本次调用：
+
+```text
+POST /approvals/{approvalId}  {"decision":"approve" | "deny"}
+```
+
+批准不授权后续调用；参数变化也必须产生新的确认。停止 Turn、确认超时或服务重启都会使待确认操作失效。
+
+工具执行通过 `activity.started / completed / failed / cancelled` 事件展示自然语言状态。事件不包含原始参数、模型思维链或完整日志，刷新后可以从 RuntimeEventJournal 恢复。
+
 ## 本地启动
 
 ```bash
@@ -108,6 +130,12 @@ ENDLESS_TASK_SUMMARY_TOKEN_LIMIT=1024
 ENDLESS_TASK_SYSTEM_PROMPT_VERSION=p0-v1
 ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS=2
 ENDLESS_TASK_MAX_MESSAGE_CHARACTERS=100000
+ENDLESS_TASK_MAX_AGENT_ITERATIONS=4
+ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN=8
+ENDLESS_TASK_AGENT_TIMEOUT_SECONDS=120
+ENDLESS_TASK_APPROVAL_TIMEOUT_SECONDS=1800
+ENDLESS_TASK_MAX_FILE_BYTES=1000000
+ENDLESS_TASK_MAX_FILES_PER_CONVERSATION=10
 ```
 
 Runtime 会先为输出预留预算，再保留系统提示和当前消息，最后纳入本地摘要与最近的完整 Turn。当前消息不会被静默截断；无法安全放入上下文时返回 `context_too_large`。

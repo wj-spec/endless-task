@@ -1,11 +1,13 @@
 import type {
   CompactTurnSnapshot,
+  ApprovalRequest,
   Conversation,
   ConversationSnapshot,
   ConversationStatus,
   HealthSnapshot,
   RuntimeEvent,
   TurnCommandResponse,
+  UploadedTextFile,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -61,6 +63,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function responseError(response: Response): Promise<ApiClientError> {
+  let payload: ApiErrorEnvelope | undefined;
+  try {
+    payload = (await response.json()) as ApiErrorEnvelope;
+  } catch {
+    payload = undefined;
+  }
+  return new ApiClientError(response, payload);
+}
+
 export const chatApi = {
   health: () => request<HealthSnapshot>("/health"),
   listConversations: async (status: ConversationStatus, query?: string) => {
@@ -85,6 +97,26 @@ export const chatApi = {
     }),
   deleteConversation: (conversationId: string) =>
     request<void>(`/conversations/${conversationId}`, { method: "DELETE" }),
+  uploadFile: async (conversationId: string, file: File) => {
+    const parameters = new URLSearchParams({ filename: file.name });
+    const response = await fetch(
+      url(`/conversations/${conversationId}/files?${parameters.toString()}`),
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": file.type || "application/octet-stream",
+        },
+        body: file,
+      },
+    );
+    if (!response.ok) throw await responseError(response);
+    return (await response.json()) as UploadedTextFile;
+  },
+  deleteFile: (conversationId: string, fileId: string) =>
+    request<void>(`/conversations/${conversationId}/files/${fileId}`, {
+      method: "DELETE",
+    }),
   createTurn: (conversationId: string, content: string, idempotencyKey: string) =>
     request<TurnCommandResponse>(`/conversations/${conversationId}/turns`, {
       method: "POST",
@@ -108,6 +140,11 @@ export const chatApi = {
     request<TurnCommandResponse>(`/turns/${turnId}/response-variants/${variantId}/select`, {
       method: "POST",
     }),
+  resolveApproval: (approvalId: string, decision: "approve" | "deny") =>
+    request<ApprovalRequest>(`/approvals/${approvalId}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
 };
 
 export async function streamTurnEvents(options: {
@@ -125,13 +162,7 @@ export async function streamTurnEvents(options: {
     signal: options.signal,
   });
   if (!response.ok) {
-    let payload: ApiErrorEnvelope | undefined;
-    try {
-      payload = (await response.json()) as ApiErrorEnvelope;
-    } catch {
-      payload = undefined;
-    }
-    throw new ApiClientError(response, payload);
+    throw await responseError(response);
   }
   if (!response.body) {
     throw new Error("浏览器无法读取流式响应。");

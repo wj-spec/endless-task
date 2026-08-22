@@ -8,6 +8,16 @@ from typing import Mapping, Optional, Sequence
 
 from endless_task.domain.repositories import InvalidStateError, NotFoundError, ValidationError
 from endless_task.runtime.events import RuntimeEvent
+from endless_task.tooling import (
+    ApprovalRequest,
+    ApprovalStatus,
+    ToolApprovalMode,
+    ToolApprovalPrompt,
+    ToolActivityCopy,
+    ToolCall,
+    ToolCallStatus,
+    ToolDefinition,
+)
 
 from .database import Database
 
@@ -247,6 +257,264 @@ class SqliteRuntimeRepository:
                 data=data,
             )
 
+    def prepare_tool_call(
+        self,
+        *,
+        call: ToolCall,
+        definition: ToolDefinition,
+        approval_prompt: Optional[ToolApprovalPrompt] = None,
+    ) -> tuple[Optional[ApprovalRequest], Optional[RuntimeEvent]]:
+        requires_approval = definition.approval_mode is ToolApprovalMode.REQUIRED
+        if requires_approval != (approval_prompt is not None):
+            raise ValidationError("Approval prompt must match the tool approval policy")
+
+        with self._database.transaction() as connection:
+            row = self._active_execution(
+                connection,
+                call.turn_id,
+                call.response_variant_id,
+            )
+            self._require_running(row)
+            status = (
+                ToolCallStatus.WAITING_APPROVAL
+                if requires_approval
+                else ToolCallStatus.CREATED
+            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO tool_calls(
+                        turn_id, id, conversation_id, response_variant_id,
+                        tool_name, arguments_json, effect, approval_mode, status,
+                        created_at, started_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        call.turn_id,
+                        call.id,
+                        call.conversation_id,
+                        call.response_variant_id,
+                        call.tool_name,
+                        call.canonical_arguments_json,
+                        definition.effect.value,
+                        definition.approval_mode.value,
+                        status.value,
+                        call.created_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise InvalidStateError("Tool call was already recorded") from error
+
+            if approval_prompt is None:
+                return None, None
+
+            approval_id = f"approval_{uuid.uuid4().hex}"
+            connection.execute(
+                """
+                INSERT INTO approval_requests(
+                    id, turn_id, tool_call_id, summary, reason, status,
+                    metadata_json, created_at, resolved_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, NULL)
+                """,
+                (
+                    approval_id,
+                    call.turn_id,
+                    call.id,
+                    approval_prompt.summary,
+                    approval_prompt.reason,
+                    json.dumps(
+                        dict(approval_prompt.metadata),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    call.created_at,
+                ),
+            )
+            approval = ApprovalRequest(
+                id=approval_id,
+                tool_call_id=call.id,
+                summary=approval_prompt.summary,
+                reason=approval_prompt.reason,
+                status=ApprovalStatus.PENDING,
+                created_at=call.created_at,
+                metadata=approval_prompt.metadata,
+            )
+            event = self._append_event(
+                connection,
+                row=row,
+                event_type="approval.requested",
+                occurred_at=call.created_at,
+                data=self._approval_event_data(approval),
+                include_message=False,
+            )
+            return approval, event
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        status: ApprovalStatus,
+    ) -> tuple[ApprovalRequest, Optional[RuntimeEvent]]:
+        if status not in (
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.DENIED,
+            ApprovalStatus.CANCELLED,
+            ApprovalStatus.EXPIRED,
+        ):
+            raise ValidationError("Approval must resolve to a terminal status")
+
+        with self._database.transaction() as connection:
+            approval_row = connection.execute(
+                "SELECT * FROM approval_requests WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+            if approval_row is None:
+                raise NotFoundError("Approval request not found")
+            current = ApprovalStatus(approval_row["status"])
+            if current is not ApprovalStatus.PENDING:
+                if current is status:
+                    return self._approval_from_row(approval_row), None
+                raise InvalidStateError("Approval request was already resolved")
+
+            row = self._active_execution(
+                connection,
+                approval_row["turn_id"],
+                self._variant_id_for_approval(connection, approval_id),
+            )
+            self._require_running(row)
+            now = self._clock()
+            tool_status = (
+                ToolCallStatus.WAITING_APPROVAL
+                if status is ApprovalStatus.APPROVED
+                else ToolCallStatus.CANCELLED
+            )
+            connection.execute(
+                """
+                UPDATE approval_requests
+                SET status = ?, resolved_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (status.value, now, approval_id),
+            )
+            connection.execute(
+                """
+                UPDATE tool_calls
+                SET status = ?,
+                    finished_at = CASE WHEN ? = 'cancelled' THEN ? ELSE finished_at END
+                WHERE turn_id = ? AND id = ?
+                """,
+                (
+                    tool_status.value,
+                    tool_status.value,
+                    now,
+                    approval_row["turn_id"],
+                    approval_row["tool_call_id"],
+                ),
+            )
+            resolved_row = connection.execute(
+                "SELECT * FROM approval_requests WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+            approval = self._approval_from_row(resolved_row)
+            event = self._append_event(
+                connection,
+                row=row,
+                event_type="approval.resolved",
+                occurred_at=now,
+                data=self._approval_event_data(approval),
+                include_message=False,
+            )
+            return approval, event
+
+    def get_pending_approval(self, turn_id: str) -> Optional[ApprovalRequest]:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM approval_requests
+                WHERE turn_id = ? AND status = 'pending'
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (turn_id,),
+            ).fetchone()
+            return self._approval_from_row(row) if row is not None else None
+
+    def start_tool_call(
+        self,
+        call: ToolCall,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        with self._database.transaction() as connection:
+            row = self._active_execution(
+                connection,
+                call.turn_id,
+                call.response_variant_id,
+            )
+            self._require_running(row)
+            current = connection.execute(
+                "SELECT status FROM tool_calls WHERE turn_id = ? AND id = ?",
+                (call.turn_id, call.id),
+            ).fetchone()
+            if current is None:
+                raise NotFoundError("Tool call not found")
+            if current["status"] not in ("created", "waiting_approval"):
+                raise InvalidStateError("Tool call is not ready to run")
+            now = self._clock()
+            connection.execute(
+                """
+                UPDATE tool_calls SET status = 'running', started_at = ?
+                WHERE turn_id = ? AND id = ?
+                """,
+                (now, call.turn_id, call.id),
+            )
+            return self._append_event(
+                connection,
+                row=row,
+                event_type="activity.started",
+                occurred_at=now,
+                data=self._activity_event_data(call.id, "running", activity.running),
+                include_message=False,
+            )
+
+    def complete_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        result_truncated: bool,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        return self._finish_tool_call(
+            call,
+            status=ToolCallStatus.COMPLETED,
+            result_truncated=result_truncated,
+            activity_message=activity.completed,
+        )
+
+    def fail_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        error_code: str,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        return self._finish_tool_call(
+            call,
+            status=ToolCallStatus.FAILED,
+            error_code=error_code,
+            activity_message=activity.failed,
+        )
+
+    def cancel_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        activity: ToolActivityCopy,
+    ) -> RuntimeEvent:
+        return self._finish_tool_call(
+            call,
+            status=ToolCallStatus.CANCELLED,
+            activity_message=activity.cancelled,
+        )
+
     def list_events(
         self,
         turn_id: str,
@@ -292,6 +560,44 @@ class SqliteRuntimeRepository:
             ).fetchall()
             for row in rows:
                 now = self._clock()
+                running_tools = connection.execute(
+                    """
+                    SELECT id FROM tool_calls
+                    WHERE turn_id = ? AND status = 'running'
+                    ORDER BY created_at, id
+                    """,
+                    (row["turn_id"],),
+                ).fetchall()
+                connection.execute(
+                    """
+                    UPDATE approval_requests
+                    SET status = 'cancelled', resolved_at = ?
+                    WHERE turn_id = ? AND status = 'pending'
+                    """,
+                    (now, row["turn_id"]),
+                )
+                connection.execute(
+                    """
+                    UPDATE tool_calls
+                    SET status = 'cancelled', finished_at = ?
+                    WHERE turn_id = ?
+                      AND status IN ('created', 'waiting_approval', 'running')
+                    """,
+                    (now, row["turn_id"]),
+                )
+                for tool_row in running_tools:
+                    self._append_event(
+                        connection,
+                        row=row,
+                        event_type="activity.cancelled",
+                        occurred_at=now,
+                        data=self._activity_event_data(
+                            tool_row["id"],
+                            "cancelled",
+                            "操作因本地服务中断而停止",
+                        ),
+                        include_message=False,
+                    )
                 self._write_terminal_state(
                     connection,
                     row=row,
@@ -320,6 +626,128 @@ class SqliteRuntimeRepository:
                     )
                 )
         return tuple(recovered)
+
+    def _finish_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        status: ToolCallStatus,
+        result_truncated: bool = False,
+        error_code: Optional[str] = None,
+        activity_message: str,
+    ) -> RuntimeEvent:
+        if status not in (
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.FAILED,
+            ToolCallStatus.CANCELLED,
+        ):
+            raise ValidationError("Tool call must finish with a terminal status")
+        with self._database.transaction() as connection:
+            row = self._active_execution(
+                connection,
+                call.turn_id,
+                call.response_variant_id,
+            )
+            current = connection.execute(
+                "SELECT status FROM tool_calls WHERE turn_id = ? AND id = ?",
+                (call.turn_id, call.id),
+            ).fetchone()
+            if current is None:
+                raise NotFoundError("Tool call not found")
+            if current["status"] in ("completed", "failed", "cancelled"):
+                raise InvalidStateError("Tool call is already finished")
+            now = self._clock()
+            connection.execute(
+                """
+                UPDATE tool_calls
+                SET status = ?, result_truncated = ?, error_code = ?, finished_at = ?
+                WHERE turn_id = ? AND id = ?
+                """,
+                (
+                    status.value,
+                    int(result_truncated),
+                    error_code,
+                    now,
+                    call.turn_id,
+                    call.id,
+                ),
+            )
+            event_type = {
+                ToolCallStatus.COMPLETED: "activity.completed",
+                ToolCallStatus.FAILED: "activity.failed",
+                ToolCallStatus.CANCELLED: "activity.cancelled",
+            }[status]
+            return self._append_event(
+                connection,
+                row=row,
+                event_type=event_type,
+                occurred_at=now,
+                data=self._activity_event_data(
+                    call.id,
+                    status.value,
+                    activity_message,
+                ),
+                include_message=False,
+            )
+
+    @staticmethod
+    def _variant_id_for_approval(
+        connection: sqlite3.Connection,
+        approval_id: str,
+    ) -> str:
+        row = connection.execute(
+            """
+            SELECT tc.response_variant_id
+            FROM approval_requests ar
+            JOIN tool_calls tc
+              ON tc.turn_id = ar.turn_id AND tc.id = ar.tool_call_id
+            WHERE ar.id = ?
+            """,
+            (approval_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("Approval tool call not found")
+        return str(row["response_variant_id"])
+
+    @staticmethod
+    def _approval_from_row(row: sqlite3.Row) -> ApprovalRequest:
+        return ApprovalRequest(
+            id=row["id"],
+            tool_call_id=row["tool_call_id"],
+            summary=row["summary"],
+            reason=row["reason"],
+            status=ApprovalStatus(row["status"]),
+            created_at=row["created_at"],
+            resolved_at=row["resolved_at"],
+            metadata=json.loads(row["metadata_json"]),
+        )
+
+    @staticmethod
+    def _approval_event_data(approval: ApprovalRequest) -> dict[str, object]:
+        result: dict[str, object] = {
+            "approvalId": approval.id,
+            "toolCallId": approval.tool_call_id,
+            "summary": approval.summary,
+            "reason": approval.reason,
+            "status": approval.status.value,
+            "createdAt": approval.created_at,
+            "metadata": dict(approval.metadata),
+        }
+        if approval.resolved_at is not None:
+            result["resolvedAt"] = approval.resolved_at
+        return result
+
+    @staticmethod
+    def _activity_event_data(
+        activity_id: str,
+        status: str,
+        message: str,
+    ) -> dict[str, object]:
+        return {
+            "activityId": activity_id,
+            "status": status,
+            "message": message,
+        }
 
     def _active_execution(
         self,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError, chatApi, streamTurnEvents } from "./api";
 import type {
   CompactTurnSnapshot,
+  ActivityStatus,
   Conversation,
   ConversationSnapshot,
   ConversationStatus,
@@ -30,6 +31,8 @@ const liveFromSnapshot = (snapshot: CompactTurnSnapshot): LiveTurn => ({
   content: snapshot.content,
   lastSequence: snapshot.lastSequence,
   error: snapshot.error,
+  pendingApproval: snapshot.pendingApproval,
+  activities: snapshot.activities,
 });
 
 export function useChatApplication() {
@@ -60,21 +63,74 @@ export function useChatApplication() {
         content: variantChanged ? "" : (previous?.content ?? ""),
         lastSequence: event.sequence,
         error: variantChanged ? undefined : previous?.error,
+        pendingApproval: variantChanged ? undefined : previous?.pendingApproval,
+        activities: variantChanged ? [] : (previous?.activities ?? []),
       };
 
       if (event.type === "turn.started") next.status = "running";
       if (event.type === "message.started") next.content = "";
       if (event.type === "message.delta") next.content += event.data.delta ?? "";
       if (event.type === "message.completed") next.content = event.data.content ?? next.content;
-      if (event.type === "turn.completed") next.status = "completed";
+      if (
+        event.type === "approval.requested" &&
+        event.data.approvalId &&
+        event.data.toolCallId &&
+        event.data.summary &&
+        event.data.reason
+      ) {
+        next.pendingApproval = {
+          id: event.data.approvalId,
+          toolCallId: event.data.toolCallId,
+          summary: event.data.summary,
+          reason: event.data.reason,
+          status: "pending",
+          createdAt: event.data.createdAt ?? event.occurredAt,
+          resolvedAt: null,
+          metadata: event.data.metadata ?? {},
+        };
+      }
+      if (
+        event.type === "approval.resolved" &&
+        next.pendingApproval?.id === event.data.approvalId
+      ) {
+        next.pendingApproval = undefined;
+      }
+      if (
+        event.type.startsWith("activity.") &&
+        event.data.activityId &&
+        event.data.status &&
+        event.data.message
+      ) {
+        const previousActivity = next.activities.find(
+          (item) => item.id === event.data.activityId,
+        );
+        const updatedActivity = {
+          id: event.data.activityId,
+          status: event.data.status as ActivityStatus,
+          message: event.data.message,
+          startedAt: previousActivity?.startedAt ?? event.occurredAt,
+          updatedAt: event.occurredAt,
+        };
+        next.activities = previousActivity
+          ? next.activities.map((item) =>
+              item.id === updatedActivity.id ? updatedActivity : item,
+            )
+          : [...next.activities, updatedActivity];
+      }
+      if (event.type === "turn.completed") {
+        next.status = "completed";
+        next.pendingApproval = undefined;
+      }
       if (event.type === "turn.failed") {
         next.status = "failed";
         next.content = event.data.partialContent ?? next.content;
         next.error = event.data.error;
+        next.pendingApproval = undefined;
       }
       if (event.type === "turn.cancelled") {
         next.status = "cancelled";
         next.content = event.data.partialContent ?? next.content;
+        next.pendingApproval = undefined;
       }
       return { ...current, [event.turnId]: next };
     });
@@ -251,6 +307,54 @@ export function useChatApplication() {
     });
   };
 
+  const uploadFile = async (file: File) => {
+    if (!activeConversationId || isGenerating) return;
+    setPendingAction("upload-file");
+    setError(null);
+    try {
+      const uploaded = await chatApi.uploadFile(activeConversationId, file);
+      setSnapshots((current) => {
+        const snapshot = current[activeConversationId];
+        if (!snapshot) return current;
+        return {
+          ...current,
+          [activeConversationId]: {
+            ...snapshot,
+            files: [...snapshot.files, uploaded],
+          },
+        };
+      });
+    } catch (uploadError) {
+      setError(readableError(uploadError));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const removeFile = async (fileId: string) => {
+    if (!activeConversationId || isGenerating) return;
+    setPendingAction(`remove-file:${fileId}`);
+    setError(null);
+    try {
+      await chatApi.deleteFile(activeConversationId, fileId);
+      setSnapshots((current) => {
+        const snapshot = current[activeConversationId];
+        if (!snapshot) return current;
+        return {
+          ...current,
+          [activeConversationId]: {
+            ...snapshot,
+            files: snapshot.files.filter((item) => item.id !== fileId),
+          },
+        };
+      });
+    } catch (removeError) {
+      setError(readableError(removeError));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
   const newConversation = async () => {
     setPendingAction("new");
     setError(null);
@@ -342,6 +446,30 @@ export function useChatApplication() {
     }
   };
 
+  const resolveApproval = async (
+    turnId: string,
+    approvalId: string,
+    decision: "approve" | "deny",
+  ) => {
+    setPendingAction(`approval:${approvalId}`);
+    setError(null);
+    try {
+      await chatApi.resolveApproval(approvalId, decision);
+      setLiveTurns((current) => {
+        const live = current[turnId];
+        if (!live || live.pendingApproval?.id !== approvalId) return current;
+        return {
+          ...current,
+          [turnId]: { ...live, pendingApproval: undefined },
+        };
+      });
+    } catch (approvalError) {
+      setError(readableError(approvalError));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
   const retry = async (turnId: string) =>
     runCommand("retry", () => chatApi.retryTurn(turnId, requestId()));
 
@@ -387,6 +515,8 @@ export function useChatApplication() {
     openConversation,
     pendingAction,
     regenerate,
+    removeFile,
+    resolveApproval,
     renameConversation,
     retry,
     search,
@@ -397,5 +527,6 @@ export function useChatApplication() {
     setSearch,
     setStatusFilter,
     statusFilter,
+    uploadFile,
   };
 }

@@ -1,5 +1,7 @@
-"""P0 Assistant Runtime and provider-neutral streaming contracts."""
+"""Assistant and Agent Runtime with provider-neutral streaming contracts."""
 
+from .agent_loop import AgentLoop, AgentLoopResult
+from .approval import ApprovalCoordinator
 from .assistant import AssistantRuntime, RuntimeConfiguration
 from .cancellation import CancellationManager, CancellationToken
 from .controller import TurnController, TurnHandle
@@ -21,11 +23,16 @@ from .provider import (
     ProviderMessage,
     ProviderRequest,
     ProviderTextDelta,
+    ProviderToolCall,
+    ProviderToolDefinition,
 )
 
 __all__ = [
     "AssistantRuntime",
+    "AgentLoop",
+    "AgentLoopResult",
     "ApproximateTokenEstimator",
+    "ApprovalCoordinator",
     "CancellationManager",
     "CancellationToken",
     "ContextBuildError",
@@ -41,6 +48,8 @@ __all__ = [
     "ProviderMessage",
     "ProviderRequest",
     "ProviderTextDelta",
+    "ProviderToolCall",
+    "ProviderToolDefinition",
     "RecordingEventPublisher",
     "RuntimeConfiguration",
     "RuntimeEvent",

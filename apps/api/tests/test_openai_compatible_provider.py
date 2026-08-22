@@ -12,6 +12,8 @@ from endless_task.runtime import (
     ProviderMessage,
     ProviderRequest,
     ProviderTextDelta,
+    ProviderToolCall,
+    ProviderToolDefinition,
     UnconfiguredProvider,
 )
 from endless_task.runtime.cancellation import RuntimeCancelled
@@ -110,12 +112,12 @@ class ApiConnectionError(Exception):
     pass
 
 
-def chunk(content=None, *, finish_reason=None, usage=None):
+def chunk(content=None, *, finish_reason=None, usage=None, tool_calls=None):
     choices = []
-    if content is not None or finish_reason is not None:
+    if content is not None or finish_reason is not None or tool_calls is not None:
         choices.append(
             SimpleNamespace(
-                delta=SimpleNamespace(content=content),
+                delta=SimpleNamespace(content=content, tool_calls=tool_calls),
                 finish_reason=finish_reason,
             )
         )
@@ -174,6 +176,79 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(512, completions.calls[0]["max_tokens"])
         self.assertEqual({"include_usage": True}, completions.calls[0]["stream_options"])
         self.assertEqual(0.3, completions.calls[0]["temperature"])
+
+    async def test_stream_maps_fragmented_tool_calls_and_followup_messages(self) -> None:
+        first_fragment = SimpleNamespace(
+            index=0,
+            id="call_1",
+            function=SimpleNamespace(name="read_", arguments='{"file_'),
+        )
+        second_fragment = SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(name="file", arguments='id":"file_1"}'),
+        )
+        stream = StubStream(
+            (
+                chunk(tool_calls=(first_fragment,)),
+                chunk(tool_calls=(second_fragment,)),
+                chunk(finish_reason="tool_calls"),
+            )
+        )
+        completions = StubCompletions(stream=stream)
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            client=StubClient(completions),
+        )
+        request = ProviderRequest(
+            request_id="variant-1:2",
+            model="deepseek-chat",
+            messages=(
+                ProviderMessage(role="user", content="读取文件"),
+                ProviderMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=(
+                        ProviderToolCall(
+                            id="prior_call",
+                            name="read_file",
+                            arguments={"file_id": "old"},
+                        ),
+                    ),
+                ),
+                ProviderMessage(
+                    role="tool",
+                    content="旧文件内容",
+                    tool_call_id="prior_call",
+                    name="read_file",
+                ),
+            ),
+            max_output_tokens=512,
+            tools=(
+                ProviderToolDefinition(
+                    name="read_file",
+                    description="读取文件",
+                    input_schema={"type": "object"},
+                ),
+            ),
+        )
+
+        events = [event async for event in provider.stream(request, await self._token())]
+
+        call = next(event for event in events if isinstance(event, ProviderToolCall))
+        self.assertEqual("call_1", call.id)
+        self.assertEqual("read_file", call.name)
+        self.assertEqual({"file_id": "file_1"}, call.arguments)
+        self.assertEqual("tool_calls", events[-1].finish_reason)
+        sent = completions.calls[0]
+        self.assertEqual("read_file", sent["tools"][0]["function"]["name"])
+        self.assertEqual("prior_call", sent["messages"][2]["tool_call_id"])
+        self.assertEqual(
+            '{"file_id":"old"}',
+            sent["messages"][1]["tool_calls"][0]["function"]["arguments"],
+        )
 
     async def test_close_releases_sdk_client(self) -> None:
         client = StubClient(StubCompletions(stream=StubStream(())))

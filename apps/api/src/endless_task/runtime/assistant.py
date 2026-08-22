@@ -8,17 +8,14 @@ from typing import Optional
 
 from endless_task.domain.models import TurnSnapshot
 from endless_task.domain.repositories import ChatRepository
+from endless_task.tooling import ApprovalRequest, ApprovalStatus, ToolError, ToolRegistry
 
+from .agent_loop import AgentLoop
+from .approval import ApprovalCoordinator, RuntimeToolExecutionObserver
 from .cancellation import CancellationManager, RuntimeCancelled
 from .context import ContextBuildError, P0ContextBuilder
 from .events import EventPublisher, NullEventPublisher, RuntimeEvent
-from .provider import (
-    ModelProvider,
-    ProviderCompleted,
-    ProviderError,
-    ProviderRequest,
-    ProviderTextDelta,
-)
+from .provider import ModelProvider, ProviderError
 from .repository import RuntimeRepository
 
 
@@ -31,12 +28,24 @@ class RuntimeConfiguration:
     max_output_tokens: int = 2048
     temperature: Optional[float] = None
     max_concurrent_model_calls: int = 2
+    max_agent_iterations: int = 4
+    max_tool_calls_per_turn: int = 8
+    agent_timeout_seconds: float = 120.0
+    approval_timeout_seconds: float = 1800.0
 
     def __post_init__(self) -> None:
         if self.max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
         if self.max_concurrent_model_calls <= 0:
             raise ValueError("max_concurrent_model_calls must be positive")
+        if self.max_agent_iterations <= 0:
+            raise ValueError("max_agent_iterations must be positive")
+        if self.max_tool_calls_per_turn <= 0:
+            raise ValueError("max_tool_calls_per_turn must be positive")
+        if self.agent_timeout_seconds <= 0:
+            raise ValueError("agent_timeout_seconds must be positive")
+        if self.approval_timeout_seconds <= 0:
+            raise ValueError("approval_timeout_seconds must be positive")
 
 
 class AssistantRuntime:
@@ -48,19 +57,23 @@ class AssistantRuntime:
         context_builder: P0ContextBuilder,
         provider: ModelProvider,
         configuration: RuntimeConfiguration,
+        tool_registry: Optional[ToolRegistry] = None,
         cancellation_manager: Optional[CancellationManager] = None,
         event_publisher: Optional[EventPublisher] = None,
+        approval_coordinator: Optional[ApprovalCoordinator] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime_repository = runtime_repository
         self._context_builder = context_builder
         self._provider = provider
         self._configuration = configuration
+        self._tool_registry = tool_registry or ToolRegistry()
         self._provider_slots = asyncio.Semaphore(
             configuration.max_concurrent_model_calls
         )
         self._cancellation_manager = cancellation_manager or CancellationManager()
         self._event_publisher = event_publisher or NullEventPublisher()
+        self._approval_coordinator = approval_coordinator or ApprovalCoordinator()
 
     async def execute(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
         token = await self._cancellation_manager.acquire(turn_id, variant_id)
@@ -105,55 +118,55 @@ class AssistantRuntime:
             )
             await self._publish(message_event)
 
-            completion: Optional[ProviderCompleted] = None
-            request = ProviderRequest(
-                request_id=variant_id,
+            async def append_text(delta: str) -> None:
+                nonlocal accumulated_content
+                accumulated_content += delta
+                event = self._runtime_repository.append_text_delta(
+                    turn_id=turn_id,
+                    variant_id=variant_id,
+                    delta=delta,
+                    accumulated_content=accumulated_content,
+                )
+                await self._publish(event)
+
+            agent_loop = AgentLoop(
+                provider=self._provider,
+                tool_registry=self._tool_registry,
                 model=self._configuration.model,
-                messages=context.messages,
                 max_output_tokens=self._configuration.max_output_tokens,
                 temperature=self._configuration.temperature,
+                max_iterations=self._configuration.max_agent_iterations,
+                max_tool_calls=self._configuration.max_tool_calls_per_turn,
+                tool_observer=RuntimeToolExecutionObserver(
+                    repository=self._runtime_repository,
+                    coordinator=self._approval_coordinator,
+                    publish=self._publish,
+                    approval_timeout_seconds=(
+                        self._configuration.approval_timeout_seconds
+                    ),
+                ),
+                active_timeout_seconds=self._configuration.agent_timeout_seconds,
+            )
+            result = await agent_loop.run(
+                request_id=variant_id,
+                conversation_id=self._chat_repository.get_turn(
+                    turn_id
+                ).turn.conversation_id,
+                turn_id=turn_id,
+                response_variant_id=variant_id,
+                messages=context.messages,
+                cancellation_token=token,
+                on_text_delta=append_text,
             )
 
-            async for provider_event in self._provider.stream(request, token):
-                token.raise_if_cancelled()
-                if isinstance(provider_event, ProviderTextDelta):
-                    if not provider_event.text:
-                        continue
-                    accumulated_content += provider_event.text
-                    event = self._runtime_repository.append_text_delta(
-                        turn_id=turn_id,
-                        variant_id=variant_id,
-                        delta=provider_event.text,
-                        accumulated_content=accumulated_content,
-                    )
-                    await self._publish(event)
-                    continue
-
-                if isinstance(provider_event, ProviderCompleted):
-                    completion = provider_event
-                    break
-
-                raise ProviderError(
-                    "unsupported_provider_event",
-                    "模型返回了当前版本无法处理的响应。",
-                    retryable=False,
-                )
-
             token.raise_if_cancelled()
-            if completion is None:
-                raise ProviderError(
-                    "provider_error",
-                    "模型响应意外结束，可以重试。",
-                    retryable=True,
-                )
-
             completed_events = self._runtime_repository.complete_response(
                 turn_id=turn_id,
                 variant_id=variant_id,
-                content=accumulated_content,
-                finish_reason=completion.finish_reason,
-                input_tokens=completion.input_tokens,
-                output_tokens=completion.output_tokens,
+                content=result.content,
+                finish_reason=result.finish_reason,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
             )
             for event in completed_events:
                 await self._publish(event)
@@ -193,6 +206,19 @@ class AssistantRuntime:
                 correlation_id=self._correlation_id(),
             )
             await self._publish(event)
+        except ToolError as error:
+            if not started:
+                raise
+            event = self._runtime_repository.fail_response(
+                turn_id=turn_id,
+                variant_id=variant_id,
+                partial_content=accumulated_content,
+                error_code=error.code,
+                safe_message=error.safe_message,
+                retryable=error.retryable,
+                correlation_id=error.correlation_id or self._correlation_id(),
+            )
+            await self._publish(event)
         except asyncio.CancelledError:
             if started:
                 event = self._runtime_repository.cancel_response(
@@ -230,6 +256,21 @@ class AssistantRuntime:
 
     async def request_cancel(self, *, turn_id: str, variant_id: str) -> bool:
         return await self._cancellation_manager.cancel(turn_id, variant_id)
+
+    async def resolve_approval(
+        self,
+        *,
+        approval_id: str,
+        status: ApprovalStatus,
+    ) -> ApprovalRequest:
+        approval, event = self._runtime_repository.resolve_approval(
+            approval_id,
+            status,
+        )
+        if event is not None:
+            await self._publish(event)
+        await self._approval_coordinator.resolve(approval.id, approval.status)
+        return approval
 
     async def recover_interrupted(self) -> tuple[RuntimeEvent, ...]:
         events = tuple(self._runtime_repository.recover_interrupted())

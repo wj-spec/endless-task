@@ -14,11 +14,22 @@ from endless_task.runtime import (
     ProviderCompleted,
     ProviderError,
     ProviderTextDelta,
+    ProviderToolCall,
     RecordingEventPublisher,
     RuntimeConfiguration,
     TurnController,
 )
 from endless_task.storage import Database, SqliteChatRepository, SqliteRuntimeRepository
+from endless_task.tooling import (
+    ToolApprovalMode,
+    ToolApprovalPrompt,
+    ToolCall,
+    ToolCallStatus,
+    ToolDefinition,
+    ToolEffect,
+    ToolRegistry,
+    ToolResult,
+)
 
 from test_sqlite_chat_repository import SequenceClock, SequenceIdFactory
 
@@ -57,6 +68,68 @@ class ConcurrencyProbeProvider:
             yield ProviderCompleted(finish_reason="stop")
         finally:
             self.active -= 1
+
+
+class NeverCompletingProvider:
+    name = "never-completing"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def stream(self, request, cancellation_token):
+        del request
+        cancellation_token.raise_if_cancelled()
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        if False:
+            yield ProviderTextDelta("")
+
+
+class OneToolProvider:
+    name = "one-tool"
+
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def stream(self, request, cancellation_token):
+        cancellation_token.raise_if_cancelled()
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            yield ProviderToolCall(
+                id="call_1",
+                name="read_file",
+                arguments={"file_id": "file_1"},
+            )
+            yield ProviderCompleted(
+                finish_reason="tool_calls",
+                input_tokens=4,
+                output_tokens=1,
+            )
+            return
+        yield ProviderTextDelta("根据文件：测试内容")
+        yield ProviderCompleted(finish_reason="stop", input_tokens=6, output_tokens=3)
+
+
+class ReadFileTool:
+    definition = ToolDefinition(
+        name="read_file",
+        description="读取已授权文件。",
+        input_schema={
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}},
+            "required": ["file_id"],
+            "additionalProperties": False,
+        },
+    )
+
+    async def execute(self, call, cancellation_token):
+        cancellation_token.raise_if_cancelled()
+        return ToolResult(tool_call_id=call.id, content="测试内容")
 
 
 class AssistantRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -225,6 +298,75 @@ class AssistantRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("provider_error", publisher.events[-1].data["error"]["code"])
         self.assertTrue(publisher.events[-1].data["error"]["retryable"])
 
+    async def test_agent_timeout_stops_the_entire_turn(self) -> None:
+        _, turn = self._new_turn("不要无限等待")
+        provider = NeverCompletingProvider()
+        publisher = RecordingEventPublisher()
+        runtime = AssistantRuntime(
+            chat_repository=self.chat_repository,
+            runtime_repository=self.runtime_repository,
+            context_builder=self.context_builder,
+            provider=provider,
+            configuration=RuntimeConfiguration(
+                model="fake-model",
+                agent_timeout_seconds=0.01,
+            ),
+            event_publisher=publisher,
+        )
+
+        result = await runtime.execute(
+            turn_id=turn.turn.id,
+            variant_id=turn.turn.active_response_variant_id,
+        )
+
+        self.assertEqual(TurnStatus.FAILED, result.turn.status)
+        self.assertEqual("agent_timeout", publisher.events[-1].data["error"]["code"])
+        self.assertTrue(publisher.events[-1].data["error"]["retryable"])
+        self.assertTrue(provider.cancelled)
+
+    async def test_agent_loop_persists_only_the_final_chat_response(self) -> None:
+        _, turn = self._new_turn("读取文件")
+        provider = OneToolProvider()
+        publisher = RecordingEventPublisher()
+        registry = ToolRegistry()
+        registry.register(ReadFileTool())
+        runtime = AssistantRuntime(
+            chat_repository=self.chat_repository,
+            runtime_repository=self.runtime_repository,
+            context_builder=self.context_builder,
+            provider=provider,
+            configuration=RuntimeConfiguration(model="fake-model"),
+            tool_registry=registry,
+            event_publisher=publisher,
+        )
+
+        result = await runtime.execute(
+            turn_id=turn.turn.id,
+            variant_id=turn.turn.active_response_variant_id,
+        )
+
+        self.assertEqual(TurnStatus.COMPLETED, result.turn.status)
+        self.assertEqual(
+            "根据文件：测试内容",
+            result.response_variants[0].assistant_message.content,
+        )
+        self.assertEqual(10, result.response_variants[0].variant.input_tokens)
+        self.assertEqual(4, result.response_variants[0].variant.output_tokens)
+        self.assertEqual(2, len(provider.requests))
+        self.assertEqual("tool", provider.requests[1].messages[-1].role)
+        self.assertEqual(
+            [
+                "turn.started",
+                "message.started",
+                "activity.started",
+                "activity.completed",
+                "message.delta",
+                "message.completed",
+                "turn.completed",
+            ],
+            [event.type for event in publisher.events],
+        )
+
     async def test_context_uses_selected_canonical_response(self) -> None:
         conversation, first = self._new_turn("第一个问题")
         first_runtime = self._runtime(FakeProvider(chunks=("回答一",)))
@@ -312,6 +454,31 @@ class AssistantRuntimeTest(unittest.IsolatedAsyncioTestCase):
             delta="保留内容",
             accumulated_content="保留内容",
         )
+        pending_call = ToolCall(
+            id="call_pending",
+            conversation_id=turn.turn.conversation_id,
+            turn_id=turn.turn.id,
+            response_variant_id=variant_id,
+            tool_name="write_note",
+            arguments={"content": "draft"},
+            status=ToolCallStatus.WAITING_APPROVAL,
+            created_at="2026-08-22T00:00:10.000Z",
+        )
+        approval, _ = self.runtime_repository.prepare_tool_call(
+            call=pending_call,
+            definition=ToolDefinition(
+                name="write_note",
+                description="写入本地笔记。",
+                input_schema={"type": "object"},
+                effect=ToolEffect.LOCAL_WRITE,
+                approval_mode=ToolApprovalMode.REQUIRED,
+            ),
+            approval_prompt=ToolApprovalPrompt(
+                summary="保存笔记吗？",
+                reason="这会修改本地数据。",
+            ),
+        )
+        self.assertIsNotNone(approval)
 
         events = self.runtime_repository.recover_interrupted()
         recovered = self.chat_repository.get_turn(turn.turn.id)
@@ -321,6 +488,18 @@ class AssistantRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("runtime_interrupted", events[0].data["error"]["code"])
         self.assertEqual(TurnStatus.FAILED, recovered.turn.status)
         self.assertEqual("保留内容", recovered.response_variants[0].assistant_message.content)
+        self.assertIsNone(self.runtime_repository.get_pending_approval(turn.turn.id))
+        with self.database.connect() as connection:
+            tool_row = connection.execute(
+                "SELECT status FROM tool_calls WHERE turn_id = ? AND id = ?",
+                (turn.turn.id, pending_call.id),
+            ).fetchone()
+            approval_row = connection.execute(
+                "SELECT status FROM approval_requests WHERE id = ?",
+                (approval.id,),
+            ).fetchone()
+        self.assertEqual("cancelled", tool_row["status"])
+        self.assertEqual("cancelled", approval_row["status"])
 
     async def test_event_replay_starts_after_requested_sequence(self) -> None:
         _, turn = self._new_turn()

@@ -44,6 +44,10 @@ export function App() {
         onDraftChange={chat.setDraft}
         onMenu={() => setRailOpen(true)}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
+        onResolveApproval={(turnId, approvalId, decision) =>
+          void chat.resolveApproval(turnId, approvalId, decision)
+        }
+        onRemoveFile={(fileId) => void chat.removeFile(fileId)}
         onRename={(title) => void chat.renameConversation(title)}
         onRestore={() => void chat.changeConversationStatus("active")}
         onRetry={(turnId) => void chat.retry(turnId)}
@@ -51,6 +55,7 @@ export function App() {
           void chat.selectVariant(turnId, variantId)
         }
         onSend={() => void chat.send()}
+        onUploadFile={(file) => void chat.uploadFile(file)}
       />
       {railOpen ? (
         <button

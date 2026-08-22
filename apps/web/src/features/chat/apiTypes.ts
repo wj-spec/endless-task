@@ -64,11 +64,23 @@ export type ConversationTurnSnapshot = {
   userMessage: Message;
   activeResponseVariantId: string | null;
   responseVariants: ResponseVariantSnapshot[];
+  activities: ActivitySnapshot[];
 };
 
 export type ConversationSnapshot = {
   conversation: Conversation;
   turns: ConversationTurnSnapshot[];
+  files: UploadedTextFile[];
+};
+
+export type UploadedTextFile = {
+  id: string;
+  conversationId: string;
+  originalName: string;
+  mediaType: string;
+  byteSize: number;
+  sha256: string;
+  createdAt: string;
 };
 
 export type RuntimeErrorDetail = {
@@ -77,6 +89,29 @@ export type RuntimeErrorDetail = {
   retryable: boolean;
   retryAfterMs?: number;
   correlationId: string;
+};
+
+export type ApprovalStatus = "pending" | "approved" | "denied" | "cancelled" | "expired";
+
+export type ApprovalRequest = {
+  id: string;
+  toolCallId: string;
+  summary: string;
+  reason: string;
+  status: ApprovalStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type ActivityStatus = "running" | "completed" | "failed" | "cancelled";
+
+export type ActivitySnapshot = {
+  id: string;
+  status: ActivityStatus;
+  message: string;
+  startedAt: string;
+  updatedAt: string;
 };
 
 export type RuntimeEvent = {
@@ -88,6 +123,12 @@ export type RuntimeEvent = {
     | "message.started"
     | "message.delta"
     | "message.completed"
+    | "approval.requested"
+    | "approval.resolved"
+    | "activity.started"
+    | "activity.completed"
+    | "activity.failed"
+    | "activity.cancelled"
     | "turn.completed"
     | "turn.failed"
     | "turn.cancelled";
@@ -102,6 +143,16 @@ export type RuntimeEvent = {
     finishReason?: string;
     partialContent?: string;
     error?: RuntimeErrorDetail;
+    approvalId?: string;
+    toolCallId?: string;
+    summary?: string;
+    reason?: string;
+    status?: ApprovalStatus | ActivityStatus;
+    createdAt?: string;
+    resolvedAt?: string;
+    metadata?: Record<string, unknown>;
+    activityId?: string;
+    message?: string;
   };
 };
 
@@ -124,6 +175,8 @@ export type CompactTurnSnapshot = {
   content: string;
   lastSequence: number;
   error?: RuntimeErrorDetail;
+  pendingApproval?: ApprovalRequest;
+  activities: ActivitySnapshot[];
 };
 
 export type HealthSnapshot = {
@@ -140,4 +193,6 @@ export type LiveTurn = {
   content: string;
   lastSequence: number;
   error?: RuntimeErrorDetail;
+  pendingApproval?: ApprovalRequest;
+  activities: ActivitySnapshot[];
 };

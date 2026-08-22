@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from typing import Any, AsyncIterator, Optional
 
 from .cancellation import CancellationToken, RuntimeCancelled
@@ -11,6 +12,7 @@ from .provider import (
     ProviderRequest,
     ProviderStreamEvent,
     ProviderTextDelta,
+    ProviderToolCall,
 )
 
 
@@ -63,14 +65,23 @@ class OpenAICompatibleProvider:
         cancellation_token.raise_if_cancelled()
         arguments: dict[str, Any] = {
             "model": request.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in request.messages
-            ],
+            "messages": [self._message_json(message) for message in request.messages],
             "max_tokens": request.max_output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if request.tools:
+            arguments["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": dict(tool.input_schema),
+                    },
+                }
+                for tool in request.tools
+            ]
         if request.temperature is not None:
             arguments["temperature"] = request.temperature
 
@@ -84,6 +95,7 @@ class OpenAICompatibleProvider:
             finish_reason: Optional[str] = None
             input_tokens: Optional[int] = None
             output_tokens: Optional[int] = None
+            tool_call_fragments: dict[int, dict[str, str]] = {}
 
             while True:
                 try:
@@ -102,6 +114,31 @@ class OpenAICompatibleProvider:
                     content = getattr(delta, "content", None) if delta is not None else None
                     if isinstance(content, str) and content:
                         yield ProviderTextDelta(content)
+                    raw_tool_calls = (
+                        getattr(delta, "tool_calls", None) if delta is not None else None
+                    ) or ()
+                    for position, raw_tool_call in enumerate(raw_tool_calls):
+                        index = getattr(raw_tool_call, "index", position)
+                        if not isinstance(index, int) or index < 0:
+                            raise ProviderError(
+                                "invalid_provider_response",
+                                "模型返回了无效的工具调用。",
+                                retryable=False,
+                            )
+                        fragments = tool_call_fragments.setdefault(
+                            index,
+                            {"id": "", "name": "", "arguments": ""},
+                        )
+                        call_id = getattr(raw_tool_call, "id", None)
+                        if isinstance(call_id, str):
+                            fragments["id"] += call_id
+                        function = getattr(raw_tool_call, "function", None)
+                        name = getattr(function, "name", None)
+                        if isinstance(name, str):
+                            fragments["name"] += name
+                        raw_arguments = getattr(function, "arguments", None)
+                        if isinstance(raw_arguments, str):
+                            fragments["arguments"] += raw_arguments
                     candidate = getattr(choice, "finish_reason", None)
                     if candidate is not None:
                         finish_reason = str(candidate)
@@ -112,12 +149,14 @@ class OpenAICompatibleProvider:
                     "模型服务暂时不可用，可以稍后重试。",
                     retryable=True,
                 )
-            if finish_reason not in {"stop", "length", "content_filter"}:
+            if finish_reason not in {"stop", "length", "content_filter", "tool_calls"}:
                 raise ProviderError(
                     "unsupported_provider_event",
                     "模型返回了当前版本无法处理的结束状态。",
                     retryable=False,
                 )
+            for provider_tool_call in self._parse_tool_calls(tool_call_fragments):
+                yield provider_tool_call
             yield ProviderCompleted(
                 finish_reason=finish_reason,
                 input_tokens=input_tokens,
@@ -130,6 +169,74 @@ class OpenAICompatibleProvider:
         finally:
             if stream is not None:
                 await self._close_stream(stream)
+
+    @staticmethod
+    def _message_json(message) -> dict[str, Any]:
+        if message.role == "assistant" and message.tool_calls:
+            return {
+                "role": "assistant",
+                "content": message.content or None,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": json.dumps(
+                                dict(call.arguments),
+                                ensure_ascii=False,
+                                allow_nan=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                        },
+                    }
+                    for call in message.tool_calls
+                ],
+            }
+        if message.role == "tool":
+            return {
+                "role": "tool",
+                "content": message.content,
+                "tool_call_id": message.tool_call_id,
+            }
+        return {"role": message.role, "content": message.content}
+
+    @staticmethod
+    def _parse_tool_calls(
+        fragments_by_index: dict[int, dict[str, str]],
+    ) -> tuple[ProviderToolCall, ...]:
+        calls = []
+        for index in sorted(fragments_by_index):
+            fragments = fragments_by_index[index]
+            if not fragments["id"] or not fragments["name"]:
+                raise ProviderError(
+                    "invalid_provider_response",
+                    "模型返回了不完整的工具调用。",
+                    retryable=False,
+                )
+            try:
+                arguments = json.loads(fragments["arguments"] or "{}")
+            except (TypeError, ValueError) as error:
+                raise ProviderError(
+                    "invalid_tool_arguments",
+                    "模型返回的工具参数不是有效 JSON。",
+                    retryable=False,
+                ) from error
+            if not isinstance(arguments, dict):
+                raise ProviderError(
+                    "invalid_tool_arguments",
+                    "模型返回的工具参数必须是 JSON 对象。",
+                    retryable=False,
+                )
+            calls.append(
+                ProviderToolCall(
+                    id=fragments["id"],
+                    name=fragments["name"],
+                    arguments=arguments,
+                )
+            )
+        return tuple(calls)
 
     @staticmethod
     async def _next_or_cancel(iterator: Any, token: CancellationToken) -> Any:
