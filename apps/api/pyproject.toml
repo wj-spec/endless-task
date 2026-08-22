@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "endless-task-api"
+version = "0.0.0"
+description = "Local-first Assistant Runtime backend for Endless Task"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "openai>=1.68,<3",
+    "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+endless-task = "endless_task.cli:main"
+endless-task-api = "endless_task.api.main:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"endless_task.storage.migrations" = ["*.sql"]
