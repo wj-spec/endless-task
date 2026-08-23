@@ -263,9 +263,15 @@ class SqliteRuntimeRepository:
         call: ToolCall,
         definition: ToolDefinition,
         approval_prompt: Optional[ToolApprovalPrompt] = None,
+        auto_authorized: bool = False,
     ) -> tuple[Optional[ApprovalRequest], Optional[RuntimeEvent]]:
         requires_approval = definition.approval_mode is ToolApprovalMode.REQUIRED
-        if requires_approval != (approval_prompt is not None):
+        if requires_approval:
+            if auto_authorized == (approval_prompt is not None):
+                raise ValidationError(
+                    "Approval prompt must match the tool approval policy"
+                )
+        elif approval_prompt is not None or auto_authorized:
             raise ValidationError("Approval prompt must match the tool approval policy")
 
         with self._database.transaction() as connection:
@@ -277,7 +283,7 @@ class SqliteRuntimeRepository:
             self._require_running(row)
             status = (
                 ToolCallStatus.WAITING_APPROVAL
-                if requires_approval
+                if requires_approval and not auto_authorized
                 else ToolCallStatus.CREATED
             )
             try:

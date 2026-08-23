@@ -174,3 +174,78 @@ class MemoryProposal:
     updated_at: str
     resolved_memory_id: Optional[str] = None
     resolved_at: Optional[str] = None
+
+
+class PermissionMode(str, Enum):
+    CONFIRM_EVERY_TIME = "confirm_every_time"
+    TRUST_LOCAL_WRITES = "trust_local_writes"
+    TRUST_ALL = "trust_all"
+
+    @property
+    def rank(self) -> int:
+        return {
+            PermissionMode.CONFIRM_EVERY_TIME: 0,
+            PermissionMode.TRUST_LOCAL_WRITES: 1,
+            PermissionMode.TRUST_ALL: 2,
+        }[self]
+
+    def is_escalation_from(self, other: "PermissionMode") -> bool:
+        return self.rank > other.rank
+
+    def covers(self, effect: str) -> bool:
+        if effect == "read_only":
+            return True
+        if effect == "local_write":
+            return self.rank >= 1
+        if effect == "external_action":
+            return self.rank >= 2
+        return False
+
+
+class ArtifactKind(str, Enum):
+    MARKDOWN = "markdown"
+    TEXT = "text"
+
+
+class ArtifactStatus(str, Enum):
+    ACTIVE = "active"
+    DELETED = "deleted"
+
+
+class ArtifactVersionOperation(str, Enum):
+    CREATE = "create"
+    UPDATE = "update"
+    CHAT_CONTINUE = "chat_continue"
+    ROLLBACK = "rollback"
+
+
+@dataclass(frozen=True)
+class ArtifactRecord:
+    id: str
+    title: str
+    kind: ArtifactKind
+    status: ArtifactStatus
+    current_version_ordinal: int
+    created_at: str
+    updated_at: str
+    deleted_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ArtifactVersionRecord:
+    id: str
+    artifact_id: str
+    ordinal: int
+    content: str
+    operation: ArtifactVersionOperation
+    source_conversation_id: str
+    source_turn_id: str
+    source_labels: Tuple[str, ...]
+    note: Optional[str]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ArtifactSnapshot:
+    artifact: ArtifactRecord
+    current_version: ArtifactVersionRecord

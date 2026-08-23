@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Optional, Protocol, Sequence, Tuple
 
 from .models import (
+    ArtifactKind,
+    ArtifactRecord,
+    ArtifactSnapshot,
+    ArtifactVersionOperation,
+    ArtifactVersionRecord,
     Conversation,
     ConversationSnapshot,
     ConversationStatus,
@@ -191,4 +196,52 @@ class MemoryProposalRepository(Protocol):
         ...
 
     def reject_proposal(self, proposal_id: str) -> MemoryProposal:
+        ...
+
+
+class ArtifactRepository(Protocol):
+    def create_artifact(
+        self,
+        *,
+        title: str,
+        kind: ArtifactKind,
+        content: str,
+        source_conversation_id: str,
+        source_turn_id: str,
+        source_labels: Sequence[str] = (),
+        note: Optional[str] = None,
+    ) -> ArtifactSnapshot:
+        ...
+
+    def append_version(
+        self,
+        *,
+        artifact_id: str,
+        content: str,
+        operation: ArtifactVersionOperation,
+        source_conversation_id: str,
+        source_turn_id: str,
+        source_labels: Sequence[str] = (),
+        note: Optional[str] = None,
+    ) -> ArtifactSnapshot:
+        ...
+
+    def get_artifact(self, artifact_id: str) -> ArtifactRecord:
+        ...
+
+    def get_current_version(self, artifact_id: str) -> ArtifactVersionRecord:
+        ...
+
+    def get_version(self, artifact_id: str, ordinal: int) -> ArtifactVersionRecord:
+        ...
+
+    def list_versions(self, artifact_id: str) -> Sequence[ArtifactVersionRecord]:
+        ...
+
+    def list_artifacts(
+        self, *, include_deleted: bool = False
+    ) -> Sequence[ArtifactRecord]:
+        ...
+
+    def delete_artifact(self, artifact_id: str) -> ArtifactRecord:
         ...

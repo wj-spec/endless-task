@@ -4,9 +4,9 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
-from endless_task.domain.models import TurnSnapshot
+from endless_task.domain.models import PermissionMode, TurnSnapshot
 from endless_task.domain.repositories import ChatRepository
 from endless_task.tooling import ApprovalRequest, ApprovalStatus, ToolError, ToolRegistry
 
@@ -61,6 +61,7 @@ class AssistantRuntime:
         cancellation_manager: Optional[CancellationManager] = None,
         event_publisher: Optional[EventPublisher] = None,
         approval_coordinator: Optional[ApprovalCoordinator] = None,
+        permission_mode_provider: Optional[Callable[[], PermissionMode]] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime_repository = runtime_repository
@@ -74,6 +75,7 @@ class AssistantRuntime:
         self._cancellation_manager = cancellation_manager or CancellationManager()
         self._event_publisher = event_publisher or NullEventPublisher()
         self._approval_coordinator = approval_coordinator or ApprovalCoordinator()
+        self._permission_mode_provider = permission_mode_provider
 
     async def execute(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
         token = await self._cancellation_manager.acquire(turn_id, variant_id)
@@ -144,6 +146,7 @@ class AssistantRuntime:
                     approval_timeout_seconds=(
                         self._configuration.approval_timeout_seconds
                     ),
+                    permission_mode_provider=self._permission_mode_provider,
                 ),
                 active_timeout_seconds=self._configuration.agent_timeout_seconds,
             )

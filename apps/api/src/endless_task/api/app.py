@@ -17,7 +17,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from endless_task.domain.models import ConversationStatus, TurnStatus
+from endless_task.domain.models import (
+    ConversationStatus,
+    PermissionMode,
+    TurnStatus,
+)
 from endless_task.domain.repositories import (
     ConflictError,
     InvalidStateError,
@@ -43,10 +47,12 @@ from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.storage import (
     Database,
+    SqliteArtifactRepository,
     SqliteChatRepository,
     SqliteContextRepository,
     SqliteMemoryProposalRepository,
     SqliteMemoryRepository,
+    SqlitePreferencesRepository,
     SqliteTextFileRepository,
     SqliteRuntimeRepository,
 )
@@ -257,6 +263,8 @@ class AppContainer:
     file_repository: SqliteTextFileRepository
     memory_repository: SqliteMemoryRepository
     proposal_repository: SqliteMemoryProposalRepository
+    preferences_repository: SqlitePreferencesRepository
+    artifact_repository: SqliteArtifactRepository
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
     broker: RuntimeEventBroker
@@ -295,6 +303,13 @@ class ResolveApprovalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["approve", "deny"]
+
+
+class SetPermissionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str
+    acknowledge: bool = False
 
 
 class ApiRequestError(RuntimeError):
@@ -392,6 +407,8 @@ def _build_container(
     )
     memory_repository = SqliteMemoryRepository(database)
     proposal_repository = SqliteMemoryProposalRepository(database)
+    preferences_repository = SqlitePreferencesRepository(database)
+    artifact_repository = SqliteArtifactRepository(database)
     memory_proposal_service: Optional[MemoryProposalService] = None
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
@@ -423,6 +440,7 @@ def _build_container(
         ),
         tool_registry=selected_tool_registry,
         event_publisher=broker,
+        permission_mode_provider=lambda: preferences_repository.get_permission_mode()[0],
     )
     memory_conflict_service: Optional[MemoryConflictService] = None
     on_turn_completed = None
@@ -473,6 +491,8 @@ def _build_container(
         file_repository=file_repository,
         memory_repository=memory_repository,
         proposal_repository=proposal_repository,
+        preferences_repository=preferences_repository,
+        artifact_repository=artifact_repository,
         memory_proposal_service=memory_proposal_service,
         memory_conflict_service=memory_conflict_service,
         broker=broker,
@@ -595,6 +615,33 @@ def create_app(
                 UnconfiguredProvider,
             ),
         }
+
+    @app.get("/settings/permissions")
+    async def get_permission_mode() -> dict[str, object]:
+        mode, updated_at = container.preferences_repository.get_permission_mode()
+        return {"mode": mode.value, "updatedAt": updated_at}
+
+    @app.post("/settings/permissions")
+    async def set_permission_mode(
+        body: SetPermissionBody,
+    ) -> dict[str, object]:
+        try:
+            target = PermissionMode(body.mode)
+        except ValueError as error:
+            raise ApiRequestError(
+                "invalid_request",
+                "mode 必须是 confirm_every_time / trust_local_writes / trust_all。",
+            ) from error
+        current, _ = container.preferences_repository.get_permission_mode()
+        if target.is_escalation_from(current) and not body.acknowledge:
+            raise ApiRequestError(
+                "invalid_request",
+                "提权需要 acknowledge=true 显式确认。",
+            )
+        mode, updated_at = container.preferences_repository.set_permission_mode(
+            target
+        )
+        return {"mode": mode.value, "updatedAt": updated_at}
 
     @app.post("/conversations", status_code=201)
     async def create_conversation() -> dict[str, object]:

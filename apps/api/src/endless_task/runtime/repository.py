@@ -80,6 +80,7 @@ class RuntimeRepository(Protocol):
         call: ToolCall,
         definition: ToolDefinition,
         approval_prompt: Optional[ToolApprovalPrompt] = None,
+        auto_authorized: bool = False,
     ) -> tuple[Optional[ApprovalRequest], Optional[RuntimeEvent]]:
         ...
 

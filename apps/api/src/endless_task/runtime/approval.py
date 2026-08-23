@@ -18,6 +18,8 @@ from endless_task.tooling import (
     ToolValidationError,
 )
 
+from endless_task.domain.models import PermissionMode
+
 from .cancellation import CancellationToken, RuntimeCancelled
 from .events import RuntimeEvent
 from .repository import RuntimeRepository
@@ -83,11 +85,13 @@ class RuntimeToolExecutionObserver:
         coordinator: ApprovalCoordinator,
         publish: Callable[[RuntimeEvent], Awaitable[None]],
         approval_timeout_seconds: float,
+        permission_mode_provider: Optional[Callable[[], PermissionMode]] = None,
     ) -> None:
         self._repository = repository
         self._coordinator = coordinator
         self._publish = publish
         self._approval_timeout_seconds = approval_timeout_seconds
+        self._permission_mode_provider = permission_mode_provider
         self._activities: dict[str, ToolActivityCopy] = {}
 
     async def prepare(
@@ -97,13 +101,23 @@ class RuntimeToolExecutionObserver:
         cancellation_token: CancellationToken,
     ) -> Optional[ToolCall]:
         prompt = None
+        auto_authorized = False
         activity = self._activity_copy(tool, call)
         if tool.definition.approval_mode is ToolApprovalMode.REQUIRED:
-            prompt = self._approval_prompt(tool, call)
+            mode = (
+                self._permission_mode_provider()
+                if self._permission_mode_provider is not None
+                else PermissionMode.CONFIRM_EVERY_TIME
+            )
+            if mode.covers(tool.definition.effect.value):
+                auto_authorized = True
+            else:
+                prompt = self._approval_prompt(tool, call)
         approval, event = self._repository.prepare_tool_call(
             call=call,
             definition=tool.definition,
             approval_prompt=prompt,
+            auto_authorized=auto_authorized,
         )
         if approval is None:
             running = replace(call, status=ToolCallStatus.RUNNING)
