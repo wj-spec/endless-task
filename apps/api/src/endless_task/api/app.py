@@ -278,6 +278,12 @@ class CreateTurnBody(BaseModel):
     content: str
 
 
+class UpdateMemoryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+
+
 class ResolveMemoryProposalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -674,6 +680,27 @@ def create_app(
     @app.delete("/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str) -> Response:
         container.chat_repository.delete_conversation(conversation_id)
+        return Response(status_code=204)
+
+    @app.get("/memories")
+    async def list_memories(include_deleted: bool = False) -> dict[str, object]:
+        memories = container.memory_repository.list_memories(
+            include_deleted=include_deleted
+        )
+        return {"items": [memory_record_json(item) for item in memories]}
+
+    @app.patch("/memories/{memory_id}")
+    async def update_memory(
+        memory_id: str, body: UpdateMemoryBody
+    ) -> dict[str, object]:
+        record = container.memory_repository.update_memory_content(
+            memory_id, body.content
+        )
+        return {"memory": memory_record_json(record)}
+
+    @app.delete("/memories/{memory_id}", status_code=204)
+    async def delete_memory(memory_id: str) -> Response:
+        container.memory_repository.delete_memory(memory_id)
         return Response(status_code=204)
 
     @app.post("/memory-proposals/{proposal_id}/resolve")
