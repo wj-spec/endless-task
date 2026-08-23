@@ -262,4 +262,7 @@ def memory_record_json(record) -> dict[str, object]:
         "writeOrigin": record.write_origin,
         "createdAt": record.created_at,
         "updatedAt": record.updated_at,
+        "sourceProposalId": record.source_proposal_id,
+        "expiredReason": record.expired_reason,
+        "supersededBy": record.superseded_by,
     }

@@ -149,6 +149,9 @@ class MemoryRecord:
     updated_at: str
     expired_at: Optional[str] = None
     deleted_at: Optional[str] = None
+    source_proposal_id: Optional[str] = None
+    expired_reason: Optional[str] = None
+    superseded_by: Optional[str] = None
 
 
 class MemoryProposalStatus(str, Enum):

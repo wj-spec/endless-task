@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
 
 from endless_task.domain.models import MemoryKind, MemoryRecord, MemoryStatus
 from endless_task.domain.repositories import (
@@ -26,15 +26,16 @@ def insert_memory_row(
     source_conversation_id: str,
     source_turn_id: str,
     timestamp: str,
+    source_proposal_id: Optional[str] = None,
 ) -> None:
     connection.execute(
         """
         INSERT INTO memories (
             id, kind, content, status,
             source_conversation_id, source_turn_id, write_origin,
-            created_at, updated_at
+            created_at, updated_at, source_proposal_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             memory_id,
@@ -46,6 +47,7 @@ def insert_memory_row(
             CONFIRMED_PROPOSAL_ORIGIN,
             timestamp,
             timestamp,
+            source_proposal_id,
         ),
     )
 
@@ -63,6 +65,9 @@ def memory_record_from_row(row) -> MemoryRecord:
         updated_at=row["updated_at"],
         expired_at=row["expired_at"],
         deleted_at=row["deleted_at"],
+        source_proposal_id=row["source_proposal_id"],
+        expired_reason=row["expired_reason"],
+        superseded_by=row["superseded_by"],
     )
 
 
@@ -165,6 +170,59 @@ class SqliteMemoryRepository:
                 WHERE id = ?
                 """,
                 (MemoryStatus.DELETED.value, now, now, memory_id),
+            )
+        return self.get_memory(memory_id)
+
+    def find_active_by_content(self, content: str) -> Optional[MemoryRecord]:
+        normalized = content.strip()
+        if not normalized:
+            return None
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM memories
+                WHERE status = ? AND content = ?
+                ORDER BY updated_at, id
+                """,
+                (MemoryStatus.ACTIVE.value, normalized),
+            ).fetchone()
+        return memory_record_from_row(row) if row is not None else None
+
+    def expire_memory(
+        self,
+        memory_id: str,
+        *,
+        reason: str,
+        superseded_by: Optional[str] = None,
+    ) -> MemoryRecord:
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValidationError("Expire reason must not be empty.")
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Memory not found: {memory_id}")
+            record = memory_record_from_row(row)
+            if record.status is not MemoryStatus.ACTIVE:
+                raise InvalidStateError("Only active memories can expire.")
+            now = self._clock()
+            connection.execute(
+                """
+                UPDATE memories
+                SET status = ?, expired_at = ?, expired_reason = ?,
+                    superseded_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    MemoryStatus.EXPIRED.value,
+                    now,
+                    normalized_reason,
+                    superseded_by,
+                    now,
+                    memory_id,
+                ),
             )
         return self.get_memory(memory_id)
 

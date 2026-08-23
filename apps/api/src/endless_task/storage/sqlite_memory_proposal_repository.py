@@ -7,6 +7,7 @@ from endless_task.domain.models import (
     MemoryProposal,
     MemoryProposalStatus,
     MemoryRecord,
+    MemoryStatus,
 )
 from endless_task.domain.repositories import (
     InvalidStateError,
@@ -138,15 +139,27 @@ class SqliteMemoryProposalRepository:
             proposal = self._from_row(row)
             if proposal.status is not MemoryProposalStatus.PENDING:
                 raise InvalidStateError("Only pending proposals can be resolved.")
-            insert_memory_row(
-                connection,
-                memory_id=memory_id,
-                kind=proposal.kind,
-                content=proposal.content,
-                source_conversation_id=proposal.conversation_id,
-                source_turn_id=proposal.turn_id,
-                timestamp=now,
-            )
+            existing = connection.execute(
+                """
+                SELECT id FROM memories
+                WHERE status = ? AND content = ?
+                ORDER BY updated_at, id
+                """,
+                (MemoryStatus.ACTIVE.value, proposal.content),
+            ).fetchone()
+            if existing is not None:
+                memory_id = str(existing["id"])
+            else:
+                insert_memory_row(
+                    connection,
+                    memory_id=memory_id,
+                    kind=proposal.kind,
+                    content=proposal.content,
+                    source_conversation_id=proposal.conversation_id,
+                    source_turn_id=proposal.turn_id,
+                    timestamp=now,
+                    source_proposal_id=proposal_id,
+                )
             connection.execute(
                 """
                 UPDATE memory_proposals

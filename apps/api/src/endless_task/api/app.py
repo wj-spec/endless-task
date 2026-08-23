@@ -40,7 +40,7 @@ from endless_task.runtime import (
 )
 from endless_task.runtime.provider import ModelProvider
 from endless_task.security import configure_safe_logging
-from endless_task.memory import MemoryProposalService
+from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.storage import (
     Database,
     SqliteChatRepository,
@@ -258,6 +258,7 @@ class AppContainer:
     memory_repository: SqliteMemoryRepository
     proposal_repository: SqliteMemoryProposalRepository
     memory_proposal_service: Optional[MemoryProposalService]
+    memory_conflict_service: Optional[MemoryConflictService]
     broker: RuntimeEventBroker
     provider: ModelProvider
     runtime: AssistantRuntime
@@ -423,8 +424,14 @@ def _build_container(
         tool_registry=selected_tool_registry,
         event_publisher=broker,
     )
+    memory_conflict_service: Optional[MemoryConflictService] = None
     on_turn_completed = None
     if settings.memory_proposals_enabled:
+        memory_conflict_service = MemoryConflictService(
+            provider=selected_provider,
+            memory_repository=memory_repository,
+            model=settings.model,
+        )
         memory_proposal_service = MemoryProposalService(
             provider=selected_provider,
             proposal_repository=proposal_repository,
@@ -467,6 +474,7 @@ def _build_container(
         memory_repository=memory_repository,
         proposal_repository=proposal_repository,
         memory_proposal_service=memory_proposal_service,
+        memory_conflict_service=memory_conflict_service,
         broker=broker,
         provider=selected_provider,
         runtime=runtime,
@@ -713,6 +721,8 @@ def create_app(
         proposal, memory = container.proposal_repository.accept_proposal(
             proposal_id
         )
+        if container.memory_conflict_service is not None:
+            await container.memory_conflict_service.resolve_conflicts_for(memory)
         return {
             "proposal": memory_proposal_json(proposal),
             "memory": memory_record_json(memory),
