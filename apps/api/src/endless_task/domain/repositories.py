@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from typing import Optional, Protocol, Sequence
+from typing import Optional, Protocol, Sequence, Tuple
 
 from .models import (
     Conversation,
     ConversationSnapshot,
     ConversationStatus,
     FinishReason,
+    MemoryKind,
+    MemoryProposal,
+    MemoryRecord,
+    MemoryStatus,
     ResponseVariantCommandResult,
     ResponseVariantOperation,
     TurnSnapshot,
@@ -129,4 +133,62 @@ class ChatRepository(Protocol):
         ...
 
     def select_response_variant(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
+        ...
+
+
+class MemoryRepository(Protocol):
+    def create_memory(
+        self,
+        *,
+        kind: MemoryKind,
+        content: str,
+        source_conversation_id: str,
+        source_turn_id: str,
+    ) -> MemoryRecord:
+        ...
+
+    def get_memory(self, memory_id: str) -> MemoryRecord:
+        ...
+
+    def list_memories(
+        self, *, include_deleted: bool = False
+    ) -> Sequence[MemoryRecord]:
+        ...
+
+    def update_memory_content(self, memory_id: str, content: str) -> MemoryRecord:
+        ...
+
+    def delete_memory(self, memory_id: str) -> MemoryRecord:
+        ...
+
+
+class MemoryProposalRepository(Protocol):
+    def create_proposal(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        kind: MemoryKind,
+        content: str,
+        reason: str,
+    ) -> MemoryProposal:
+        ...
+
+    def get_proposal(self, proposal_id: str) -> MemoryProposal:
+        ...
+
+    def list_proposals(
+        self, *, conversation_id: str, include_resolved: bool = False
+    ) -> Sequence[MemoryProposal]:
+        ...
+
+    def find_pending_by_content(self, content: str) -> Optional[MemoryProposal]:
+        ...
+
+    def accept_proposal(
+        self, proposal_id: str
+    ) -> Tuple[MemoryProposal, "MemoryRecord"]:
+        ...
+
+    def reject_proposal(self, proposal_id: str) -> MemoryProposal:
         ...

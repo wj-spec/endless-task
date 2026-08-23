@@ -123,3 +123,51 @@ class ResponseVariantCommandResult:
 class ConversationSnapshot:
     conversation: Conversation
     turns: Tuple[TurnSnapshot, ...]
+
+
+class MemoryKind(str, Enum):
+    PREFERENCE = "preference"
+    FACT = "fact"
+
+
+class MemoryStatus(str, Enum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    DELETED = "deleted"
+
+
+@dataclass(frozen=True)
+class MemoryRecord:
+    id: str
+    kind: MemoryKind
+    content: str
+    status: MemoryStatus
+    source_conversation_id: str
+    source_turn_id: str
+    write_origin: str
+    created_at: str
+    updated_at: str
+    expired_at: Optional[str] = None
+    deleted_at: Optional[str] = None
+
+
+class MemoryProposalStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class MemoryProposal:
+    id: str
+    conversation_id: str
+    turn_id: str
+    kind: MemoryKind
+    content: str
+    reason: str
+    status: MemoryProposalStatus
+    created_at: str
+    updated_at: str
+    resolved_memory_id: Optional[str] = None
+    resolved_at: Optional[str] = None

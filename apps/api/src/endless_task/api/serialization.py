@@ -233,3 +233,33 @@ def turn_command_json(snapshot: TurnSnapshot) -> dict[str, Any]:
         "assistantMessageId": selected.assistant_message.id,
         "eventsUrl": f"/turns/{snapshot.turn.id}/events",
     }
+
+
+def memory_proposal_json(proposal) -> dict[str, object]:
+    return {
+        "id": proposal.id,
+        "conversationId": proposal.conversation_id,
+        "turnId": proposal.turn_id,
+        "kind": proposal.kind.value,
+        "content": proposal.content,
+        "reason": proposal.reason,
+        "status": proposal.status.value,
+        "createdAt": proposal.created_at,
+        "updatedAt": proposal.updated_at,
+        "resolvedMemoryId": proposal.resolved_memory_id,
+        "resolvedAt": proposal.resolved_at,
+    }
+
+
+def memory_record_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "kind": record.kind.value,
+        "content": record.content,
+        "status": record.status.value,
+        "sourceConversationId": record.source_conversation_id,
+        "sourceTurnId": record.source_turn_id,
+        "writeOrigin": record.write_origin,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+    }

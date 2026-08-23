@@ -40,16 +40,21 @@ from endless_task.runtime import (
 )
 from endless_task.runtime.provider import ModelProvider
 from endless_task.security import configure_safe_logging
+from endless_task.memory import MemoryProposalService
 from endless_task.storage import (
     Database,
     SqliteChatRepository,
     SqliteContextRepository,
+    SqliteMemoryProposalRepository,
+    SqliteMemoryRepository,
     SqliteTextFileRepository,
     SqliteRuntimeRepository,
 )
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
 from .serialization import (
+    memory_proposal_json,
+    memory_record_json,
     approval_request_json,
     compact_turn_snapshot_json,
     conversation_json,
@@ -138,6 +143,7 @@ class AppSettings:
     max_file_bytes: int = 1_000_000
     max_files_per_conversation: int = 10
     heartbeat_seconds: float = 15.0
+    memory_proposals_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -187,6 +193,9 @@ class AppSettings:
         )
         return cls(
             database_path=database_path,
+            memory_proposals_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_MEMORY_PROPOSALS", "1")
+            ),
             config_version=int(env.get("ENDLESS_TASK_CONFIG_VERSION", "1")),
             provider_name=provider_name,
             model=env.get("ENDLESS_TASK_MODEL", default_model),
@@ -246,6 +255,9 @@ class AppContainer:
     chat_repository: SqliteChatRepository
     runtime_repository: SqliteRuntimeRepository
     file_repository: SqliteTextFileRepository
+    memory_repository: SqliteMemoryRepository
+    proposal_repository: SqliteMemoryProposalRepository
+    memory_proposal_service: Optional[MemoryProposalService]
     broker: RuntimeEventBroker
     provider: ModelProvider
     runtime: AssistantRuntime
@@ -264,6 +276,12 @@ class CreateTurnBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str
+
+
+class ResolveMemoryProposalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
 
 
 class ResolveApprovalBody(BaseModel):
@@ -347,6 +365,10 @@ def _parse_last_event_id(turn_id: str, value: Optional[str]) -> int:
     return sequence
 
 
+def _parse_flag(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _build_container(
     settings: AppSettings,
     provider: Optional[ModelProvider],
@@ -361,6 +383,9 @@ def _build_container(
         max_file_bytes=settings.max_file_bytes,
         max_files_per_conversation=settings.max_files_per_conversation,
     )
+    memory_repository = SqliteMemoryRepository(database)
+    proposal_repository = SqliteMemoryProposalRepository(database)
+    memory_proposal_service: Optional[MemoryProposalService] = None
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
     selected_tool_registry = tool_registry or ToolRegistry()
@@ -377,6 +402,7 @@ def _build_container(
             summary_token_limit=settings.summary_token_limit,
             context_repository=context_repository,
             file_repository=file_repository,
+            memory_repository=memory_repository,
         ),
         provider=selected_provider,
         configuration=RuntimeConfiguration(
@@ -391,13 +417,50 @@ def _build_container(
         tool_registry=selected_tool_registry,
         event_publisher=broker,
     )
-    controller = TurnController(chat_repository=chat_repository, runtime=runtime)
+    on_turn_completed = None
+    if settings.memory_proposals_enabled:
+        memory_proposal_service = MemoryProposalService(
+            provider=selected_provider,
+            proposal_repository=proposal_repository,
+            memory_repository=memory_repository,
+            model=settings.model,
+        )
+
+    async def on_turn_completed(snapshot) -> None:
+        active = next(
+            (
+                item
+                for item in snapshot.response_variants
+                if item.variant.id == snapshot.turn.active_response_variant_id
+            ),
+            None,
+        )
+        if active is None or not active.assistant_message.content.strip():
+            return
+        assert memory_proposal_service is not None
+        await memory_proposal_service.generate_for_turn(
+            conversation_id=snapshot.turn.conversation_id,
+            turn_id=snapshot.turn.id,
+            user_message=snapshot.user_message.content,
+            assistant_message=active.assistant_message.content,
+        )
+
+    controller = TurnController(
+        chat_repository=chat_repository,
+        runtime=runtime,
+        on_turn_completed=on_turn_completed
+        if settings.memory_proposals_enabled
+        else None,
+    )
     return AppContainer(
         settings=settings,
         database=database,
         chat_repository=chat_repository,
         runtime_repository=runtime_repository,
         file_repository=file_repository,
+        memory_repository=memory_repository,
+        proposal_repository=proposal_repository,
+        memory_proposal_service=memory_proposal_service,
         broker=broker,
         provider=selected_provider,
         runtime=runtime,
@@ -612,6 +675,31 @@ def create_app(
     async def delete_conversation(conversation_id: str) -> Response:
         container.chat_repository.delete_conversation(conversation_id)
         return Response(status_code=204)
+
+    @app.post("/memory-proposals/{proposal_id}/resolve")
+    async def resolve_memory_proposal(
+        proposal_id: str, body: ResolveMemoryProposalBody
+    ) -> dict[str, object]:
+        if body.decision == "reject":
+            proposal = container.proposal_repository.reject_proposal(proposal_id)
+            return {"proposal": memory_proposal_json(proposal)}
+        proposal, memory = container.proposal_repository.accept_proposal(
+            proposal_id
+        )
+        return {
+            "proposal": memory_proposal_json(proposal),
+            "memory": memory_record_json(memory),
+        }
+
+    @app.get("/conversations/{conversation_id}/memory-proposals")
+    async def list_memory_proposals(
+        conversation_id: str, include_resolved: bool = False
+    ) -> dict[str, object]:
+        proposals = container.proposal_repository.list_proposals(
+            conversation_id=conversation_id,
+            include_resolved=include_resolved,
+        )
+        return {"items": [memory_proposal_json(item) for item in proposals]}
 
     @app.post("/conversations/{conversation_id}/turns", status_code=202)
     async def create_turn(

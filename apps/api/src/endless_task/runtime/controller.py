@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from endless_task.domain.models import (
     ResponseVariantOperation,
@@ -33,10 +33,15 @@ class TurnController:
         *,
         chat_repository: ChatRepository,
         runtime: AssistantRuntime,
+        on_turn_completed: Optional[
+            Callable[[TurnSnapshot], Awaitable[None]]
+        ] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime = runtime
+        self._on_turn_completed = on_turn_completed
         self._tasks: dict[tuple[str, str], asyncio.Task[TurnSnapshot]] = {}
+        self._hook_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
 
     async def submit(
@@ -122,6 +127,7 @@ class TurnController:
                 )
         if items:
             await asyncio.gather(*(task for _, task in items), return_exceptions=True)
+        await self.drain_hooks()
 
     async def _schedule_created(
         self,
@@ -162,6 +168,15 @@ class TurnController:
             )
         return handle
 
+    async def drain_hooks(self) -> None:
+        while self._hook_tasks:
+            pending = tuple(task for task in self._hook_tasks if not task.done())
+            if not pending:
+                # Done-callback cleanup is queued in the loop; yield to it.
+                await asyncio.sleep(0)
+                continue
+            await asyncio.gather(*pending, return_exceptions=True)
+
     def _on_task_done(
         self,
         key: tuple[str, str],
@@ -176,4 +191,22 @@ class TurnController:
                 "Turn execution task failed before state convergence",
                 exc_info=(type(error), error, error.__traceback__),
                 extra={"turn_id": key[0], "variant_id": key[1]},
+            )
+            return
+        if self._on_turn_completed is None:
+            return
+        snapshot = task.result()
+        if snapshot.turn.status is not TurnStatus.COMPLETED:
+            return
+        hook_task = asyncio.create_task(self._run_turn_completed_hook(snapshot))
+        self._hook_tasks.add(hook_task)
+        hook_task.add_done_callback(self._hook_tasks.discard)
+
+    async def _run_turn_completed_hook(self, snapshot: TurnSnapshot) -> None:
+        assert self._on_turn_completed is not None
+        try:
+            await self._on_turn_completed(snapshot)
+        except Exception:
+            logger.exception(
+                "Turn completed hook failed for turn %s", snapshot.turn.id
             )
