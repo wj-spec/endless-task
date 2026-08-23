@@ -235,6 +235,51 @@ def turn_command_json(snapshot: TurnSnapshot) -> dict[str, Any]:
     }
 
 
+def artifact_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "title": record.title,
+        "kind": record.kind.value,
+        "status": record.status.value,
+        "currentVersionOrdinal": record.current_version_ordinal,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+        "deletedAt": record.deleted_at,
+    }
+
+
+def artifact_version_json(version) -> dict[str, object]:
+    return {
+        "id": version.id,
+        "artifactId": version.artifact_id,
+        "ordinal": version.ordinal,
+        "content": version.content,
+        "operation": version.operation.value,
+        "sourceConversationId": version.source_conversation_id,
+        "sourceTurnId": version.source_turn_id,
+        "sourceLabels": list(version.source_labels),
+        "note": version.note,
+        "createdAt": version.created_at,
+    }
+
+
+def artifact_proposal_json(proposal) -> dict[str, object]:
+    return {
+        "id": proposal.id,
+        "conversationId": proposal.conversation_id,
+        "turnId": proposal.turn_id,
+        "title": proposal.title,
+        "kind": proposal.kind.value,
+        "content": proposal.content,
+        "reason": proposal.reason,
+        "status": proposal.status.value,
+        "createdAt": proposal.created_at,
+        "updatedAt": proposal.updated_at,
+        "resolvedArtifactId": proposal.resolved_artifact_id,
+        "resolvedAt": proposal.resolved_at,
+    }
+
+
 def memory_proposal_json(proposal) -> dict[str, object]:
     return {
         "id": proposal.id,

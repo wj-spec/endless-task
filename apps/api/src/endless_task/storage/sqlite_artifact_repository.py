@@ -23,7 +23,7 @@ from .sqlite_chat_repository import IdFactory, new_id, utc_now
 Clock = Callable[[], str]
 
 
-def _artifact_record_from_row(row) -> ArtifactRecord:
+def artifact_record_from_row(row) -> ArtifactRecord:
     return ArtifactRecord(
         id=row["id"],
         title=row["title"],
@@ -48,6 +48,50 @@ def _artifact_version_from_row(row) -> ArtifactVersionRecord:
         source_labels=tuple(json.loads(row["source_labels"])),
         note=row["note"],
         created_at=row["created_at"],
+    )
+
+
+def insert_artifact_with_first_version(
+    connection,
+    *,
+    artifact_id: str,
+    version_id: str,
+    title: str,
+    kind: ArtifactKind,
+    content: str,
+    source_conversation_id: str,
+    source_turn_id: str,
+    timestamp: str,
+    source_labels_json: str = "[]",
+    note: Optional[str] = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO artifacts (
+            id, title, kind, status, current_version_ordinal,
+            created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, 'active', 1, ?, ?, NULL)
+        """,
+        (artifact_id, title, kind.value, timestamp, timestamp),
+    )
+    connection.execute(
+        """
+        INSERT INTO artifact_versions (
+            id, artifact_id, ordinal, content, operation,
+            source_conversation_id, source_turn_id, source_labels,
+            note, created_at
+        ) VALUES (?, ?, 1, ?, 'create', ?, ?, ?, ?, ?)
+        """,
+        (
+            version_id,
+            artifact_id,
+            content,
+            source_conversation_id,
+            source_turn_id,
+            source_labels_json,
+            note,
+            timestamp,
+        ),
     )
 
 
@@ -92,33 +136,18 @@ class SqliteArtifactRepository:
         artifact_id = self._id_factory("art")
         version_id = self._id_factory("artv")
         with self._database.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO artifacts (
-                    id, title, kind, status, current_version_ordinal,
-                    created_at, updated_at, deleted_at
-                ) VALUES (?, ?, ?, 'active', 1, ?, ?, NULL)
-                """,
-                (artifact_id, validated_title, artifact_kind.value, now, now),
-            )
-            connection.execute(
-                """
-                INSERT INTO artifact_versions (
-                    id, artifact_id, ordinal, content, operation,
-                    source_conversation_id, source_turn_id, source_labels,
-                    note, created_at
-                ) VALUES (?, ?, 1, ?, 'create', ?, ?, ?, ?, ?)
-                """,
-                (
-                    version_id,
-                    artifact_id,
-                    validated_content,
-                    source_conversation_id,
-                    source_turn_id,
-                    labels_json,
-                    note,
-                    now,
-                ),
+            insert_artifact_with_first_version(
+                connection,
+                artifact_id=artifact_id,
+                version_id=version_id,
+                title=validated_title,
+                kind=artifact_kind,
+                content=validated_content,
+                source_conversation_id=source_conversation_id,
+                source_turn_id=source_turn_id,
+                timestamp=now,
+                source_labels_json=labels_json,
+                note=note,
             )
         return self.get_artifact_snapshot(artifact_id)
 
@@ -184,7 +213,7 @@ class SqliteArtifactRepository:
             ).fetchone()
         if row is None:
             raise NotFoundError(f"Artifact {artifact_id} was not found")
-        return _artifact_record_from_row(row)
+        return artifact_record_from_row(row)
 
     def get_current_version(self, artifact_id: str) -> ArtifactVersionRecord:
         artifact = self.get_artifact(artifact_id)
@@ -221,7 +250,7 @@ class SqliteArtifactRepository:
         query += " ORDER BY updated_at DESC, id ASC"
         with self._database.connect() as connection:
             rows = connection.execute(query).fetchall()
-        return tuple(_artifact_record_from_row(row) for row in rows)
+        return tuple(artifact_record_from_row(row) for row in rows)
 
     def delete_artifact(self, artifact_id: str) -> ArtifactRecord:
         now = self._clock()
@@ -239,6 +268,84 @@ class SqliteArtifactRepository:
                 (now, now, artifact_id),
             )
         return self.get_artifact(artifact_id)
+
+    def rollback_to_version(
+        self,
+        *,
+        artifact_id: str,
+        target_ordinal: int,
+        source_conversation_id: str,
+        source_turn_id: str,
+        note: Optional[str] = None,
+    ) -> ArtifactSnapshot:
+        if (
+            isinstance(target_ordinal, bool)
+            or not isinstance(target_ordinal, int)
+            or target_ordinal < 1
+        ):
+            raise InvalidStateError(
+                "Rollback target ordinal must be a positive integer"
+            )
+        if not source_conversation_id or not source_conversation_id.strip():
+            raise ValidationError("Rollback source conversation is required.")
+        if not source_turn_id or not source_turn_id.strip():
+            raise ValidationError("Rollback source turn is required.")
+        now = self._clock()
+        version_id = self._id_factory("artv")
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Artifact {artifact_id} was not found")
+            if row["status"] != ArtifactStatus.ACTIVE.value:
+                raise InvalidStateError("Deleted artifacts cannot be rolled back")
+            current_ordinal = row["current_version_ordinal"]
+            if target_ordinal >= current_ordinal:
+                raise InvalidStateError(
+                    "Rollback target must be earlier than the current version"
+                )
+            target_row = connection.execute(
+                "SELECT * FROM artifact_versions "
+                "WHERE artifact_id = ? AND ordinal = ?",
+                (artifact_id, target_ordinal),
+            ).fetchone()
+            if target_row is None:
+                raise NotFoundError(
+                    f"Artifact {artifact_id} has no version {target_ordinal}"
+                )
+            ordinal = current_ordinal + 1
+            resolved_note = (
+                note.strip()
+                if isinstance(note, str) and note.strip()
+                else f"回滚到版本 {target_ordinal}"
+            )
+            connection.execute(
+                """
+                INSERT INTO artifact_versions (
+                    id, artifact_id, ordinal, content, operation,
+                    source_conversation_id, source_turn_id, source_labels,
+                    note, created_at
+                ) VALUES (?, ?, ?, ?, 'rollback', ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    artifact_id,
+                    ordinal,
+                    target_row["content"],
+                    source_conversation_id.strip(),
+                    source_turn_id.strip(),
+                    target_row["source_labels"],
+                    resolved_note,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE artifacts SET current_version_ordinal = ?, updated_at = ? "
+                "WHERE id = ?",
+                (ordinal, now, artifact_id),
+            )
+        return self.get_artifact_snapshot(artifact_id)
 
     def get_artifact_snapshot(self, artifact_id: str) -> ArtifactSnapshot:
         artifact = self.get_artifact(artifact_id)

@@ -8,6 +8,7 @@ from typing import Optional, Protocol, Sequence, Tuple
 
 from endless_task.domain.models import ResponseVariantStatus, TurnSnapshot
 from endless_task.domain.repositories import (
+    ArtifactProposalRepository,
     ChatRepository,
     InvalidStateError,
     MemoryRepository,
@@ -198,6 +199,8 @@ class P0ContextBuilder:
         memory_repository: Optional[MemoryRepository] = None,
         max_memories_in_context: int = 20,
         max_memory_chars: int = 1200,
+        artifact_proposal_repository: Optional[ArtifactProposalRepository] = None,
+        max_artifact_proposals_in_context: int = 5,
         token_estimator: Optional[TokenEstimator] = None,
         summarizer: Optional[ExtractiveConversationSummarizer] = None,
     ) -> None:
@@ -207,6 +210,8 @@ class P0ContextBuilder:
             raise ValueError("summary_token_limit cannot be negative")
         if max_memories_in_context <= 0 or max_memory_chars <= 0:
             raise ValueError("Memory injection limits must be positive")
+        if max_artifact_proposals_in_context <= 0:
+            raise ValueError("Artifact proposal injection limit must be positive")
         self._repository = repository
         self._system_prompt = system_prompt
         self._system_prompt_version = system_prompt_version
@@ -217,6 +222,8 @@ class P0ContextBuilder:
         self._memory_repository = memory_repository
         self._max_memories_in_context = max_memories_in_context
         self._max_memory_chars = max_memory_chars
+        self._artifact_proposal_repository = artifact_proposal_repository
+        self._max_artifact_proposals_in_context = max_artifact_proposals_in_context
         self._token_estimator = token_estimator or ApproximateTokenEstimator()
         self._summarizer = summarizer or ExtractiveConversationSummarizer()
 
@@ -347,6 +354,9 @@ class P0ContextBuilder:
         memory_block = self._memory_block()
         if memory_block:
             content = f"{content}\n\n{memory_block}"
+        artifact_proposal_block = self._artifact_proposal_block(conversation_id)
+        if artifact_proposal_block:
+            content = f"{content}\n\n{artifact_proposal_block}"
         return content
 
     def _memory_block(self) -> str:
@@ -367,6 +377,25 @@ class P0ContextBuilder:
         return (
             "以下是用户确认后写入的长期记忆，跨会话有效；"
             "可以直接使用，不要向用户重复确认。\n" + "\n".join(lines)
+        )
+
+    def _artifact_proposal_block(self, conversation_id: str) -> str:
+        if self._artifact_proposal_repository is None:
+            return ""
+        proposals = self._artifact_proposal_repository.list_proposals(
+            conversation_id=conversation_id
+        )
+        lines: list[str] = []
+        for proposal in proposals[: self._max_artifact_proposals_in_context]:
+            lines.append(
+                f"- 《{proposal.title}》（{proposal.kind.value}）：{proposal.reason}"
+            )
+        if not lines:
+            return ""
+        return (
+            "以下是本会话待确认的 Artifact 提案，用户确认前不要把它当作已保存的文档。"
+            "如果用户表达想保留，请引导其在提案卡片上确认；不要自行声称已保存。\n"
+            + "\n".join(lines)
         )
 
     def _canonical_history(

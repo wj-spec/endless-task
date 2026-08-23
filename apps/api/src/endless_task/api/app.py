@@ -43,10 +43,12 @@ from endless_task.runtime import (
     UnconfiguredProvider,
 )
 from endless_task.runtime.provider import ModelProvider
+from endless_task.artifacts import ArtifactProposalService
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.storage import (
     Database,
+    SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
     SqliteChatRepository,
     SqliteContextRepository,
@@ -59,6 +61,9 @@ from endless_task.storage import (
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
 from .serialization import (
+    artifact_json,
+    artifact_proposal_json,
+    artifact_version_json,
     memory_proposal_json,
     memory_record_json,
     approval_request_json,
@@ -75,6 +80,13 @@ from .serialization import (
 logger = logging.getLogger(__name__)
 TERMINAL_TURN_STATUSES = {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED}
 CONFIG_VERSION = 1
+
+ARTIFACT_AWARENESS_PROMPT_VERSION = "p3.1-v1"
+ARTIFACT_AWARENESS_CLAUSE = (
+    "\n- 当本轮回答属于值得整体保留的独立成文结果（长回答、计划、改写稿、报告、总结等）时，"
+    "可以在回复末尾追加一句简短的陈述式预告，说明该结果可以保留为文档；"
+    "不要用追问口吻推销，普通问答、闲聊或简短回答一律不要提及文档保留。"
+)
 
 
 def default_data_directory() -> Path:
@@ -150,6 +162,7 @@ class AppSettings:
     max_files_per_conversation: int = 10
     heartbeat_seconds: float = 15.0
     memory_proposals_enabled: bool = True
+    artifact_proposals_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -201,6 +214,9 @@ class AppSettings:
             database_path=database_path,
             memory_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_MEMORY_PROPOSALS", "1")
+            ),
+            artifact_proposals_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
             ),
             config_version=int(env.get("ENDLESS_TASK_CONFIG_VERSION", "1")),
             provider_name=provider_name,
@@ -265,6 +281,8 @@ class AppContainer:
     proposal_repository: SqliteMemoryProposalRepository
     preferences_repository: SqlitePreferencesRepository
     artifact_repository: SqliteArtifactRepository
+    artifact_proposal_repository: SqliteArtifactProposalRepository
+    artifact_proposal_service: Optional[ArtifactProposalService]
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
     broker: RuntimeEventBroker
@@ -294,6 +312,21 @@ class UpdateMemoryBody(BaseModel):
 
 
 class ResolveMemoryProposalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
+
+
+class RollbackArtifactBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    targetOrdinal: int
+    sourceConversationId: str
+    sourceTurnId: str
+    note: Optional[str] = None
+
+
+class ResolveArtifactProposalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["accept", "reject"]
@@ -409,24 +442,31 @@ def _build_container(
     proposal_repository = SqliteMemoryProposalRepository(database)
     preferences_repository = SqlitePreferencesRepository(database)
     artifact_repository = SqliteArtifactRepository(database)
+    artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     memory_proposal_service: Optional[MemoryProposalService] = None
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
     selected_tool_registry = tool_registry or ToolRegistry()
     if tool_registry is None:
         selected_tool_registry.register(ReadTextFileTool(file_repository))
+    system_prompt = settings.system_prompt
+    system_prompt_version = settings.system_prompt_version
+    if settings.artifact_proposals_enabled:
+        system_prompt = system_prompt + ARTIFACT_AWARENESS_CLAUSE
+        system_prompt_version = ARTIFACT_AWARENESS_PROMPT_VERSION
     runtime = AssistantRuntime(
         chat_repository=chat_repository,
         runtime_repository=runtime_repository,
         context_builder=P0ContextBuilder(
             chat_repository,
-            system_prompt=settings.system_prompt,
-            system_prompt_version=settings.system_prompt_version,
+            system_prompt=system_prompt,
+            system_prompt_version=system_prompt_version,
             max_context_tokens=settings.context_window_tokens,
             summary_token_limit=settings.summary_token_limit,
             context_repository=context_repository,
             file_repository=file_repository,
             memory_repository=memory_repository,
+            artifact_proposal_repository=artifact_proposal_repository,
         ),
         provider=selected_provider,
         configuration=RuntimeConfiguration(
@@ -442,6 +482,14 @@ def _build_container(
         event_publisher=broker,
         permission_mode_provider=lambda: preferences_repository.get_permission_mode()[0],
     )
+    artifact_proposal_service: Optional[ArtifactProposalService] = None
+    if settings.artifact_proposals_enabled:
+        artifact_proposal_service = ArtifactProposalService(
+            provider=selected_provider,
+            proposal_repository=artifact_proposal_repository,
+            model=settings.model,
+        )
+
     memory_conflict_service: Optional[MemoryConflictService] = None
     on_turn_completed = None
     if settings.memory_proposals_enabled:
@@ -457,31 +505,38 @@ def _build_container(
             model=settings.model,
         )
 
-    async def on_turn_completed(snapshot) -> None:
-        active = next(
-            (
-                item
-                for item in snapshot.response_variants
-                if item.variant.id == snapshot.turn.active_response_variant_id
-            ),
-            None,
-        )
-        if active is None or not active.assistant_message.content.strip():
-            return
-        assert memory_proposal_service is not None
-        await memory_proposal_service.generate_for_turn(
-            conversation_id=snapshot.turn.conversation_id,
-            turn_id=snapshot.turn.id,
-            user_message=snapshot.user_message.content,
-            assistant_message=active.assistant_message.content,
-        )
+    if settings.memory_proposals_enabled or settings.artifact_proposals_enabled:
+
+        async def on_turn_completed(snapshot) -> None:
+            active = next(
+                (
+                    item
+                    for item in snapshot.response_variants
+                    if item.variant.id == snapshot.turn.active_response_variant_id
+                ),
+                None,
+            )
+            if active is None or not active.assistant_message.content.strip():
+                return
+            if memory_proposal_service is not None:
+                await memory_proposal_service.generate_for_turn(
+                    conversation_id=snapshot.turn.conversation_id,
+                    turn_id=snapshot.turn.id,
+                    user_message=snapshot.user_message.content,
+                    assistant_message=active.assistant_message.content,
+                )
+            if artifact_proposal_service is not None:
+                await artifact_proposal_service.generate_for_turn(
+                    conversation_id=snapshot.turn.conversation_id,
+                    turn_id=snapshot.turn.id,
+                    user_message=snapshot.user_message.content,
+                    assistant_message=active.assistant_message.content,
+                )
 
     controller = TurnController(
         chat_repository=chat_repository,
         runtime=runtime,
-        on_turn_completed=on_turn_completed
-        if settings.memory_proposals_enabled
-        else None,
+        on_turn_completed=on_turn_completed,
     )
     return AppContainer(
         settings=settings,
@@ -493,6 +548,8 @@ def _build_container(
         proposal_repository=proposal_repository,
         preferences_repository=preferences_repository,
         artifact_repository=artifact_repository,
+        artifact_proposal_repository=artifact_proposal_repository,
+        artifact_proposal_service=artifact_proposal_service,
         memory_proposal_service=memory_proposal_service,
         memory_conflict_service=memory_conflict_service,
         broker=broker,
@@ -784,6 +841,70 @@ def create_app(
             include_resolved=include_resolved,
         )
         return {"items": [memory_proposal_json(item) for item in proposals]}
+
+    @app.get("/artifacts")
+    async def list_artifacts(include_deleted: bool = False) -> dict[str, object]:
+        records = container.artifact_repository.list_artifacts(
+            include_deleted=include_deleted
+        )
+        return {"items": [artifact_json(item) for item in records]}
+
+    @app.get("/artifacts/{artifact_id}")
+    async def get_artifact(artifact_id: str) -> dict[str, object]:
+        artifact = container.artifact_repository.get_artifact(artifact_id)
+        version = container.artifact_repository.get_current_version(artifact_id)
+        return {
+            "artifact": artifact_json(artifact),
+            "currentVersion": artifact_version_json(version),
+        }
+
+    @app.get("/artifacts/{artifact_id}/versions")
+    async def list_artifact_versions(artifact_id: str) -> dict[str, object]:
+        versions = container.artifact_repository.list_versions(artifact_id)
+        return {"items": [artifact_version_json(item) for item in versions]}
+
+    @app.post("/artifacts/{artifact_id}/rollback")
+    async def rollback_artifact(
+        artifact_id: str, body: RollbackArtifactBody
+    ) -> dict[str, object]:
+        snapshot = container.artifact_repository.rollback_to_version(
+            artifact_id=artifact_id,
+            target_ordinal=body.targetOrdinal,
+            source_conversation_id=body.sourceConversationId,
+            source_turn_id=body.sourceTurnId,
+            note=body.note,
+        )
+        return {
+            "artifact": artifact_json(snapshot.artifact),
+            "currentVersion": artifact_version_json(snapshot.current_version),
+        }
+
+    @app.get("/conversations/{conversation_id}/artifact-proposals")
+    async def list_artifact_proposals(
+        conversation_id: str, include_resolved: bool = False
+    ) -> dict[str, object]:
+        proposals = container.artifact_proposal_repository.list_proposals(
+            conversation_id=conversation_id,
+            include_resolved=include_resolved,
+        )
+        return {"items": [artifact_proposal_json(item) for item in proposals]}
+
+    @app.post("/artifact-proposals/{proposal_id}/resolve")
+    async def resolve_artifact_proposal(
+        proposal_id: str, body: ResolveArtifactProposalBody
+    ) -> dict[str, object]:
+        if body.decision == "reject":
+            proposal = container.artifact_proposal_repository.reject_proposal(
+                proposal_id
+            )
+            return {"proposal": artifact_proposal_json(proposal)}
+        proposal, artifact = container.artifact_proposal_repository.accept_proposal(
+            proposal_id
+        )
+        return {
+            "proposal": artifact_proposal_json(proposal),
+            "artifact": artifact_json(artifact),
+        }
 
     @app.post("/conversations/{conversation_id}/turns", status_code=202)
     async def create_turn(

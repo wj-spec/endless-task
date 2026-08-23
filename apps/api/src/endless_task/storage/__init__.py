@@ -1,6 +1,7 @@
 """SQLite persistence for the P0 chat domain."""
 
 from .database import Database
+from .sqlite_artifact_proposal_repository import SqliteArtifactProposalRepository
 from .sqlite_artifact_repository import SqliteArtifactRepository
 from .sqlite_chat_repository import SqliteChatRepository
 from .sqlite_context_repository import SqliteContextRepository

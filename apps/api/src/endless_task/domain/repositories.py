@@ -4,6 +4,8 @@ from typing import Optional, Protocol, Sequence, Tuple
 
 from .models import (
     ArtifactKind,
+    ArtifactProposal,
+    ArtifactProposalStatus,
     ArtifactRecord,
     ArtifactSnapshot,
     ArtifactVersionOperation,
@@ -226,6 +228,17 @@ class ArtifactRepository(Protocol):
     ) -> ArtifactSnapshot:
         ...
 
+    def rollback_to_version(
+        self,
+        *,
+        artifact_id: str,
+        target_ordinal: int,
+        source_conversation_id: str,
+        source_turn_id: str,
+        note: Optional[str] = None,
+    ) -> ArtifactSnapshot:
+        ...
+
     def get_artifact(self, artifact_id: str) -> ArtifactRecord:
         ...
 
@@ -245,3 +258,37 @@ class ArtifactRepository(Protocol):
 
     def delete_artifact(self, artifact_id: str) -> ArtifactRecord:
         ...
+
+
+class ArtifactProposalRepository(Protocol):
+    def create_proposal(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        title: str,
+        kind: ArtifactKind,
+        content: str,
+        reason: str,
+    ) -> ArtifactProposal:
+        ...
+
+    def get_proposal(self, proposal_id: str) -> ArtifactProposal:
+        ...
+
+    def list_proposals(
+        self, *, conversation_id: str, include_resolved: bool = False
+    ) -> Sequence[ArtifactProposal]:
+        ...
+
+    def find_pending_by_content(self, content: str) -> Optional[ArtifactProposal]:
+        ...
+
+    def accept_proposal(
+        self, proposal_id: str
+    ) -> Tuple[ArtifactProposal, ArtifactRecord]:
+        ...
+
+    def reject_proposal(self, proposal_id: str) -> ArtifactProposal:
+        ...
+

@@ -249,3 +249,26 @@ class ArtifactVersionRecord:
 class ArtifactSnapshot:
     artifact: ArtifactRecord
     current_version: ArtifactVersionRecord
+
+
+class ArtifactProposalStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class ArtifactProposal:
+    id: str
+    conversation_id: str
+    turn_id: str
+    title: str
+    kind: ArtifactKind
+    content: str
+    reason: str
+    status: ArtifactProposalStatus
+    created_at: str
+    updated_at: str
+    resolved_artifact_id: Optional[str] = None
+    resolved_at: Optional[str] = None
