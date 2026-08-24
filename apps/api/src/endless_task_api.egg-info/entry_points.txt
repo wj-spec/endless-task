@@ -1,2 +1,3 @@
 [console_scripts]
+endless-task = endless_task.cli:main
 endless-task-api = endless_task.api.main:run

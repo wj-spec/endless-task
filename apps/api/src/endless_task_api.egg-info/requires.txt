@@ -1,6 +1,7 @@
 fastapi<1,>=0.115
 openai<3,>=1.68
 uvicorn<1,>=0.30
+reportlab<5,>=4
 
 [dev]
 httpx<1,>=0.27

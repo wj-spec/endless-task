@@ -47,6 +47,12 @@ from endless_task.artifacts import (
     ArtifactProposalService,
     SourceReferenceResolver,
 )
+from endless_task.artifacts.export_service import (
+    ExportError,
+    build_export,
+    content_disposition_header,
+    export_filename,
+)
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
@@ -894,6 +900,29 @@ def create_app(
                 artifact_version_json(version, source_references=references)
             )
         return {"items": items}
+
+    @app.get("/artifacts/{artifact_id}/export")
+    async def export_artifact(
+        artifact_id: str, format: str = "markdown"
+    ) -> Response:
+        artifact = container.artifact_repository.get_artifact(artifact_id)
+        version = container.artifact_repository.get_current_version(artifact_id)
+        try:
+            data, media_type = build_export(artifact, version, fmt=format)
+            filename = export_filename(artifact, fmt=format)
+        except ExportError as error:
+            return _error_response(
+                status_code=error.status_code,
+                code=error.code,
+                message=error.message,
+            )
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": content_disposition_header(filename)
+            },
+        )
 
     @app.post("/artifacts/{artifact_id}/rollback")
     async def rollback_artifact(
