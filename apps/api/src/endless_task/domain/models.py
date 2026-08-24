@@ -270,5 +270,14 @@ class ArtifactProposal:
     status: ArtifactProposalStatus
     created_at: str
     updated_at: str
+    source_labels: Tuple[str, ...] = ()
     resolved_artifact_id: Optional[str] = None
     resolved_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ToolCallJournal:
+    id: str
+    tool_name: str
+    arguments: dict
+    status: str

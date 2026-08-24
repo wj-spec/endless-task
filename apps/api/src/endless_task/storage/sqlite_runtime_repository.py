@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
+from endless_task.domain.models import ToolCallJournal
 from endless_task.domain.repositories import InvalidStateError, NotFoundError, ValidationError
 from endless_task.runtime.events import RuntimeEvent
 from endless_task.tooling import (
@@ -519,6 +520,23 @@ class SqliteRuntimeRepository:
             call,
             status=ToolCallStatus.CANCELLED,
             activity_message=activity.cancelled,
+        )
+
+    def list_tool_calls(self, turn_id: str) -> tuple:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, tool_name, arguments_json, status "
+                "FROM tool_calls WHERE turn_id = ? ORDER BY rowid",
+                (turn_id,),
+            ).fetchall()
+        return tuple(
+            ToolCallJournal(
+                id=row["id"],
+                tool_name=row["tool_name"],
+                arguments=json.loads(row["arguments_json"]),
+                status=row["status"],
+            )
+            for row in rows
         )
 
     def list_events(

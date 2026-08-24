@@ -5,7 +5,7 @@ import logging
 import uuid
 from typing import Optional, Tuple
 
-from endless_task.domain.models import ArtifactKind, ArtifactProposal
+from endless_task.domain.models import ArtifactKind, ArtifactProposal, MemoryStatus
 from endless_task.domain.repositories import RepositoryError
 from endless_task.runtime import (
     CancellationToken,
@@ -16,6 +16,13 @@ from endless_task.runtime import (
 )
 from endless_task.storage import SqliteArtifactProposalRepository
 
+from .source_labels import (
+    MAX_SOURCE_LABELS,
+    format_file_label,
+    format_memory_label,
+    parse_source_label,
+)
+
 logger = logging.getLogger(__name__)
 
 _EXTRACTION_SYSTEM_PROMPT = (
@@ -24,19 +31,27 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "（长回答、计划、改写稿、报告、总结等）时，才提出 Artifact 提案。"
     "问答片段、列表式简短说明、讨论中的中间回答不要提案。"
     "提案内容应整理为可独立阅读的文档，不要包含对话措辞。"
+    "如果回答明确引用了随附长期记忆清单中的某些记忆，"
+    '在 labels 中以 "memory:{id}" 形式列出对应记忆；不要输出其他形式的标签。'
     '只输出 JSON：{"proposal":{"title":"文档标题","kind":"markdown|text",'
-    '"content":"文档内容","reason":"为什么值得保留"}}；'
+    '"content":"文档内容","reason":"为什么值得保留","labels":[]}}；'
     '没有合适内容时输出 {"proposal":null}。'
 )
 
 DEFAULT_PROPOSAL_REASON = "回答较长且值得保留为独立文档"
+READ_TEXT_FILE_TOOL = "read_text_file"
+COMPLETED_STATUS = "completed"
+MEMORY_LIST_CAP = 20
+MEMORY_PROMPT_SNIPPET_CHARS = 200
 
 
 class ArtifactProposalService:
     """Generates pending artifact proposals from completed turns.
 
     The service never writes to ``artifacts``; writing happens only when the
-    user accepts a proposal through the resolve API.
+    user accepts a proposal through the resolve API. Source labels combine
+    deterministic file labels (from the turn journal) with model-proposed
+    memory labels validated against active memories.
     """
 
     def __init__(
@@ -45,6 +60,8 @@ class ArtifactProposalService:
         provider: ModelProvider,
         proposal_repository: SqliteArtifactProposalRepository,
         model: str,
+        memory_repository=None,
+        runtime_repository=None,
         min_assistant_chars: int = 400,
         max_output_tokens: int = 8_000,
     ) -> None:
@@ -53,6 +70,8 @@ class ArtifactProposalService:
         self._provider = provider
         self._proposal_repository = proposal_repository
         self._model = model
+        self._memory_repository = memory_repository
+        self._runtime_repository = runtime_repository
         self._min_assistant_chars = min_assistant_chars
         self._max_output_tokens = max_output_tokens
 
@@ -90,7 +109,10 @@ class ArtifactProposalService:
         stripped_answer = assistant_message.strip()
         if len(stripped_answer) < self._min_assistant_chars:
             return ()
-        transcript = f"用户：{user_message.strip()}\nAssistant：{stripped_answer}"
+        transcript = (
+            f"用户：{user_message.strip()}\nAssistant：{stripped_answer}"
+            f"{self._memory_list_block()}"
+        )
         request = ProviderRequest(
             request_id=f"artp_{uuid.uuid4().hex}",
             model=self._model,
@@ -124,6 +146,7 @@ class ArtifactProposalService:
             if isinstance(reason, str) and reason.strip()
             else DEFAULT_PROPOSAL_REASON
         )
+        labels = self._assemble_labels(turn_id, payload.get("labels"))
 
         if (
             self._proposal_repository.find_pending_by_content(content.strip())
@@ -138,10 +161,68 @@ class ArtifactProposalService:
                 kind=kind,
                 content=content,
                 reason=normalized_reason,
+                source_labels=labels,
             )
         except RepositoryError:
             return ()
         return (proposal,)
+
+    def _assemble_labels(self, turn_id: str, model_labels) -> Tuple[str, ...]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for label in self._file_labels_for_turn(turn_id) + self._validated_memory_labels(
+            model_labels
+        ):
+            if label in seen:
+                continue
+            seen.add(label)
+            ordered.append(label)
+        return tuple(ordered[:MAX_SOURCE_LABELS])
+
+    def _file_labels_for_turn(self, turn_id: str) -> list[str]:
+        if self._runtime_repository is None:
+            return []
+        labels: list[str] = []
+        for call in self._runtime_repository.list_tool_calls(turn_id):
+            if call.tool_name != READ_TEXT_FILE_TOOL:
+                continue
+            if call.status != COMPLETED_STATUS:
+                continue
+            file_id = call.arguments.get("file_id")
+            if not isinstance(file_id, str) or not file_id.strip():
+                continue
+            labels.append(format_file_label(file_id.strip()))
+        return labels
+
+    def _validated_memory_labels(self, model_labels) -> list[str]:
+        if self._memory_repository is None or not isinstance(model_labels, list):
+            return []
+        labels: list[str] = []
+        for item in model_labels:
+            parsed = parse_source_label(item if isinstance(item, str) else "")
+            if parsed.kind != "memory":
+                continue
+            try:
+                record = self._memory_repository.get_memory(parsed.target_id)
+            except RepositoryError:
+                continue
+            if record.status is not MemoryStatus.ACTIVE:
+                continue
+            labels.append(format_memory_label(parsed.target_id))
+        return labels
+
+    def _memory_list_block(self) -> str:
+        if self._memory_repository is None:
+            return ""
+        lines: list[str] = []
+        for record in self._memory_repository.list_memories()[:MEMORY_LIST_CAP]:
+            snippet = record.content.strip().replace("\n", " ")[
+                :MEMORY_PROMPT_SNIPPET_CHARS
+            ]
+            lines.append(f"- memory:{record.id}: {snippet}")
+        if not lines:
+            return ""
+        return "\n\n当前可用的长期记忆清单：\n" + "\n".join(lines)
 
     @staticmethod
     def _parse_proposal(raw: str) -> Optional[dict]:

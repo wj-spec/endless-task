@@ -248,8 +248,29 @@ def artifact_json(record) -> dict[str, object]:
     }
 
 
-def artifact_version_json(version) -> dict[str, object]:
-    return {
+def source_reference_json(reference) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "label": reference.label,
+        "type": reference.type,
+        "resolved": reference.resolved,
+    }
+    if reference.file_id is not None:
+        payload["fileId"] = reference.file_id
+    if reference.file_name is not None:
+        payload["fileName"] = reference.file_name
+    if reference.line_range is not None:
+        payload["lineRange"] = [reference.line_range[0], reference.line_range[1]]
+    if reference.memory_id is not None:
+        payload["memoryId"] = reference.memory_id
+    if reference.memory_snippet is not None:
+        payload["memorySnippet"] = reference.memory_snippet
+    return payload
+
+
+def artifact_version_json(
+    version, *, source_references=None
+) -> dict[str, object]:
+    payload = {
         "id": version.id,
         "artifactId": version.artifact_id,
         "ordinal": version.ordinal,
@@ -261,6 +282,11 @@ def artifact_version_json(version) -> dict[str, object]:
         "note": version.note,
         "createdAt": version.created_at,
     }
+    if source_references is not None:
+        payload["sourceReferences"] = [
+            source_reference_json(item) for item in source_references
+        ]
+    return payload
 
 
 def artifact_proposal_json(proposal) -> dict[str, object]:
@@ -273,6 +299,7 @@ def artifact_proposal_json(proposal) -> dict[str, object]:
         "content": proposal.content,
         "reason": proposal.reason,
         "status": proposal.status.value,
+        "sourceLabels": list(proposal.source_labels),
         "createdAt": proposal.created_at,
         "updatedAt": proposal.updated_at,
         "resolvedArtifactId": proposal.resolved_artifact_id,

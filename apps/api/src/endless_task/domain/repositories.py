@@ -7,6 +7,7 @@ from .models import (
     ArtifactProposal,
     ArtifactProposalStatus,
     ArtifactRecord,
+    ToolCallJournal,
     ArtifactSnapshot,
     ArtifactVersionOperation,
     ArtifactVersionRecord,
@@ -270,6 +271,7 @@ class ArtifactProposalRepository(Protocol):
         kind: ArtifactKind,
         content: str,
         reason: str,
+        source_labels: Sequence[str] = (),
     ) -> ArtifactProposal:
         ...
 

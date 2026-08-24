@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Callable, Optional, Sequence, Tuple
 
 from endless_task.domain.models import (
@@ -19,6 +20,8 @@ from .sqlite_artifact_repository import (
     artifact_record_from_row,
     insert_artifact_with_first_version,
 )
+from endless_task.artifacts.source_labels import MAX_SOURCE_LABELS
+
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
 
 Clock = Callable[[], str]
@@ -53,6 +56,7 @@ class SqliteArtifactProposalRepository:
         kind: ArtifactKind,
         content: str,
         reason: str,
+        source_labels: Sequence[str] = (),
     ) -> ArtifactProposal:
         normalized_kind = self._validate_kind(kind)
         normalized_title = self._validate_text(
@@ -66,6 +70,7 @@ class SqliteArtifactProposalRepository:
         )
         if not conversation_id.strip() or not turn_id.strip():
             raise ValidationError("Proposal source conversation and turn are required.")
+        labels_json = self._validate_source_labels(source_labels)
 
         existing = self.find_pending_by_content(normalized_content)
         if existing is not None:
@@ -78,9 +83,9 @@ class SqliteArtifactProposalRepository:
                 """
                 INSERT INTO artifact_proposals (
                     id, conversation_id, turn_id, title, kind, content, reason,
-                    status, created_at, updated_at
+                    status, created_at, updated_at, source_labels
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     proposal_id,
@@ -93,6 +98,7 @@ class SqliteArtifactProposalRepository:
                     ArtifactProposalStatus.PENDING.value,
                     now,
                     now,
+                    labels_json,
                 ),
             )
         return self.get_proposal(proposal_id)
@@ -159,6 +165,11 @@ class SqliteArtifactProposalRepository:
                 source_conversation_id=proposal.conversation_id,
                 source_turn_id=proposal.turn_id,
                 timestamp=now,
+                source_labels_json=json.dumps(
+                    list(proposal.source_labels),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             )
             connection.execute(
                 """
@@ -201,6 +212,23 @@ class SqliteArtifactProposalRepository:
             )
         return self.get_proposal(proposal_id)
 
+    @staticmethod
+    def _validate_source_labels(source_labels: Sequence[str]) -> str:
+        try:
+            labels = list(source_labels)
+        except TypeError as error:
+            raise ValidationError("Proposal source labels must be a sequence.") from error
+        if len(labels) > MAX_SOURCE_LABELS:
+            raise ValidationError(
+                f"Proposal source labels exceed {MAX_SOURCE_LABELS} entries."
+            )
+        for label in labels:
+            if not isinstance(label, str) or not label.strip():
+                raise ValidationError(
+                    "Proposal source labels must be non-empty strings."
+                )
+        return json.dumps(labels, ensure_ascii=False, separators=(",", ":"))
+
     def _validate_kind(self, kind) -> ArtifactKind:
         if isinstance(kind, ArtifactKind):
             return kind
@@ -230,6 +258,7 @@ class SqliteArtifactProposalRepository:
             content=row["content"],
             reason=row["reason"],
             status=ArtifactProposalStatus(row["status"]),
+            source_labels=tuple(json.loads(row["source_labels"])),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             resolved_artifact_id=row["resolved_artifact_id"],

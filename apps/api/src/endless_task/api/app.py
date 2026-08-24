@@ -43,7 +43,10 @@ from endless_task.runtime import (
     UnconfiguredProvider,
 )
 from endless_task.runtime.provider import ModelProvider
-from endless_task.artifacts import ArtifactProposalService
+from endless_task.artifacts import (
+    ArtifactProposalService,
+    SourceReferenceResolver,
+)
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.storage import (
@@ -283,6 +286,7 @@ class AppContainer:
     artifact_repository: SqliteArtifactRepository
     artifact_proposal_repository: SqliteArtifactProposalRepository
     artifact_proposal_service: Optional[ArtifactProposalService]
+    reference_resolver: SourceReferenceResolver
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
     broker: RuntimeEventBroker
@@ -443,6 +447,10 @@ def _build_container(
     preferences_repository = SqlitePreferencesRepository(database)
     artifact_repository = SqliteArtifactRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
+    reference_resolver = SourceReferenceResolver(
+        file_repository=file_repository,
+        memory_repository=memory_repository,
+    )
     memory_proposal_service: Optional[MemoryProposalService] = None
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
@@ -488,6 +496,8 @@ def _build_container(
             provider=selected_provider,
             proposal_repository=artifact_proposal_repository,
             model=settings.model,
+            memory_repository=memory_repository,
+            runtime_repository=runtime_repository,
         )
 
     memory_conflict_service: Optional[MemoryConflictService] = None
@@ -550,6 +560,7 @@ def _build_container(
         artifact_repository=artifact_repository,
         artifact_proposal_repository=artifact_proposal_repository,
         artifact_proposal_service=artifact_proposal_service,
+        reference_resolver=reference_resolver,
         memory_proposal_service=memory_proposal_service,
         memory_conflict_service=memory_conflict_service,
         broker=broker,
@@ -853,15 +864,30 @@ def create_app(
     async def get_artifact(artifact_id: str) -> dict[str, object]:
         artifact = container.artifact_repository.get_artifact(artifact_id)
         version = container.artifact_repository.get_current_version(artifact_id)
+        references = container.reference_resolver.resolve(
+            version.source_labels,
+            conversation_id=version.source_conversation_id,
+        )
         return {
             "artifact": artifact_json(artifact),
-            "currentVersion": artifact_version_json(version),
+            "currentVersion": artifact_version_json(
+                version, source_references=references
+            ),
         }
 
     @app.get("/artifacts/{artifact_id}/versions")
     async def list_artifact_versions(artifact_id: str) -> dict[str, object]:
         versions = container.artifact_repository.list_versions(artifact_id)
-        return {"items": [artifact_version_json(item) for item in versions]}
+        items = []
+        for version in versions:
+            references = container.reference_resolver.resolve(
+                version.source_labels,
+                conversation_id=version.source_conversation_id,
+            )
+            items.append(
+                artifact_version_json(version, source_references=references)
+            )
+        return {"items": items}
 
     @app.post("/artifacts/{artifact_id}/rollback")
     async def rollback_artifact(

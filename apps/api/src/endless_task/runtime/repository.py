@@ -137,3 +137,7 @@ class RuntimeRepository(Protocol):
 
     def recover_interrupted(self) -> Sequence[RuntimeEvent]:
         ...
+
+    def list_tool_calls(self, turn_id: str) -> tuple:
+        ...
+
