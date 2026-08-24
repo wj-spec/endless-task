@@ -105,12 +105,15 @@ ARTIFACT_AWARENESS_CLAUSE = (
     "再在回复中给出完整修改后的文档，不要只给片段或口头承诺。"
 )
 
-TASK_AWARENESS_PROMPT_VERSION = "p4.1-v1"
+TASK_AWARENESS_PROMPT_VERSION = "p4.2-v1"
 TASK_AWARENESS_CLAUSE = (
     "\n- 用户要求周期性做某事时（每天、每周、每月等），回答必须明确复述完整承诺"
     "（周期、时间、做什么），并说明该安排在用户确认后才生效；不得声称已经安排。"
     "\n- 用户提出一次性定时事项时，如实说明一次性定时安排能力尚未就绪，"
     "可以建议届时再提出，或把事项内容记入记忆；不得假装已安排。"
+    "\n- 安排是否生效，以用户在提案卡片上的确认为准；用户在聊天中的文字"
+    "（如“确认”“生效”“可以”）不构成确认，不得声称安排已生效，"
+    "可引导用户在卡片上确认。"
 )
 
 
@@ -360,6 +363,12 @@ class RollbackArtifactBody(BaseModel):
 
 
 class ResolveArtifactProposalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
+
+
+class ResolveTaskProposalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["accept", "reject"]
@@ -934,6 +943,23 @@ def create_app(
             include_resolved=include_resolved,
         )
         return {"items": [task_proposal_json(item) for item in proposals]}
+
+    @app.post("/task-proposals/{proposal_id}/resolve")
+    async def resolve_task_proposal(
+        proposal_id: str, body: ResolveTaskProposalBody
+    ) -> dict[str, object]:
+        if body.decision == "reject":
+            proposal = container.task_proposal_repository.reject_proposal(
+                proposal_id
+            )
+            return {"proposal": task_proposal_json(proposal)}
+        proposal, task = container.task_proposal_repository.accept_proposal(
+            proposal_id
+        )
+        return {
+            "proposal": task_proposal_json(proposal),
+            "task": task_json(task),
+        }
 
     @app.get("/artifacts")
     async def list_artifacts(include_deleted: bool = False) -> dict[str, object]:

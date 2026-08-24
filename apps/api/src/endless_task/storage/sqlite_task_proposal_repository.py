@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Tuple, Union
 
-from endless_task.domain.models import TaskProposal, TaskProposalStatus
+from endless_task.domain.models import (
+    TaskProposal,
+    TaskProposalStatus,
+    TaskRecord,
+    TaskStatus,
+)
 from endless_task.domain.repositories import (
+    InvalidStateError,
     NotFoundError,
     ValidationError,
 )
@@ -18,6 +24,7 @@ from endless_task.domain.task_schedule import (
 
 from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
+from .sqlite_task_repository import task_record_from_row
 
 Clock = Callable[[], str]
 
@@ -163,6 +170,104 @@ class SqliteTaskProposalRepository:
                 (TaskProposalStatus.PENDING.value, normalized, schedule_json),
             ).fetchone()
         return task_proposal_from_row(row) if row is not None else None
+
+    def list_pending(self, *, limit: int) -> Sequence[TaskProposal]:
+        query = (
+            "SELECT * FROM task_proposals WHERE status = ? "
+            "ORDER BY created_at, id LIMIT ?"
+        )
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                query, (TaskProposalStatus.PENDING.value, limit)
+            ).fetchall()
+        return tuple(task_proposal_from_row(row) for row in rows)
+
+    def accept_proposal(
+        self, proposal_id: str
+    ) -> Tuple[TaskProposal, TaskRecord]:
+        now = self._clock()
+        task_id = self._id_factory("task")
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Task proposal not found: {proposal_id}")
+            proposal = task_proposal_from_row(row)
+            if proposal.status is not TaskProposalStatus.PENDING:
+                raise InvalidStateError(
+                    "Only pending task proposals can be resolved."
+                )
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    id, title, commitment, schedule, status,
+                    source_conversation_id, source_turn_id, source_proposal_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    proposal.title,
+                    proposal.commitment,
+                    row["schedule"],
+                    TaskStatus.ACTIVE.value,
+                    proposal.conversation_id,
+                    proposal.turn_id,
+                    proposal.id,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE task_proposals
+                SET status = ?, resolved_task_id = ?, resolved_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    TaskProposalStatus.ACCEPTED.value,
+                    task_id,
+                    now,
+                    now,
+                    proposal_id,
+                ),
+            )
+        task = self._get_task(task_id)
+        return self.get_proposal(proposal_id), task
+
+    def reject_proposal(self, proposal_id: str) -> TaskProposal:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Task proposal not found: {proposal_id}")
+            proposal = task_proposal_from_row(row)
+            if proposal.status is not TaskProposalStatus.PENDING:
+                raise InvalidStateError(
+                    "Only pending task proposals can be resolved."
+                )
+            connection.execute(
+                """
+                UPDATE task_proposals
+                SET status = ?, resolved_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (TaskProposalStatus.REJECTED.value, now, now, proposal_id),
+            )
+        return self.get_proposal(proposal_id)
+
+    def _get_task(self, task_id: str) -> TaskRecord:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Task not found: {task_id}")
+        return task_record_from_row(row)
 
     def _validate_text(self, value: str, limit: int, *, field: str) -> str:
         if not isinstance(value, str):

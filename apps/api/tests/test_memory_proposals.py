@@ -240,6 +240,55 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(created, ())
 
+    async def test_extraction_request_includes_awareness_list(self) -> None:
+        self.proposals.create_proposal(
+            conversation_id="conv_1",
+            turn_id="turn_0",
+            kind=MemoryKind.PREFERENCE,
+            content="用户偏好本地优先的方案。",
+            reason="明确表达",
+        )
+        self.memories.create_memory(
+            kind=MemoryKind.FACT,
+            content="用户在上海工作。",
+            source_conversation_id="conv_1",
+            source_turn_id="turn_0",
+        )
+        provider = TextProvider([json.dumps({"proposals": []})])
+        service = self._service(provider)
+        await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            user_message="随便聊聊。",
+            assistant_message="好的。",
+        )
+        transcript = provider.requests[0].messages[1].content
+        self.assertIn("语义相同的不要再提案", transcript)
+        self.assertIn("待确认：用户偏好本地优先的方案。", transcript)
+        self.assertIn("已记住：用户在上海工作。", transcript)
+
+        empty_database = Database(
+            Path(self._temporary_directory.name) / "empty.db"
+        )
+        empty_database.initialize()
+        empty_provider = TextProvider([json.dumps({"proposals": []})])
+        empty_service = MemoryProposalService(
+            provider=empty_provider,
+            proposal_repository=SqliteMemoryProposalRepository(empty_database),
+            memory_repository=SqliteMemoryRepository(empty_database),
+            model="test-model",
+        )
+        await empty_service.generate_for_turn(
+            conversation_id="conv_9",
+            turn_id="turn_9",
+            user_message="随便聊聊。",
+            assistant_message="好的。",
+        )
+        self.assertNotIn(
+            "语义相同的不要再提案",
+            empty_provider.requests[0].messages[1].content,
+        )
+
 
 class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:

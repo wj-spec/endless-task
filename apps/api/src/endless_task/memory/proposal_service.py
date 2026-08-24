@@ -30,6 +30,10 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "没有合适内容时输出 {\"proposals\":[]}。"
 )
 
+PENDING_LIST_CAP = 10
+ACTIVE_LIST_CAP = 20
+LIST_SNIPPET_CHARS = 200
+
 
 class MemoryProposalService:
     """Generates pending memory proposals from completed turns.
@@ -89,6 +93,7 @@ class MemoryProposalService:
     ) -> Tuple[MemoryProposal, ...]:
         transcript = (
             f"用户：{user_message.strip()}\nAssistant：{assistant_message.strip()}"
+            f"{self._awareness_block()}"
         )
         request = ProviderRequest(
             request_id=f"memp_{uuid.uuid4().hex}",
@@ -130,6 +135,27 @@ class MemoryProposalService:
                 continue
             created.append(proposal)
         return tuple(created)
+
+    def _awareness_block(self) -> str:
+        lines: list[str] = []
+        for proposal in self._proposal_repository.list_pending(
+            limit=PENDING_LIST_CAP
+        ):
+            snippet = proposal.content.strip().replace("\n", " ")[
+                :LIST_SNIPPET_CHARS
+            ]
+            lines.append(f"- 待确认：{snippet}")
+        for record in self._memory_repository.list_memories()[:ACTIVE_LIST_CAP]:
+            snippet = record.content.strip().replace("\n", " ")[
+                :LIST_SNIPPET_CHARS
+            ]
+            lines.append(f"- 已记住：{snippet}")
+        if not lines:
+            return ""
+        return (
+            "\n以下是待确认或已记住的内容，语义相同的不要再提案。\n"
+            + "\n".join(lines)
+        )
 
     def _parse_proposals(self, raw: str) -> Sequence[dict]:
         start = raw.find("{")

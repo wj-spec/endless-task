@@ -125,6 +125,17 @@ class SqliteMemoryProposalRepository:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def list_pending(self, *, limit: int) -> Sequence[MemoryProposal]:
+        query = (
+            "SELECT * FROM memory_proposals WHERE status = ? "
+            "ORDER BY created_at, id LIMIT ?"
+        )
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                query, (MemoryProposalStatus.PENDING.value, limit)
+            ).fetchall()
+        return tuple(self._from_row(row) for row in rows)
+
     def accept_proposal(
         self, proposal_id: str
     ) -> tuple[MemoryProposal, MemoryRecord]:

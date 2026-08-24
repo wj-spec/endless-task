@@ -334,6 +334,60 @@ class TaskProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(created))
         self.assertEqual("用户要求周期性执行", created[0].reason)
 
+    async def test_extraction_request_includes_awareness_list(self) -> None:
+        self.tasks.create_task(
+            title="每周进展总结",
+            commitment="每周一 09:00 总结上周的项目进展",
+            schedule=WEEKLY_SCHEDULE,
+            source_conversation_id="conv_1",
+            source_turn_id="turn_0",
+        )
+        self.proposals.create_proposal(
+            conversation_id="conv_2",
+            turn_id="turn_0",
+            title="每日天气",
+            commitment="每天 08:00 播报天气",
+            schedule={"kind": "daily", "time": "08:00"},
+            reason="用户要求周期性执行",
+        )
+        provider = TextProvider([json.dumps({"task": None})])
+        service = self._service(provider)
+        await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            user_message=PERIODIC_USER,
+            assistant_message=PERIODIC_ANSWER,
+        )
+        transcript = provider.requests[0].messages[1].content
+        self.assertIn("语义相同的不要再提案", transcript)
+        self.assertIn(
+            "已安排：每周一 09:00 总结上周的项目进展（每周一 09:00）",
+            transcript,
+        )
+        self.assertIn("待确认：每天 08:00 播报天气", transcript)
+
+        empty_database = Database(
+            Path(self._temporary_directory.name) / "empty.db"
+        )
+        empty_database.initialize()
+        empty_provider = TextProvider([json.dumps({"task": None})])
+        empty_service = TaskProposalService(
+            provider=empty_provider,
+            proposal_repository=SqliteTaskProposalRepository(empty_database),
+            model="test-model",
+            task_repository=SqliteTaskRepository(empty_database),
+        )
+        await empty_service.generate_for_turn(
+            conversation_id="conv_9",
+            turn_id="turn_9",
+            user_message=PERIODIC_USER,
+            assistant_message=PERIODIC_ANSWER,
+        )
+        self.assertNotIn(
+            "语义相同的不要再提案",
+            empty_provider.requests[0].messages[1].content,
+        )
+
 
 class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:

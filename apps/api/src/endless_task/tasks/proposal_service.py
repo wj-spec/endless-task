@@ -19,6 +19,7 @@ from endless_task.domain.task_schedule import (
     parse_task_schedule,
     serialize_task_schedule,
 )
+from endless_task.domain.task_schedule import describe_task_schedule
 from endless_task.runtime import (
     CancellationToken,
     ModelProvider,
@@ -49,6 +50,10 @@ _EXTRACTION_SYSTEM_PROMPT = (
 )
 
 DEFAULT_PROPOSAL_REASON = "用户要求周期性执行"
+
+TASK_LIST_CAP = 10
+PENDING_LIST_CAP = 10
+LIST_SNIPPET_CHARS = 200
 
 
 class TaskProposalService:
@@ -113,6 +118,7 @@ class TaskProposalService:
             return ()
         transcript = (
             f"用户：{user_message.strip()}\nAssistant：{stripped_answer}"
+            f"{self._awareness_block()}"
         )
         request = ProviderRequest(
             request_id=f"taskp_{uuid.uuid4().hex}",
@@ -193,6 +199,32 @@ class TaskProposalService:
             if serialize_task_schedule(record.schedule) == target_schedule:
                 return True
         return False
+
+    def _awareness_block(self) -> str:
+        lines: list[str] = []
+        if self._task_repository is not None:
+            for record in self._task_repository.list_tasks()[:TASK_LIST_CAP]:
+                snippet = record.commitment.strip().replace("\n", " ")[
+                    :LIST_SNIPPET_CHARS
+                ]
+                lines.append(
+                    f"- 已安排：{snippet}"
+                    f"（{describe_task_schedule(record.schedule)}）"
+                )
+        for proposal in self._proposal_repository.list_pending(
+            limit=PENDING_LIST_CAP
+        ):
+            snippet = proposal.commitment.strip().replace("\n", " ")[
+                :LIST_SNIPPET_CHARS
+            ]
+            lines.append(f"- 待确认：{snippet}")
+        if not lines:
+            return ""
+        return (
+            "\n以下是待确认或已安排的承诺，语义相同的不要再提案；"
+            "若 Assistant 回答中说明该安排已经生效或已记录，输出 null。\n"
+            + "\n".join(lines)
+        )
 
     @staticmethod
     def _parse_task(raw: str) -> Optional[dict]:

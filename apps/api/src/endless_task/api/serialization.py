@@ -15,6 +15,7 @@ from endless_task.domain.models import (
 )
 from endless_task.files import UploadedTextFile
 from endless_task.runtime.events import RuntimeEvent
+from endless_task.domain.task_schedule import describe_task_schedule
 from endless_task.tooling import ApprovalRequest
 
 
@@ -253,6 +254,7 @@ def task_json(record) -> dict[str, object]:
         "title": record.title,
         "commitment": record.commitment,
         "schedule": task_schedule_json(record.schedule),
+        "scheduleDescription": describe_task_schedule(record.schedule),
         "status": record.status.value,
         "sourceConversationId": record.source_conversation_id,
         "sourceTurnId": record.source_turn_id,
@@ -271,6 +273,7 @@ def task_proposal_json(record) -> dict[str, object]:
         "title": record.title,
         "commitment": record.commitment,
         "schedule": task_schedule_json(record.schedule),
+        "scheduleDescription": describe_task_schedule(record.schedule),
         "reason": record.reason,
         "status": record.status.value,
         "createdAt": record.created_at,
