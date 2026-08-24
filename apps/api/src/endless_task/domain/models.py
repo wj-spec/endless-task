@@ -301,6 +301,29 @@ class TaskRecord:
     cancelled_at: Optional[str] = None
 
 
+class TaskProposalStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class TaskProposal:
+    id: str
+    conversation_id: str
+    turn_id: str
+    title: str
+    commitment: str
+    schedule: "TaskSchedule"
+    reason: str
+    status: TaskProposalStatus
+    created_at: str
+    updated_at: str
+    resolved_task_id: Optional[str] = None
+    resolved_at: Optional[str] = None
+
+
 @dataclass(frozen=True)
 class ToolCallJournal:
     id: str

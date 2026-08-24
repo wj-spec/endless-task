@@ -13,6 +13,7 @@ from endless_task.domain.repositories import (
     InvalidStateError,
     MemoryRepository,
 )
+from endless_task.domain.task_schedule import describe_task_schedule
 from endless_task.files import TextFileRepository
 
 from .provider import ProviderMessage
@@ -203,6 +204,8 @@ class P0ContextBuilder:
         max_artifact_proposals_in_context: int = 5,
         artifact_repository=None,
         max_artifacts_in_context: int = 10,
+        task_repository=None,
+        max_tasks_in_context: int = 10,
         token_estimator: Optional[TokenEstimator] = None,
         summarizer: Optional[ExtractiveConversationSummarizer] = None,
     ) -> None:
@@ -216,6 +219,8 @@ class P0ContextBuilder:
             raise ValueError("Artifact proposal injection limit must be positive")
         if max_artifacts_in_context <= 0:
             raise ValueError("Artifact injection limit must be positive")
+        if max_tasks_in_context <= 0:
+            raise ValueError("Task injection limit must be positive")
         self._repository = repository
         self._system_prompt = system_prompt
         self._system_prompt_version = system_prompt_version
@@ -230,6 +235,8 @@ class P0ContextBuilder:
         self._max_artifact_proposals_in_context = max_artifact_proposals_in_context
         self._artifact_repository = artifact_repository
         self._max_artifacts_in_context = max_artifacts_in_context
+        self._task_repository = task_repository
+        self._max_tasks_in_context = max_tasks_in_context
         self._token_estimator = token_estimator or ApproximateTokenEstimator()
         self._summarizer = summarizer or ExtractiveConversationSummarizer()
 
@@ -366,6 +373,9 @@ class P0ContextBuilder:
         artifact_list_block = self._artifact_list_block()
         if artifact_list_block:
             content = f"{content}\n\n{artifact_list_block}"
+        task_list_block = self._task_list_block()
+        if task_list_block:
+            content = f"{content}\n\n{task_list_block}"
         return content
 
     def _memory_block(self) -> str:
@@ -424,6 +434,25 @@ class P0ContextBuilder:
             "以下是本产品当前已保存的 Artifact（用户保留的独立文档结果）。"
             "如果用户要求修改其中某一份，先调用 read_artifact 读取当前内容，"
             "再在回复中给出完整修改后的文档。\n" + "\n".join(lines)
+        )
+
+    def _task_list_block(self) -> str:
+        if self._task_repository is None:
+            return ""
+        records = self._task_repository.list_tasks()[
+            : self._max_tasks_in_context
+        ]
+        if not records:
+            return ""
+        lines = [
+            f"- task:{record.id}: 《{record.title}》"
+            f" {describe_task_schedule(record.schedule)}"
+            for record in records
+        ]
+        return (
+            "以下是用户已确认的安排，会按周期自动执行。"
+            "不要对相同内容重复提出提案，也不要声称可以修改或取消它们。\n"
+            + "\n".join(lines)
         )
 
     def _canonical_history(

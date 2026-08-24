@@ -11,6 +11,7 @@ from .sqlite_preferences_repository import SqlitePreferencesRepository
 from .sqlite_memory_proposal_repository import SqliteMemoryProposalRepository
 from .sqlite_runtime_repository import SqliteRuntimeRepository
 from .sqlite_task_repository import SqliteTaskRepository
+from .sqlite_task_proposal_repository import SqliteTaskProposalRepository
 
 __all__ = [
     "Database",

@@ -263,6 +263,23 @@ def task_json(record) -> dict[str, object]:
     }
 
 
+def task_proposal_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "conversationId": record.conversation_id,
+        "turnId": record.turn_id,
+        "title": record.title,
+        "commitment": record.commitment,
+        "schedule": task_schedule_json(record.schedule),
+        "reason": record.reason,
+        "status": record.status.value,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+        "resolvedTaskId": record.resolved_task_id,
+        "resolvedAt": record.resolved_at,
+    }
+
+
 def artifact_json(record) -> dict[str, object]:
     return {
         "id": record.id,

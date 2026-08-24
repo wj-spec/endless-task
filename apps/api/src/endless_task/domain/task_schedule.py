@@ -98,3 +98,23 @@ def parse_task_schedule(raw: Union[str, dict, TaskSchedule]) -> TaskSchedule:
             raise ValidationError("monthly 周期的 day 必须是 1–28。")
 
     return TaskSchedule(kind=kind, time=time_raw, weekday=weekday, day=day)
+
+
+_WEEKDAY_NAMES = {
+    1: "周一",
+    2: "周二",
+    3: "周三",
+    4: "周四",
+    5: "周五",
+    6: "周六",
+    7: "周日",
+}
+
+
+def describe_task_schedule(schedule: TaskSchedule) -> str:
+    if schedule.kind is TaskScheduleKind.DAILY:
+        return f"每天 {schedule.time}"
+    if schedule.kind is TaskScheduleKind.WEEKLY:
+        weekday = _WEEKDAY_NAMES.get(schedule.weekday or 1, "周一")
+        return f"每{weekday} {schedule.time}"
+    return f"每月 {schedule.day or 1} 日 {schedule.time}"

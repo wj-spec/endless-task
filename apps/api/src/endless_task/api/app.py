@@ -56,6 +56,7 @@ from endless_task.artifacts.export_service import (
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
+from endless_task.tasks import TaskProposalService
 from endless_task.storage import (
     Database,
     SqliteArtifactProposalRepository,
@@ -68,6 +69,7 @@ from endless_task.storage import (
     SqliteTextFileRepository,
     SqliteRuntimeRepository,
     SqliteTaskRepository,
+    SqliteTaskProposalRepository,
 )
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
@@ -86,6 +88,7 @@ from .serialization import (
     turn_command_json,
     uploaded_text_file_json,
     task_json,
+    task_proposal_json,
 )
 
 
@@ -100,6 +103,14 @@ ARTIFACT_AWARENESS_CLAUSE = (
     "不要用追问口吻推销，普通问答、闲聊或简短回答一律不要提及文档保留。"
     "\n- 用户要求修改已保存的文档结果时，先用 read_artifact 读取当前内容，"
     "再在回复中给出完整修改后的文档，不要只给片段或口头承诺。"
+)
+
+TASK_AWARENESS_PROMPT_VERSION = "p4.1-v1"
+TASK_AWARENESS_CLAUSE = (
+    "\n- 用户要求周期性做某事时（每天、每周、每月等），回答必须明确复述完整承诺"
+    "（周期、时间、做什么），并说明该安排在用户确认后才生效；不得声称已经安排。"
+    "\n- 用户提出一次性定时事项时，如实说明一次性定时安排能力尚未就绪，"
+    "可以建议届时再提出，或把事项内容记入记忆；不得假装已安排。"
 )
 
 
@@ -177,6 +188,7 @@ class AppSettings:
     heartbeat_seconds: float = 15.0
     memory_proposals_enabled: bool = True
     artifact_proposals_enabled: bool = True
+    task_proposals_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -231,6 +243,9 @@ class AppSettings:
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
+            ),
+            task_proposals_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_TASK_PROPOSALS", "1")
             ),
             config_version=int(env.get("ENDLESS_TASK_CONFIG_VERSION", "1")),
             provider_name=provider_name,
@@ -298,6 +313,8 @@ class AppContainer:
     artifact_proposal_repository: SqliteArtifactProposalRepository
     artifact_proposal_service: Optional[ArtifactProposalService]
     task_repository: SqliteTaskRepository
+    task_proposal_repository: SqliteTaskProposalRepository
+    task_proposal_service: Optional[TaskProposalService]
     reference_resolver: SourceReferenceResolver
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
@@ -460,6 +477,7 @@ def _build_container(
     artifact_repository = SqliteArtifactRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
+    task_proposal_repository = SqliteTaskProposalRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -476,6 +494,9 @@ def _build_container(
     if settings.artifact_proposals_enabled:
         system_prompt = system_prompt + ARTIFACT_AWARENESS_CLAUSE
         system_prompt_version = ARTIFACT_AWARENESS_PROMPT_VERSION
+    if settings.task_proposals_enabled:
+        system_prompt = system_prompt + TASK_AWARENESS_CLAUSE
+        system_prompt_version = TASK_AWARENESS_PROMPT_VERSION
     runtime = AssistantRuntime(
         chat_repository=chat_repository,
         runtime_repository=runtime_repository,
@@ -490,6 +511,7 @@ def _build_container(
             memory_repository=memory_repository,
             artifact_proposal_repository=artifact_proposal_repository,
             artifact_repository=artifact_repository,
+            task_repository=task_repository,
         ),
         provider=selected_provider,
         configuration=RuntimeConfiguration(
@@ -516,6 +538,15 @@ def _build_container(
             artifact_repository=artifact_repository,
         )
 
+    task_proposal_service: Optional[TaskProposalService] = None
+    if settings.task_proposals_enabled:
+        task_proposal_service = TaskProposalService(
+            provider=selected_provider,
+            proposal_repository=task_proposal_repository,
+            model=settings.model,
+            task_repository=task_repository,
+        )
+
     memory_conflict_service: Optional[MemoryConflictService] = None
     on_turn_completed = None
     if settings.memory_proposals_enabled:
@@ -531,7 +562,11 @@ def _build_container(
             model=settings.model,
         )
 
-    if settings.memory_proposals_enabled or settings.artifact_proposals_enabled:
+    if (
+        settings.memory_proposals_enabled
+        or settings.artifact_proposals_enabled
+        or settings.task_proposals_enabled
+    ):
 
         async def on_turn_completed(snapshot) -> None:
             active = next(
@@ -558,6 +593,13 @@ def _build_container(
                     user_message=snapshot.user_message.content,
                     assistant_message=active.assistant_message.content,
                 )
+            if task_proposal_service is not None:
+                await task_proposal_service.generate_for_turn(
+                    conversation_id=snapshot.turn.conversation_id,
+                    turn_id=snapshot.turn.id,
+                    user_message=snapshot.user_message.content,
+                    assistant_message=active.assistant_message.content,
+                )
 
     controller = TurnController(
         chat_repository=chat_repository,
@@ -576,6 +618,8 @@ def _build_container(
         artifact_repository=artifact_repository,
         artifact_proposal_repository=artifact_proposal_repository,
         task_repository=task_repository,
+        task_proposal_repository=task_proposal_repository,
+        task_proposal_service=task_proposal_service,
         artifact_proposal_service=artifact_proposal_service,
         reference_resolver=reference_resolver,
         memory_proposal_service=memory_proposal_service,
@@ -880,6 +924,16 @@ def create_app(
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> dict[str, object]:
         return {"task": task_json(container.task_repository.get_task(task_id))}
+
+    @app.get("/conversations/{conversation_id}/task-proposals")
+    async def list_task_proposals(
+        conversation_id: str, include_resolved: bool = False
+    ) -> dict[str, object]:
+        proposals = container.task_proposal_repository.list_proposals(
+            conversation_id=conversation_id,
+            include_resolved=include_resolved,
+        )
+        return {"items": [task_proposal_json(item) for item in proposals]}
 
     @app.get("/artifacts")
     async def list_artifacts(include_deleted: bool = False) -> dict[str, object]:
