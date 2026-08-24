@@ -4,6 +4,7 @@ import type {
   ArtifactDetailSnapshot,
   ArtifactProposal,
   ArtifactRecordSummary,
+  ArtifactVersionRecord,
   Conversation,
   ConversationSnapshot,
   ConversationStatus,
@@ -176,7 +177,65 @@ export const chatApi = {
     request<WorkspaceSnapshot>(`/conversations/${conversationId}/workspace`),
   getArtifact: (artifactId: string) =>
     request<ArtifactDetailSnapshot>(`/artifacts/${artifactId}`),
+  listArtifactVersions: async (artifactId: string) => {
+    const response = await request<{ items: ArtifactVersionRecord[] }>(
+      `/artifacts/${artifactId}/versions`,
+    );
+    return response.items;
+  },
+  rollbackArtifact: (
+    artifactId: string,
+    body: {
+      targetOrdinal: number;
+      sourceConversationId: string;
+      sourceTurnId: string;
+      note?: string;
+    },
+  ) =>
+    request<{ artifact: ArtifactRecordSummary; currentVersion: ArtifactVersionRecord }>(
+      `/artifacts/${artifactId}/rollback`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 };
+
+export type ExportFormat = "markdown" | "html" | "pdf";
+
+function parseContentDispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch {
+      return null;
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain?.[1]?.trim() ?? null;
+}
+
+export async function downloadArtifactExport(
+  artifactId: string,
+  format: ExportFormat,
+): Promise<void> {
+  const response = await fetch(
+    url(`/artifacts/${artifactId}/export?format=${format}`),
+    { headers: { Accept: "*/*" } },
+  );
+  if (!response.ok) throw await responseError(response);
+  const blob = await response.blob();
+  const filename =
+    parseContentDispositionFilename(response.headers.get("Content-Disposition")) ??
+    `artifact-${artifactId}`;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
 
 export async function streamTurnEvents(options: {
   turnId: string;

@@ -109,11 +109,14 @@ export function App() {
       />
       {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
         <WorkspacePanel
+          conversationId={workspace.workspace!.conversationId}
           drawerOpen={workspaceDrawerOpen}
+          latestTurnId={latestTurn?.turn.id ?? null}
           onCollapse={() => {
             setWorkspaceCollapsed(true);
             setWorkspaceDrawerOpen(false);
           }}
+          onWorkspaceRefresh={() => void workspace.refresh()}
           workspace={workspace.workspace!}
         />
       ) : null}

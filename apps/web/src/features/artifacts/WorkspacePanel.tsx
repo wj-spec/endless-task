@@ -5,13 +5,23 @@ import { formatRelativeTime } from "./time";
 
 type WorkspacePanelProps = {
   workspace: WorkspaceSnapshot;
+  conversationId: string;
+  latestTurnId: string | null;
   drawerOpen: boolean;
   onCollapse: () => void;
+  onWorkspaceRefresh: () => void;
 };
 
 const kindLabel = { markdown: "文档", text: "纯文本" } as const;
 
-export function WorkspacePanel({ workspace, drawerOpen, onCollapse }: WorkspacePanelProps) {
+export function WorkspacePanel({
+  workspace,
+  conversationId,
+  latestTurnId,
+  drawerOpen,
+  onCollapse,
+  onWorkspaceRefresh,
+}: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -46,7 +56,10 @@ export function WorkspacePanel({ workspace, drawerOpen, onCollapse }: WorkspaceP
       {selectedArtifactId ? (
         <ArtifactDetail
           artifactId={selectedArtifactId}
+          conversationId={conversationId}
+          latestTurnId={latestTurnId}
           onBack={() => setSelectedArtifactId(null)}
+          onChanged={onWorkspaceRefresh}
         />
       ) : (
         <ul className="workspace-list">
