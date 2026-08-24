@@ -4,6 +4,7 @@ import type {
   ConversationSnapshot,
   HealthSnapshot,
   LiveTurn,
+  PermissionMode,
   ResponseVariantSnapshot,
 } from "./apiTypes";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
@@ -27,6 +28,8 @@ type ChatWorkSurfaceProps = {
   onDraftChange: (value: string) => void;
   onMenu: () => void;
   onOpenMemory: () => void;
+  onOpenSettings: () => void;
+  permissionMode: PermissionMode | null;
   onRegenerate: (turnId: string) => void;
   onResolveApproval: (
     turnId: string,
@@ -47,6 +50,12 @@ type ChatWorkSurfaceProps = {
   onResolveArtifactProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
 };
+
+const permissionShortLabel = {
+  confirm_every_time: "逐项确认",
+  trust_local_writes: "本地写已信任",
+  trust_all: "全部已信任",
+} as const;
 
 const statusText = {
   created: "准备回答",
@@ -79,6 +88,8 @@ export function ChatWorkSurface({
   onDraftChange,
   onMenu,
   onOpenMemory,
+  onOpenSettings,
+  permissionMode,
   onRegenerate,
   onResolveApproval,
   onRemoveFile,
@@ -153,8 +164,16 @@ export function ChatWorkSurface({
         </div>
         <div className="surface-header-side">
           <div className="surface-global-actions">
+            {permissionMode ? (
+              <span className="permission-chip" title="当前操作权限档位">
+                {permissionShortLabel[permissionMode]}
+              </span>
+            ) : null}
             <button onClick={onOpenMemory} type="button">
               记忆
+            </button>
+            <button onClick={onOpenSettings} type="button">
+              设置
             </button>
           </div>
           {conversation ? (

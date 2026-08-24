@@ -1698,3 +1698,90 @@ textarea:focus-visible {
   font-size: 12px;
   line-height: 1.6;
 }
+
+.permission-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-section-title {
+  margin: 0 0 4px;
+  color: #30332f;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-section-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.permission-option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: #fdfdfb;
+  cursor: pointer;
+}
+
+.permission-option + .permission-option {
+  margin-top: 8px;
+}
+
+.permission-option.is-selected {
+  border-left: 2px solid #9cb3a9;
+  background: var(--accent-soft);
+}
+
+.permission-option input {
+  margin-top: 3px;
+}
+
+.permission-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.permission-option-text strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.permission-option-text span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.permission-confirm {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid #c9a86c;
+  background: #fbf8f1;
+}
+
+.permission-confirm p {
+  margin: 0;
+  color: #6d5a33;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.permission-acknowledge {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 12px;
+}

@@ -301,3 +301,10 @@ export type MemoryRecord = {
   expiredReason: string | null;
   supersededBy: string | null;
 };
+
+export type PermissionMode = "confirm_every_time" | "trust_local_writes" | "trust_all";
+
+export type PermissionSettings = {
+  mode: PermissionMode;
+  updatedAt: string;
+};

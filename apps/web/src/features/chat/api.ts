@@ -11,6 +11,7 @@ import type {
   HealthSnapshot,
   MemoryProposal,
   MemoryRecord,
+  PermissionSettings,
   RuntimeEvent,
   TurnCommandResponse,
   UploadedTextFile,
@@ -173,6 +174,13 @@ export const chatApi = {
     request<{ proposal: MemoryProposal }>(`/memory-proposals/${proposalId}/resolve`, {
       method: "POST",
       body: JSON.stringify({ decision }),
+    }),
+  getPermissionSettings: () =>
+    request<PermissionSettings>("/settings/permissions"),
+  setPermissionSettings: (mode: string, acknowledge: boolean) =>
+    request<PermissionSettings>("/settings/permissions", {
+      method: "POST",
+      body: JSON.stringify({ mode, acknowledge }),
     }),
   getWorkspace: (conversationId: string) =>
     request<WorkspaceSnapshot>(`/conversations/${conversationId}/workspace`),

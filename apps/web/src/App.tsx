@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
+import { chatApi } from "./features/chat/api";
+import type { PermissionMode } from "./features/chat/apiTypes";
 import { MemoryManagement } from "./features/memory/MemoryManagement";
+import { SettingsOverlay } from "./features/settings/SettingsOverlay";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
 import { SessionRail } from "./features/chat/SessionRail";
@@ -37,6 +40,15 @@ export function App() {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
+
+  useEffect(() => {
+    chatApi
+      .getPermissionSettings()
+      .then((settings) => setPermissionMode(settings.mode))
+      .catch(() => setPermissionMode(null));
+  }, []);
 
   useEffect(() => {
     setWorkspaceCollapsed(false);
@@ -84,6 +96,8 @@ export function App() {
         onDraftChange={chat.setDraft}
         onMenu={() => setRailOpen(true)}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        permissionMode={permissionMode}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
         onResolveApproval={(turnId, approvalId, decision) =>
           void chat.resolveApproval(turnId, approvalId, decision)
@@ -159,6 +173,12 @@ export function App() {
       ) : null}
       {memoryOpen ? (
         <MemoryManagement onClose={() => setMemoryOpen(false)} />
+      ) : null}
+      {settingsOpen ? (
+        <SettingsOverlay
+          onClose={() => setSettingsOpen(false)}
+          onModeChanged={setPermissionMode}
+        />
       ) : null}
     </div>
   );
