@@ -47,6 +47,7 @@ from endless_task.artifacts import (
     ArtifactProposalService,
     SourceReferenceResolver,
 )
+from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.storage import (
@@ -89,6 +90,8 @@ ARTIFACT_AWARENESS_CLAUSE = (
     "\n- 当本轮回答属于值得整体保留的独立成文结果（长回答、计划、改写稿、报告、总结等）时，"
     "可以在回复末尾追加一句简短的陈述式预告，说明该结果可以保留为文档；"
     "不要用追问口吻推销，普通问答、闲聊或简短回答一律不要提及文档保留。"
+    "\n- 用户要求修改已保存的文档结果时，先用 read_artifact 读取当前内容，"
+    "再在回复中给出完整修改后的文档，不要只给片段或口头承诺。"
 )
 
 
@@ -457,6 +460,7 @@ def _build_container(
     selected_tool_registry = tool_registry or ToolRegistry()
     if tool_registry is None:
         selected_tool_registry.register(ReadTextFileTool(file_repository))
+        selected_tool_registry.register(ReadArtifactTool(artifact_repository))
     system_prompt = settings.system_prompt
     system_prompt_version = settings.system_prompt_version
     if settings.artifact_proposals_enabled:
@@ -475,6 +479,7 @@ def _build_container(
             file_repository=file_repository,
             memory_repository=memory_repository,
             artifact_proposal_repository=artifact_proposal_repository,
+            artifact_repository=artifact_repository,
         ),
         provider=selected_provider,
         configuration=RuntimeConfiguration(
@@ -498,6 +503,7 @@ def _build_container(
             model=settings.model,
             memory_repository=memory_repository,
             runtime_repository=runtime_repository,
+            artifact_repository=artifact_repository,
         )
 
     memory_conflict_service: Optional[MemoryConflictService] = None

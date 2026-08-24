@@ -201,6 +201,8 @@ class P0ContextBuilder:
         max_memory_chars: int = 1200,
         artifact_proposal_repository: Optional[ArtifactProposalRepository] = None,
         max_artifact_proposals_in_context: int = 5,
+        artifact_repository=None,
+        max_artifacts_in_context: int = 10,
         token_estimator: Optional[TokenEstimator] = None,
         summarizer: Optional[ExtractiveConversationSummarizer] = None,
     ) -> None:
@@ -212,6 +214,8 @@ class P0ContextBuilder:
             raise ValueError("Memory injection limits must be positive")
         if max_artifact_proposals_in_context <= 0:
             raise ValueError("Artifact proposal injection limit must be positive")
+        if max_artifacts_in_context <= 0:
+            raise ValueError("Artifact injection limit must be positive")
         self._repository = repository
         self._system_prompt = system_prompt
         self._system_prompt_version = system_prompt_version
@@ -224,6 +228,8 @@ class P0ContextBuilder:
         self._max_memory_chars = max_memory_chars
         self._artifact_proposal_repository = artifact_proposal_repository
         self._max_artifact_proposals_in_context = max_artifact_proposals_in_context
+        self._artifact_repository = artifact_repository
+        self._max_artifacts_in_context = max_artifacts_in_context
         self._token_estimator = token_estimator or ApproximateTokenEstimator()
         self._summarizer = summarizer or ExtractiveConversationSummarizer()
 
@@ -357,6 +363,9 @@ class P0ContextBuilder:
         artifact_proposal_block = self._artifact_proposal_block(conversation_id)
         if artifact_proposal_block:
             content = f"{content}\n\n{artifact_proposal_block}"
+        artifact_list_block = self._artifact_list_block()
+        if artifact_list_block:
+            content = f"{content}\n\n{artifact_list_block}"
         return content
 
     def _memory_block(self) -> str:
@@ -396,6 +405,25 @@ class P0ContextBuilder:
             "以下是本会话待确认的 Artifact 提案，用户确认前不要把它当作已保存的文档。"
             "如果用户表达想保留，请引导其在提案卡片上确认；不要自行声称已保存。\n"
             + "\n".join(lines)
+        )
+
+    def _artifact_list_block(self) -> str:
+        if self._artifact_repository is None:
+            return ""
+        records = self._artifact_repository.list_artifacts()[
+            : self._max_artifacts_in_context
+        ]
+        if not records:
+            return ""
+        lines = [
+            f"- artifact:{record.id}: 《{record.title}》"
+            f"（{record.kind.value}）v{record.current_version_ordinal}"
+            for record in records
+        ]
+        return (
+            "以下是本产品当前已保存的 Artifact（用户保留的独立文档结果）。"
+            "如果用户要求修改其中某一份，先调用 read_artifact 读取当前内容，"
+            "再在回复中给出完整修改后的文档。\n" + "\n".join(lines)
         )
 
     def _canonical_history(

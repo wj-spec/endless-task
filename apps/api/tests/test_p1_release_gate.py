@@ -144,7 +144,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, len(provider.requests))
             # 工具定义可用，但模型不调用时不得产生任何工具状态。
             self.assertEqual(
-                ("read_text_file",),
+                ("read_artifact", "read_text_file"),
                 tuple(tool.name for tool in provider.requests[0].tools),
             )
             event_types = await self._event_types(client, created["turnId"])

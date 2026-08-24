@@ -357,7 +357,10 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
                 for item in result["activities"]
             ],
         )
-        self.assertEqual("read_text_file", provider.requests[0].tools[0].name)
+        self.assertIn(
+            "read_text_file",
+            [tool.name for tool in provider.requests[0].tools],
+        )
         self.assertIn(file_id, provider.requests[0].messages[0].content)
         restored = await client.get(f"/conversations/{conversation_id}")
         self.assertEqual(

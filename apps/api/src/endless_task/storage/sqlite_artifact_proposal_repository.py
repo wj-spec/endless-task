@@ -57,6 +57,7 @@ class SqliteArtifactProposalRepository:
         content: str,
         reason: str,
         source_labels: Sequence[str] = (),
+        target_artifact_id: Optional[str] = None,
     ) -> ArtifactProposal:
         normalized_kind = self._validate_kind(kind)
         normalized_title = self._validate_text(
@@ -83,9 +84,10 @@ class SqliteArtifactProposalRepository:
                 """
                 INSERT INTO artifact_proposals (
                     id, conversation_id, turn_id, title, kind, content, reason,
-                    status, created_at, updated_at, source_labels
+                    status, created_at, updated_at, source_labels,
+                    target_artifact_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     proposal_id,
@@ -99,6 +101,7 @@ class SqliteArtifactProposalRepository:
                     now,
                     now,
                     labels_json,
+                    target_artifact_id,
                 ),
             )
         return self.get_proposal(proposal_id)
@@ -155,22 +158,59 @@ class SqliteArtifactProposalRepository:
             proposal = self._from_row(row)
             if proposal.status is not ArtifactProposalStatus.PENDING:
                 raise InvalidStateError("Only pending proposals can be resolved.")
-            insert_artifact_with_first_version(
-                connection,
-                artifact_id=artifact_id,
-                version_id=version_id,
-                title=proposal.title,
-                kind=proposal.kind,
-                content=proposal.content,
-                source_conversation_id=proposal.conversation_id,
-                source_turn_id=proposal.turn_id,
-                timestamp=now,
-                source_labels_json=json.dumps(
-                    list(proposal.source_labels),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
+            labels_json = json.dumps(
+                list(proposal.source_labels),
+                ensure_ascii=False,
+                separators=(",", ":"),
             )
+            if proposal.target_artifact_id:
+                artifact_id = proposal.target_artifact_id
+                target_row = connection.execute(
+                    "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+                ).fetchone()
+                if target_row is None:
+                    raise InvalidStateError("Proposal target artifact was not found")
+                if target_row["status"] != "active":
+                    raise InvalidStateError("Proposal target artifact was deleted")
+                ordinal = target_row["current_version_ordinal"] + 1
+                connection.execute(
+                    """
+                    INSERT INTO artifact_versions (
+                        id, artifact_id, ordinal, content, operation,
+                        source_conversation_id, source_turn_id, source_labels,
+                        note, created_at
+                    ) VALUES (?, ?, ?, ?, 'chat_continue', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version_id,
+                        artifact_id,
+                        ordinal,
+                        proposal.content,
+                        proposal.conversation_id,
+                        proposal.turn_id,
+                        labels_json,
+                        proposal.reason,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE artifacts SET current_version_ordinal = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (ordinal, now, artifact_id),
+                )
+            else:
+                insert_artifact_with_first_version(
+                    connection,
+                    artifact_id=artifact_id,
+                    version_id=version_id,
+                    title=proposal.title,
+                    kind=proposal.kind,
+                    content=proposal.content,
+                    source_conversation_id=proposal.conversation_id,
+                    source_turn_id=proposal.turn_id,
+                    timestamp=now,
+                    source_labels_json=labels_json,
+                )
             connection.execute(
                 """
                 UPDATE artifact_proposals
@@ -259,6 +299,7 @@ class SqliteArtifactProposalRepository:
             reason=row["reason"],
             status=ArtifactProposalStatus(row["status"]),
             source_labels=tuple(json.loads(row["source_labels"])),
+            target_artifact_id=row["target_artifact_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             resolved_artifact_id=row["resolved_artifact_id"],

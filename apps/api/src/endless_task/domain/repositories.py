@@ -272,6 +272,7 @@ class ArtifactProposalRepository(Protocol):
         content: str,
         reason: str,
         source_labels: Sequence[str] = (),
+        target_artifact_id: Optional[str] = None,
     ) -> ArtifactProposal:
         ...
 

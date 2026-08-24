@@ -5,7 +5,12 @@ import logging
 import uuid
 from typing import Optional, Tuple
 
-from endless_task.domain.models import ArtifactKind, ArtifactProposal, MemoryStatus
+from endless_task.domain.models import (
+    ArtifactKind,
+    ArtifactProposal,
+    ArtifactStatus,
+    MemoryStatus,
+)
 from endless_task.domain.repositories import RepositoryError
 from endless_task.runtime import (
     CancellationToken,
@@ -27,15 +32,18 @@ logger = logging.getLogger(__name__)
 
 _EXTRACTION_SYSTEM_PROMPT = (
     "你是 Artifact 提取助手。阅读一段用户与 Assistant 的对话，"
-    "仅当 Assistant 的回答属于值得整体保留的独立成文结果"
-    "（长回答、计划、改写稿、报告、总结等）时，才提出 Artifact 提案。"
+    "判断是否产生 Artifact 提案："
+    "1. 当 Assistant 的回答属于值得整体保留的独立成文结果"
+    "（长回答、计划、改写稿、报告、总结等）时，提出创建提案。"
+    "2. 当用户要求修改随附 Artifact 清单中的某一份，且 Assistant 的回答给出"
+    "完整修改后的文档时，提出更新提案，并把 target 设为该 Artifact 的 id。"
     "问答片段、列表式简短说明、讨论中的中间回答不要提案。"
-    "提案内容应整理为可独立阅读的文档，不要包含对话措辞。"
+    "提案内容必须是可独立阅读的完整文档，不得只给差量或片段，不要包含对话措辞。"
     "如果回答明确引用了随附长期记忆清单中的某些记忆，"
     '在 labels 中以 "memory:{id}" 形式列出对应记忆；不要输出其他形式的标签。'
     '只输出 JSON：{"proposal":{"title":"文档标题","kind":"markdown|text",'
-    '"content":"文档内容","reason":"为什么值得保留","labels":[]}}；'
-    '没有合适内容时输出 {"proposal":null}。'
+    '"content":"完整文档内容","reason":"为什么值得保留","labels":[],'
+    '"target":"art_xxx 或省略"}}；没有合适内容时输出 {"proposal":null}。'
 )
 
 DEFAULT_PROPOSAL_REASON = "回答较长且值得保留为独立文档"
@@ -43,15 +51,17 @@ READ_TEXT_FILE_TOOL = "read_text_file"
 COMPLETED_STATUS = "completed"
 MEMORY_LIST_CAP = 20
 MEMORY_PROMPT_SNIPPET_CHARS = 200
+ARTIFACT_LIST_CAP = 10
+ARTIFACT_TARGET_PREFIX = "artifact:"
 
 
 class ArtifactProposalService:
     """Generates pending artifact proposals from completed turns.
 
     The service never writes to ``artifacts``; writing happens only when the
-    user accepts a proposal through the resolve API. Source labels combine
-    deterministic file labels (from the turn journal) with model-proposed
-    memory labels validated against active memories.
+    user accepts a proposal through the resolve API. Proposals either create a
+    new artifact (R3.1) or target an existing one for a ``chat_continue``
+    version (R3.4).
     """
 
     def __init__(
@@ -62,6 +72,7 @@ class ArtifactProposalService:
         model: str,
         memory_repository=None,
         runtime_repository=None,
+        artifact_repository=None,
         min_assistant_chars: int = 400,
         max_output_tokens: int = 8_000,
     ) -> None:
@@ -72,6 +83,7 @@ class ArtifactProposalService:
         self._model = model
         self._memory_repository = memory_repository
         self._runtime_repository = runtime_repository
+        self._artifact_repository = artifact_repository
         self._min_assistant_chars = min_assistant_chars
         self._max_output_tokens = max_output_tokens
 
@@ -111,7 +123,7 @@ class ArtifactProposalService:
             return ()
         transcript = (
             f"用户：{user_message.strip()}\nAssistant：{stripped_answer}"
-            f"{self._memory_list_block()}"
+            f"{self._memory_list_block()}{self._artifact_list_block()}"
         )
         request = ProviderRequest(
             request_id=f"artp_{uuid.uuid4().hex}",
@@ -146,7 +158,21 @@ class ArtifactProposalService:
             if isinstance(reason, str) and reason.strip()
             else DEFAULT_PROPOSAL_REASON
         )
-        labels = self._assemble_labels(turn_id, payload.get("labels"))
+
+        target_artifact_id = None
+        inherited_labels: Tuple[str, ...] = ()
+        raw_target = payload.get("target")
+        if raw_target is not None:
+            resolved = self._resolve_target(raw_target)
+            if resolved is None:
+                return ()
+            target_artifact_id, current_content, inherited_labels = resolved
+            if content.strip() == current_content:
+                return ()
+
+        labels = self._assemble_labels(
+            turn_id, payload.get("labels"), inherited_labels
+        )
 
         if (
             self._proposal_repository.find_pending_by_content(content.strip())
@@ -162,17 +188,43 @@ class ArtifactProposalService:
                 content=content,
                 reason=normalized_reason,
                 source_labels=labels,
+                target_artifact_id=target_artifact_id,
             )
         except RepositoryError:
             return ()
         return (proposal,)
 
-    def _assemble_labels(self, turn_id: str, model_labels) -> Tuple[str, ...]:
+    def _resolve_target(self, raw_target) -> Optional[Tuple[str, str, Tuple[str, ...]]]:
+        if self._artifact_repository is None or not isinstance(raw_target, str):
+            return None
+        candidate = raw_target.strip()
+        if candidate.startswith(ARTIFACT_TARGET_PREFIX):
+            candidate = candidate[len(ARTIFACT_TARGET_PREFIX):]
+        if not candidate:
+            return None
+        try:
+            artifact = self._artifact_repository.get_artifact(candidate)
+        except RepositoryError:
+            return None
+        if artifact.status is not ArtifactStatus.ACTIVE:
+            return None
+        current_version = self._artifact_repository.get_current_version(candidate)
+        return candidate, current_version.content.strip(), current_version.source_labels
+
+    def _assemble_labels(
+        self,
+        turn_id: str,
+        model_labels,
+        inherited_labels: Tuple[str, ...] = (),
+    ) -> Tuple[str, ...]:
         ordered: list[str] = []
         seen: set[str] = set()
-        for label in self._file_labels_for_turn(turn_id) + self._validated_memory_labels(
-            model_labels
-        ):
+        candidates = (
+            list(inherited_labels)
+            + self._file_labels_for_turn(turn_id)
+            + self._validated_memory_labels(model_labels)
+        )
+        for label in candidates:
             if label in seen:
                 continue
             seen.add(label)
@@ -223,6 +275,19 @@ class ArtifactProposalService:
         if not lines:
             return ""
         return "\n\n当前可用的长期记忆清单：\n" + "\n".join(lines)
+
+    def _artifact_list_block(self) -> str:
+        if self._artifact_repository is None:
+            return ""
+        records = self._artifact_repository.list_artifacts()[:ARTIFACT_LIST_CAP]
+        if not records:
+            return ""
+        lines = [
+            f"- artifact:{record.id}: 《{record.title}》"
+            f"（{record.kind.value}）v{record.current_version_ordinal}"
+            for record in records
+        ]
+        return "\n\n当前已保存的 Artifact 清单：\n" + "\n".join(lines)
 
     @staticmethod
     def _parse_proposal(raw: str) -> Optional[dict]:
