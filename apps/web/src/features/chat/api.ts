@@ -16,6 +16,8 @@ import type {
   TurnCommandResponse,
   UploadedTextFile,
   WorkspaceSnapshot,
+  TaskProposal,
+  TaskSummary,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -175,6 +177,21 @@ export const chatApi = {
       method: "POST",
       body: JSON.stringify({ decision }),
     }),
+  listTaskProposals: async (conversationId: string, includeResolved = false) => {
+    const response = await request<{ items: TaskProposal[] }>(
+      `/conversations/${conversationId}/task-proposals?include_resolved=${includeResolved}`,
+    );
+    return response.items;
+  },
+  resolveTaskProposal: (proposalId: string, decision: "accept" | "reject") =>
+    request<{ proposal: TaskProposal; task?: TaskSummary }>(
+      `/task-proposals/${proposalId}/resolve`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    ),
+  listTasks: async () => {
+    const response = await request<{ items: TaskSummary[] }>("/tasks");
+    return response.items;
+  },
   getPermissionSettings: () =>
     request<PermissionSettings>("/settings/permissions"),
   setPermissionSettings: (mode: string, acknowledge: boolean) =>

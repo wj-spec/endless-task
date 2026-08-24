@@ -9,6 +9,7 @@ import type {
 } from "./apiTypes";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
+import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
 import { MessageContent } from "./MessageContent";
 
@@ -28,6 +29,7 @@ type ChatWorkSurfaceProps = {
   onDraftChange: (value: string) => void;
   onMenu: () => void;
   onOpenMemory: () => void;
+  onOpenScheduled: () => void;
   onOpenSettings: () => void;
   permissionMode: PermissionMode | null;
   onRegenerate: (turnId: string) => void;
@@ -49,6 +51,7 @@ type ChatWorkSurfaceProps = {
   turnProposals: (turnId: string) => TurnProposals;
   onResolveArtifactProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
+  onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
 };
 
 const permissionShortLabel = {
@@ -88,6 +91,7 @@ export function ChatWorkSurface({
   onDraftChange,
   onMenu,
   onOpenMemory,
+  onOpenScheduled,
   onOpenSettings,
   permissionMode,
   onRegenerate,
@@ -105,6 +109,7 @@ export function ChatWorkSurface({
   turnProposals,
   onResolveArtifactProposal,
   onResolveMemoryProposal,
+  onResolveTaskProposal,
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -171,6 +176,9 @@ export function ChatWorkSurface({
             ) : null}
             <button onClick={onOpenMemory} type="button">
               记忆
+            </button>
+            <button onClick={onOpenScheduled} type="button">
+              已安排
             </button>
             <button onClick={onOpenSettings} type="button">
               设置
@@ -376,7 +384,11 @@ export function ChatWorkSurface({
 
                 {(() => {
                   const proposals = turnProposals(turnSnapshot.turn.id);
-                  if (!proposals.artifacts.length && !proposals.memories.length) {
+                  if (
+                    !proposals.artifacts.length &&
+                    !proposals.memories.length &&
+                    !proposals.tasks.length
+                  ) {
                     return null;
                   }
                   return (
@@ -400,6 +412,17 @@ export function ChatWorkSurface({
                           key={proposal.id}
                           onResolve={(decision) =>
                             onResolveMemoryProposal(proposal.id, decision)
+                          }
+                          proposal={proposal}
+                        />
+                      ))}
+                      {proposals.tasks.map((proposal) => (
+                        <TaskProposalCard
+                          busy={proposalBusyId === proposal.id}
+                          error={proposalErrors[proposal.id] ?? null}
+                          key={proposal.id}
+                          onResolve={(decision) =>
+                            onResolveTaskProposal(proposal.id, decision)
                           }
                           proposal={proposal}
                         />

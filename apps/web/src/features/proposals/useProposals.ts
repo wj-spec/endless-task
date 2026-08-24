@@ -4,11 +4,13 @@ import type {
   ArtifactProposal,
   ArtifactRecordSummary,
   MemoryProposal,
+  TaskProposal,
 } from "../chat/apiTypes";
 
 export type TurnProposals = {
   artifacts: ArtifactProposal[];
   memories: MemoryProposal[];
+  tasks: TaskProposal[];
 };
 
 type ConversationProposalState = TurnProposals;
@@ -29,13 +31,14 @@ export function useProposals(activeConversationId: string | null) {
 
   const fetchProposals = useCallback(async (conversationId: string) => {
     try {
-      const [artifacts, memories] = await Promise.all([
+      const [artifacts, memories, tasks] = await Promise.all([
         chatApi.listArtifactProposals(conversationId, true),
         chatApi.listMemoryProposals(conversationId, true),
+        chatApi.listTaskProposals(conversationId, true),
       ]);
       setByConversation((current) => ({
         ...current,
-        [conversationId]: { artifacts, memories },
+        [conversationId]: { artifacts, memories, tasks },
       }));
     } catch {
       // 提案是增强信息，拉取失败时静默降级，不打断聊天主流程。
@@ -61,17 +64,19 @@ export function useProposals(activeConversationId: string | null) {
       const timer = globalThis.setTimeout(() => {
         void (async () => {
           try {
-            const [artifacts, memories] = await Promise.all([
+            const [artifacts, memories, tasks] = await Promise.all([
               chatApi.listArtifactProposals(conversationId, true),
               chatApi.listMemoryProposals(conversationId, true),
+              chatApi.listTaskProposals(conversationId, true),
             ]);
             setByConversation((current) => ({
               ...current,
-              [conversationId]: { artifacts, memories },
+              [conversationId]: { artifacts, memories, tasks },
             }));
             const found =
               artifacts.some((item) => item.turnId === turnId) ||
-              memories.some((item) => item.turnId === turnId);
+              memories.some((item) => item.turnId === turnId) ||
+              tasks.some((item) => item.turnId === turnId);
             if (found) {
               scheduled.forEach((pending) => globalThis.clearTimeout(pending));
             }
@@ -140,6 +145,26 @@ export function useProposals(activeConversationId: string | null) {
     [activeConversationId, clearError, fetchProposals],
   );
 
+  const resolveTaskProposal = useCallback(
+    async (proposalId: string, decision: "accept" | "reject") => {
+      setBusyProposalId(proposalId);
+      clearError(proposalId);
+      try {
+        await chatApi.resolveTaskProposal(proposalId, decision);
+        if (activeConversationId) await fetchProposals(activeConversationId);
+      } catch (error) {
+        const message =
+          error instanceof ApiClientError && error.status === 409
+            ? "该提案已处理。"
+            : "提案处理失败，请重试。";
+        setResolveErrors((current) => ({ ...current, [proposalId]: message }));
+      } finally {
+        setBusyProposalId(null);
+      }
+    },
+    [activeConversationId, clearError, fetchProposals],
+  );
+
   const artifactProposalsFor = useCallback(
     (conversationId: string | null): ArtifactProposal[] => {
       if (!conversationId) return [];
@@ -151,10 +176,11 @@ export function useProposals(activeConversationId: string | null) {
   const forTurn = useCallback(
     (conversationId: string | null, turnId: string): TurnProposals => {
       const state = conversationId ? byConversation[conversationId] : undefined;
-      if (!state) return { artifacts: [], memories: [] };
+      if (!state) return { artifacts: [], memories: [], tasks: [] };
       return {
         artifacts: state.artifacts.filter((item) => item.turnId === turnId),
         memories: state.memories.filter((item) => item.turnId === turnId),
+        tasks: state.tasks.filter((item) => item.turnId === turnId),
       };
     },
     [byConversation],
@@ -166,6 +192,7 @@ export function useProposals(activeConversationId: string | null) {
     forTurn,
     resolveArtifactProposal,
     resolveMemoryProposal,
+    resolveTaskProposal,
     resolvedArtifacts,
     resolveErrors,
     watchTurn,

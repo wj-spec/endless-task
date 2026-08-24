@@ -3,6 +3,7 @@ import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
 import type { PermissionMode } from "./features/chat/apiTypes";
 import { MemoryManagement } from "./features/memory/MemoryManagement";
+import { ScheduledTasks } from "./features/tasks/ScheduledTasks";
 import { SettingsOverlay } from "./features/settings/SettingsOverlay";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
@@ -40,6 +41,7 @@ export function App() {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [scheduledOpen, setScheduledOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
 
@@ -96,6 +98,7 @@ export function App() {
         onDraftChange={chat.setDraft}
         onMenu={() => setRailOpen(true)}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenScheduled={() => setScheduledOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
         permissionMode={permissionMode}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
@@ -122,6 +125,9 @@ export function App() {
         }
         onResolveMemoryProposal={(proposalId, decision) =>
           void proposals.resolveMemoryProposal(proposalId, decision)
+        }
+        onResolveTaskProposal={(proposalId, decision) =>
+          void proposals.resolveTaskProposal(proposalId, decision)
         }
       />
       {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
@@ -173,6 +179,9 @@ export function App() {
       ) : null}
       {memoryOpen ? (
         <MemoryManagement onClose={() => setMemoryOpen(false)} />
+      ) : null}
+      {scheduledOpen ? (
+        <ScheduledTasks onClose={() => setScheduledOpen(false)} />
       ) : null}
       {settingsOpen ? (
         <SettingsOverlay

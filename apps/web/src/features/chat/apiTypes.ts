@@ -253,6 +253,50 @@ export type WorkspaceSnapshot = {
   pendingProposals: ArtifactProposal[];
 };
 
+export type TaskSchedule = {
+  kind: "daily" | "weekly" | "monthly";
+  time: string;
+  weekday?: number;
+  day?: number;
+};
+
+export type TaskProposalStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "cancelled";
+
+export type TaskProposal = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  title: string;
+  commitment: string;
+  schedule: TaskSchedule;
+  scheduleDescription: string;
+  reason: string;
+  status: TaskProposalStatus;
+  createdAt: string;
+  updatedAt: string;
+  resolvedTaskId: string | null;
+  resolvedAt: string | null;
+};
+
+export type TaskSummary = {
+  id: string;
+  title: string;
+  commitment: string;
+  schedule: TaskSchedule;
+  scheduleDescription: string;
+  status: "active" | "paused" | "cancelled";
+  sourceConversationId: string;
+  sourceTurnId: string;
+  sourceProposalId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  cancelledAt: string | null;
+};
+
 export type ArtifactVersionOperation = "create" | "update" | "chat_continue" | "rollback";
 
 export type SourceReference = {
