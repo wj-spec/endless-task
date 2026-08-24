@@ -252,6 +252,20 @@ class SqliteArtifactRepository:
             rows = connection.execute(query).fetchall()
         return tuple(artifact_record_from_row(row) for row in rows)
 
+    def list_artifacts_for_conversation(
+        self, conversation_id: str
+    ) -> Sequence[ArtifactRecord]:
+        query = (
+            "SELECT a.* FROM artifacts a "
+            "WHERE a.status = 'active' AND EXISTS ("
+            "SELECT 1 FROM artifact_versions v "
+            "WHERE v.artifact_id = a.id AND v.source_conversation_id = ?"
+            ") ORDER BY a.updated_at DESC, a.id ASC"
+        )
+        with self._database.connect() as connection:
+            rows = connection.execute(query, (conversation_id,)).fetchall()
+        return tuple(artifact_record_from_row(row) for row in rows)
+
     def delete_artifact(self, artifact_id: str) -> ArtifactRecord:
         now = self._clock()
         with self._database.transaction() as connection:

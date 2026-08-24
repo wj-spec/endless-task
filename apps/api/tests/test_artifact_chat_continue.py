@@ -345,6 +345,7 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
 
         items = await self._wait_for_proposals(client, conversation_id, 1)
         self.assertEqual(artifact_id, items[0]["targetArtifactId"])
+        self.assertEqual(1, items[0]["baseVersionOrdinal"])
         self.assertEqual("pending", items[0]["status"])
         self.assertEqual(
             1,

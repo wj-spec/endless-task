@@ -160,13 +160,19 @@ class ArtifactProposalService:
         )
 
         target_artifact_id = None
+        base_version_ordinal: Optional[int] = None
         inherited_labels: Tuple[str, ...] = ()
         raw_target = payload.get("target")
         if raw_target is not None:
             resolved = self._resolve_target(raw_target)
             if resolved is None:
                 return ()
-            target_artifact_id, current_content, inherited_labels = resolved
+            (
+                target_artifact_id,
+                current_content,
+                inherited_labels,
+                base_version_ordinal,
+            ) = resolved
             if content.strip() == current_content:
                 return ()
 
@@ -189,12 +195,15 @@ class ArtifactProposalService:
                 reason=normalized_reason,
                 source_labels=labels,
                 target_artifact_id=target_artifact_id,
+                base_version_ordinal=base_version_ordinal,
             )
         except RepositoryError:
             return ()
         return (proposal,)
 
-    def _resolve_target(self, raw_target) -> Optional[Tuple[str, str, Tuple[str, ...]]]:
+    def _resolve_target(
+        self, raw_target
+    ) -> Optional[Tuple[str, str, Tuple[str, ...], int]]:
         if self._artifact_repository is None or not isinstance(raw_target, str):
             return None
         candidate = raw_target.strip()
@@ -209,7 +218,12 @@ class ArtifactProposalService:
         if artifact.status is not ArtifactStatus.ACTIVE:
             return None
         current_version = self._artifact_repository.get_current_version(candidate)
-        return candidate, current_version.content.strip(), current_version.source_labels
+        return (
+            candidate,
+            current_version.content.strip(),
+            current_version.source_labels,
+            current_version.ordinal,
+        )
 
     def _assemble_labels(
         self,

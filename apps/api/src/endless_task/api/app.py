@@ -950,6 +950,24 @@ def create_app(
         )
         return {"items": [artifact_proposal_json(item) for item in proposals]}
 
+    @app.get("/conversations/{conversation_id}/workspace")
+    async def get_conversation_workspace(conversation_id: str) -> dict[str, object]:
+        container.chat_repository.get_conversation(conversation_id)
+        artifacts = container.artifact_repository.list_artifacts_for_conversation(
+            conversation_id
+        )
+        proposals = container.artifact_proposal_repository.list_proposals(
+            conversation_id=conversation_id
+        )
+        artifact_items = [artifact_json(item) for item in artifacts]
+        proposal_items = [artifact_proposal_json(item) for item in proposals]
+        return {
+            "conversationId": conversation_id,
+            "visible": bool(artifact_items or proposal_items),
+            "artifacts": artifact_items,
+            "pendingProposals": proposal_items,
+        }
+
     @app.post("/artifact-proposals/{proposal_id}/resolve")
     async def resolve_artifact_proposal(
         proposal_id: str, body: ResolveArtifactProposalBody

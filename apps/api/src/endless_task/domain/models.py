@@ -272,6 +272,7 @@ class ArtifactProposal:
     updated_at: str
     source_labels: Tuple[str, ...] = ()
     target_artifact_id: Optional[str] = None
+    base_version_ordinal: Optional[int] = None
     resolved_artifact_id: Optional[str] = None
     resolved_at: Optional[str] = None
 

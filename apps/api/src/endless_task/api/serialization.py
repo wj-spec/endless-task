@@ -301,6 +301,7 @@ def artifact_proposal_json(proposal) -> dict[str, object]:
         "status": proposal.status.value,
         "sourceLabels": list(proposal.source_labels),
         "targetArtifactId": proposal.target_artifact_id,
+        "baseVersionOrdinal": proposal.base_version_ordinal,
         "createdAt": proposal.created_at,
         "updatedAt": proposal.updated_at,
         "resolvedArtifactId": proposal.resolved_artifact_id,

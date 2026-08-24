@@ -58,6 +58,7 @@ class SqliteArtifactProposalRepository:
         reason: str,
         source_labels: Sequence[str] = (),
         target_artifact_id: Optional[str] = None,
+        base_version_ordinal: Optional[int] = None,
     ) -> ArtifactProposal:
         normalized_kind = self._validate_kind(kind)
         normalized_title = self._validate_text(
@@ -71,6 +72,12 @@ class SqliteArtifactProposalRepository:
         )
         if not conversation_id.strip() or not turn_id.strip():
             raise ValidationError("Proposal source conversation and turn are required.")
+        if base_version_ordinal is not None and (
+            not isinstance(base_version_ordinal, int)
+            or isinstance(base_version_ordinal, bool)
+            or base_version_ordinal < 1
+        ):
+            raise ValidationError("Proposal base version ordinal must be positive.")
         labels_json = self._validate_source_labels(source_labels)
 
         existing = self.find_pending_by_content(normalized_content)
@@ -85,9 +92,9 @@ class SqliteArtifactProposalRepository:
                 INSERT INTO artifact_proposals (
                     id, conversation_id, turn_id, title, kind, content, reason,
                     status, created_at, updated_at, source_labels,
-                    target_artifact_id
+                    target_artifact_id, base_version_ordinal
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     proposal_id,
@@ -102,6 +109,7 @@ class SqliteArtifactProposalRepository:
                     now,
                     labels_json,
                     target_artifact_id,
+                    base_version_ordinal,
                 ),
             )
         return self.get_proposal(proposal_id)
@@ -172,6 +180,15 @@ class SqliteArtifactProposalRepository:
                     raise InvalidStateError("Proposal target artifact was not found")
                 if target_row["status"] != "active":
                     raise InvalidStateError("Proposal target artifact was deleted")
+                if (
+                    proposal.base_version_ordinal is not None
+                    and target_row["current_version_ordinal"]
+                    != proposal.base_version_ordinal
+                ):
+                    raise InvalidStateError(
+                        "Proposal base version is stale; regenerate from the "
+                        "latest artifact content"
+                    )
                 ordinal = target_row["current_version_ordinal"] + 1
                 connection.execute(
                     """
@@ -300,6 +317,7 @@ class SqliteArtifactProposalRepository:
             status=ArtifactProposalStatus(row["status"]),
             source_labels=tuple(json.loads(row["source_labels"])),
             target_artifact_id=row["target_artifact_id"],
+            base_version_ordinal=row["base_version_ordinal"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             resolved_artifact_id=row["resolved_artifact_id"],
