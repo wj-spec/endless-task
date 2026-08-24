@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .task_schedule import TaskSchedule
 
 
 class ConversationStatus(str, Enum):
@@ -275,6 +278,27 @@ class ArtifactProposal:
     base_version_ordinal: Optional[int] = None
     resolved_artifact_id: Optional[str] = None
     resolved_at: Optional[str] = None
+
+
+class TaskStatus(str, Enum):
+    ACTIVE = "active"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    id: str
+    title: str
+    commitment: str
+    schedule: "TaskSchedule"
+    status: TaskStatus
+    source_conversation_id: str
+    source_turn_id: str
+    source_proposal_id: Optional[str]
+    created_at: str
+    updated_at: str
+    cancelled_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -235,6 +235,34 @@ def turn_command_json(snapshot: TurnSnapshot) -> dict[str, Any]:
     }
 
 
+def task_schedule_json(schedule) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "kind": schedule.kind.value,
+        "time": schedule.time,
+    }
+    if schedule.weekday is not None:
+        payload["weekday"] = schedule.weekday
+    if schedule.day is not None:
+        payload["day"] = schedule.day
+    return payload
+
+
+def task_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "title": record.title,
+        "commitment": record.commitment,
+        "schedule": task_schedule_json(record.schedule),
+        "status": record.status.value,
+        "sourceConversationId": record.source_conversation_id,
+        "sourceTurnId": record.source_turn_id,
+        "sourceProposalId": record.source_proposal_id,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+        "cancelledAt": record.cancelled_at,
+    }
+
+
 def artifact_json(record) -> dict[str, object]:
     return {
         "id": record.id,

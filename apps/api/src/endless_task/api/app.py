@@ -67,6 +67,7 @@ from endless_task.storage import (
     SqlitePreferencesRepository,
     SqliteTextFileRepository,
     SqliteRuntimeRepository,
+    SqliteTaskRepository,
 )
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
@@ -84,6 +85,7 @@ from .serialization import (
     runtime_event_json,
     turn_command_json,
     uploaded_text_file_json,
+    task_json,
 )
 
 
@@ -295,6 +297,7 @@ class AppContainer:
     artifact_repository: SqliteArtifactRepository
     artifact_proposal_repository: SqliteArtifactProposalRepository
     artifact_proposal_service: Optional[ArtifactProposalService]
+    task_repository: SqliteTaskRepository
     reference_resolver: SourceReferenceResolver
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
@@ -456,6 +459,7 @@ def _build_container(
     preferences_repository = SqlitePreferencesRepository(database)
     artifact_repository = SqliteArtifactRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
+    task_repository = SqliteTaskRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -571,6 +575,7 @@ def _build_container(
         preferences_repository=preferences_repository,
         artifact_repository=artifact_repository,
         artifact_proposal_repository=artifact_proposal_repository,
+        task_repository=task_repository,
         artifact_proposal_service=artifact_proposal_service,
         reference_resolver=reference_resolver,
         memory_proposal_service=memory_proposal_service,
@@ -864,6 +869,17 @@ def create_app(
             include_resolved=include_resolved,
         )
         return {"items": [memory_proposal_json(item) for item in proposals]}
+
+    @app.get("/tasks")
+    async def list_tasks(include_cancelled: bool = False) -> dict[str, object]:
+        tasks = container.task_repository.list_tasks(
+            include_cancelled=include_cancelled
+        )
+        return {"items": [task_json(item) for item in tasks]}
+
+    @app.get("/tasks/{task_id}")
+    async def get_task(task_id: str) -> dict[str, object]:
+        return {"task": task_json(container.task_repository.get_task(task_id))}
 
     @app.get("/artifacts")
     async def list_artifacts(include_deleted: bool = False) -> dict[str, object]:
