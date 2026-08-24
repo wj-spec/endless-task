@@ -187,11 +187,16 @@ class MemoryInjectionGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 202)
             await self._wait_for_terminal(client, response.json()["turnId"])
 
-            proposals = (
-                await client.get(
-                    f"/conversations/{conversation['id']}/memory-proposals"
-                )
-            ).json()["items"]
+            proposals = []
+            for _ in range(200):
+                proposals = (
+                    await client.get(
+                        f"/conversations/{conversation['id']}/memory-proposals"
+                    )
+                ).json()["items"]
+                if len(proposals) == 1:
+                    break
+                await asyncio.sleep(0.005)
             self.assertEqual(len(proposals), 1)
             response = await client.post(
                 f"/memory-proposals/{proposals[0]['id']}/resolve",

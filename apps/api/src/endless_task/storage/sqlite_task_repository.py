@@ -127,6 +127,25 @@ class SqliteTaskRepository:
             rows = connection.execute(query).fetchall()
         return tuple(task_record_from_row(row) for row in rows)
 
+    def cancel_tasks_for_conversation(self, conversation_id: str) -> int:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?, cancelled_at = ?, updated_at = ?
+                WHERE source_conversation_id = ?
+                    AND status IN ('active', 'paused')
+                """,
+                (
+                    TaskStatus.CANCELLED.value,
+                    now,
+                    now,
+                    conversation_id.strip(),
+                ),
+            )
+        return cursor.rowcount or 0
+
     def _validate_text(self, value: str, limit: int, *, field: str) -> str:
         if not isinstance(value, str):
             raise ValidationError(f"Task {field} must be a string.")

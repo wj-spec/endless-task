@@ -225,8 +225,12 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
             user_message="重复内容不应新增提案。",
             assistant_message="好的。",
         )
+        self.assertEqual(len(repeated), 2)
+        pending = self.proposals.list_proposals(conversation_id="conv_1")
+        self.assertEqual(len(pending), 2)
         self.assertEqual(
-            [item.content for item in repeated], ["用户养了一只猫。"]
+            {item.id for item in pending},
+            {item.id for item in repeated},
         )
 
     async def test_garbage_extraction_is_ignored(self) -> None:
@@ -241,11 +245,18 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created, ())
 
     async def test_extraction_request_includes_awareness_list(self) -> None:
-        self.proposals.create_proposal(
+        pending = self.proposals.create_proposal(
             conversation_id="conv_1",
             turn_id="turn_0",
             kind=MemoryKind.PREFERENCE,
             content="用户偏好本地优先的方案。",
+            reason="明确表达",
+        )
+        self.proposals.create_proposal(
+            conversation_id="conv_2",
+            turn_id="turn_0",
+            kind=MemoryKind.FACT,
+            content="用户喜欢深色模式。",
             reason="明确表达",
         )
         self.memories.create_memory(
@@ -263,9 +274,12 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
             assistant_message="好的。",
         )
         transcript = provider.requests[0].messages[1].content
-        self.assertIn("语义相同的不要再提案", transcript)
-        self.assertIn("待确认：用户偏好本地优先的方案。", transcript)
+        self.assertIn("与已记住语义相同的不要再提案", transcript)
+        self.assertIn(
+            f"待确认 {pending.id}：用户偏好本地优先的方案。", transcript
+        )
         self.assertIn("已记住：用户在上海工作。", transcript)
+        self.assertNotIn("用户喜欢深色模式。", transcript)
 
         empty_database = Database(
             Path(self._temporary_directory.name) / "empty.db"

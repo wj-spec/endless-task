@@ -283,6 +283,20 @@ def task_proposal_json(record) -> dict[str, object]:
     }
 
 
+def task_run_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "taskId": record.task_id,
+        "trigger": record.trigger.value,
+        "status": record.status.value,
+        "conversationId": record.conversation_id,
+        "turnId": record.turn_id,
+        "error": record.error,
+        "startedAt": record.started_at,
+        "finishedAt": record.finished_at,
+    }
+
+
 def artifact_json(record) -> dict[str, object]:
     return {
         "id": record.id,

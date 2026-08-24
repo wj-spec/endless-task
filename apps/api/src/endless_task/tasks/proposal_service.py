@@ -13,6 +13,7 @@ import uuid
 from typing import Optional, Tuple
 
 from endless_task.domain.models import TaskProposal
+from endless_task.domain.models import TaskProposalStatus
 from endless_task.domain.repositories import RepositoryError
 from endless_task.domain.task_schedule import (
     TaskSchedule,
@@ -43,9 +44,12 @@ _EXTRACTION_SYSTEM_PROMPT = (
     '{"kind":"weekly","weekday":1-7,"time":"HH:MM"}、'
     '{"kind":"monthly","day":1-28,"time":"HH:MM"}；'
     "周期或时间无法结构化时输出 null。"
+    "5. 随附“已安排/待确认清单”：与已安排语义相同的输出 null；"
+    "与待确认语义相同的照常输出新提案，并把旧提案 id 填入 supersedes"
+    "（系统会取消旧提案、保留新提案）。"
     "只输出 JSON：{\"task\":{\"title\":\"短标题\","
     "\"commitment\":\"完整自然语言承诺\",\"schedule\":{...},"
-    "\"reason\":\"为什么这是周期承诺\"}}；"
+    "\"reason\":\"为什么这是周期承诺\",\"supersedes\":\"旧提案 id 或省略\"}}；"
     "没有合适内容时输出 {\"task\":null}。"
 )
 
@@ -118,7 +122,7 @@ class TaskProposalService:
             return ()
         transcript = (
             f"用户：{user_message.strip()}\nAssistant：{stripped_answer}"
-            f"{self._awareness_block()}"
+            f"{self._awareness_block(conversation_id)}"
         )
         request = ProviderRequest(
             request_id=f"taskp_{uuid.uuid4().hex}",
@@ -158,18 +162,6 @@ class TaskProposalService:
         if self._matches_existing_task(commitment.strip(), schedule):
             return ()
 
-        schedule_json = json.dumps(
-            serialize_task_schedule(schedule),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        if (
-            self._proposal_repository.find_pending_by_commitment(
-                commitment.strip(), schedule_json
-            )
-            is not None
-        ):
-            return ()
         try:
             proposal = self._proposal_repository.create_proposal(
                 conversation_id=conversation_id,
@@ -181,6 +173,7 @@ class TaskProposalService:
             )
         except RepositoryError:
             return ()
+        self._supersede(conversation_id, proposal, payload.get("supersedes"))
         return (proposal,)
 
     def _matches_existing_task(
@@ -200,7 +193,7 @@ class TaskProposalService:
                 return True
         return False
 
-    def _awareness_block(self) -> str:
+    def _awareness_block(self, conversation_id: str) -> str:
         lines: list[str] = []
         if self._task_repository is not None:
             for record in self._task_repository.list_tasks()[:TASK_LIST_CAP]:
@@ -211,20 +204,53 @@ class TaskProposalService:
                     f"- 已安排：{snippet}"
                     f"（{describe_task_schedule(record.schedule)}）"
                 )
-        for proposal in self._proposal_repository.list_pending(
-            limit=PENDING_LIST_CAP
-        ):
+        for proposal in self._proposal_repository.list_proposals(
+            conversation_id=conversation_id
+        )[:PENDING_LIST_CAP]:
             snippet = proposal.commitment.strip().replace("\n", " ")[
                 :LIST_SNIPPET_CHARS
             ]
-            lines.append(f"- 待确认：{snippet}")
+            lines.append(f"- 待确认 {proposal.id}：{snippet}")
         if not lines:
             return ""
         return (
-            "\n以下是待确认或已安排的承诺，语义相同的不要再提案；"
-            "若 Assistant 回答中说明该安排已经生效或已记录，输出 null。\n"
+            "\n以下是待确认或已安排的承诺：与“已安排”语义相同的输出 null；"
+            "与“待确认”语义相同的照常输出新提案，并把对应旧 id 填入 supersedes。\n"
             + "\n".join(lines)
         )
+
+    def _supersede(
+        self,
+        conversation_id: str,
+        created: TaskProposal,
+        supersedes: object,
+    ) -> None:
+        stale_ids: list[str] = []
+        if isinstance(supersedes, str) and supersedes.strip():
+            candidate = supersedes.strip()
+            try:
+                referenced = self._proposal_repository.get_proposal(candidate)
+            except RepositoryError:
+                referenced = None
+            if (
+                referenced is not None
+                and referenced.status is TaskProposalStatus.PENDING
+                and referenced.conversation_id == conversation_id
+            ):
+                stale_ids.append(candidate)
+        created_schedule = serialize_task_schedule(created.schedule)
+        for pending in self._proposal_repository.list_proposals(
+            conversation_id=conversation_id
+        ):
+            if pending.id == created.id:
+                continue
+            if serialize_task_schedule(pending.schedule) == created_schedule:
+                stale_ids.append(pending.id)
+        for stale_id in dict.fromkeys(stale_ids):
+            try:
+                self._proposal_repository.cancel_proposal(stale_id)
+            except RepositoryError:
+                continue
 
     @staticmethod
     def _parse_task(raw: str) -> Optional[dict]:

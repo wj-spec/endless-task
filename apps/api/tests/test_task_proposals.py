@@ -132,7 +132,13 @@ class TaskProposalRepositoryTest(unittest.TestCase):
         self.assertEqual("09:00", proposal.schedule.time)
 
         duplicate = self._create(turn_id="turn_2")
-        self.assertEqual(proposal.id, duplicate.id)
+        self.assertNotEqual(proposal.id, duplicate.id)
+        self.assertEqual(
+            2, len(self.proposals.list_proposals(conversation_id="conv_1"))
+        )
+        cancelled = self.proposals.cancel_proposal(proposal.id)
+        self.assertEqual("cancelled", cancelled.status.value)
+        self.assertIsNotNone(cancelled.resolved_at)
         self.assertEqual(
             1, len(self.proposals.list_proposals(conversation_id="conv_1"))
         )
@@ -271,7 +277,29 @@ class TaskProposalServiceTest(unittest.IsolatedAsyncioTestCase):
             user_message="再说一次。",
             assistant_message=PERIODIC_ANSWER,
         )
-        self.assertEqual((), repeated)
+        self.assertEqual(1, len(repeated))
+        self.assertEqual(
+            "cancelled",
+            self.proposals.get_proposal(created[0].id).status.value,
+        )
+        self.assertEqual(
+            1, len(self.proposals.list_proposals(conversation_id="conv_1"))
+        )
+        self.assertEqual(
+            repeated[0].id,
+            self.proposals.list_proposals(conversation_id="conv_1")[0].id,
+        )
+
+        cross = await service.generate_for_turn(
+            conversation_id="conv_2",
+            turn_id="turn_9",
+            user_message=PERIODIC_USER,
+            assistant_message=PERIODIC_ANSWER,
+        )
+        self.assertEqual(1, len(cross))
+        self.assertEqual(
+            1, len(self.proposals.list_proposals(conversation_id="conv_2"))
+        )
         self.assertEqual(
             1, len(self.proposals.list_proposals(conversation_id="conv_1"))
         )
@@ -298,7 +326,7 @@ class TaskProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((), blocked)
         self.assertEqual(
-            0, len(fresh_proposals.list_proposals(conversation_id="conv_2"))
+            1, len(fresh_proposals.list_proposals(conversation_id="conv_2"))
         )
 
     async def test_short_answers_are_skipped(self) -> None:
@@ -342,12 +370,20 @@ class TaskProposalServiceTest(unittest.IsolatedAsyncioTestCase):
             source_conversation_id="conv_1",
             source_turn_id="turn_0",
         )
-        self.proposals.create_proposal(
-            conversation_id="conv_2",
+        pending = self.proposals.create_proposal(
+            conversation_id="conv_1",
             turn_id="turn_0",
             title="每日天气",
             commitment="每天 08:00 播报天气",
             schedule={"kind": "daily", "time": "08:00"},
+            reason="用户要求周期性执行",
+        )
+        self.proposals.create_proposal(
+            conversation_id="conv_2",
+            turn_id="turn_0",
+            title="每日吃药",
+            commitment="每天 07:00 提醒吃药",
+            schedule={"kind": "daily", "time": "07:00"},
             reason="用户要求周期性执行",
         )
         provider = TextProvider([json.dumps({"task": None})])
@@ -359,12 +395,13 @@ class TaskProposalServiceTest(unittest.IsolatedAsyncioTestCase):
             assistant_message=PERIODIC_ANSWER,
         )
         transcript = provider.requests[0].messages[1].content
-        self.assertIn("语义相同的不要再提案", transcript)
+        self.assertIn("与“已安排”语义相同的输出 null", transcript)
         self.assertIn(
             "已安排：每周一 09:00 总结上周的项目进展（每周一 09:00）",
             transcript,
         )
-        self.assertIn("待确认：每天 08:00 播报天气", transcript)
+        self.assertIn(f"待确认 {pending.id}：每天 08:00 播报天气", transcript)
+        self.assertNotIn("每天 07:00 提醒吃药", transcript)
 
         empty_database = Database(
             Path(self._temporary_directory.name) / "empty.db"

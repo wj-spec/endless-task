@@ -324,6 +324,31 @@ class TaskProposal:
     resolved_at: Optional[str] = None
 
 
+class TaskRunTrigger(str, Enum):
+    MANUAL = "manual"
+    SCHEDULED = "scheduled"
+
+
+class TaskRunStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class TaskRun:
+    id: str
+    task_id: str
+    trigger: TaskRunTrigger
+    status: TaskRunStatus
+    conversation_id: str
+    turn_id: Optional[str]
+    error: Optional[str]
+    started_at: str
+    finished_at: Optional[str] = None
+
+
 @dataclass(frozen=True)
 class ToolCallJournal:
     id: str

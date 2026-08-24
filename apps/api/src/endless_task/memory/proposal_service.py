@@ -25,8 +25,12 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "你是记忆提取助手。阅读一段用户与 Assistant 的对话，"
     "仅当用户明确表达了值得长期保留的偏好（preference）或事实（fact）时，"
     "才提出记忆提案。不要推断、猜测或提取文件内容。"
+    "随附“待确认/已记住清单”：与已记住语义相同的不要再提案；"
+    "与待确认语义相同的照常输出新提案，并把旧提案 id 填入该条目的 supersedes"
+    "（系统会取消旧提案、保留新提案）。"
     '只输出 JSON：{"proposals":[{"kind":"preference|fact",'
-    '"content":"规范化后的记忆文本","reason":"为什么值得记住"}]}；'
+    '"content":"规范化后的记忆文本","reason":"为什么值得记住",'
+    '"supersedes":"旧提案 id 或省略"}]}；'
     "没有合适内容时输出 {\"proposals\":[]}。"
 )
 
@@ -93,7 +97,7 @@ class MemoryProposalService:
     ) -> Tuple[MemoryProposal, ...]:
         transcript = (
             f"用户：{user_message.strip()}\nAssistant：{assistant_message.strip()}"
-            f"{self._awareness_block()}"
+            f"{self._awareness_block(conversation_id)}"
         )
         request = ProviderRequest(
             request_id=f"memp_{uuid.uuid4().hex}",
@@ -121,8 +125,6 @@ class MemoryProposalService:
             content = str(item.get("content", "")).strip()
             if not content or content in active_contents:
                 continue
-            if self._proposal_repository.find_pending_by_content(content) is not None:
-                continue
             try:
                 proposal = self._proposal_repository.create_proposal(
                     conversation_id=conversation_id,
@@ -133,18 +135,51 @@ class MemoryProposalService:
                 )
             except RepositoryError:
                 continue
+            self._supersede(conversation_id, proposal, item.get("supersedes"))
             created.append(proposal)
         return tuple(created)
 
-    def _awareness_block(self) -> str:
-        lines: list[str] = []
-        for proposal in self._proposal_repository.list_pending(
-            limit=PENDING_LIST_CAP
+    def _supersede(
+        self,
+        conversation_id: str,
+        created: MemoryProposal,
+        supersedes: object,
+    ) -> None:
+        stale_ids: list[str] = []
+        if isinstance(supersedes, str) and supersedes.strip():
+            candidate = supersedes.strip()
+            try:
+                referenced = self._proposal_repository.get_proposal(candidate)
+            except RepositoryError:
+                referenced = None
+            if (
+                referenced is not None
+                and referenced.conversation_id == conversation_id
+                and referenced.status.value == "pending"
+            ):
+                stale_ids.append(candidate)
+        for pending in self._proposal_repository.list_proposals(
+            conversation_id=conversation_id
         ):
+            if pending.id == created.id:
+                continue
+            if pending.content.strip() == created.content.strip():
+                stale_ids.append(pending.id)
+        for stale_id in dict.fromkeys(stale_ids):
+            try:
+                self._proposal_repository.cancel_proposal(stale_id)
+            except RepositoryError:
+                continue
+
+    def _awareness_block(self, conversation_id: str) -> str:
+        lines: list[str] = []
+        for proposal in self._proposal_repository.list_proposals(
+            conversation_id=conversation_id
+        )[:PENDING_LIST_CAP]:
             snippet = proposal.content.strip().replace("\n", " ")[
                 :LIST_SNIPPET_CHARS
             ]
-            lines.append(f"- 待确认：{snippet}")
+            lines.append(f"- 待确认 {proposal.id}：{snippet}")
         for record in self._memory_repository.list_memories()[:ACTIVE_LIST_CAP]:
             snippet = record.content.strip().replace("\n", " ")[
                 :LIST_SNIPPET_CHARS
@@ -153,7 +188,8 @@ class MemoryProposalService:
         if not lines:
             return ""
         return (
-            "\n以下是待确认或已记住的内容，语义相同的不要再提案。\n"
+            "\n以下是待确认或已记住的内容：与已记住语义相同的不要再提案；"
+            "与待确认语义相同的照常输出新提案，并把对应旧 id 填入 supersedes。\n"
             + "\n".join(lines)
         )
 

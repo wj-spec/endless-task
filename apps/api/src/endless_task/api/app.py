@@ -22,6 +22,7 @@ from endless_task.domain.models import (
     PermissionMode,
     TurnStatus,
 )
+from endless_task.domain.models import TaskRunTrigger
 from endless_task.domain.repositories import (
     ConflictError,
     InvalidStateError,
@@ -56,7 +57,7 @@ from endless_task.artifacts.export_service import (
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
-from endless_task.tasks import TaskProposalService
+from endless_task.tasks import TaskProposalService, TaskWorker
 from endless_task.storage import (
     Database,
     SqliteArtifactProposalRepository,
@@ -70,6 +71,7 @@ from endless_task.storage import (
     SqliteRuntimeRepository,
     SqliteTaskRepository,
     SqliteTaskProposalRepository,
+    SqliteTaskRunRepository,
 )
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
@@ -89,6 +91,7 @@ from .serialization import (
     uploaded_text_file_json,
     task_json,
     task_proposal_json,
+    task_run_json,
 )
 
 
@@ -181,6 +184,7 @@ class AppSettings:
     max_output_tokens: int = 2_048
     summary_token_limit: int = 1_024
     max_concurrent_model_calls: int = 2
+    max_concurrent_task_runs: int = 1
     max_agent_iterations: int = 4
     max_tool_calls_per_turn: int = 8
     agent_timeout_seconds: float = 120.0
@@ -278,6 +282,9 @@ class AppSettings:
             max_concurrent_model_calls=int(
                 env.get("ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS", "2")
             ),
+            max_concurrent_task_runs=int(
+                env.get("ENDLESS_TASK_MAX_TASK_RUNS", "1")
+            ),
             max_agent_iterations=int(
                 env.get("ENDLESS_TASK_MAX_AGENT_ITERATIONS", "4")
             ),
@@ -318,6 +325,8 @@ class AppContainer:
     task_repository: SqliteTaskRepository
     task_proposal_repository: SqliteTaskProposalRepository
     task_proposal_service: Optional[TaskProposalService]
+    task_run_repository: SqliteTaskRunRepository
+    task_worker: TaskWorker
     reference_resolver: SourceReferenceResolver
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
@@ -487,6 +496,7 @@ def _build_container(
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
     task_proposal_repository = SqliteTaskProposalRepository(database)
+    task_run_repository = SqliteTaskRunRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -615,6 +625,12 @@ def _build_container(
         runtime=runtime,
         on_turn_completed=on_turn_completed,
     )
+    task_worker = TaskWorker(
+        task_repository=task_repository,
+        run_repository=task_run_repository,
+        controller=controller,
+        max_concurrent_task_runs=settings.max_concurrent_task_runs,
+    )
     return AppContainer(
         settings=settings,
         database=database,
@@ -629,6 +645,8 @@ def _build_container(
         task_repository=task_repository,
         task_proposal_repository=task_proposal_repository,
         task_proposal_service=task_proposal_service,
+        task_run_repository=task_run_repository,
+        task_worker=task_worker,
         artifact_proposal_service=artifact_proposal_service,
         reference_resolver=reference_resolver,
         memory_proposal_service=memory_proposal_service,
@@ -675,6 +693,7 @@ def create_app(
         try:
             yield
         finally:
+            await container.task_worker.drain()
             await container.controller.shutdown()
             close_provider = getattr(container.provider, "close", None)
             if close_provider is not None:
@@ -872,6 +891,15 @@ def create_app(
 
     @app.delete("/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str) -> Response:
+        container.task_repository.cancel_tasks_for_conversation(
+            conversation_id
+        )
+        container.task_proposal_repository.cancel_proposals_for_conversation(
+            conversation_id
+        )
+        container.proposal_repository.cancel_proposals_for_conversation(
+            conversation_id
+        )
         container.chat_repository.delete_conversation(conversation_id)
         return Response(status_code=204)
 
@@ -933,6 +961,18 @@ def create_app(
     @app.get("/tasks/{task_id}")
     async def get_task(task_id: str) -> dict[str, object]:
         return {"task": task_json(container.task_repository.get_task(task_id))}
+
+    @app.post("/tasks/{task_id}/run", status_code=202)
+    async def run_task(task_id: str) -> dict[str, object]:
+        run = await container.task_worker.start(
+            task_id, trigger=TaskRunTrigger.MANUAL
+        )
+        return {"run": task_run_json(run)}
+
+    @app.get("/tasks/{task_id}/runs")
+    async def list_task_runs(task_id: str) -> dict[str, object]:
+        runs = container.task_run_repository.list_runs(task_id=task_id)
+        return {"items": [task_run_json(item) for item in runs]}
 
     @app.get("/conversations/{conversation_id}/task-proposals")
     async def list_task_proposals(

@@ -99,13 +99,6 @@ class SqliteTaskProposalRepository:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-
-        existing = self.find_pending_by_commitment(
-            normalized_commitment, schedule_json
-        )
-        if existing is not None:
-            return existing
-
         now = self._clock()
         proposal_id = self._id_factory("taskp")
         with self._database.transaction() as connection:
@@ -155,7 +148,7 @@ class SqliteTaskProposalRepository:
         return tuple(task_proposal_from_row(row) for row in rows)
 
     def find_pending_by_commitment(
-        self, commitment: str, schedule_json: str
+        self, commitment: str, schedule_json: str, *, conversation_id: str
     ) -> Optional[TaskProposal]:
         normalized = commitment.strip()
         if not normalized:
@@ -165,9 +158,15 @@ class SqliteTaskProposalRepository:
                 """
                 SELECT * FROM task_proposals
                 WHERE status = ? AND commitment = ? AND schedule = ?
+                    AND conversation_id = ?
                 ORDER BY created_at, id
                 """,
-                (TaskProposalStatus.PENDING.value, normalized, schedule_json),
+                (
+                    TaskProposalStatus.PENDING.value,
+                    normalized,
+                    schedule_json,
+                    conversation_id.strip(),
+                ),
             ).fetchone()
         return task_proposal_from_row(row) if row is not None else None
 
@@ -181,6 +180,29 @@ class SqliteTaskProposalRepository:
                 query, (TaskProposalStatus.PENDING.value, limit)
             ).fetchall()
         return tuple(task_proposal_from_row(row) for row in rows)
+
+    def cancel_proposal(self, proposal_id: str) -> TaskProposal:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Task proposal not found: {proposal_id}")
+            proposal = task_proposal_from_row(row)
+            if proposal.status is not TaskProposalStatus.PENDING:
+                raise InvalidStateError(
+                    "Only pending task proposals can be cancelled."
+                )
+            connection.execute(
+                """
+                UPDATE task_proposals
+                SET status = ?, resolved_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (TaskProposalStatus.CANCELLED.value, now, now, proposal_id),
+            )
+        return self.get_proposal(proposal_id)
 
     def accept_proposal(
         self, proposal_id: str
@@ -259,6 +281,25 @@ class SqliteTaskProposalRepository:
                 (TaskProposalStatus.REJECTED.value, now, now, proposal_id),
             )
         return self.get_proposal(proposal_id)
+
+    def cancel_proposals_for_conversation(self, conversation_id: str) -> int:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE task_proposals
+                SET status = ?, resolved_at = ?, updated_at = ?
+                WHERE conversation_id = ? AND status = ?
+                """,
+                (
+                    TaskProposalStatus.CANCELLED.value,
+                    now,
+                    now,
+                    conversation_id.strip(),
+                    TaskProposalStatus.PENDING.value,
+                ),
+            )
+        return cursor.rowcount or 0
 
     def _get_task(self, task_id: str) -> TaskRecord:
         with self._database.connect() as connection:

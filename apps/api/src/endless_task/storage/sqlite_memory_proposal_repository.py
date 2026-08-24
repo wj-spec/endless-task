@@ -212,6 +212,48 @@ class SqliteMemoryProposalRepository:
             )
         return self.get_proposal(proposal_id)
 
+    def cancel_proposal(self, proposal_id: str) -> MemoryProposal:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM memory_proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Memory proposal not found: {proposal_id}")
+            proposal = self._from_row(row)
+            if proposal.status is not MemoryProposalStatus.PENDING:
+                raise InvalidStateError(
+                    "Only pending proposals can be cancelled."
+                )
+            connection.execute(
+                """
+                UPDATE memory_proposals
+                SET status = ?, resolved_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (MemoryProposalStatus.CANCELLED.value, now, now, proposal_id),
+            )
+        return self.get_proposal(proposal_id)
+
+    def cancel_proposals_for_conversation(self, conversation_id: str) -> int:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memory_proposals
+                SET status = ?, resolved_at = ?, updated_at = ?
+                WHERE conversation_id = ? AND status = ?
+                """,
+                (
+                    MemoryProposalStatus.CANCELLED.value,
+                    now,
+                    now,
+                    conversation_id.strip(),
+                    MemoryProposalStatus.PENDING.value,
+                ),
+            )
+        return cursor.rowcount or 0
+
     def _validate_kind(self, kind: MemoryKind) -> MemoryKind:
         if isinstance(kind, MemoryKind):
             return kind
