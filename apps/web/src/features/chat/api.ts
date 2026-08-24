@@ -10,6 +10,7 @@ import type {
   ConversationStatus,
   HealthSnapshot,
   MemoryProposal,
+  MemoryRecord,
   RuntimeEvent,
   TurnCommandResponse,
   UploadedTextFile,
@@ -183,6 +184,19 @@ export const chatApi = {
     );
     return response.items;
   },
+  listMemories: async (includeDeleted = false) => {
+    const response = await request<{ items: MemoryRecord[] }>(
+      `/memories?include_deleted=${includeDeleted}`,
+    );
+    return response.items;
+  },
+  updateMemory: (memoryId: string, content: string) =>
+    request<{ memory: MemoryRecord }>(`/memories/${memoryId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    }),
+  deleteMemory: (memoryId: string) =>
+    request<void>(`/memories/${memoryId}`, { method: "DELETE" }),
   rollbackArtifact: (
     artifactId: string,
     body: {

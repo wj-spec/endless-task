@@ -284,3 +284,20 @@ export type ArtifactDetailSnapshot = {
   artifact: ArtifactRecordSummary;
   currentVersion: ArtifactVersionRecord;
 };
+
+export type MemoryStatus = "active" | "expired" | "deleted";
+
+export type MemoryRecord = {
+  id: string;
+  kind: string;
+  content: string;
+  status: MemoryStatus;
+  sourceConversationId: string;
+  sourceTurnId: string;
+  writeOrigin: string;
+  createdAt: string;
+  updatedAt: string;
+  sourceProposalId: string | null;
+  expiredReason: string | null;
+  supersededBy: string | null;
+};

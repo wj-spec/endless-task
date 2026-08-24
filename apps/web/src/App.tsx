@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
+import { MemoryManagement } from "./features/memory/MemoryManagement";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
 import { SessionRail } from "./features/chat/SessionRail";
@@ -35,6 +36,7 @@ export function App() {
   const workspaceVisible = workspace.workspace?.visible === true;
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   useEffect(() => {
     setWorkspaceCollapsed(false);
@@ -81,6 +83,7 @@ export function App() {
         onDismissError={() => chat.setError(null)}
         onDraftChange={chat.setDraft}
         onMenu={() => setRailOpen(true)}
+        onOpenMemory={() => setMemoryOpen(true)}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
         onResolveApproval={(turnId, approvalId, decision) =>
           void chat.resolveApproval(turnId, approvalId, decision)
@@ -153,6 +156,9 @@ export function App() {
           onClick={() => setRailOpen(false)}
           type="button"
         />
+      ) : null}
+      {memoryOpen ? (
+        <MemoryManagement onClose={() => setMemoryOpen(false)} />
       ) : null}
     </div>
   );

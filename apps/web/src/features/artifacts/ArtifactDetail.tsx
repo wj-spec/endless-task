@@ -5,7 +5,11 @@ import {
   downloadArtifactExport,
   type ExportFormat,
 } from "../chat/api";
-import type { ArtifactDetailSnapshot, ArtifactVersionRecord } from "../chat/apiTypes";
+import type {
+  ArtifactDetailSnapshot,
+  ArtifactVersionRecord,
+  SourceReference,
+} from "../chat/apiTypes";
 import { MessageContent } from "../chat/MessageContent";
 import { formatRelativeTime } from "./time";
 
@@ -25,6 +29,35 @@ const operationLabel = {
   chat_continue: "聊天继续",
   rollback: "回滚",
 } as const;
+
+function referenceDisplay(reference: SourceReference): {
+  primary: string;
+  range: string | null;
+  typeLabel: string;
+} {
+  if (reference.type === "file") {
+    return {
+      primary: reference.fileName ?? reference.label,
+      range: reference.lineRange
+        ? `L${reference.lineRange[0]}–${reference.lineRange[1]}`
+        : null,
+      typeLabel: "文件",
+    };
+  }
+  if (reference.type === "memory") {
+    const snippet = reference.memorySnippet?.trim() ?? "";
+    return {
+      primary: snippet
+        ? snippet.length > 40
+          ? `${snippet.slice(0, 40)}…`
+          : snippet
+        : "长期记忆",
+      range: null,
+      typeLabel: "记忆",
+    };
+  }
+  return { primary: reference.label, range: null, typeLabel: "来源" };
+}
 
 const EXPORT_FORMATS: { format: ExportFormat; label: string }[] = [
   { format: "markdown", label: "Markdown" },
@@ -126,6 +159,31 @@ export function ArtifactDetail({
               v{detail.currentVersion.ordinal} · 更新于{" "}
               {formatRelativeTime(detail.artifact.updatedAt)}
             </div>
+            {detail.currentVersion.sourceReferences?.length ? (
+              <div className="reference-list" aria-label="来源引用">
+                <span className="reference-list-label">来源</span>
+                {detail.currentVersion.sourceReferences.map((reference) => {
+                  const display = referenceDisplay(reference);
+                  return (
+                    <span
+                      className={`ref-chip${reference.resolved ? "" : " is-unresolved"}`}
+                      key={reference.label}
+                      title={reference.label}
+                    >
+                      <span className="ref-chip-type">{display.typeLabel}</span>
+                      <span className="ref-chip-text">
+                        {reference.resolved
+                          ? display.primary
+                          : `${display.primary}（未能解析）`}
+                      </span>
+                      {display.range ? (
+                        <span className="ref-chip-range">{display.range}</span>
+                      ) : null}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="artifact-toolbar" aria-label="导出">
               <span className="artifact-toolbar-label">导出</span>
               {EXPORT_FORMATS.map(({ format, label }) => (

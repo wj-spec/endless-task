@@ -26,6 +26,7 @@ type ChatWorkSurfaceProps = {
   onDismissError: () => void;
   onDraftChange: (value: string) => void;
   onMenu: () => void;
+  onOpenMemory: () => void;
   onRegenerate: (turnId: string) => void;
   onResolveApproval: (
     turnId: string,
@@ -77,6 +78,7 @@ export function ChatWorkSurface({
   onDismissError,
   onDraftChange,
   onMenu,
+  onOpenMemory,
   onRegenerate,
   onResolveApproval,
   onRemoveFile,
@@ -149,8 +151,14 @@ export function ChatWorkSurface({
           )}
           <span>{archived ? "已归档" : "私人对话"}</span>
         </div>
-        {conversation ? (
-          <div className="conversation-actions">
+        <div className="surface-header-side">
+          <div className="surface-global-actions">
+            <button onClick={onOpenMemory} type="button">
+              记忆
+            </button>
+          </div>
+          {conversation ? (
+            <div className="conversation-actions">
             <button onClick={() => setRenaming(true)} type="button">
               重命名
             </button>
@@ -167,8 +175,9 @@ export function ChatWorkSurface({
             >
               删除
             </button>
-          </div>
-        ) : null}
+            </div>
+          ) : null}
+        </div>
       </header>
 
       <div className="conversation-stream" ref={streamRef}>
