@@ -196,3 +196,91 @@ export type LiveTurn = {
   pendingApproval?: ApprovalRequest;
   activities: ActivitySnapshot[];
 };
+
+export type ArtifactProposalStatus = "pending" | "accepted" | "rejected" | "cancelled";
+
+export type ArtifactKind = "markdown" | "text";
+
+export type ArtifactProposal = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  title: string;
+  kind: ArtifactKind;
+  content: string;
+  reason: string;
+  status: ArtifactProposalStatus;
+  sourceLabels: string[];
+  targetArtifactId: string | null;
+  baseVersionOrdinal: number | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedArtifactId: string | null;
+  resolvedAt: string | null;
+};
+
+export type ArtifactRecordSummary = {
+  id: string;
+  title: string;
+  kind: ArtifactKind;
+  status: "active" | "deleted";
+  currentVersionOrdinal: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
+export type MemoryProposalStatus = "pending" | "accepted" | "rejected" | "cancelled";
+
+export type MemoryProposal = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  kind: string;
+  content: string;
+  reason: string;
+  status: MemoryProposalStatus;
+  createdAt: string;
+  updatedAt: string;
+  resolvedMemoryId: string | null;
+  resolvedAt: string | null;
+};
+
+export type WorkspaceSnapshot = {
+  conversationId: string;
+  visible: boolean;
+  artifacts: ArtifactRecordSummary[];
+  pendingProposals: ArtifactProposal[];
+};
+
+export type ArtifactVersionOperation = "create" | "update" | "chat_continue" | "rollback";
+
+export type SourceReference = {
+  label: string;
+  type: string;
+  resolved: boolean;
+  fileId?: string;
+  fileName?: string;
+  lineRange?: [number, number];
+  memoryId?: string;
+  memorySnippet?: string;
+};
+
+export type ArtifactVersionRecord = {
+  id: string;
+  artifactId: string;
+  ordinal: number;
+  content: string;
+  operation: ArtifactVersionOperation;
+  sourceConversationId: string;
+  sourceTurnId: string;
+  sourceLabels: string[];
+  note: string | null;
+  createdAt: string;
+  sourceReferences?: SourceReference[];
+};
+
+export type ArtifactDetailSnapshot = {
+  artifact: ArtifactRecordSummary;
+  currentVersion: ArtifactVersionRecord;
+};

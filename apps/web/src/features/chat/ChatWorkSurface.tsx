@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  ArtifactRecordSummary,
   ConversationSnapshot,
   HealthSnapshot,
   LiveTurn,
   ResponseVariantSnapshot,
 } from "./apiTypes";
+import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
+import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
+import type { TurnProposals } from "../proposals/useProposals";
 import { MessageContent } from "./MessageContent";
 
 type ChatWorkSurfaceProps = {
@@ -35,6 +39,12 @@ type ChatWorkSurfaceProps = {
   onSelectVariant: (turnId: string, variantId: string) => void;
   onSend: () => void;
   onUploadFile: (file: File) => void;
+  proposalBusyId: string | null;
+  proposalErrors: Record<string, string>;
+  resolvedArtifacts: Record<string, ArtifactRecordSummary>;
+  turnProposals: (turnId: string) => TurnProposals;
+  onResolveArtifactProposal: (proposalId: string, decision: "accept" | "reject") => void;
+  onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
 };
 
 const statusText = {
@@ -76,6 +86,12 @@ export function ChatWorkSurface({
   onSelectVariant,
   onSend,
   onUploadFile,
+  proposalBusyId,
+  proposalErrors,
+  resolvedArtifacts,
+  turnProposals,
+  onResolveArtifactProposal,
+  onResolveMemoryProposal,
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -329,6 +345,40 @@ export function ChatWorkSurface({
                     ) : null}
                   </div>
                 </article>
+
+                {(() => {
+                  const proposals = turnProposals(turnSnapshot.turn.id);
+                  if (!proposals.artifacts.length && !proposals.memories.length) {
+                    return null;
+                  }
+                  return (
+                    <div className="proposal-stack">
+                      {proposals.artifacts.map((proposal) => (
+                        <ArtifactProposalCard
+                          busy={proposalBusyId === proposal.id}
+                          error={proposalErrors[proposal.id] ?? null}
+                          key={proposal.id}
+                          onResolve={(decision) =>
+                            onResolveArtifactProposal(proposal.id, decision)
+                          }
+                          proposal={proposal}
+                          resolvedArtifact={resolvedArtifacts[proposal.id] ?? null}
+                        />
+                      ))}
+                      {proposals.memories.map((proposal) => (
+                        <MemoryProposalCard
+                          busy={proposalBusyId === proposal.id}
+                          error={proposalErrors[proposal.id] ?? null}
+                          key={proposal.id}
+                          onResolve={(decision) =>
+                            onResolveMemoryProposal(proposal.id, decision)
+                          }
+                          proposal={proposal}
+                        />
+                      ))}
+                    </div>
+                  );
+                })()}
               </section>
             );
           })}

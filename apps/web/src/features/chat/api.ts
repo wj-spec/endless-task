@@ -1,13 +1,18 @@
 import type {
   CompactTurnSnapshot,
   ApprovalRequest,
+  ArtifactDetailSnapshot,
+  ArtifactProposal,
+  ArtifactRecordSummary,
   Conversation,
   ConversationSnapshot,
   ConversationStatus,
   HealthSnapshot,
+  MemoryProposal,
   RuntimeEvent,
   TurnCommandResponse,
   UploadedTextFile,
+  WorkspaceSnapshot,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -145,6 +150,32 @@ export const chatApi = {
       method: "POST",
       body: JSON.stringify({ decision }),
     }),
+  listArtifactProposals: async (conversationId: string, includeResolved = false) => {
+    const response = await request<{ items: ArtifactProposal[] }>(
+      `/conversations/${conversationId}/artifact-proposals?include_resolved=${includeResolved}`,
+    );
+    return response.items;
+  },
+  resolveArtifactProposal: (proposalId: string, decision: "accept" | "reject") =>
+    request<{ proposal: ArtifactProposal; artifact?: ArtifactRecordSummary }>(
+      `/artifact-proposals/${proposalId}/resolve`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    ),
+  listMemoryProposals: async (conversationId: string, includeResolved = false) => {
+    const response = await request<{ items: MemoryProposal[] }>(
+      `/conversations/${conversationId}/memory-proposals?include_resolved=${includeResolved}`,
+    );
+    return response.items;
+  },
+  resolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") =>
+    request<{ proposal: MemoryProposal }>(`/memory-proposals/${proposalId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
+  getWorkspace: (conversationId: string) =>
+    request<WorkspaceSnapshot>(`/conversations/${conversationId}/workspace`),
+  getArtifact: (artifactId: string) =>
+    request<ArtifactDetailSnapshot>(`/artifacts/${artifactId}`),
 };
 
 export async function streamTurnEvents(options: {

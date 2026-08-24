@@ -1,14 +1,52 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
+import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
 import { SessionRail } from "./features/chat/SessionRail";
 import { useChatApplication } from "./features/chat/useChatApplication";
+import { useProposals } from "./features/proposals/useProposals";
+
+const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function App() {
   const chat = useChatApplication();
+  const proposals = useProposals(chat.activeConversationId);
   const [railOpen, setRailOpen] = useState(false);
 
+  const latestTurn = chat.activeSnapshot?.turns.at(-1);
+  const latestTurnStatus = latestTurn
+    ? (chat.liveTurns[latestTurn.turn.id]?.status ?? latestTurn.turn.status)
+    : undefined;
+
+  useEffect(() => {
+    if (!chat.activeConversationId || !latestTurn) return;
+    if (!latestTurnStatus || !TERMINAL_TURN_STATUSES.has(latestTurnStatus)) return;
+    proposals.watchTurn(chat.activeConversationId, latestTurn.turn.id);
+  }, [chat.activeConversationId, latestTurn, latestTurnStatus, proposals.watchTurn]);
+
+  const pendingArtifactProposalCount = useMemo(
+    () =>
+      proposals.artifactProposalsFor(chat.activeConversationId).filter(
+        (item) => item.status === "pending",
+      ).length,
+    [proposals, chat.activeConversationId],
+  );
+  const workspace = useWorkspace(chat.activeConversationId, pendingArtifactProposalCount);
+  const workspaceVisible = workspace.workspace?.visible === true;
+  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
+  const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    setWorkspaceCollapsed(false);
+    setWorkspaceDrawerOpen(false);
+  }, [chat.activeConversationId]);
+
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell${
+        workspaceVisible && !workspaceCollapsed ? " workspace-open" : ""
+      }`}
+    >
       <SessionRail
         activeConversationId={chat.activeConversationId}
         conversations={chat.conversations}
@@ -56,7 +94,55 @@ export function App() {
         }
         onSend={() => void chat.send()}
         onUploadFile={(file) => void chat.uploadFile(file)}
+        proposalBusyId={proposals.busyProposalId}
+        proposalErrors={proposals.resolveErrors}
+        resolvedArtifacts={proposals.resolvedArtifacts}
+        turnProposals={(turnId) =>
+          proposals.forTurn(chat.activeConversationId, turnId)
+        }
+        onResolveArtifactProposal={(proposalId, decision) =>
+          void proposals.resolveArtifactProposal(proposalId, decision)
+        }
+        onResolveMemoryProposal={(proposalId, decision) =>
+          void proposals.resolveMemoryProposal(proposalId, decision)
+        }
       />
+      {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
+        <WorkspacePanel
+          drawerOpen={workspaceDrawerOpen}
+          onCollapse={() => {
+            setWorkspaceCollapsed(true);
+            setWorkspaceDrawerOpen(false);
+          }}
+          workspace={workspace.workspace!}
+        />
+      ) : null}
+      {workspaceVisible && workspaceCollapsed && !workspaceDrawerOpen ? (
+        <button
+          className="workspace-reopen"
+          onClick={() => setWorkspaceCollapsed(false)}
+          type="button"
+        >
+          工作区
+        </button>
+      ) : null}
+      {workspaceVisible ? (
+        <button
+          className="workspace-fab"
+          onClick={() => setWorkspaceDrawerOpen((current) => !current)}
+          type="button"
+        >
+          工作区
+        </button>
+      ) : null}
+      {workspaceVisible && workspaceDrawerOpen ? (
+        <button
+          aria-label="关闭工作区"
+          className="workspace-scrim"
+          onClick={() => setWorkspaceDrawerOpen(false)}
+          type="button"
+        />
+      ) : null}
       {railOpen ? (
         <button
           aria-label="关闭会话列表"
