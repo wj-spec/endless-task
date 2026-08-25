@@ -348,6 +348,8 @@ class TaskRun:
     error: Optional[str]
     started_at: str
     finished_at: Optional[str] = None
+    awaiting_user: bool = False
+    awaiting_note: Optional[str] = None
 
 
 @dataclass(frozen=True)

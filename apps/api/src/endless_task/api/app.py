@@ -57,7 +57,12 @@ from endless_task.artifacts.export_service import (
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
-from endless_task.tasks import TaskProposalService, TaskScheduler, TaskWorker
+from endless_task.tasks import (
+    TaskProposalService,
+    TaskRunReviewService,
+    TaskScheduler,
+    TaskWorker,
+)
 from endless_task.storage import (
     Database,
     SqliteArtifactProposalRepository,
@@ -198,6 +203,7 @@ class AppSettings:
     task_proposals_enabled: bool = True
     scheduler_enabled: bool = True
     scheduler_tick_seconds: float = 30.0
+    task_run_review_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -259,6 +265,9 @@ class AppSettings:
                 env.get("ENDLESS_TASK_TASK_PROPOSALS", "1")
             ),
             scheduler_enabled=_parse_flag(env.get("ENDLESS_TASK_SCHEDULER", "1")),
+            task_run_review_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_RUN_REVIEW", "1")
+            ),
             scheduler_tick_seconds=float(
                 env.get("ENDLESS_TASK_SCHEDULER_TICK", "30")
             ),
@@ -634,11 +643,17 @@ def _build_container(
         runtime=runtime,
         on_turn_completed=on_turn_completed,
     )
+    task_run_review_service = None
+    if settings.task_run_review_enabled:
+        task_run_review_service = TaskRunReviewService(
+            provider=selected_provider, model=settings.model
+        )
     task_worker = TaskWorker(
         task_repository=task_repository,
         run_repository=task_run_repository,
         controller=controller,
         max_concurrent_task_runs=settings.max_concurrent_task_runs,
+        review_service=task_run_review_service,
     )
     task_scheduler = TaskScheduler(
         task_repository=task_repository,

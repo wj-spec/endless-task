@@ -32,6 +32,8 @@ def task_run_from_row(row) -> TaskRun:
         error=row["error"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+        awaiting_user=bool(row["awaiting_user"]),
+        awaiting_note=row["awaiting_note"],
     )
 
 
@@ -126,6 +128,8 @@ class SqliteTaskRunRepository:
         status: TaskRunStatus,
         *,
         error: Optional[str] = None,
+        awaiting_user: bool = False,
+        awaiting_note: Optional[str] = None,
     ) -> TaskRun:
         if status is TaskRunStatus.RUNNING:
             raise ValidationError("Task runs cannot be finished as running.")
@@ -141,9 +145,17 @@ class SqliteTaskRunRepository:
             connection.execute(
                 """
                 UPDATE task_runs
-                SET status = ?, error = ?, finished_at = ?
+                SET status = ?, error = ?, finished_at = ?,
+                    awaiting_user = ?, awaiting_note = ?
                 WHERE id = ?
                 """,
-                (status.value, error, now, run_id),
+                (
+                    status.value,
+                    error,
+                    now,
+                    1 if awaiting_user else 0,
+                    awaiting_note,
+                    run_id,
+                ),
             )
         return self.get_run(run_id)

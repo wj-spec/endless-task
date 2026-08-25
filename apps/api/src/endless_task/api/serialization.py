@@ -294,6 +294,8 @@ def task_run_json(record) -> dict[str, object]:
         "error": record.error,
         "startedAt": record.started_at,
         "finishedAt": record.finished_at,
+        "awaitingUser": record.awaiting_user,
+        "awaitingNote": record.awaiting_note,
     }
 
 

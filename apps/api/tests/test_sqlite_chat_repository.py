@@ -72,6 +72,7 @@ class SqliteChatRepositoryTest(unittest.TestCase):
                 "017_task_proposals.sql",
                 "018_task_runs.sql",
                 "019_task_lifecycle.sql",
+                "020_task_run_awaiting.sql",
             ),
             self.database.applied_migrations(),
         )
@@ -80,7 +81,7 @@ class SqliteChatRepositoryTest(unittest.TestCase):
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(19, row["count"])
+        self.assertEqual(20, row["count"])
 
     def test_create_turn_is_persisted_and_idempotent(self) -> None:
         conversation = self.repository.create_conversation()

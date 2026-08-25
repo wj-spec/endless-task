@@ -17,6 +17,7 @@ from endless_task.domain.models import (
     TaskRunStatus,
     TaskRunTrigger,
     TaskStatus,
+    TurnSnapshot,
     TurnStatus,
 )
 from endless_task.domain.repositories import InvalidStateError
@@ -26,6 +27,8 @@ from endless_task.storage import (
     SqliteTaskRepository,
     SqliteTaskRunRepository,
 )
+
+from .run_review_service import RunReview, TaskRunReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,7 @@ class TaskWorker:
         run_repository: SqliteTaskRunRepository,
         controller: TurnController,
         max_concurrent_task_runs: int = 1,
+        review_service: Optional[TaskRunReviewService] = None,
     ) -> None:
         if max_concurrent_task_runs <= 0:
             raise ValueError("max_concurrent_task_runs must be positive")
@@ -53,6 +57,7 @@ class TaskWorker:
         self._controller = controller
         self._semaphore = asyncio.Semaphore(max_concurrent_task_runs)
         self._tasks: set[asyncio.Task[None]] = set()
+        self._review_service = review_service
 
     async def start(
         self, task_id: str, *, trigger: TaskRunTrigger
@@ -124,8 +129,12 @@ class TaskWorker:
 
         status = snapshot.turn.status
         if status is TurnStatus.COMPLETED:
+            review = await self._review_run(snapshot)
             return self._run_repository.finish_run(
-                run_id, TaskRunStatus.COMPLETED
+                run_id,
+                TaskRunStatus.COMPLETED,
+                awaiting_user=review.awaiting_user,
+                awaiting_note=review.note,
             )
         if status is TurnStatus.CANCELLED:
             return self._run_repository.finish_run(
@@ -137,6 +146,24 @@ class TaskWorker:
             run_id,
             TaskRunStatus.FAILED,
             error="Turn did not complete successfully.",
+        )
+
+    async def _review_run(self, snapshot: TurnSnapshot) -> RunReview:
+        if self._review_service is None:
+            return RunReview(False)
+        active = next(
+            (
+                item
+                for item in snapshot.response_variants
+                if item.variant.id == snapshot.turn.active_response_variant_id
+            ),
+            None,
+        )
+        if active is None or not active.assistant_message.content.strip():
+            return RunReview(False)
+        return await self._review_service.review(
+            user_message=snapshot.user_message.content,
+            assistant_message=active.assistant_message.content,
         )
 
     async def drain(self) -> None:
