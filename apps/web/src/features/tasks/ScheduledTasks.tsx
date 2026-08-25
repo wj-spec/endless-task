@@ -141,6 +141,15 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
             const runs = runsByTask[task.id] ?? [];
             const lastRun = runs.length ? runs[runs.length - 1] : null;
             const running = lastRun?.status === "running";
+            const awaiting = lastRun?.awaitingUser ?? false;
+            const lastRunLabel = awaiting
+              ? "等待你处理"
+              : lastRun
+                ? RUN_STATUS_LABEL[lastRun.status]
+                : "";
+            const lastRunNote = awaiting
+              ? (lastRun?.awaitingNote ?? null)
+              : (lastRun?.error ?? null);
             return (
               <div className="memory-item" key={task.id}>
                 <div className="memory-content">
@@ -151,8 +160,8 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                   {lastRun ? (
                     <span className="proposal-reason">
                       上次执行：{RUN_TRIGGER_LABEL[lastRun.trigger]} ·{" "}
-                      {RUN_STATUS_LABEL[lastRun.status]}
-                      {lastRun.error ? `（${lastRun.error}）` : ""}
+                      {lastRunLabel}
+                      {lastRunNote ? `（${lastRunNote}）` : ""}
                     </span>
                   ) : null}
                   {task.status === "active" ? (
@@ -193,7 +202,7 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                     onClick={() => onOpenConversation(task.sourceConversationId)}
                     type="button"
                   >
-                    查看会话
+                    {awaiting ? "去处理" : "查看会话"}
                   </button>
                 </div>
               </div>

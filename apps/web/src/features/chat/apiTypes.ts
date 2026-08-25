@@ -307,6 +307,8 @@ export type TaskRun = {
   error: string | null;
   startedAt: string;
   finishedAt: string | null;
+  awaitingUser: boolean;
+  awaitingNote: string | null;
 };
 
 export type ArtifactVersionOperation = "create" | "update" | "chat_continue" | "rollback";
