@@ -299,6 +299,7 @@ class TaskRecord:
     created_at: str
     updated_at: str
     cancelled_at: Optional[str] = None
+    resumed_at: Optional[str] = None
 
 
 class TaskProposalStatus(str, Enum):

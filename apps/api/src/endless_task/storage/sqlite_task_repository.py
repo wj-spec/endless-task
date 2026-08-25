@@ -7,6 +7,7 @@ from typing import Callable, Optional, Sequence, Union
 
 from endless_task.domain.models import TaskRecord, TaskStatus
 from endless_task.domain.repositories import (
+    InvalidStateError,
     NotFoundError,
     ValidationError,
 )
@@ -35,6 +36,7 @@ def task_record_from_row(row) -> TaskRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         cancelled_at=row["cancelled_at"],
+        resumed_at=row["resumed_at"],
     )
 
 
@@ -145,6 +147,51 @@ class SqliteTaskRepository:
                 ),
             )
         return cursor.rowcount or 0
+
+    def pause_task(self, task_id: str) -> TaskRecord:
+        return self._transition(task_id, TaskStatus.PAUSED)
+
+    def resume_task(self, task_id: str) -> TaskRecord:
+        return self._transition(task_id, TaskStatus.ACTIVE)
+
+    def cancel_task(self, task_id: str) -> TaskRecord:
+        return self._transition(task_id, TaskStatus.CANCELLED)
+
+    def _transition(self, task_id: str, target: TaskStatus) -> TaskRecord:
+        allowed = {
+            TaskStatus.PAUSED: (TaskStatus.ACTIVE,),
+            TaskStatus.ACTIVE: (TaskStatus.PAUSED,),
+            TaskStatus.CANCELLED: (TaskStatus.ACTIVE, TaskStatus.PAUSED),
+        }[target]
+        now = self._clock()
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Task not found: {task_id}")
+            if TaskStatus(row["status"]) not in allowed:
+                raise InvalidStateError(
+                    f"Task {task_id} cannot move to {target.value}."
+                )
+            if target is TaskStatus.CANCELLED:
+                connection.execute(
+                    "UPDATE tasks SET status = ?, cancelled_at = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (target.value, now, now, task_id),
+                )
+            elif target is TaskStatus.ACTIVE:
+                connection.execute(
+                    "UPDATE tasks SET status = ?, resumed_at = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (target.value, now, now, task_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                    (target.value, now, task_id),
+                )
+        return self.get_task(task_id)
 
     def _validate_text(self, value: str, limit: int, *, field: str) -> str:
         if not isinstance(value, str):

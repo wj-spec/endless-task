@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
@@ -118,3 +119,42 @@ def describe_task_schedule(schedule: TaskSchedule) -> str:
         weekday = _WEEKDAY_NAMES.get(schedule.weekday or 1, "周一")
         return f"每{weekday} {schedule.time}"
     return f"每月 {schedule.day or 1} 日 {schedule.time}"
+
+
+def next_occurrence(schedule: TaskSchedule, after: datetime) -> datetime:
+    """First occurrence of the schedule strictly after ``after``.
+
+    ``after`` must be aware; the HH:MM of the schedule is interpreted in the
+    process local timezone (personal-assistant semantics).
+    """
+    if after.tzinfo is None:
+        raise ValidationError("next_occurrence requires an aware datetime.")
+    local_after = after.astimezone()
+    hour, minute = (int(part) for part in schedule.time.split(":"))
+
+    def at_time(day: datetime) -> datetime:
+        return day.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+
+    if schedule.kind is TaskScheduleKind.DAILY:
+        candidate = at_time(local_after)
+        return candidate if candidate > local_after else candidate + timedelta(days=1)
+
+    if schedule.kind is TaskScheduleKind.WEEKLY:
+        weekday = schedule.weekday or 1
+        days_ahead = (weekday - 1 - local_after.weekday()) % 7
+        candidate = at_time(local_after + timedelta(days=days_ahead))
+        return candidate if candidate > local_after else candidate + timedelta(days=7)
+
+    day = schedule.day or 1
+    candidate = at_time(local_after.replace(day=day))
+    if candidate > local_after:
+        return candidate
+    if local_after.month == 12:
+        next_month = local_after.replace(
+            year=local_after.year + 1, month=1, day=day
+        )
+    else:
+        next_month = local_after.replace(month=local_after.month + 1, day=day)
+    return at_time(next_month)

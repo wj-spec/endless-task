@@ -57,7 +57,7 @@ from endless_task.artifacts.export_service import (
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
-from endless_task.tasks import TaskProposalService, TaskWorker
+from endless_task.tasks import TaskProposalService, TaskScheduler, TaskWorker
 from endless_task.storage import (
     Database,
     SqliteArtifactProposalRepository,
@@ -196,6 +196,8 @@ class AppSettings:
     memory_proposals_enabled: bool = True
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
+    scheduler_enabled: bool = True
+    scheduler_tick_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -216,6 +218,8 @@ class AppSettings:
             raise ValueError("Agent timeout must be positive")
         if self.approval_timeout_seconds <= 0:
             raise ValueError("Approval timeout must be positive")
+        if self.scheduler_tick_seconds <= 0:
+            raise ValueError("Scheduler tick must be positive")
         if self.max_message_characters <= 0:
             raise ValueError("Maximum message characters must be positive")
         if self.max_file_bytes <= 0 or self.max_files_per_conversation <= 0:
@@ -253,6 +257,10 @@ class AppSettings:
             ),
             task_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_TASK_PROPOSALS", "1")
+            ),
+            scheduler_enabled=_parse_flag(env.get("ENDLESS_TASK_SCHEDULER", "1")),
+            scheduler_tick_seconds=float(
+                env.get("ENDLESS_TASK_SCHEDULER_TICK", "30")
             ),
             config_version=int(env.get("ENDLESS_TASK_CONFIG_VERSION", "1")),
             provider_name=provider_name,
@@ -327,6 +335,7 @@ class AppContainer:
     task_proposal_service: Optional[TaskProposalService]
     task_run_repository: SqliteTaskRunRepository
     task_worker: TaskWorker
+    task_scheduler: TaskScheduler
     reference_resolver: SourceReferenceResolver
     memory_proposal_service: Optional[MemoryProposalService]
     memory_conflict_service: Optional[MemoryConflictService]
@@ -631,6 +640,12 @@ def _build_container(
         controller=controller,
         max_concurrent_task_runs=settings.max_concurrent_task_runs,
     )
+    task_scheduler = TaskScheduler(
+        task_repository=task_repository,
+        run_repository=task_run_repository,
+        worker=task_worker,
+        tick_seconds=settings.scheduler_tick_seconds,
+    )
     return AppContainer(
         settings=settings,
         database=database,
@@ -647,6 +662,7 @@ def _build_container(
         task_proposal_service=task_proposal_service,
         task_run_repository=task_run_repository,
         task_worker=task_worker,
+        task_scheduler=task_scheduler,
         artifact_proposal_service=artifact_proposal_service,
         reference_resolver=reference_resolver,
         memory_proposal_service=memory_proposal_service,
@@ -690,9 +706,20 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         container.database.initialize()
         await container.runtime.recover_interrupted()
+        scheduler_task: Optional[asyncio.Task[None]] = None
+        if container.settings.scheduler_enabled:
+            scheduler_task = asyncio.create_task(
+                container.task_scheduler.run()
+            )
         try:
             yield
         finally:
+            if scheduler_task is not None:
+                scheduler_task.cancel()
+                try:
+                    await scheduler_task
+                except asyncio.CancelledError:
+                    pass
             await container.task_worker.drain()
             await container.controller.shutdown()
             close_provider = getattr(container.provider, "close", None)
@@ -968,6 +995,21 @@ def create_app(
             task_id, trigger=TaskRunTrigger.MANUAL
         )
         return {"run": task_run_json(run)}
+
+    @app.post("/tasks/{task_id}/pause")
+    async def pause_task(task_id: str) -> dict[str, object]:
+        task = container.task_repository.pause_task(task_id)
+        return {"task": task_json(task)}
+
+    @app.post("/tasks/{task_id}/resume")
+    async def resume_task(task_id: str) -> dict[str, object]:
+        task = container.task_repository.resume_task(task_id)
+        return {"task": task_json(task)}
+
+    @app.post("/tasks/{task_id}/cancel")
+    async def cancel_task(task_id: str) -> dict[str, object]:
+        task = container.task_repository.cancel_task(task_id)
+        return {"task": task_json(task)}
 
     @app.get("/tasks/{task_id}/runs")
     async def list_task_runs(task_id: str) -> dict[str, object]:

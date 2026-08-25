@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from endless_task.domain.task_schedule import (
     TaskScheduleKind,
     parse_task_schedule,
 )
+from endless_task.domain.task_schedule import next_occurrence
 from endless_task.runtime import FakeProvider
 from endless_task.storage import Database, SqliteTaskRepository
 
@@ -248,3 +250,72 @@ class TaskApiTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NextOccurrenceTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+
+    def at(self, *args) -> datetime:
+        return datetime(*args, tzinfo=self.local_tz)
+
+    def test_daily(self) -> None:
+        schedule = parse_task_schedule({"kind": "daily", "time": "09:00"})
+        self.assertEqual(
+            self.at(2026, 8, 24, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 24, 8, 0)),
+        )
+        self.assertEqual(
+            self.at(2026, 8, 25, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 24, 10, 0)),
+        )
+
+    def test_daily_boundary_equal_is_past(self) -> None:
+        schedule = parse_task_schedule({"kind": "daily", "time": "09:00"})
+        self.assertEqual(
+            self.at(2026, 8, 25, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 24, 9, 0)),
+        )
+
+    def test_weekly(self) -> None:
+        # 2026-08-24 is a Monday.
+        schedule = parse_task_schedule(
+            {"kind": "weekly", "weekday": 1, "time": "09:00"}
+        )
+        self.assertEqual(
+            self.at(2026, 8, 24, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 24, 8, 0)),
+        )
+        self.assertEqual(
+            self.at(2026, 8, 31, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 24, 10, 0)),
+        )
+        wednesday = parse_task_schedule(
+            {"kind": "weekly", "weekday": 3, "time": "09:00"}
+        )
+        self.assertEqual(
+            self.at(2026, 8, 26, 9, 0),
+            next_occurrence(wednesday, self.at(2026, 8, 24, 10, 0)),
+        )
+
+    def test_monthly(self) -> None:
+        schedule = parse_task_schedule(
+            {"kind": "monthly", "day": 1, "time": "09:00"}
+        )
+        self.assertEqual(
+            self.at(2026, 9, 1, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 24, 10, 0)),
+        )
+        self.assertEqual(
+            self.at(2026, 8, 1, 9, 0),
+            next_occurrence(schedule, self.at(2026, 8, 1, 8, 0)),
+        )
+        self.assertEqual(
+            self.at(2027, 1, 1, 9, 0),
+            next_occurrence(schedule, self.at(2026, 12, 15, 10, 0)),
+        )
+
+    def test_naive_datetime_rejected(self) -> None:
+        schedule = parse_task_schedule({"kind": "daily", "time": "09:00"})
+        with self.assertRaises(ValidationError):
+            next_occurrence(schedule, datetime(2026, 8, 24, 8, 0))
