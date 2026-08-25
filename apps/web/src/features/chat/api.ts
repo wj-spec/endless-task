@@ -18,6 +18,7 @@ import type {
   WorkspaceSnapshot,
   TaskProposal,
   TaskSummary,
+  TaskRun,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -192,6 +193,24 @@ export const chatApi = {
     const response = await request<{ items: TaskSummary[] }>("/tasks");
     return response.items;
   },
+  listTaskRuns: async (taskId: string) => {
+    const response = await request<{ items: TaskRun[] }>(`/tasks/${taskId}/runs`);
+    return response.items;
+  },
+  runTask: (taskId: string) =>
+    request<{ run: TaskRun }>(`/tasks/${taskId}/run`, { method: "POST" }),
+  pauseTask: (taskId: string) =>
+    request<{ task: TaskSummary }>(`/tasks/${taskId}/pause`, {
+      method: "POST",
+    }),
+  resumeTask: (taskId: string) =>
+    request<{ task: TaskSummary }>(`/tasks/${taskId}/resume`, {
+      method: "POST",
+    }),
+  cancelTask: (taskId: string) =>
+    request<{ task: TaskSummary }>(`/tasks/${taskId}/cancel`, {
+      method: "POST",
+    }),
   getPermissionSettings: () =>
     request<PermissionSettings>("/settings/permissions"),
   setPermissionSettings: (mode: string, acknowledge: boolean) =>

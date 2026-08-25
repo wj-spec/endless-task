@@ -297,6 +297,18 @@ export type TaskSummary = {
   cancelledAt: string | null;
 };
 
+export type TaskRun = {
+  id: string;
+  taskId: string;
+  trigger: "manual" | "scheduled";
+  status: "running" | "completed" | "failed" | "cancelled";
+  conversationId: string;
+  turnId: string | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
 export type ArtifactVersionOperation = "create" | "update" | "chat_continue" | "rollback";
 
 export type SourceReference = {

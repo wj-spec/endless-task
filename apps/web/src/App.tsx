@@ -181,7 +181,13 @@ export function App() {
         <MemoryManagement onClose={() => setMemoryOpen(false)} />
       ) : null}
       {scheduledOpen ? (
-        <ScheduledTasks onClose={() => setScheduledOpen(false)} />
+        <ScheduledTasks
+          onClose={() => setScheduledOpen(false)}
+          onOpenConversation={(conversationId) => {
+            setScheduledOpen(false);
+            void chat.openConversation(conversationId);
+          }}
+        />
       ) : null}
       {settingsOpen ? (
         <SettingsOverlay
