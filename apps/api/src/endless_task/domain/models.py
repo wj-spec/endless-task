@@ -330,6 +330,12 @@ class TaskRunTrigger(str, Enum):
     SCHEDULED = "scheduled"
 
 
+class NotificationKind(str, Enum):
+    RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
+    RUN_AWAITING = "run_awaiting"
+
+
 class TaskRunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
@@ -350,6 +356,21 @@ class TaskRun:
     finished_at: Optional[str] = None
     awaiting_user: bool = False
     awaiting_note: Optional[str] = None
+    attempt: int = 1
+    retryable: bool = False
+
+
+@dataclass(frozen=True)
+class Notification:
+    id: str
+    kind: NotificationKind
+    task_id: str
+    run_id: str
+    conversation_id: str
+    title: str
+    body: str
+    created_at: str
+    read_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

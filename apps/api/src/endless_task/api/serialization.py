@@ -283,6 +283,20 @@ def task_proposal_json(record) -> dict[str, object]:
     }
 
 
+def notification_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "kind": record.kind.value,
+        "taskId": record.task_id,
+        "runId": record.run_id,
+        "conversationId": record.conversation_id,
+        "title": record.title,
+        "body": record.body,
+        "createdAt": record.created_at,
+        "readAt": record.read_at,
+    }
+
+
 def task_run_json(record) -> dict[str, object]:
     return {
         "id": record.id,
@@ -296,6 +310,8 @@ def task_run_json(record) -> dict[str, object]:
         "finishedAt": record.finished_at,
         "awaitingUser": record.awaiting_user,
         "awaitingNote": record.awaiting_note,
+        "attempt": record.attempt,
+        "retryable": record.retryable,
     }
 
 

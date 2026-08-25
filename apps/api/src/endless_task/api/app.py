@@ -8,6 +8,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
@@ -58,6 +59,7 @@ from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.tasks import (
+    TaskNotificationService,
     TaskProposalService,
     TaskRunReviewService,
     TaskScheduler,
@@ -76,6 +78,7 @@ from endless_task.storage import (
     SqliteRuntimeRepository,
     SqliteTaskRepository,
     SqliteTaskProposalRepository,
+    SqliteNotificationRepository,
     SqliteTaskRunRepository,
 )
 from endless_task.tooling import ApprovalStatus, ToolRegistry
@@ -96,6 +99,7 @@ from .serialization import (
     uploaded_text_file_json,
     task_json,
     task_proposal_json,
+    notification_json,
     task_run_json,
 )
 
@@ -204,6 +208,9 @@ class AppSettings:
     scheduler_enabled: bool = True
     scheduler_tick_seconds: float = 30.0
     task_run_review_enabled: bool = True
+    notifications_enabled: bool = True
+    task_max_attempts: int = 3
+    task_retry_backoff_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -226,6 +233,10 @@ class AppSettings:
             raise ValueError("Approval timeout must be positive")
         if self.scheduler_tick_seconds <= 0:
             raise ValueError("Scheduler tick must be positive")
+        if self.task_max_attempts < 1:
+            raise ValueError("Task max attempts must be positive")
+        if self.task_retry_backoff_seconds <= 0:
+            raise ValueError("Task retry backoff must be positive")
         if self.max_message_characters <= 0:
             raise ValueError("Maximum message characters must be positive")
         if self.max_file_bytes <= 0 or self.max_files_per_conversation <= 0:
@@ -267,6 +278,13 @@ class AppSettings:
             scheduler_enabled=_parse_flag(env.get("ENDLESS_TASK_SCHEDULER", "1")),
             task_run_review_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_RUN_REVIEW", "1")
+            ),
+            notifications_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_NOTIFICATIONS", "1")
+            ),
+            task_max_attempts=int(env.get("ENDLESS_TASK_TASK_MAX_ATTEMPTS", "3")),
+            task_retry_backoff_seconds=float(
+                env.get("ENDLESS_TASK_TASK_RETRY_BACKOFF", "60")
             ),
             scheduler_tick_seconds=float(
                 env.get("ENDLESS_TASK_SCHEDULER_TICK", "30")
@@ -343,6 +361,8 @@ class AppContainer:
     task_proposal_repository: SqliteTaskProposalRepository
     task_proposal_service: Optional[TaskProposalService]
     task_run_repository: SqliteTaskRunRepository
+    notification_repository: SqliteNotificationRepository
+    task_notification_service: Optional[TaskNotificationService]
     task_worker: TaskWorker
     task_scheduler: TaskScheduler
     reference_resolver: SourceReferenceResolver
@@ -515,6 +535,7 @@ def _build_container(
     task_repository = SqliteTaskRepository(database)
     task_proposal_repository = SqliteTaskProposalRepository(database)
     task_run_repository = SqliteTaskRunRepository(database)
+    notification_repository = SqliteNotificationRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -643,6 +664,11 @@ def _build_container(
         runtime=runtime,
         on_turn_completed=on_turn_completed,
     )
+    task_notification_service = None
+    if settings.notifications_enabled:
+        task_notification_service = TaskNotificationService(
+            notification_repository=notification_repository
+        )
     task_run_review_service = None
     if settings.task_run_review_enabled:
         task_run_review_service = TaskRunReviewService(
@@ -654,10 +680,16 @@ def _build_container(
         controller=controller,
         max_concurrent_task_runs=settings.max_concurrent_task_runs,
         review_service=task_run_review_service,
+        notification_service=task_notification_service,
     )
     task_scheduler = TaskScheduler(
         task_repository=task_repository,
         run_repository=task_run_repository,
+        max_attempts=settings.task_max_attempts,
+        retry_backoff=(
+            timedelta(seconds=settings.task_retry_backoff_seconds),
+            timedelta(seconds=settings.task_retry_backoff_seconds * 5),
+        ),
         worker=task_worker,
         tick_seconds=settings.scheduler_tick_seconds,
     )
@@ -676,6 +708,8 @@ def _build_container(
         task_proposal_repository=task_proposal_repository,
         task_proposal_service=task_proposal_service,
         task_run_repository=task_run_repository,
+        notification_repository=notification_repository,
+        task_notification_service=task_notification_service,
         task_worker=task_worker,
         task_scheduler=task_scheduler,
         artifact_proposal_service=artifact_proposal_service,
@@ -722,6 +756,18 @@ def create_app(
         container.database.initialize()
         await container.runtime.recover_interrupted()
         scheduler_task: Optional[asyncio.Task[None]] = None
+        swept_runs = container.task_run_repository.sweep_interrupted_runs()
+        if swept_runs and container.task_notification_service is not None:
+            for swept_run in swept_runs:
+                try:
+                    swept_task = container.task_repository.get_task(
+                        swept_run.task_id
+                    )
+                except NotFoundError:
+                    continue
+                container.task_notification_service.notify_run(
+                    swept_task, swept_run
+                )
         if container.settings.scheduler_enabled:
             scheduler_task = asyncio.create_task(
                 container.task_scheduler.run()
@@ -1030,6 +1076,26 @@ def create_app(
     async def list_task_runs(task_id: str) -> dict[str, object]:
         runs = container.task_run_repository.list_runs(task_id=task_id)
         return {"items": [task_run_json(item) for item in runs]}
+
+    @app.get("/notifications")
+    async def list_notifications(
+        unread_only: bool = False,
+    ) -> dict[str, object]:
+        items = container.notification_repository.list_notifications(
+            unread_only=unread_only
+        )
+        return {"items": [notification_json(item) for item in items]}
+
+    @app.post("/notifications/read-all")
+    async def read_all_notifications() -> dict[str, object]:
+        return {"count": container.notification_repository.mark_all_read()}
+
+    @app.post("/notifications/{notification_id}/read")
+    async def read_notification(notification_id: str) -> dict[str, object]:
+        notification = container.notification_repository.mark_read(
+            notification_id
+        )
+        return {"notification": notification_json(notification)}
 
     @app.get("/conversations/{conversation_id}/task-proposals")
     async def list_task_proposals(

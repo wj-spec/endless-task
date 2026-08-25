@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Callable, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Optional, Tuple
 
 from endless_task.domain.models import (
     TaskRecord,
+    TaskRunStatus,
     TaskRunTrigger,
     TaskStatus,
 )
@@ -43,14 +44,25 @@ class TaskScheduler:
         run_repository: SqliteTaskRunRepository,
         worker: TaskWorker,
         tick_seconds: float = 30.0,
+        max_attempts: int = 3,
+        retry_backoff: Tuple[timedelta, ...] = (
+            timedelta(seconds=60),
+            timedelta(seconds=300),
+        ),
         clock: Clock = lambda: datetime.now(timezone.utc),
     ) -> None:
         if tick_seconds <= 0:
             raise ValueError("tick_seconds must be positive")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        if not retry_backoff:
+            raise ValueError("retry_backoff must not be empty")
         self._task_repository = task_repository
         self._run_repository = run_repository
         self._worker = worker
         self._tick_seconds = tick_seconds
+        self._max_attempts = max_attempts
+        self._retry_backoff = retry_backoff
         self._clock = clock
 
     async def run(self) -> None:
@@ -69,11 +81,14 @@ class TaskScheduler:
         for task in self._task_repository.list_tasks():
             if task.status is not TaskStatus.ACTIVE:
                 continue
-            if not self.is_due(task, moment):
+            attempt = self._retry_attempt(task, moment)
+            if not self.is_due(task, moment) and attempt is None:
                 continue
             try:
                 await self._worker.start(
-                    task.id, trigger=TaskRunTrigger.SCHEDULED
+                    task.id,
+                    trigger=TaskRunTrigger.SCHEDULED,
+                    attempt=attempt or 1,
                 )
             except (InvalidStateError, NotFoundError):
                 continue
@@ -84,6 +99,30 @@ class TaskScheduler:
                 continue
             started += 1
         return started
+
+    def _retry_attempt(
+        self, task: TaskRecord, now: datetime
+    ) -> Optional[int]:
+        scheduled = [
+            run
+            for run in self._run_repository.list_runs(task_id=task.id)
+            if run.trigger is TaskRunTrigger.SCHEDULED
+        ]
+        if not scheduled:
+            return None
+        last = max(scheduled, key=lambda run: run.started_at)
+        if last.status is not TaskRunStatus.FAILED or not last.retryable:
+            return None
+        if last.attempt >= self._max_attempts:
+            return None
+        if last.finished_at is None:
+            return None
+        backoff = self._retry_backoff[
+            min(last.attempt - 1, len(self._retry_backoff) - 1)
+        ]
+        if parse_timestamp(last.finished_at) + backoff > now:
+            return None
+        return last.attempt + 1
 
     def is_due(self, task: TaskRecord, now: datetime) -> bool:
         anchor = parse_timestamp(task.created_at)

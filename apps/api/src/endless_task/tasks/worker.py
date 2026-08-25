@@ -28,6 +28,7 @@ from endless_task.storage import (
     SqliteTaskRunRepository,
 )
 
+from .notification_service import TaskNotificationService
 from .run_review_service import RunReview, TaskRunReviewService
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class TaskWorker:
         controller: TurnController,
         max_concurrent_task_runs: int = 1,
         review_service: Optional[TaskRunReviewService] = None,
+        notification_service: Optional[TaskNotificationService] = None,
     ) -> None:
         if max_concurrent_task_runs <= 0:
             raise ValueError("max_concurrent_task_runs must be positive")
@@ -58,9 +60,14 @@ class TaskWorker:
         self._semaphore = asyncio.Semaphore(max_concurrent_task_runs)
         self._tasks: set[asyncio.Task[None]] = set()
         self._review_service = review_service
+        self._notification_service = notification_service
 
     async def start(
-        self, task_id: str, *, trigger: TaskRunTrigger
+        self,
+        task_id: str,
+        *,
+        trigger: TaskRunTrigger,
+        attempt: int = 1,
     ) -> TaskRun:
         task = self._task_repository.get_task(task_id)
         if task.status is not TaskStatus.ACTIVE:
@@ -71,6 +78,7 @@ class TaskWorker:
             task_id=task_id,
             trigger=trigger,
             conversation_id=task.source_conversation_id,
+            attempt=attempt,
         )
         spawned = asyncio.create_task(self.execute(run.id))
         self._tasks.add(spawned)
@@ -86,36 +94,43 @@ class TaskWorker:
         try:
             task = self._task_repository.get_task(run.task_id)
         except Exception:  # noqa: BLE001 - task vanished between start and run
-            return self._run_repository.finish_run(
+            return self._finish(
                 run_id, TaskRunStatus.CANCELLED, error="Task no longer exists."
             )
         if task.status is not TaskStatus.ACTIVE:
-            return self._run_repository.finish_run(
+            return self._finish(
                 run_id,
                 TaskRunStatus.CANCELLED,
                 error="Task is not active anymore.",
+                task=task,
             )
 
         message = TRIGGER_PREFIX[run.trigger] + task.commitment
         try:
             handle = await self._controller.submit(
                 conversation_id=run.conversation_id,
-                client_request_id=f"taskrun:{uuid.uuid4().hex}",
+                client_request_id=f"taskrun:{run.id}",
                 content=message,
             )
         except NotFoundError:
             logger.warning(
                 "Task run %s failed: source conversation is gone", run_id
             )
-            return self._run_repository.finish_run(
+            return self._finish(
                 run_id,
                 TaskRunStatus.FAILED,
                 error="来源会话已删除，无法执行该安排。",
+                task=task,
+                retryable=False,
             )
         except Exception as error:  # noqa: BLE001 - journal must survive failures
             logger.warning("Task run %s failed to submit turn: %s", run_id, error)
-            return self._run_repository.finish_run(
-                run_id, TaskRunStatus.FAILED, error="Turn submission failed."
+            return self._finish(
+                run_id,
+                TaskRunStatus.FAILED,
+                error="Turn submission failed.",
+                task=task,
+                retryable=True,
             )
         self._run_repository.link_turn(run_id, handle.turn_id)
 
@@ -123,34 +138,73 @@ class TaskWorker:
             snapshot = await self._controller.wait(handle)
         except Exception as error:  # noqa: BLE001 - journal must survive failures
             logger.warning("Task run %s failed while waiting: %s", run_id, error)
-            return self._run_repository.finish_run(
-                run_id, TaskRunStatus.FAILED, error="Turn execution failed."
+            return self._finish(
+                run_id,
+                TaskRunStatus.FAILED,
+                error="Turn execution failed.",
+                task=task,
+                retryable=True,
             )
 
         status = snapshot.turn.status
         if status is TurnStatus.COMPLETED:
             review = await self._review_run(snapshot)
-            return self._run_repository.finish_run(
+            return self._finish(
                 run_id,
                 TaskRunStatus.COMPLETED,
                 awaiting_user=review.awaiting_user,
                 awaiting_note=review.note,
+                task=task,
+                excerpt=self._active_text(snapshot),
             )
         if status is TurnStatus.CANCELLED:
-            return self._run_repository.finish_run(
+            return self._finish(
                 run_id,
                 TaskRunStatus.CANCELLED,
                 error="Turn was cancelled.",
+                task=task,
             )
-        return self._run_repository.finish_run(
+        return self._finish(
             run_id,
             TaskRunStatus.FAILED,
             error="Turn did not complete successfully.",
+            task=task,
+            retryable=True,
         )
 
-    async def _review_run(self, snapshot: TurnSnapshot) -> RunReview:
-        if self._review_service is None:
-            return RunReview(False)
+    def _finish(
+        self,
+        run_id: str,
+        status: TaskRunStatus,
+        *,
+        error: Optional[str] = None,
+        awaiting_user: bool = False,
+        awaiting_note: Optional[str] = None,
+        retryable: bool = False,
+        task: Optional[TaskRecord] = None,
+        excerpt: Optional[str] = None,
+    ) -> TaskRun:
+        run = self._run_repository.finish_run(
+            run_id,
+            status,
+            error=error,
+            awaiting_user=awaiting_user,
+            awaiting_note=awaiting_note,
+            retryable=retryable,
+        )
+        if self._notification_service is not None and task is not None:
+            try:
+                self._notification_service.notify_run(task, run, excerpt)
+            except Exception:  # noqa: BLE001 - notifications must not fail runs
+                logger.warning(
+                    "Task run notification skipped for %s",
+                    run_id,
+                    exc_info=True,
+                )
+        return run
+
+    @staticmethod
+    def _active_text(snapshot: TurnSnapshot) -> Optional[str]:
         active = next(
             (
                 item
@@ -160,10 +214,18 @@ class TaskWorker:
             None,
         )
         if active is None or not active.assistant_message.content.strip():
+            return None
+        return active.assistant_message.content
+
+    async def _review_run(self, snapshot: TurnSnapshot) -> RunReview:
+        if self._review_service is None:
+            return RunReview(False)
+        text = self._active_text(snapshot)
+        if text is None:
             return RunReview(False)
         return await self._review_service.review(
             user_message=snapshot.user_message.content,
-            assistant_message=active.assistant_message.content,
+            assistant_message=text,
         )
 
     async def drain(self) -> None:

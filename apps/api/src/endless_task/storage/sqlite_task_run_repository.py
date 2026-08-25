@@ -34,6 +34,8 @@ def task_run_from_row(row) -> TaskRun:
         finished_at=row["finished_at"],
         awaiting_user=bool(row["awaiting_user"]),
         awaiting_note=row["awaiting_note"],
+        attempt=row["attempt"],
+        retryable=bool(row["retryable"]),
     )
 
 
@@ -55,17 +57,21 @@ class SqliteTaskRunRepository:
         task_id: str,
         trigger: TaskRunTrigger,
         conversation_id: str,
+        attempt: int = 1,
     ) -> TaskRun:
         if not task_id.strip() or not conversation_id.strip():
             raise ValidationError("Task run task and conversation are required.")
+        if attempt < 1:
+            raise ValidationError("Task run attempt must be positive.")
         now = self._clock()
         run_id = self._id_factory("taskrun")
         with self._database.transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO task_runs (
-                    id, task_id, trigger, status, conversation_id, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, task_id, trigger, status, conversation_id,
+                    started_at, attempt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -74,6 +80,7 @@ class SqliteTaskRunRepository:
                     TaskRunStatus.RUNNING.value,
                     conversation_id.strip(),
                     now,
+                    attempt,
                 ),
             )
         return self.get_run(run_id)
@@ -122,6 +129,22 @@ class SqliteTaskRunRepository:
             )
         return self.get_run(run_id)
 
+    def sweep_interrupted_runs(self) -> Sequence[TaskRun]:
+        now = self._clock()
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                "SELECT id FROM task_runs WHERE status = 'running'"
+            ).fetchall()
+            if rows:
+                connection.execute(
+                    "UPDATE task_runs SET status = 'failed', error = ?, "
+                    "finished_at = ?, retryable = 1 WHERE status = 'running'",
+                    ("服务重启中断了这次执行。", now),
+                )
+        if not rows:
+            return ()
+        return tuple(self.get_run(row["id"]) for row in rows)
+
     def finish_run(
         self,
         run_id: str,
@@ -130,6 +153,7 @@ class SqliteTaskRunRepository:
         error: Optional[str] = None,
         awaiting_user: bool = False,
         awaiting_note: Optional[str] = None,
+        retryable: bool = False,
     ) -> TaskRun:
         if status is TaskRunStatus.RUNNING:
             raise ValidationError("Task runs cannot be finished as running.")
@@ -146,7 +170,7 @@ class SqliteTaskRunRepository:
                 """
                 UPDATE task_runs
                 SET status = ?, error = ?, finished_at = ?,
-                    awaiting_user = ?, awaiting_note = ?
+                    awaiting_user = ?, awaiting_note = ?, retryable = ?
                 WHERE id = ?
                 """,
                 (
@@ -155,6 +179,7 @@ class SqliteTaskRunRepository:
                     now,
                     1 if awaiting_user else 0,
                     awaiting_note,
+                    1 if retryable else 0,
                     run_id,
                 ),
             )
