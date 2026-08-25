@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { chatApi } from "../chat/api";
-import type { TaskRun, TaskSummary } from "../chat/apiTypes";
+import type { Reminder, TaskRun, TaskSummary } from "../chat/apiTypes";
 
 type ScheduledTasksProps = {
   onClose: () => void;
@@ -25,10 +25,25 @@ const RUN_TRIGGER_LABEL: Record<TaskRun["trigger"], string> = {
   scheduled: "到点执行",
 };
 
+const REMINDER_STATUS_LABEL: Record<Reminder["status"], string> = {
+  pending: "待执行",
+  fired: "已执行",
+  cancelled: "已取消",
+};
+
 const POLL_DELAYS_MS = [2000, 6000, 12000];
+
+function formatDue(dueAt: string): string {
+  const moment = new Date(dueAt);
+  if (Number.isNaN(moment.getTime())) return dueAt;
+  const hh = String(moment.getHours()).padStart(2, "0");
+  const mm = String(moment.getMinutes()).padStart(2, "0");
+  return `${moment.getMonth() + 1}月${moment.getDate()}日 ${hh}:${mm}`;
+}
 
 export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksProps) {
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [runsByTask, setRunsByTask] = useState<Record<string, TaskRun[]>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -49,8 +64,14 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
     try {
       const items = await chatApi.listTasks();
       setTasks(items);
+      const reminderItems = await chatApi.listReminders();
+      setReminders(reminderItems);
       setLoadError(null);
-      await Promise.all(items.map((task) => loadRuns(task.id)));
+      await Promise.all(
+        [...items.map((task) => task.id), ...reminderItems.map((r) => r.id)].map(
+          (id) => loadRuns(id),
+        ),
+      );
     } catch {
       setLoadError("无法加载已安排的事项，请重试。");
     } finally {
@@ -79,6 +100,19 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
       } else {
         await chatApi.cancelTask(taskId);
       }
+      await load();
+    } catch {
+      setActionError("操作失败，请重试。");
+    } finally {
+      setBusyTaskId(null);
+    }
+  };
+
+  const cancelReminder = async (reminderId: string) => {
+    setBusyTaskId(reminderId);
+    setActionError(null);
+    try {
+      await chatApi.cancelReminder(reminderId);
       await load();
     } catch {
       setActionError("操作失败，请重试。");
@@ -203,6 +237,54 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                   </button>
                   <button
                     onClick={() => onOpenConversation(task.sourceConversationId)}
+                    type="button"
+                  >
+                    {awaiting ? "去处理" : "查看会话"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {reminders.length > 0 ? (
+            <h3 className="settings-section-title">一次性提醒</h3>
+          ) : null}
+          {reminders.map((reminder) => {
+            const runs = runsByTask[reminder.id] ?? [];
+            const lastRun = runs.length ? runs[runs.length - 1] : null;
+            const awaiting = lastRun?.awaitingUser ?? false;
+            return (
+              <div className="memory-item" key={reminder.id}>
+                <div className="memory-content">
+                  《{reminder.title}》 {formatDue(reminder.dueAt)}
+                  <span className="proposal-kind">
+                    {REMINDER_STATUS_LABEL[reminder.status]}
+                  </span>
+                  {lastRun ? (
+                    <span className="proposal-reason">
+                      上次执行：{RUN_TRIGGER_LABEL[lastRun.trigger]} ·{" "}
+                      {awaiting ? "等待你处理" : RUN_STATUS_LABEL[lastRun.status]}
+                      {awaiting
+                        ? lastRun.awaitingNote
+                          ? `（${lastRun.awaitingNote}）`
+                          : ""
+                        : lastRun.error
+                          ? `（${lastRun.error}）`
+                          : ""}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="memory-actions">
+                  {reminder.status === "pending" ? (
+                    <button
+                      disabled={busyTaskId === reminder.id}
+                      onClick={() => void cancelReminder(reminder.id)}
+                      type="button"
+                    >
+                      取消
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={() => onOpenConversation(reminder.sourceConversationId)}
                     type="button"
                   >
                     {awaiting ? "去处理" : "查看会话"}

@@ -13,14 +13,17 @@ export function TaskProposalCard({
   error,
   onResolve,
 }: TaskProposalCardProps) {
+  const isReminder = proposal.schedule.kind === "once";
+  const kindLabel = isReminder ? "提醒" : "已安排";
   if (proposal.status !== "pending") {
     let notice = "提案已处理";
-    if (proposal.status === "accepted") notice = "已安排，助手会按时做";
+    if (proposal.status === "accepted")
+      notice = isReminder ? "提醒已记下，到时会自动执行" : "已安排，助手会按时做";
     else if (proposal.status === "rejected") notice = "已忽略，不会安排";
     else if (proposal.status === "cancelled") notice = "提案已取消";
     return (
       <div className="proposal-card is-resolved">
-        <span className="proposal-kind">已安排</span>
+        <span className="proposal-kind">{kindLabel}</span>
         <span>{notice}</span>
       </div>
     );
@@ -29,8 +32,10 @@ export function TaskProposalCard({
   return (
     <div className="proposal-card">
       <div className="proposal-head">
-        <span className="proposal-kind">已安排</span>
-        <strong>Assistant 承诺按时做这件事</strong>
+        <span className="proposal-kind">{kindLabel}</span>
+        <strong>
+          {isReminder ? "Assistant 承诺到时做这件事" : "Assistant 承诺按时做这件事"}
+        </strong>
       </div>
       <p className="proposal-preview">{proposal.commitment}</p>
       <p className="proposal-reason">
@@ -48,7 +53,7 @@ export function TaskProposalCard({
           onClick={() => onResolve("accept")}
           type="button"
         >
-          安排上
+          {isReminder ? "提醒我" : "安排上"}
         </button>
         <button
           disabled={busy}

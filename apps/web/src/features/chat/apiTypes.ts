@@ -254,10 +254,24 @@ export type WorkspaceSnapshot = {
 };
 
 export type TaskSchedule = {
-  kind: "daily" | "weekly" | "monthly";
-  time: string;
+  kind: "daily" | "weekly" | "monthly" | "once";
+  time?: string;
+  at?: string;
   weekday?: number;
   day?: number;
+};
+
+export type Reminder = {
+  id: string;
+  title: string;
+  commitment: string;
+  dueAt: string;
+  status: "pending" | "fired" | "cancelled";
+  sourceConversationId: string;
+  sourceTurnId: string;
+  createdAt: string;
+  firedAt: string | null;
+  cancelledAt: string | null;
 };
 
 export type TaskProposalStatus =

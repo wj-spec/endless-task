@@ -20,6 +20,7 @@ import type {
   TaskSummary,
   TaskRun,
   TaskNotification,
+  Reminder,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -186,7 +187,7 @@ export const chatApi = {
     return response.items;
   },
   resolveTaskProposal: (proposalId: string, decision: "accept" | "reject") =>
-    request<{ proposal: TaskProposal; task?: TaskSummary }>(
+    request<{ proposal: TaskProposal; task?: TaskSummary; reminder?: Reminder }>(
       `/task-proposals/${proposalId}/resolve`,
       { method: "POST", body: JSON.stringify({ decision }) },
     ),
@@ -225,6 +226,14 @@ export const chatApi = {
     ),
   markAllNotificationsRead: () =>
     request<{ count: number }>("/notifications/read-all", {
+      method: "POST",
+    }),
+  listReminders: async () => {
+    const response = await request<{ items: Reminder[] }>("/reminders");
+    return response.items;
+  },
+  cancelReminder: (reminderId: string) =>
+    request<{ reminder: Reminder }>(`/reminders/${reminderId}/cancel`, {
       method: "POST",
     }),
   getPermissionSettings: () =>
