@@ -506,7 +506,8 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
             await self._wait_for_terminal(client, turn_id)
         system_content = provider.requests[0].messages[0].content
         self.assertIn("确认后才生效", system_content)
-        self.assertIn("一次性定时安排能力尚未就绪", system_content)
+        self.assertIn("用户提出一次性定时事项时", system_content)
+        self.assertNotIn("一次性定时安排能力尚未就绪", system_content)
 
         provider_off = TextProvider([[PERIODIC_ANSWER]])
         async with local_client(

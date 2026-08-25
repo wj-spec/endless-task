@@ -15,7 +15,11 @@ from endless_task.domain.models import (
 )
 from endless_task.files import UploadedTextFile
 from endless_task.runtime.events import RuntimeEvent
-from endless_task.domain.task_schedule import describe_task_schedule
+from endless_task.domain.task_schedule import (
+    ReminderDue,
+    describe_reminder_due,
+    describe_task_schedule,
+)
 from endless_task.tooling import ApprovalRequest
 
 
@@ -236,7 +240,24 @@ def turn_command_json(snapshot: TurnSnapshot) -> dict[str, Any]:
     }
 
 
+def reminder_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "title": record.title,
+        "commitment": record.commitment,
+        "dueAt": record.due_at,
+        "status": record.status.value,
+        "sourceConversationId": record.source_conversation_id,
+        "sourceTurnId": record.source_turn_id,
+        "createdAt": record.created_at,
+        "firedAt": record.fired_at,
+        "cancelledAt": record.cancelled_at,
+    }
+
+
 def task_schedule_json(schedule) -> dict[str, object]:
+    if isinstance(schedule, ReminderDue):
+        return {"kind": "once", "at": schedule.at}
     payload: dict[str, object] = {
         "kind": schedule.kind.value,
         "time": schedule.time,
@@ -273,7 +294,11 @@ def task_proposal_json(record) -> dict[str, object]:
         "title": record.title,
         "commitment": record.commitment,
         "schedule": task_schedule_json(record.schedule),
-        "scheduleDescription": describe_task_schedule(record.schedule),
+        "scheduleDescription": (
+            describe_reminder_due(record.schedule)
+            if isinstance(record.schedule, ReminderDue)
+            else describe_task_schedule(record.schedule)
+        ),
         "reason": record.reason,
         "status": record.status.value,
         "createdAt": record.created_at,

@@ -16,8 +16,9 @@ from endless_task.domain.models import TaskProposal
 from endless_task.domain.models import TaskProposalStatus
 from endless_task.domain.repositories import RepositoryError
 from endless_task.domain.task_schedule import (
+    ReminderDue,
     TaskSchedule,
-    parse_task_schedule,
+    parse_schedule_intent,
     serialize_task_schedule,
 )
 from endless_task.domain.task_schedule import describe_task_schedule
@@ -37,12 +38,14 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "判断 Assistant 的回答是否构成“周期执行承诺”："
     "1. 仅当用户明确要求周期性/长期行为（每天、每周、每月等），"
     "且 Assistant 在回答中明确复述并承担了该承诺时，才提出提案。"
-    "2. 一次性定时事项（“明天下午整理”“周五前发我”）不要提案。"
+    "2. 一次性定时事项（“明天下午整理”“周五前发我”）按提醒提案，"
+    "schedule 输出 once 结构；用户没有明确要求时间的一次性事项不要提案。"
     "3. 闲聊、一次性问答、或 Assistant 只是顺带提到而用户没有要求的，不要提案。"
-    "4. schedule 必须严格为三种结构之一："
+    "4. schedule 必须严格为四种结构之一："
     '{"kind":"daily","time":"HH:MM"}、'
     '{"kind":"weekly","weekday":1-7,"time":"HH:MM"}、'
-    '{"kind":"monthly","day":1-28,"time":"HH:MM"}；'
+    '{"kind":"monthly","day":1-28,"time":"HH:MM"}、'
+    '{"kind":"once","at":"YYYY-MM-DDTHH:MM"}（本地时间）；'
     "周期或时间无法结构化时输出 null。"
     "5. 随附“已安排/待确认清单”：与已安排语义相同的输出 null；"
     "与待确认语义相同的照常输出新提案，并把旧提案 id 填入 supersedes"
@@ -149,7 +152,7 @@ class TaskProposalService:
         if not isinstance(commitment, str) or not commitment.strip():
             return ()
         try:
-            schedule = parse_task_schedule(payload.get("schedule"))
+            schedule = parse_schedule_intent(payload.get("schedule"))
         except RepositoryError:
             return ()
         reason = payload.get("reason")
@@ -159,7 +162,9 @@ class TaskProposalService:
             else DEFAULT_PROPOSAL_REASON
         )
 
-        if self._matches_existing_task(commitment.strip(), schedule):
+        if isinstance(schedule, TaskSchedule) and self._matches_existing_task(
+            commitment.strip(), schedule
+        ):
             return ()
 
         try:

@@ -330,6 +330,12 @@ class TaskRunTrigger(str, Enum):
     SCHEDULED = "scheduled"
 
 
+class ReminderStatus(str, Enum):
+    PENDING = "pending"
+    FIRED = "fired"
+    CANCELLED = "cancelled"
+
+
 class NotificationKind(str, Enum):
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
@@ -358,6 +364,22 @@ class TaskRun:
     awaiting_note: Optional[str] = None
     attempt: int = 1
     retryable: bool = False
+
+
+@dataclass(frozen=True)
+class Reminder:
+    id: str
+    title: str
+    commitment: str
+    due_at: str
+    status: ReminderStatus
+    source_conversation_id: str
+    source_turn_id: str
+    source_proposal_id: Optional[str]
+    created_at: str
+    updated_at: str
+    fired_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

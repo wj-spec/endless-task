@@ -21,6 +21,7 @@ from endless_task.domain.models import (
 from endless_task.domain.repositories import InvalidStateError, NotFoundError
 from endless_task.domain.task_schedule import next_occurrence
 from endless_task.storage import (
+    SqliteReminderRepository,
     SqliteTaskRepository,
     SqliteTaskRunRepository,
 )
@@ -49,6 +50,7 @@ class TaskScheduler:
             timedelta(seconds=60),
             timedelta(seconds=300),
         ),
+        reminder_repository: Optional[SqliteReminderRepository] = None,
         clock: Clock = lambda: datetime.now(timezone.utc),
     ) -> None:
         if tick_seconds <= 0:
@@ -63,6 +65,7 @@ class TaskScheduler:
         self._tick_seconds = tick_seconds
         self._max_attempts = max_attempts
         self._retry_backoff = retry_backoff
+        self._reminder_repository = reminder_repository
         self._clock = clock
 
     async def run(self) -> None:
@@ -98,6 +101,24 @@ class TaskScheduler:
                 )
                 continue
             started += 1
+        if self._reminder_repository is not None:
+            now_iso = (
+                moment.isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+            for reminder in self._reminder_repository.list_due_pending(now_iso):
+                try:
+                    await self._worker.start_reminder(reminder.id)
+                except (InvalidStateError, NotFoundError):
+                    continue
+                except Exception:  # noqa: BLE001 - one item must not stop the scan
+                    logger.warning(
+                        "Reminder start failed for %s",
+                        reminder.id,
+                        exc_info=True,
+                    )
+                    continue
+                started += 1
         return started
 
     def _retry_attempt(

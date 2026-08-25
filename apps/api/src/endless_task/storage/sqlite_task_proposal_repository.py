@@ -6,6 +6,7 @@ import json
 from typing import Callable, Optional, Sequence, Tuple, Union
 
 from endless_task.domain.models import (
+    Reminder,
     TaskProposal,
     TaskProposalStatus,
     TaskRecord,
@@ -17,14 +18,17 @@ from endless_task.domain.repositories import (
     ValidationError,
 )
 from endless_task.domain.task_schedule import (
+    ReminderDue,
     TaskSchedule,
-    parse_task_schedule,
-    serialize_task_schedule,
+    parse_schedule_intent,
+    reminder_due_to_utc_iso,
+    serialize_schedule_intent,
 )
 
 from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
 from .sqlite_task_repository import task_record_from_row
+from .sqlite_reminder_repository import reminder_from_row
 
 Clock = Callable[[], str]
 
@@ -36,7 +40,7 @@ def task_proposal_from_row(row) -> TaskProposal:
         turn_id=row["turn_id"],
         title=row["title"],
         commitment=row["commitment"],
-        schedule=parse_task_schedule(json.loads(row["schedule"])),
+        schedule=parse_schedule_intent(json.loads(row["schedule"])),
         reason=row["reason"],
         status=TaskProposalStatus(row["status"]),
         created_at=row["created_at"],
@@ -77,7 +81,7 @@ class SqliteTaskProposalRepository:
         turn_id: str,
         title: str,
         commitment: str,
-        schedule: Union[str, dict, TaskSchedule],
+        schedule: Union[str, dict, TaskSchedule, ReminderDue],
         reason: str,
     ) -> TaskProposal:
         normalized_title = self._validate_text(
@@ -89,13 +93,13 @@ class SqliteTaskProposalRepository:
         normalized_reason = self._validate_text(
             reason, self._max_reason_chars, field="reason"
         )
-        parsed_schedule = parse_task_schedule(schedule)
+        parsed_schedule = parse_schedule_intent(schedule)
         if not conversation_id.strip() or not turn_id.strip():
             raise ValidationError(
                 "Task proposal source conversation and turn are required."
             )
         schedule_json = json.dumps(
-            serialize_task_schedule(parsed_schedule),
+            serialize_schedule_intent(parsed_schedule),
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -220,6 +224,10 @@ class SqliteTaskProposalRepository:
                 raise InvalidStateError(
                     "Only pending task proposals can be resolved."
                 )
+            if isinstance(proposal.schedule, ReminderDue):
+                raise InvalidStateError(
+                    "Reminder proposals must be accepted as reminders."
+                )
             connection.execute(
                 """
                 INSERT INTO tasks (
@@ -258,6 +266,67 @@ class SqliteTaskProposalRepository:
             )
         task = self._get_task(task_id)
         return self.get_proposal(proposal_id), task
+
+    def accept_proposal_as_reminder(
+        self, proposal_id: str
+    ) -> Tuple[TaskProposal, "Reminder"]:
+        now = self._clock()
+        reminder_id = self._id_factory("rem")
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Task proposal not found: {proposal_id}")
+            proposal = task_proposal_from_row(row)
+            if proposal.status is not TaskProposalStatus.PENDING:
+                raise InvalidStateError(
+                    "Only pending task proposals can be resolved."
+                )
+            if not isinstance(proposal.schedule, ReminderDue):
+                raise InvalidStateError(
+                    "Only reminder proposals can be accepted as reminders."
+                )
+            connection.execute(
+                """
+                INSERT INTO reminders (
+                    id, title, commitment, due_at, status,
+                    source_conversation_id, source_turn_id,
+                    source_proposal_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reminder_id,
+                    proposal.title,
+                    proposal.commitment,
+                    reminder_due_to_utc_iso(proposal.schedule),
+                    "pending",
+                    proposal.conversation_id,
+                    proposal.turn_id,
+                    proposal.id,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE task_proposals
+                SET status = ?, resolved_task_id = ?, resolved_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    TaskProposalStatus.ACCEPTED.value,
+                    reminder_id,
+                    now,
+                    now,
+                    proposal_id,
+                ),
+            )
+            reminder_row = connection.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+        return self.get_proposal(proposal_id), reminder_from_row(reminder_row)
 
     def reject_proposal(self, proposal_id: str) -> TaskProposal:
         now = self._clock()

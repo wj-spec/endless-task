@@ -13,6 +13,8 @@ import uuid
 from typing import Optional
 
 from endless_task.domain.models import (
+    Reminder,
+    ReminderStatus,
     TaskRun,
     TaskRunStatus,
     TaskRunTrigger,
@@ -24,6 +26,7 @@ from endless_task.domain.repositories import InvalidStateError
 from endless_task.domain.repositories import NotFoundError
 from endless_task.runtime import TurnController
 from endless_task.storage import (
+    SqliteReminderRepository,
     SqliteTaskRepository,
     SqliteTaskRunRepository,
 )
@@ -32,6 +35,8 @@ from .notification_service import TaskNotificationService
 from .run_review_service import RunReview, TaskRunReviewService
 
 logger = logging.getLogger(__name__)
+
+REMINDER_PREFIX = "【提醒】你设置的提醒到时了，请按承诺执行："
 
 TRIGGER_PREFIX = {
     TaskRunTrigger.MANUAL: "【手动执行】请现在执行这项已确认的安排：",
@@ -51,6 +56,7 @@ class TaskWorker:
         max_concurrent_task_runs: int = 1,
         review_service: Optional[TaskRunReviewService] = None,
         notification_service: Optional[TaskNotificationService] = None,
+        reminder_repository: Optional[SqliteReminderRepository] = None,
     ) -> None:
         if max_concurrent_task_runs <= 0:
             raise ValueError("max_concurrent_task_runs must be positive")
@@ -61,6 +67,7 @@ class TaskWorker:
         self._tasks: set[asyncio.Task[None]] = set()
         self._review_service = review_service
         self._notification_service = notification_service
+        self._reminder_repository = reminder_repository
 
     async def start(
         self,
@@ -172,6 +179,94 @@ class TaskWorker:
             retryable=True,
         )
 
+    async def start_reminder(self, reminder_id: str) -> TaskRun:
+        if self._reminder_repository is None:
+            raise InvalidStateError("Reminders are not configured.")
+        reminder = self._reminder_repository.get_reminder(reminder_id)
+        if reminder.status is not ReminderStatus.PENDING:
+            raise InvalidStateError("Only pending reminders can be executed.")
+        if self._run_repository.has_running_task(reminder.id):
+            raise InvalidStateError("This reminder is already running.")
+        run = self._run_repository.create_run(
+            task_id=reminder.id,
+            trigger=TaskRunTrigger.SCHEDULED,
+            conversation_id=reminder.source_conversation_id,
+        )
+        self._reminder_repository.mark_fired(reminder.id)
+        spawned = asyncio.create_task(
+            self._execute_reminder(run.id, reminder)
+        )
+        self._tasks.add(spawned)
+        spawned.add_done_callback(self._tasks.discard)
+        return run
+
+    async def _execute_reminder(
+        self, run_id: str, reminder: Reminder
+    ) -> TaskRun:
+        message = REMINDER_PREFIX + reminder.commitment
+        try:
+            handle = await self._controller.submit(
+                conversation_id=reminder.source_conversation_id,
+                client_request_id=f"taskrun:{run_id}",
+                content=message,
+            )
+        except NotFoundError:
+            logger.warning(
+                "Reminder run %s failed: source conversation is gone", run_id
+            )
+            return self._finish(
+                run_id,
+                TaskRunStatus.FAILED,
+                error="来源会话已删除，无法执行该提醒。",
+                reminder=reminder,
+            )
+        except Exception as error:  # noqa: BLE001 - journal must survive failures
+            logger.warning("Reminder run %s failed to submit: %s", run_id, error)
+            return self._finish(
+                run_id,
+                TaskRunStatus.FAILED,
+                error="Turn submission failed.",
+                retryable=True,
+                reminder=reminder,
+            )
+        self._run_repository.link_turn(run_id, handle.turn_id)
+        try:
+            snapshot = await self._controller.wait(handle)
+        except Exception as error:  # noqa: BLE001 - journal must survive failures
+            logger.warning("Reminder run %s failed while waiting: %s", run_id, error)
+            return self._finish(
+                run_id,
+                TaskRunStatus.FAILED,
+                error="Turn execution failed.",
+                retryable=True,
+                reminder=reminder,
+            )
+        status = snapshot.turn.status
+        if status is TurnStatus.COMPLETED:
+            review = await self._review_run(snapshot)
+            return self._finish(
+                run_id,
+                TaskRunStatus.COMPLETED,
+                awaiting_user=review.awaiting_user,
+                awaiting_note=review.note,
+                excerpt=self._active_text(snapshot),
+                reminder=reminder,
+            )
+        if status is TurnStatus.CANCELLED:
+            return self._finish(
+                run_id,
+                TaskRunStatus.CANCELLED,
+                error="Turn was cancelled.",
+                reminder=reminder,
+            )
+        return self._finish(
+            run_id,
+            TaskRunStatus.FAILED,
+            error="Turn did not complete successfully.",
+            retryable=True,
+            reminder=reminder,
+        )
+
     def _finish(
         self,
         run_id: str,
@@ -182,6 +277,7 @@ class TaskWorker:
         awaiting_note: Optional[str] = None,
         retryable: bool = False,
         task: Optional[TaskRecord] = None,
+        reminder: Optional[Reminder] = None,
         excerpt: Optional[str] = None,
     ) -> TaskRun:
         run = self._run_repository.finish_run(
@@ -192,9 +288,14 @@ class TaskWorker:
             awaiting_note=awaiting_note,
             retryable=retryable,
         )
-        if self._notification_service is not None and task is not None:
+        if self._notification_service is not None:
             try:
-                self._notification_service.notify_run(task, run, excerpt)
+                if task is not None:
+                    self._notification_service.notify_run(task, run, excerpt)
+                elif reminder is not None:
+                    self._notification_service.notify_reminder(
+                        reminder, run, excerpt
+                    )
             except Exception:  # noqa: BLE001 - notifications must not fail runs
                 logger.warning(
                     "Task run notification skipped for %s",

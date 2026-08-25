@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
@@ -31,6 +31,9 @@ class TaskSchedule:
 
 
 _TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_ONCE_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$"
+)
 
 
 def serialize_task_schedule(schedule: TaskSchedule) -> dict:
@@ -158,3 +161,79 @@ def next_occurrence(schedule: TaskSchedule, after: datetime) -> datetime:
     else:
         next_month = local_after.replace(month=local_after.month + 1, day=day)
     return at_time(next_month)
+
+
+@dataclass(frozen=True)
+class ReminderDue:
+    """One-off timed matter (R4.9): local wall time YYYY-MM-DDTHH:MM."""
+
+    at: str
+
+
+def parse_reminder_due(raw: Union[str, dict, "ReminderDue"]) -> ReminderDue:
+    if isinstance(raw, ReminderDue):
+        return raw
+    payload = raw
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError as error:
+            raise ValidationError("提醒周期必须是合法的 JSON。") from error
+    if not isinstance(payload, dict):
+        raise ValidationError("提醒周期必须是一个对象。")
+    if payload.get("kind") != "once":
+        raise ValidationError("提醒周期的 kind 必须是 once。")
+    extra_keys = set(payload.keys()) - {"kind", "at"}
+    if extra_keys:
+        raise ValidationError(
+            "提醒周期包含不支持的字段：" + ", ".join(sorted(extra_keys))
+        )
+    at_raw = payload.get("at")
+    if not isinstance(at_raw, str) or not _ONCE_PATTERN.match(at_raw):
+        raise ValidationError("提醒周期的 at 必须是 YYYY-MM-DDTHH:MM。")
+    try:
+        datetime.strptime(at_raw, "%Y-%m-%dT%H:%M")
+    except ValueError as error:
+        raise ValidationError("提醒周期的日期不存在。") from error
+    return ReminderDue(at=at_raw)
+
+
+def parse_schedule_intent(
+    raw: Union[str, dict, TaskSchedule, ReminderDue],
+) -> Union[TaskSchedule, ReminderDue]:
+    if isinstance(raw, (TaskSchedule, ReminderDue)):
+        return raw
+    payload = raw
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError as error:
+            raise ValidationError("周期必须是合法的 JSON。") from error
+    if isinstance(payload, dict) and payload.get("kind") == "once":
+        return parse_reminder_due(payload)
+    return parse_task_schedule(payload)
+
+
+def serialize_schedule_intent(
+    schedule: Union[TaskSchedule, ReminderDue],
+) -> dict:
+    if isinstance(schedule, ReminderDue):
+        return {"kind": "once", "at": schedule.at}
+    return serialize_task_schedule(schedule)
+
+
+def describe_reminder_due(due: ReminderDue) -> str:
+    moment = datetime.strptime(due.at, "%Y-%m-%dT%H:%M")
+    stamp = moment.strftime("%H:%M")
+    if moment.year == datetime.now().year:
+        return f"{moment.month}月{moment.day}日 {stamp} 一次性"
+    return f"{moment.year}年{moment.month}月{moment.day}日 {stamp} 一次性"
+
+
+def reminder_due_to_utc_iso(due: ReminderDue) -> str:
+    local = datetime.strptime(due.at, "%Y-%m-%dT%H:%M").astimezone()
+    return (
+        local.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )

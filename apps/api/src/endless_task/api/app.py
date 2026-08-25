@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from endless_task.domain.task_schedule import ReminderDue
 from endless_task.domain.models import (
     ConversationStatus,
     PermissionMode,
@@ -79,6 +80,7 @@ from endless_task.storage import (
     SqliteTaskRepository,
     SqliteTaskProposalRepository,
     SqliteNotificationRepository,
+    SqliteReminderRepository,
     SqliteTaskRunRepository,
 )
 from endless_task.tooling import ApprovalStatus, ToolRegistry
@@ -100,6 +102,7 @@ from .serialization import (
     task_json,
     task_proposal_json,
     notification_json,
+    reminder_json,
     task_run_json,
 )
 
@@ -117,12 +120,12 @@ ARTIFACT_AWARENESS_CLAUSE = (
     "再在回复中给出完整修改后的文档，不要只给片段或口头承诺。"
 )
 
-TASK_AWARENESS_PROMPT_VERSION = "p4.2-v1"
+TASK_AWARENESS_PROMPT_VERSION = "p4.9-v1"
 TASK_AWARENESS_CLAUSE = (
     "\n- 用户要求周期性做某事时（每天、每周、每月等），回答必须明确复述完整承诺"
     "（周期、时间、做什么），并说明该安排在用户确认后才生效；不得声称已经安排。"
-    "\n- 用户提出一次性定时事项时，如实说明一次性定时安排能力尚未就绪，"
-    "可以建议届时再提出，或把事项内容记入记忆；不得假装已安排。"
+    "\n- 用户提出一次性定时事项时，回答必须明确复述承诺与具体时间，"
+    "并说明该提醒在用户确认后才生效；不得声称已经安排。"
     "\n- 安排是否生效，以用户在提案卡片上的确认为准；用户在聊天中的文字"
     "（如“确认”“生效”“可以”）不构成确认，不得声称安排已生效，"
     "可引导用户在卡片上确认。"
@@ -362,6 +365,7 @@ class AppContainer:
     task_proposal_service: Optional[TaskProposalService]
     task_run_repository: SqliteTaskRunRepository
     notification_repository: SqliteNotificationRepository
+    reminder_repository: SqliteReminderRepository
     task_notification_service: Optional[TaskNotificationService]
     task_worker: TaskWorker
     task_scheduler: TaskScheduler
@@ -536,6 +540,7 @@ def _build_container(
     task_proposal_repository = SqliteTaskProposalRepository(database)
     task_run_repository = SqliteTaskRunRepository(database)
     notification_repository = SqliteNotificationRepository(database)
+    reminder_repository = SqliteReminderRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -681,10 +686,12 @@ def _build_container(
         max_concurrent_task_runs=settings.max_concurrent_task_runs,
         review_service=task_run_review_service,
         notification_service=task_notification_service,
+        reminder_repository=reminder_repository,
     )
     task_scheduler = TaskScheduler(
         task_repository=task_repository,
         run_repository=task_run_repository,
+        reminder_repository=reminder_repository,
         max_attempts=settings.task_max_attempts,
         retry_backoff=(
             timedelta(seconds=settings.task_retry_backoff_seconds),
@@ -709,6 +716,7 @@ def _build_container(
         task_proposal_service=task_proposal_service,
         task_run_repository=task_run_repository,
         notification_repository=notification_repository,
+        reminder_repository=reminder_repository,
         task_notification_service=task_notification_service,
         task_worker=task_worker,
         task_scheduler=task_scheduler,
@@ -979,6 +987,9 @@ def create_app(
 
     @app.delete("/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str) -> Response:
+        container.reminder_repository.cancel_reminders_for_conversation(
+            conversation_id
+        )
         container.task_repository.cancel_tasks_for_conversation(
             conversation_id
         )
@@ -1097,6 +1108,18 @@ def create_app(
         )
         return {"notification": notification_json(notification)}
 
+    @app.get("/reminders")
+    async def list_reminders(include_cancelled: bool = False) -> dict[str, object]:
+        items = container.reminder_repository.list_reminders(
+            include_cancelled=include_cancelled
+        )
+        return {"items": [reminder_json(item) for item in items]}
+
+    @app.post("/reminders/{reminder_id}/cancel")
+    async def cancel_reminder(reminder_id: str) -> dict[str, object]:
+        reminder = container.reminder_repository.cancel_reminder(reminder_id)
+        return {"reminder": reminder_json(reminder)}
+
     @app.get("/conversations/{conversation_id}/task-proposals")
     async def list_task_proposals(
         conversation_id: str, include_resolved: bool = False
@@ -1116,6 +1139,17 @@ def create_app(
                 proposal_id
             )
             return {"proposal": task_proposal_json(proposal)}
+        peek = container.task_proposal_repository.get_proposal(proposal_id)
+        if isinstance(peek.schedule, ReminderDue):
+            proposal, reminder = (
+                container.task_proposal_repository.accept_proposal_as_reminder(
+                    proposal_id
+                )
+            )
+            return {
+                "proposal": task_proposal_json(proposal),
+                "reminder": reminder_json(reminder),
+            }
         proposal, task = container.task_proposal_repository.accept_proposal(
             proposal_id
         )

@@ -12,6 +12,7 @@ from typing import Optional
 
 from endless_task.domain.models import (
     NotificationKind,
+    Reminder,
     TaskRecord,
     TaskRun,
     TaskRunStatus,
@@ -72,6 +73,38 @@ class TaskNotificationService:
         self._repository.record(
             kind=kind,
             task_id=task.id,
+            run_id=run.id,
+            conversation_id=run.conversation_id,
+            title=title,
+            body=body,
+        )
+
+    def notify_reminder(
+        self,
+        reminder: Reminder,
+        run: TaskRun,
+        excerpt: Optional[str] = None,
+    ) -> None:
+        if run.status is TaskRunStatus.COMPLETED:
+            kind = (
+                NotificationKind.RUN_AWAITING
+                if run.awaiting_user
+                else NotificationKind.RUN_COMPLETED
+            )
+        elif run.status is TaskRunStatus.FAILED:
+            kind = NotificationKind.RUN_FAILED
+        else:
+            return
+        title = f"《提醒·{reminder.title}》"
+        if kind is NotificationKind.RUN_AWAITING:
+            body = _compact(run.awaiting_note) or "Assistant 正在等你处理。"
+        elif kind is NotificationKind.RUN_FAILED:
+            body = _compact(run.error) or "提醒执行失败。"
+        else:
+            body = _compact(excerpt) or "提醒已执行完成。"
+        self._repository.record(
+            kind=kind,
+            task_id=reminder.id,
             run_id=run.id,
             conversation_id=run.conversation_id,
             title=title,
