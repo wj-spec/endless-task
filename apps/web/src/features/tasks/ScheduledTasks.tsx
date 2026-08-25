@@ -150,6 +150,8 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
             const lastRunNote = awaiting
               ? (lastRun?.awaitingNote ?? null)
               : (lastRun?.error ?? null);
+            const attemptSuffix =
+              lastRun && lastRun.attempt > 1 ? ` · 第 ${lastRun.attempt} 次尝试` : "";
             return (
               <div className="memory-item" key={task.id}>
                 <div className="memory-content">
@@ -161,6 +163,7 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                     <span className="proposal-reason">
                       上次执行：{RUN_TRIGGER_LABEL[lastRun.trigger]} ·{" "}
                       {lastRunLabel}
+                      {attemptSuffix}
                       {lastRunNote ? `（${lastRunNote}）` : ""}
                     </span>
                   ) : null}

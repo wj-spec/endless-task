@@ -309,6 +309,20 @@ export type TaskRun = {
   finishedAt: string | null;
   awaitingUser: boolean;
   awaitingNote: string | null;
+  attempt: number;
+  retryable: boolean;
+};
+
+export type TaskNotification = {
+  id: string;
+  kind: "run_completed" | "run_failed" | "run_awaiting";
+  taskId: string;
+  runId: string;
+  conversationId: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt: string | null;
 };
 
 export type ArtifactVersionOperation = "create" | "update" | "chat_continue" | "rollback";

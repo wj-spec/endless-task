@@ -35,7 +35,34 @@ const PERMISSION_OPTIONS: {
   },
 ];
 
+const DESKTOP_NOTIFICATIONS_KEY = "endless-task-desktop-notifications";
+
 export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps) {
+  const [desktopNotifications, setDesktopNotifications] = useState(
+    () => localStorage.getItem(DESKTOP_NOTIFICATIONS_KEY) === "1",
+  );
+  const [desktopUnsupported, setDesktopUnsupported] = useState(
+    typeof Notification === "undefined",
+  );
+
+  const toggleDesktopNotifications = async () => {
+    if (desktopNotifications) {
+      localStorage.setItem(DESKTOP_NOTIFICATIONS_KEY, "0");
+      setDesktopNotifications(false);
+      return;
+    }
+    if (typeof Notification === "undefined") {
+      setDesktopUnsupported(true);
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      setError("浏览器未授予通知权限，桌面通知保持关闭。");
+      return;
+    }
+    localStorage.setItem(DESKTOP_NOTIFICATIONS_KEY, "1");
+    setDesktopNotifications(true);
+  };
   const [currentMode, setCurrentMode] = useState<PermissionMode | null>(null);
   const [pendingMode, setPendingMode] = useState<PermissionMode | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -132,6 +159,22 @@ export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps
                 );
               })
             : null}
+          <h3 className="settings-section-title">桌面通知</h3>
+          <p className="settings-section-hint">
+            标签页在后台时，任务执行结果以系统通知提醒；应用内通知不受此开关影响。
+          </p>
+          {desktopUnsupported ? (
+            <div className="overlay-empty">当前浏览器不支持桌面通知。</div>
+          ) : (
+            <label className="permission-acknowledge">
+              <input
+                checked={desktopNotifications}
+                onChange={() => void toggleDesktopNotifications()}
+                type="checkbox"
+              />
+              后台时接收桌面通知
+            </label>
+          )}
           {pendingOption && currentMode !== null ? (
             <div className="permission-confirm">
               <p>

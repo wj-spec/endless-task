@@ -29,8 +29,10 @@ type ChatWorkSurfaceProps = {
   onDraftChange: (value: string) => void;
   onMenu: () => void;
   onOpenMemory: () => void;
+  onOpenNotifications: () => void;
   onOpenScheduled: () => void;
   onOpenSettings: () => void;
+  unreadNotificationCount: number;
   permissionMode: PermissionMode | null;
   onRegenerate: (turnId: string) => void;
   onResolveApproval: (
@@ -91,8 +93,10 @@ export function ChatWorkSurface({
   onDraftChange,
   onMenu,
   onOpenMemory,
+  onOpenNotifications,
   onOpenScheduled,
   onOpenSettings,
+  unreadNotificationCount,
   permissionMode,
   onRegenerate,
   onResolveApproval,
@@ -174,6 +178,9 @@ export function ChatWorkSurface({
                 {permissionShortLabel[permissionMode]}
               </span>
             ) : null}
+            <button onClick={onOpenNotifications} type="button">
+              通知{unreadNotificationCount > 0 ? `（${unreadNotificationCount}）` : ""}
+            </button>
             <button onClick={onOpenMemory} type="button">
               记忆
             </button>

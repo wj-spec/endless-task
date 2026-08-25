@@ -1785,3 +1785,41 @@ textarea:focus-visible {
   color: var(--ink);
   font-size: 12px;
 }
+
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 60;
+}
+.toast {
+  max-width: 340px;
+  border: 1px solid var(--border, #d8d5cf);
+  border-left: 3px solid var(--accent, #1f6f30);
+  background: var(--panel, #ffffff);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.toast-title {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.toast-body {
+  display: block;
+  opacity: 0.8;
+}
+.unread-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #1f466f);
+  margin-right: 6px;
+}

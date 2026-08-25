@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
-import type { PermissionMode } from "./features/chat/apiTypes";
+import type { PermissionMode, TaskNotification } from "./features/chat/apiTypes";
 import { MemoryManagement } from "./features/memory/MemoryManagement";
+import { NotificationsDrawer } from "./features/notifications/NotificationsDrawer";
 import { ScheduledTasks } from "./features/tasks/ScheduledTasks";
 import { SettingsOverlay } from "./features/settings/SettingsOverlay";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
@@ -41,6 +42,9 @@ export function App() {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [toasts, setToasts] = useState<TaskNotification[]>([]);
   const [scheduledOpen, setScheduledOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
@@ -56,6 +60,68 @@ export function App() {
     setWorkspaceCollapsed(false);
     setWorkspaceDrawerOpen(false);
   }, [chat.activeConversationId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const known = new Set<string>();
+    let seeded = false;
+    const pushToast = (item: TaskNotification) => {
+      setToasts((current) => [...current, item]);
+      globalThis.setTimeout(() => {
+        setToasts((current) => current.filter((toast) => toast.id !== item.id));
+      }, 8000);
+      if (
+        document.hidden &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted" &&
+        localStorage.getItem("endless-task-desktop-notifications") === "1"
+      ) {
+        try {
+          new Notification(item.title, { body: item.body });
+        } catch {
+          // 桌面通知失败静默降级。
+        }
+      }
+    };
+    const poll = async () => {
+      try {
+        const items = await chatApi.listNotifications(true);
+        if (cancelled) return;
+        setUnreadCount(items.length);
+        const fresh = items.filter((item) => !known.has(item.id));
+        items.forEach((item) => known.add(item.id));
+        if (!seeded) {
+          seeded = true;
+          return;
+        }
+        fresh.forEach(pushToast);
+      } catch {
+        // 通知轮询失败静默降级。
+      }
+    };
+    void poll();
+    const timer = globalThis.setInterval(() => void poll(), 10000);
+    const refresh = () => void poll();
+    globalThis.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(timer);
+      globalThis.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
+
+  const dismissToast = async (item: TaskNotification) => {
+    setToasts((current) => current.filter((toast) => toast.id !== item.id));
+    try {
+      await chatApi.markNotificationRead(item.id);
+    } catch {
+      // 标记已读失败不阻断跳转。
+    }
+    setNotificationsOpen(false);
+    void chat.openConversation(item.conversationId);
+  };
 
   return (
     <div
@@ -98,6 +164,8 @@ export function App() {
         onDraftChange={chat.setDraft}
         onMenu={() => setRailOpen(true)}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenNotifications={() => setNotificationsOpen(true)}
+        unreadNotificationCount={unreadCount}
         onOpenScheduled={() => setScheduledOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
         permissionMode={permissionMode}
@@ -180,6 +248,15 @@ export function App() {
       {memoryOpen ? (
         <MemoryManagement onClose={() => setMemoryOpen(false)} />
       ) : null}
+      {notificationsOpen ? (
+        <NotificationsDrawer
+          onClose={() => setNotificationsOpen(false)}
+          onOpenConversation={(conversationId) => {
+            setNotificationsOpen(false);
+            void chat.openConversation(conversationId);
+          }}
+        />
+      ) : null}
       {scheduledOpen ? (
         <ScheduledTasks
           onClose={() => setScheduledOpen(false)}
@@ -189,6 +266,19 @@ export function App() {
           }}
         />
       ) : null}
+      <div className="toast-stack">
+        {toasts.map((item) => (
+          <button
+            className="toast"
+            key={item.id}
+            onClick={() => void dismissToast(item)}
+            type="button"
+          >
+            <span className="toast-title">{item.title}</span>
+            <span className="toast-body">{item.body}</span>
+          </button>
+        ))}
+      </div>
       {settingsOpen ? (
         <SettingsOverlay
           onClose={() => setSettingsOpen(false)}

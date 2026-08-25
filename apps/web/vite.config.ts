@@ -14,6 +14,7 @@ export default defineConfig({
       "/artifact-proposals": "http://127.0.0.1:8000",
       "/task-proposals": "http://127.0.0.1:8000",
       "/tasks": "http://127.0.0.1:8000",
+      "/notifications": "http://127.0.0.1:8000",
       "/memories": "http://127.0.0.1:8000",
       "/memory-proposals": "http://127.0.0.1:8000",
       "/settings": "http://127.0.0.1:8000",

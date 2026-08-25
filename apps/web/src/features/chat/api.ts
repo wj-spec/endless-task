@@ -19,6 +19,7 @@ import type {
   TaskProposal,
   TaskSummary,
   TaskRun,
+  TaskNotification,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -209,6 +210,21 @@ export const chatApi = {
     }),
   cancelTask: (taskId: string) =>
     request<{ task: TaskSummary }>(`/tasks/${taskId}/cancel`, {
+      method: "POST",
+    }),
+  listNotifications: async (unreadOnly: boolean) => {
+    const response = await request<{ items: TaskNotification[] }>(
+      `/notifications${unreadOnly ? "?unread_only=true" : ""}`,
+    );
+    return response.items;
+  },
+  markNotificationRead: (notificationId: string) =>
+    request<{ notification: TaskNotification }>(
+      `/notifications/${notificationId}/read`,
+      { method: "POST" },
+    ),
+  markAllNotificationsRead: () =>
+    request<{ count: number }>("/notifications/read-all", {
       method: "POST",
     }),
   getPermissionSettings: () =>
