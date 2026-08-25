@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { Reminder, TaskRun, TaskSummary } from "../chat/apiTypes";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { RowMenu } from "../ui/RowMenu";
+import type { RowMenuItem } from "../ui/RowMenu";
 
-type ScheduledTasksProps = {
-  onClose: () => void;
+type ScheduledTasksContentProps = {
   onOpenConversation: (conversationId: string) => void;
 };
 
@@ -33,6 +36,12 @@ const REMINDER_STATUS_LABEL: Record<Reminder["status"], string> = {
 
 const POLL_DELAYS_MS = [2000, 6000, 12000];
 
+type PendingCancel = {
+  kind: "task" | "reminder";
+  id: string;
+  title: string;
+};
+
 function formatDue(dueAt: string): string {
   const moment = new Date(dueAt);
   if (Number.isNaN(moment.getTime())) return dueAt;
@@ -41,7 +50,9 @@ function formatDue(dueAt: string): string {
   return `${moment.getMonth() + 1}月${moment.getDate()}日 ${hh}:${mm}`;
 }
 
-export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksProps) {
+export function ScheduledTasksContent({
+  onOpenConversation,
+}: ScheduledTasksContentProps) {
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [runsByTask, setRunsByTask] = useState<Record<string, TaskRun[]>>({});
@@ -49,6 +60,7 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingCancel, setPendingCancel] = useState<PendingCancel | null>(null);
   const timers = useRef<number[]>([]);
 
   const loadRuns = useCallback(async (taskId: string) => {
@@ -121,13 +133,17 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
     }
   };
 
-  const requestCancel = (taskId: string) => {
-    if (
-      !globalThis.confirm("取消这条安排？Assistant 将不再按时执行它。")
-    ) {
-      return;
+  const requestCancel = (task: TaskSummary) => {
+    setPendingCancel({ kind: "task", id: task.id, title: task.title });
+  };
+
+  const confirmPendingCancel = () => {
+    if (!pendingCancel) return;
+    if (pendingCancel.kind === "task") {
+      void changeStatus(pendingCancel.id, "cancel");
+    } else {
+      void cancelReminder(pendingCancel.id);
     }
-    void changeStatus(taskId, "cancel");
   };
 
   const runNow = async (taskId: string) => {
@@ -148,28 +164,36 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
   };
 
   return (
-    <div aria-label="已安排" className="overlay" role="dialog">
-      <div className="overlay-panel">
-        <header className="overlay-header">
-          <h2>已安排</h2>
-          <button onClick={onClose} type="button">
-            关闭
-          </button>
-        </header>
-        <div className="overlay-body">
+    <>
+      <div className="panel-content">
           {actionError ? (
             <div className="proposal-error" role="alert">
               {actionError}
             </div>
           ) : null}
-          {loading ? <div className="overlay-empty">正在加载…</div> : null}
+          {loading ? (
+            <div aria-hidden="true" className="skeleton-panel">
+              <span className="skeleton-line" />
+              <span className="skeleton-line is-short" />
+              <span className="skeleton-line" />
+            </div>
+          ) : null}
           {!loading && loadError ? (
-            <div className="overlay-empty">{loadError}</div>
+            <EmptyState
+              action={
+                <button onClick={() => void load()} type="button">
+                  重试
+                </button>
+              }
+              desc={loadError}
+              title="没加载出来"
+            />
           ) : null}
           {!loading && !loadError && tasks.length === 0 ? (
-            <div className="overlay-empty">
-              还没有已安排的事项；需要时 Assistant 会在聊天中提出。
-            </div>
+            <EmptyState
+              desc="需要时助手会在聊天中提出，你确认后才生效。"
+              title="还没有已安排的事项"
+            />
           ) : null}
           {tasks.map((task) => {
             const runs = runsByTask[task.id] ?? [];
@@ -186,13 +210,30 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
               : (lastRun?.error ?? null);
             const attemptSuffix =
               lastRun && lastRun.attempt > 1 ? ` · 第 ${lastRun.attempt} 次尝试` : "";
+            const menuItems: RowMenuItem[] = [];
+            if (task.status === "active") {
+              menuItems.push({
+                label: "暂停",
+                disabled: busyTaskId === task.id,
+                onSelect: () => void changeStatus(task.id, "pause"),
+              });
+            }
+            if (task.status !== "cancelled") {
+              menuItems.push({
+                label: "取消安排",
+                disabled: busyTaskId === task.id,
+                onSelect: () => requestCancel(task),
+              });
+            }
+            menuItems.push({
+              label: "查看会话",
+              onSelect: () => onOpenConversation(task.sourceConversationId),
+            });
             return (
               <div className="memory-item" key={task.id}>
                 <div className="memory-content">
                   《{task.title}》 {task.scheduleDescription}
                   <span className="proposal-kind">{STATUS_LABEL[task.status]}</span>
-                </div>
-                <div className="memory-actions">
                   {lastRun ? (
                     <span className="proposal-reason">
                       上次执行：{RUN_TRIGGER_LABEL[lastRun.trigger]} ·{" "}
@@ -201,7 +242,16 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                       {lastRunNote ? `（${lastRunNote}）` : ""}
                     </span>
                   ) : null}
-                  {task.status === "active" ? (
+                </div>
+                <div className="memory-actions">
+                  {awaiting ? (
+                    <button
+                      onClick={() => onOpenConversation(task.sourceConversationId)}
+                      type="button"
+                    >
+                      去处理
+                    </button>
+                  ) : task.status === "active" ? (
                     <button
                       disabled={busyTaskId === task.id || running}
                       onClick={() => void runNow(task.id)}
@@ -209,17 +259,7 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                     >
                       {running ? "执行中…" : "立即执行一次"}
                     </button>
-                  ) : null}
-                  {task.status === "active" ? (
-                    <button
-                      disabled={busyTaskId === task.id}
-                      onClick={() => void changeStatus(task.id, "pause")}
-                      type="button"
-                    >
-                      暂停
-                    </button>
-                  ) : null}
-                  {task.status === "paused" ? (
+                  ) : task.status === "paused" ? (
                     <button
                       disabled={busyTaskId === task.id}
                       onClick={() => void changeStatus(task.id, "resume")}
@@ -228,19 +268,7 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                       恢复
                     </button>
                   ) : null}
-                  <button
-                    disabled={busyTaskId === task.id}
-                    onClick={() => requestCancel(task.id)}
-                    type="button"
-                  >
-                    取消安排
-                  </button>
-                  <button
-                    onClick={() => onOpenConversation(task.sourceConversationId)}
-                    type="button"
-                  >
-                    {awaiting ? "去处理" : "查看会话"}
-                  </button>
+                  <RowMenu items={menuItems} />
                 </div>
               </div>
             );
@@ -252,6 +280,23 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
             const runs = runsByTask[reminder.id] ?? [];
             const lastRun = runs.length ? runs[runs.length - 1] : null;
             const awaiting = lastRun?.awaitingUser ?? false;
+            const menuItems: RowMenuItem[] = [];
+            if (reminder.status === "pending") {
+              menuItems.push({
+                label: "取消提醒",
+                disabled: busyTaskId === reminder.id,
+                onSelect: () =>
+                  setPendingCancel({
+                    kind: "reminder",
+                    id: reminder.id,
+                    title: reminder.title,
+                  }),
+              });
+            }
+            menuItems.push({
+              label: "查看会话",
+              onSelect: () => onOpenConversation(reminder.sourceConversationId),
+            });
             return (
               <div className="memory-item" key={reminder.id}>
                 <div className="memory-content">
@@ -274,27 +319,34 @@ export function ScheduledTasks({ onClose, onOpenConversation }: ScheduledTasksPr
                   ) : null}
                 </div>
                 <div className="memory-actions">
-                  {reminder.status === "pending" ? (
+                  {awaiting ? (
                     <button
-                      disabled={busyTaskId === reminder.id}
-                      onClick={() => void cancelReminder(reminder.id)}
+                      onClick={() => onOpenConversation(reminder.sourceConversationId)}
                       type="button"
                     >
-                      取消
+                      去处理
                     </button>
                   ) : null}
-                  <button
-                    onClick={() => onOpenConversation(reminder.sourceConversationId)}
-                    type="button"
-                  >
-                    {awaiting ? "去处理" : "查看会话"}
-                  </button>
+                  <RowMenu items={menuItems} />
                 </div>
               </div>
             );
           })}
-        </div>
       </div>
-    </div>
+
+      {pendingCancel ? (
+        <ConfirmDialog
+          body={
+            pendingCancel.kind === "task"
+              ? `取消后，Assistant 将不再按时执行《${pendingCancel.title}》。`
+              : `取消后，Assistant 将不再按时提醒你《${pendingCancel.title}》。`
+          }
+          confirmLabel={pendingCancel.kind === "task" ? "取消安排" : "取消提醒"}
+          onClose={() => setPendingCancel(null)}
+          onConfirm={confirmPendingCancel}
+          title={pendingCancel.kind === "task" ? "取消安排" : "取消提醒"}
+        />
+      ) : null}
+    </>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiClientError, chatApi } from "../chat/api";
 import type { PermissionMode } from "../chat/apiTypes";
+import { useTheme, type ThemePreference } from "./useTheme";
 
 type SettingsOverlayProps = {
   onClose: () => void;
@@ -37,6 +38,28 @@ const PERMISSION_OPTIONS: {
 
 const DESKTOP_NOTIFICATIONS_KEY = "endless-task-desktop-notifications";
 
+const THEME_OPTIONS: {
+  value: ThemePreference;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "system",
+    label: "跟随系统",
+    description: "随操作系统外观自动切换浅色或深色。",
+  },
+  {
+    value: "light",
+    label: "浅色",
+    description: "默认暖纸色。",
+  },
+  {
+    value: "dark",
+    label: "深色",
+    description: "深灰绿暗纸，适合夜间使用。",
+  },
+];
+
 export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps) {
   const [desktopNotifications, setDesktopNotifications] = useState(
     () => localStorage.getItem(DESKTOP_NOTIFICATIONS_KEY) === "1",
@@ -44,6 +67,7 @@ export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps
   const [desktopUnsupported, setDesktopUnsupported] = useState(
     typeof Notification === "undefined",
   );
+  const theme = useTheme();
 
   const toggleDesktopNotifications = async () => {
     if (desktopNotifications) {
@@ -175,6 +199,30 @@ export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps
               后台时接收桌面通知
             </label>
           )}
+          <h3 className="settings-section-title">外观</h3>
+          <p className="settings-section-hint">
+            深色仅切换配色 token，布局与交互不变；选择后立即生效并记住。
+          </p>
+          {THEME_OPTIONS.map((option) => {
+            const selected = theme.preference === option.value;
+            return (
+              <label
+                className={`permission-option${selected ? " is-selected" : ""}`}
+                key={option.value}
+              >
+                <input
+                  checked={selected}
+                  name="theme-preference"
+                  onChange={() => theme.setPreference(option.value)}
+                  type="radio"
+                />
+                <span className="permission-option-text">
+                  <strong>{option.label}</strong>
+                  <span>{option.description}</span>
+                </span>
+              </label>
+            );
+          })}
           {pendingOption && currentMode !== null ? (
             <div className="permission-confirm">
               <p>

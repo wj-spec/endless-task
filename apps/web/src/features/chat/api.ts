@@ -1,5 +1,6 @@
 import type {
   CompactTurnSnapshot,
+  PendingProposal,
   ApprovalRequest,
   ArtifactDetailSnapshot,
   ArtifactProposal,
@@ -228,6 +229,12 @@ export const chatApi = {
     request<{ count: number }>("/notifications/read-all", {
       method: "POST",
     }),
+  listPendingProposals: async () => {
+    const response = await request<{ items: PendingProposal[] }>(
+      "/proposals/pending",
+    );
+    return response.items;
+  },
   listReminders: async () => {
     const response = await request<{ items: Reminder[] }>("/reminders");
     return response.items;

@@ -373,11 +373,12 @@ export function useChatApplication() {
     }
   };
 
-  const renameConversation = async (title: string) => {
-    if (!activeConversationId) return;
+  const renameConversation = async (title: string, conversationId?: string) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
     setPendingAction("rename");
     try {
-      const updated = await chatApi.patchConversation(activeConversationId, { title });
+      const updated = await chatApi.patchConversation(targetId, { title });
       setConversations((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),
       );
@@ -394,11 +395,15 @@ export function useChatApplication() {
     }
   };
 
-  const changeConversationStatus = async (status: ConversationStatus) => {
-    if (!activeConversationId) return;
+  const changeConversationStatus = async (
+    status: ConversationStatus,
+    conversationId?: string,
+  ) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
     setPendingAction("status");
     try {
-      const updated = await chatApi.patchConversation(activeConversationId, { status });
+      const updated = await chatApi.patchConversation(targetId, { status });
       const nextFilter = status === "active" ? "active" : statusFilter;
       setStatusFilter(nextFilter);
       await loadConversationList(
@@ -412,16 +417,18 @@ export function useChatApplication() {
     }
   };
 
-  const deleteConversation = async () => {
-    if (!activeConversationId) return;
+  const deleteConversation = async (conversationId?: string) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
     setPendingAction("delete");
     try {
-      await chatApi.deleteConversation(activeConversationId);
+      await chatApi.deleteConversation(targetId);
       setSnapshots((current) => {
         const next = { ...current };
-        delete next[activeConversationId];
+        delete next[targetId];
         return next;
       });
+      if (targetId === activeConversationId) setActiveConversationId(null);
       await loadConversationList(statusFilter);
     } catch (deleteError) {
       setError(readableError(deleteError));

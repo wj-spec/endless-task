@@ -1108,6 +1108,42 @@ def create_app(
         )
         return {"notification": notification_json(notification)}
 
+    @app.get("/proposals/pending")
+    async def list_pending_proposals() -> dict[str, object]:
+        items: list[dict[str, object]] = []
+        for proposal in container.artifact_proposal_repository.list_pending(limit=50):
+            items.append(
+                {
+                    "id": proposal.id,
+                    "kind": "artifact",
+                    "conversationId": proposal.conversation_id,
+                    "title": proposal.title,
+                    "createdAt": proposal.created_at,
+                }
+            )
+        for proposal in container.task_proposal_repository.list_pending(limit=50):
+            items.append(
+                {
+                    "id": proposal.id,
+                    "kind": "task",
+                    "conversationId": proposal.conversation_id,
+                    "title": proposal.title,
+                    "createdAt": proposal.created_at,
+                }
+            )
+        for proposal in container.proposal_repository.list_pending(limit=50):
+            items.append(
+                {
+                    "id": proposal.id,
+                    "kind": "memory",
+                    "conversationId": proposal.conversation_id,
+                    "title": proposal.content[:60],
+                    "createdAt": proposal.created_at,
+                }
+            )
+        items.sort(key=lambda item: str(item["createdAt"]))
+        return {"items": items}
+
     @app.get("/reminders")
     async def list_reminders(include_cancelled: bool = False) -> dict[str, object]:
         items = container.reminder_repository.list_reminders(

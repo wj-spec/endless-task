@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { MemoryRecord } from "../chat/apiTypes";
 import { formatRelativeTime } from "../artifacts/time";
 
-type MemoryManagementProps = {
-  onClose: () => void;
-};
-
-export function MemoryManagement({ onClose }: MemoryManagementProps) {
+export function MemoryContent() {
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -69,28 +66,32 @@ export function MemoryManagement({ onClose }: MemoryManagementProps) {
   };
 
   return (
-    <div aria-label="记忆管理" className="overlay" role="dialog">
-      <div className="overlay-panel">
-        <header className="overlay-header">
-          <h2>长期记忆</h2>
-          <button onClick={onClose} type="button">
-            关闭
-          </button>
-        </header>
-        <div className="overlay-body">
+    <div className="panel-content">
           {actionError ? (
             <div className="proposal-error" role="alert">
               {actionError}
             </div>
           ) : null}
-          {loading ? <div className="overlay-empty">正在加载…</div> : null}
+          {loading ? (
+            <div aria-hidden="true" className="skeleton-panel">
+              <span className="skeleton-line" />
+              <span className="skeleton-line is-short" />
+              <span className="skeleton-line" />
+            </div>
+          ) : null}
           {!loading && loadError ? (
-            <div className="overlay-empty">{loadError}</div>
+            <EmptyState
+              action={
+                <button onClick={() => void load()} type="button">
+                  重试
+                </button>
+              }
+              desc={loadError}
+              title="没加载出来"
+            />
           ) : null}
           {!loading && !loadError && memories.length === 0 ? (
-            <div className="overlay-empty">
-              在聊天中让助手记住的事会出现在这里。
-            </div>
+            <EmptyState desc="在聊天中让助手记住的事会出现在这里。" title="还没有记忆" />
           ) : null}
           {memories.map((memory) => (
             <div className="memory-item" key={memory.id}>
@@ -177,8 +178,6 @@ export function MemoryManagement({ onClose }: MemoryManagementProps) {
               )}
             </div>
           ))}
-        </div>
-      </div>
     </div>
   );
 }

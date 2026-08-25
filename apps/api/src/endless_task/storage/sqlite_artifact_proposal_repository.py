@@ -136,6 +136,17 @@ class SqliteArtifactProposalRepository:
             rows = connection.execute(query, tuple(params)).fetchall()
         return tuple(self._from_row(row) for row in rows)
 
+    def list_pending(self, *, limit: int) -> Sequence[ArtifactProposal]:
+        query = (
+            "SELECT * FROM artifact_proposals WHERE status = ? "
+            "ORDER BY created_at, id LIMIT ?"
+        )
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                query, (ArtifactProposalStatus.PENDING.value, limit)
+            ).fetchall()
+        return tuple(self._from_row(row) for row in rows)
+
     def find_pending_by_content(self, content: str) -> Optional[ArtifactProposal]:
         normalized = content.strip()
         if not normalized:

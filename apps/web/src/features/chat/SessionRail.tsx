@@ -1,18 +1,23 @@
-import type {
-  Conversation,
-  ConversationStatus,
-  HealthSnapshot,
-} from "./apiTypes";
+import { useState } from "react";
+import type { Conversation, ConversationStatus } from "./apiTypes";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EmptyState } from "../ui/EmptyState";
+import { RowMenu } from "../ui/RowMenu";
 
 type SessionRailProps = {
   activeConversationId: string | null;
   conversations: Conversation[];
-  health: HealthSnapshot | null;
   open: boolean;
   search: string;
   statusFilter: ConversationStatus;
+  onChangeConversationStatus: (
+    conversationId: string,
+    status: ConversationStatus,
+  ) => void;
   onClose: () => void;
+  onDeleteConversation: (conversationId: string) => void;
   onNewConversation: () => void;
+  onRenameConversation: (conversationId: string, title: string) => void;
   onSearchChange: (value: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onStatusFilterChange: (status: ConversationStatus) => void;
@@ -36,16 +41,34 @@ const formatRelativeTime = (value: string) => {
 export function SessionRail({
   activeConversationId,
   conversations,
-  health,
   open,
   search,
   statusFilter,
+  onChangeConversationStatus,
   onClose,
+  onDeleteConversation,
   onNewConversation,
+  onRenameConversation,
   onSearchChange,
   onSelectConversation,
   onStatusFilterChange,
 }: SessionRailProps) {
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+
+  const startRename = (conversation: Conversation) => {
+    setRenamingId(conversation.id);
+    setRenameDraft(conversation.title);
+  };
+
+  const commitRename = () => {
+    if (!renamingId) return;
+    const title = renameDraft.trim();
+    if (title) onRenameConversation(renamingId, title);
+    setRenamingId(null);
+  };
+
   return (
     <aside className={open ? "session-rail is-open" : "session-rail"}>
       <header className="rail-header">
@@ -98,39 +121,81 @@ export function SessionRail({
 
       <nav className="session-list" aria-label="会话列表">
         {conversations.length === 0 ? (
-          <p className="rail-empty">
-            {search ? "没有匹配的对话" : "这里还没有对话"}
-          </p>
+          <EmptyState
+            className="rail-empty"
+            desc={search ? "换个关键词试试。" : "点「新对话」开始，助手会记住你们聊过什么。"}
+            title={search ? "没有匹配的对话" : "这里还没有对话"}
+          />
         ) : null}
-        {conversations.map((conversation) => (
-          <button
-            aria-current={conversation.id === activeConversationId ? "page" : undefined}
-            className={
-              conversation.id === activeConversationId
-                ? "session-item is-active"
-                : "session-item"
-            }
-            key={conversation.id}
-            onClick={() => onSelectConversation(conversation.id)}
-            type="button"
-          >
-            <span>{conversation.title}</span>
-            <time dateTime={conversation.updatedAt}>
-              {formatRelativeTime(conversation.updatedAt)}
-            </time>
-          </button>
-        ))}
+        {conversations.map((conversation) => {
+          const isActive = conversation.id === activeConversationId;
+          const archived = conversation.status === "archived";
+          return (
+            <div
+              className={isActive ? "session-item is-active" : "session-item"}
+              key={conversation.id}
+            >
+              {renamingId === conversation.id ? (
+                <div className="session-rename">
+                  <input
+                    autoFocus
+                    onBlur={commitRename}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") commitRename();
+                      if (event.key === "Escape") setRenamingId(null);
+                    }}
+                    value={renameDraft}
+                  />
+                </div>
+              ) : (
+                <button
+                  aria-current={isActive ? "page" : undefined}
+                  className="session-item-main"
+                  onClick={() => onSelectConversation(conversation.id)}
+                  type="button"
+                >
+                  <span>{conversation.title}</span>
+                  <time dateTime={conversation.updatedAt}>
+                    {formatRelativeTime(conversation.updatedAt)}
+                  </time>
+                </button>
+              )}
+              <RowMenu
+                className="session-row-menu"
+                items={[
+                  { label: "重命名", onSelect: () => startRename(conversation) },
+                  {
+                    label: archived ? "取消归档" : "归档",
+                    onSelect: () =>
+                      onChangeConversationStatus(
+                        conversation.id,
+                        archived ? "active" : "archived",
+                      ),
+                  },
+                  {
+                    danger: true,
+                    label: "删除",
+                    onSelect: () => setDeleteTarget(conversation),
+                  },
+                ]}
+                triggerAriaLabel={`管理对话：${conversation.title}`}
+                triggerClassName="session-menu-button"
+              />
+            </div>
+          );
+        })}
       </nav>
 
-      <footer className="rail-footer">
-        <span
-          className={health?.providerConfigured ? "status-light" : "status-light is-warning"}
+      {deleteTarget ? (
+        <ConfirmDialog
+          body="删除后无法恢复；该对话相关的安排与提醒会一并取消。"
+          confirmLabel="删除"
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => onDeleteConversation(deleteTarget.id)}
+          title="删除这段对话？"
         />
-        <div>
-          <span>{health ? `${health.provider} · ${health.model}` : "本地服务未连接"}</span>
-          <small>{health?.providerConfigured ? "仅在本机运行" : "需要配置模型服务"}</small>
-        </div>
-      </footer>
+      ) : null}
     </aside>
   );
 }

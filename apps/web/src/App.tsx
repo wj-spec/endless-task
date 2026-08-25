@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
 import type { PermissionMode, TaskNotification } from "./features/chat/apiTypes";
-import { MemoryManagement } from "./features/memory/MemoryManagement";
-import { NotificationsDrawer } from "./features/notifications/NotificationsDrawer";
-import { ScheduledTasks } from "./features/tasks/ScheduledTasks";
+import { AssistantPanel } from "./features/panel/AssistantPanel";
+import type { AssistantPanelTab } from "./features/panel/AssistantPanel";
+import { CornerHub } from "./features/hub/CornerHub";
+import { useAssistantHub } from "./features/hub/useAssistantHub";
 import { SettingsOverlay } from "./features/settings/SettingsOverlay";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
@@ -41,11 +42,9 @@ export function App() {
   const workspaceVisible = workspace.workspace?.visible === true;
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantTab, setAssistantTab] = useState<AssistantPanelTab>("notifications");
   const [toasts, setToasts] = useState<TaskNotification[]>([]);
-  const [scheduledOpen, setScheduledOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
 
@@ -61,56 +60,43 @@ export function App() {
     setWorkspaceDrawerOpen(false);
   }, [chat.activeConversationId]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const known = new Set<string>();
-    let seeded = false;
-    const pushToast = (item: TaskNotification) => {
-      setToasts((current) => [...current, item]);
-      globalThis.setTimeout(() => {
-        setToasts((current) => current.filter((toast) => toast.id !== item.id));
-      }, 8000);
-      if (
-        document.hidden &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted" &&
-        localStorage.getItem("endless-task-desktop-notifications") === "1"
-      ) {
-        try {
-          new Notification(item.title, { body: item.body });
-        } catch {
-          // 桌面通知失败静默降级。
-        }
-      }
-    };
-    const poll = async () => {
+  const pushToast = useCallback((item: TaskNotification) => {
+    setToasts((current) => [...current, item]);
+    globalThis.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== item.id));
+    }, 8000);
+    if (
+      document.hidden &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted" &&
+      localStorage.getItem("endless-task-desktop-notifications") === "1"
+    ) {
       try {
-        const items = await chatApi.listNotifications(true);
-        if (cancelled) return;
-        setUnreadCount(items.length);
-        const fresh = items.filter((item) => !known.has(item.id));
-        items.forEach((item) => known.add(item.id));
-        if (!seeded) {
-          seeded = true;
-          return;
-        }
-        fresh.forEach(pushToast);
+        new Notification(item.title, { body: item.body });
       } catch {
-        // 通知轮询失败静默降级。
+        // 桌面通知失败静默降级。
       }
-    };
-    void poll();
-    const timer = globalThis.setInterval(() => void poll(), 10000);
-    const refresh = () => void poll();
-    globalThis.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      cancelled = true;
-      globalThis.clearInterval(timer);
-      globalThis.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
+    }
   }, []);
+
+  const hub = useAssistantHub(
+    useCallback(
+      (items: TaskNotification[]) => items.forEach(pushToast),
+      [pushToast],
+    ),
+  );
+
+  const openAssistantPanel = () => {
+    setAssistantOpen(true);
+    setWorkspaceCollapsed(true);
+    setWorkspaceDrawerOpen(false);
+  };
+
+  const openWorkspacePanel = () => {
+    setAssistantOpen(false);
+    setWorkspaceCollapsed(false);
+    setWorkspaceDrawerOpen(true);
+  };
 
   const dismissToast = async (item: TaskNotification) => {
     setToasts((current) => current.filter((toast) => toast.id !== item.id));
@@ -119,7 +105,6 @@ export function App() {
     } catch {
       // 标记已读失败不阻断跳转。
     }
-    setNotificationsOpen(false);
     void chat.openConversation(item.conversationId);
   };
 
@@ -132,7 +117,6 @@ export function App() {
       <SessionRail
         activeConversationId={chat.activeConversationId}
         conversations={chat.conversations}
-        health={chat.health}
         open={railOpen}
         search={chat.search}
         statusFilter={chat.statusFilter}
@@ -147,6 +131,15 @@ export function App() {
           setRailOpen(false);
         }}
         onStatusFilterChange={chat.setStatusFilter}
+        onChangeConversationStatus={(conversationId, status) =>
+          void chat.changeConversationStatus(status, conversationId)
+        }
+        onDeleteConversation={(conversationId) =>
+          void chat.deleteConversation(conversationId)
+        }
+        onRenameConversation={(conversationId, title) =>
+          void chat.renameConversation(title, conversationId)
+        }
       />
       <ChatWorkSurface
         conversation={chat.activeSnapshot}
@@ -163,12 +156,6 @@ export function App() {
         onDismissError={() => chat.setError(null)}
         onDraftChange={chat.setDraft}
         onMenu={() => setRailOpen(true)}
-        onOpenMemory={() => setMemoryOpen(true)}
-        onOpenNotifications={() => setNotificationsOpen(true)}
-        unreadNotificationCount={unreadCount}
-        onOpenScheduled={() => setScheduledOpen(true)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        permissionMode={permissionMode}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
         onResolveApproval={(turnId, approvalId, decision) =>
           void chat.resolveApproval(turnId, approvalId, decision)
@@ -189,13 +176,17 @@ export function App() {
           proposals.forTurn(chat.activeConversationId, turnId)
         }
         onResolveArtifactProposal={(proposalId, decision) =>
-          void proposals.resolveArtifactProposal(proposalId, decision)
+          void proposals
+            .resolveArtifactProposal(proposalId, decision)
+            .then(hub.refresh)
         }
         onResolveMemoryProposal={(proposalId, decision) =>
-          void proposals.resolveMemoryProposal(proposalId, decision)
+          void proposals
+            .resolveMemoryProposal(proposalId, decision)
+            .then(hub.refresh)
         }
         onResolveTaskProposal={(proposalId, decision) =>
-          void proposals.resolveTaskProposal(proposalId, decision)
+          void proposals.resolveTaskProposal(proposalId, decision).then(hub.refresh)
         }
       />
       {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
@@ -214,7 +205,10 @@ export function App() {
       {workspaceVisible && workspaceCollapsed && !workspaceDrawerOpen ? (
         <button
           className="workspace-reopen"
-          onClick={() => setWorkspaceCollapsed(false)}
+          onClick={() => {
+            setAssistantOpen(false);
+            setWorkspaceCollapsed(false);
+          }}
           type="button"
         >
           工作区
@@ -223,7 +217,11 @@ export function App() {
       {workspaceVisible ? (
         <button
           className="workspace-fab"
-          onClick={() => setWorkspaceDrawerOpen((current) => !current)}
+          onClick={() => {
+            const opening = !workspaceDrawerOpen;
+            setWorkspaceDrawerOpen(opening);
+            if (opening) setAssistantOpen(false);
+          }}
           type="button"
         >
           工作区
@@ -245,25 +243,24 @@ export function App() {
           type="button"
         />
       ) : null}
-      {memoryOpen ? (
-        <MemoryManagement onClose={() => setMemoryOpen(false)} />
-      ) : null}
-      {notificationsOpen ? (
-        <NotificationsDrawer
-          onClose={() => setNotificationsOpen(false)}
+      <CornerHub
+        onOpenAssistant={openAssistantPanel}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenWorkspace={openWorkspacePanel}
+        pendingTotal={hub.total}
+        permissionMode={permissionMode}
+        workspaceAvailable={workspaceVisible}
+      />
+      {assistantOpen ? (
+        <AssistantPanel
+          onClose={() => setAssistantOpen(false)}
           onOpenConversation={(conversationId) => {
-            setNotificationsOpen(false);
             void chat.openConversation(conversationId);
           }}
-        />
-      ) : null}
-      {scheduledOpen ? (
-        <ScheduledTasks
-          onClose={() => setScheduledOpen(false)}
-          onOpenConversation={(conversationId) => {
-            setScheduledOpen(false);
-            void chat.openConversation(conversationId);
-          }}
+          onTabChange={setAssistantTab}
+          pendingProposals={hub.proposals}
+          tab={assistantTab}
+          unreadCount={hub.unread}
         />
       ) : null}
       <div className="toast-stack">

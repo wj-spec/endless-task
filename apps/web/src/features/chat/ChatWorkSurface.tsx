@@ -4,14 +4,17 @@ import type {
   ConversationSnapshot,
   HealthSnapshot,
   LiveTurn,
-  PermissionMode,
   ResponseVariantSnapshot,
 } from "./apiTypes";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
 import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
-import { MessageContent } from "./MessageContent";
+import { CollapsibleMessage } from "./CollapsibleMessage";
+import { SearchBar } from "./SearchBar";
+import { useConversationSearch } from "./useConversationSearch";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { RowMenu } from "../ui/RowMenu";
 
 type ChatWorkSurfaceProps = {
   conversation: ConversationSnapshot | null;
@@ -28,12 +31,6 @@ type ChatWorkSurfaceProps = {
   onDismissError: () => void;
   onDraftChange: (value: string) => void;
   onMenu: () => void;
-  onOpenMemory: () => void;
-  onOpenNotifications: () => void;
-  onOpenScheduled: () => void;
-  onOpenSettings: () => void;
-  unreadNotificationCount: number;
-  permissionMode: PermissionMode | null;
   onRegenerate: (turnId: string) => void;
   onResolveApproval: (
     turnId: string,
@@ -55,12 +52,6 @@ type ChatWorkSurfaceProps = {
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
 };
-
-const permissionShortLabel = {
-  confirm_every_time: "逐项确认",
-  trust_local_writes: "本地写已信任",
-  trust_all: "全部已信任",
-} as const;
 
 const statusText = {
   created: "准备回答",
@@ -92,12 +83,6 @@ export function ChatWorkSurface({
   onDismissError,
   onDraftChange,
   onMenu,
-  onOpenMemory,
-  onOpenNotifications,
-  onOpenScheduled,
-  onOpenSettings,
-  unreadNotificationCount,
-  permissionMode,
   onRegenerate,
   onResolveApproval,
   onRemoveFile,
@@ -119,6 +104,8 @@ export function ChatWorkSurface({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const search = useConversationSearch(conversation, liveTurns, streamRef);
 
   const conversationId = conversation?.conversation.id;
   const latestTurnId = conversation?.turns.at(-1)?.turn.id;
@@ -147,72 +134,76 @@ export function ChatWorkSurface({
 
   return (
     <main className="chat-surface">
-      <header className="surface-header">
-        <button className="icon-button mobile-menu" onClick={onMenu} type="button">
-          <span aria-hidden="true">☰</span>
-          <span className="sr-only">打开会话列表</span>
-        </button>
-        <div className="conversation-heading">
-          {renaming ? (
-            <input
-              aria-label="会话标题"
-              autoFocus
-              className="title-input"
-              onBlur={submitTitle}
-              onChange={(event) => setTitleDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submitTitle();
-                if (event.key === "Escape") setRenaming(false);
-              }}
-              value={titleDraft}
-            />
-          ) : (
-            <h1>{conversation?.conversation.title ?? "Endless"}</h1>
-          )}
-          <span>{archived ? "已归档" : "私人对话"}</span>
-        </div>
-        <div className="surface-header-side">
-          <div className="surface-global-actions">
-            {permissionMode ? (
-              <span className="permission-chip" title="当前操作权限档位">
-                {permissionShortLabel[permissionMode]}
-              </span>
-            ) : null}
-            <button onClick={onOpenNotifications} type="button">
-              通知{unreadNotificationCount > 0 ? `（${unreadNotificationCount}）` : ""}
-            </button>
-            <button onClick={onOpenMemory} type="button">
-              记忆
-            </button>
-            <button onClick={onOpenScheduled} type="button">
-              已安排
-            </button>
-            <button onClick={onOpenSettings} type="button">
-              设置
-            </button>
+      <div className="surface-top">
+        <header className="surface-header">
+          <button className="icon-button mobile-menu" onClick={onMenu} type="button">
+            <span aria-hidden="true">☰</span>
+            <span className="sr-only">打开会话列表</span>
+          </button>
+          <div className="conversation-heading">
+            {renaming ? (
+              <input
+                aria-label="会话标题"
+                autoFocus
+                className="title-input"
+                onBlur={submitTitle}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submitTitle();
+                  if (event.key === "Escape") setRenaming(false);
+                }}
+                value={titleDraft}
+              />
+            ) : (
+              <h1>{conversation?.conversation.title ?? "Endless"}</h1>
+            )}
+            {archived ? <span className="archived-chip">已归档</span> : null}
           </div>
-          {conversation ? (
-            <div className="conversation-actions">
-            <button onClick={() => setRenaming(true)} type="button">
-              重命名
-            </button>
-            <button onClick={archived ? onRestore : onArchive} type="button">
-              {archived ? "恢复" : "归档"}
-            </button>
-            <button
-              className="danger-action"
-              disabled={isGenerating}
-              onClick={() => {
-                if (globalThis.confirm("永久删除这个对话？此操作无法撤销。")) onDelete();
-              }}
-              type="button"
-            >
-              删除
-            </button>
-            </div>
-          ) : null}
-        </div>
-      </header>
+          <div className="surface-header-side">
+            {conversation ? (
+              <div className="conversation-actions">
+                <button
+                  aria-label="搜索当前会话"
+                  className="search-toggle"
+                  onClick={search.openSearch}
+                  type="button"
+                >
+                  <span aria-hidden="true">⌕</span>
+                </button>
+                <RowMenu
+                  items={[
+                    { label: "重命名", onSelect: () => setRenaming(true) },
+                    {
+                      label: archived ? "恢复" : "归档",
+                      disabled: isGenerating,
+                      onSelect: archived ? onRestore : onArchive,
+                    },
+                    {
+                      danger: true,
+                      disabled: isGenerating,
+                      label: "删除",
+                      onSelect: () => setConfirmingDelete(true),
+                    },
+                  ]}
+                />
+              </div>
+            ) : null}
+          </div>
+        </header>
+
+        {search.open ? (
+          <SearchBar
+            current={search.current}
+            hitCount={search.hitCount}
+            onClose={search.close}
+            onNext={search.next}
+            onPrev={search.prev}
+            onQueryChange={search.setQuery}
+            query={search.query}
+          />
+        ) : null}
+
+      </div>
 
       <div className="conversation-stream" ref={streamRef}>
         {error ? (
@@ -262,7 +253,15 @@ export function ChatWorkSurface({
                     ∞
                   </div>
                   <div className="assistant-content">
-                    {content ? <MessageContent content={content} /> : null}
+                    {content ? (
+                      <CollapsibleMessage
+                        content={content}
+                        forceExpand={search.forceExpandTurnIds.has(
+                          turnSnapshot.turn.id,
+                        )}
+                        streaming={status === "created" || status === "running"}
+                      />
+                    ) : null}
                     {activities.length ? (
                       <div className="activity-list" aria-label="操作状态">
                         {activities.map((activity) => (
@@ -529,9 +528,44 @@ export function ChatWorkSurface({
           </div>
         </div>
         <p className="composer-note">
-          Enter 发送 · Shift + Enter 换行 · 可附加 UTF-8 文本（≤ 1 MB）
+          <span
+            className={
+              health?.providerConfigured
+                ? "composer-status"
+                : "composer-status is-warning"
+            }
+          >
+            <span
+              aria-hidden="true"
+              className={
+                health?.providerConfigured
+                  ? "status-light"
+                  : "status-light is-warning"
+              }
+            />
+            <span className="composer-status-text">
+              {health
+                ? `${health.provider} · ${health.model} · ${
+                    health.providerConfigured ? "仅在本机运行" : "需要配置模型服务"
+                  }`
+                : "本地服务未连接"}
+            </span>
+          </span>
+          <span className="composer-hint">
+            Enter 发送 · Shift + Enter 换行 · 可附加 UTF-8 文本（≤ 1 MB）
+          </span>
         </p>
       </footer>
+
+      {confirmingDelete ? (
+        <ConfirmDialog
+          body="永久删除这个对话？此操作无法撤销，该对话下的已安排事项与提醒也会一并取消。"
+          confirmLabel="永久删除"
+          onClose={() => setConfirmingDelete(false)}
+          onConfirm={onDelete}
+          title="删除对话"
+        />
+      ) : null}
     </main>
   );
 }

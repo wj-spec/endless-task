@@ -339,6 +339,14 @@ export type TaskNotification = {
   readAt: string | null;
 };
 
+export type PendingProposal = {
+  id: string;
+  kind: "artifact" | "task" | "memory";
+  conversationId: string;
+  title: string;
+  createdAt: string;
+};
+
 export type ArtifactVersionOperation = "create" | "update" | "chat_continue" | "rollback";
 
 export type SourceReference = {

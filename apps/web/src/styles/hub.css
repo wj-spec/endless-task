@@ -1,0 +1,100 @@
+/* hub：左下角入口、toast */
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: var(--z-toast);
+}
+
+.toast {
+  max-width: 340px;
+  border: 1px solid var(--border, var(--line-strong));
+  border-left: 3px solid var(--accent, var(--syn-green));
+  background: var(--panel, var(--surface));
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-toast);
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.toast-title {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.toast-body {
+  display: block;
+  opacity: 0.8;
+}
+
+.unread-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, var(--syn-blue));
+  margin-right: 6px;
+}
+
+/* 左下角 hub：全局入口收敛 */
+.corner-hub {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: var(--z-hub);
+}
+
+.corner-hub-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--accent);
+  font-size: var(--fs-5);
+  box-shadow: var(--shadow-lift);
+  cursor: pointer;
+}
+
+.corner-hub-button:hover {
+  color: var(--ink);
+}
+
+.hub-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--paper);
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+@media (max-width: 760px) {
+  .corner-hub {
+    bottom: 96px;
+  }
+}
+
+.toast {
+  animation: pop-in 180ms ease-out;
+}
+
+.hub-workspace-item {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .hub-workspace-item {
+    display: block;
+  }
+}
