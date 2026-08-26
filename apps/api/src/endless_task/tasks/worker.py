@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from endless_task.domain.models import (
+    Conversation,
+    ConversationKind,
     Reminder,
     ReminderStatus,
     TaskRun,
@@ -26,6 +29,7 @@ from endless_task.domain.repositories import InvalidStateError
 from endless_task.domain.repositories import NotFoundError
 from endless_task.runtime import TurnController
 from endless_task.storage import (
+    SqliteChatRepository,
     SqliteReminderRepository,
     SqliteTaskRepository,
     SqliteTaskRunRepository,
@@ -53,6 +57,7 @@ class TaskWorker:
         task_repository: SqliteTaskRepository,
         run_repository: SqliteTaskRunRepository,
         controller: TurnController,
+        chat_repository: Optional[SqliteChatRepository] = None,
         max_concurrent_task_runs: int = 1,
         review_service: Optional[TaskRunReviewService] = None,
         notification_service: Optional[TaskNotificationService] = None,
@@ -63,6 +68,7 @@ class TaskWorker:
         self._task_repository = task_repository
         self._run_repository = run_repository
         self._controller = controller
+        self._chat_repository = chat_repository
         self._semaphore = asyncio.Semaphore(max_concurrent_task_runs)
         self._tasks: set[asyncio.Task[None]] = set()
         self._review_service = review_service
@@ -87,6 +93,22 @@ class TaskWorker:
             conversation_id=task.source_conversation_id,
             attempt=attempt,
         )
+        if self._chat_repository is not None:
+            try:
+                branch = self._ensure_branch(task, run)
+            except NotFoundError:
+                logger.warning(
+                    "Task run %s failed: source conversation is gone", run.id
+                )
+                return self._finish(
+                    run.id,
+                    TaskRunStatus.FAILED,
+                    error="来源会话已删除，无法执行该安排。",
+                    task=task,
+                    retryable=False,
+                )
+            if branch is not None:
+                run = self._run_repository.link_conversation(run.id, branch.id)
         spawned = asyncio.create_task(self.execute(run.id))
         self._tasks.add(spawned)
         spawned.add_done_callback(self._tasks.discard)
@@ -192,6 +214,28 @@ class TaskWorker:
             trigger=TaskRunTrigger.SCHEDULED,
             conversation_id=reminder.source_conversation_id,
         )
+        if self._chat_repository is not None:
+            try:
+                branch = self._chat_repository.create_branch(
+                    parent_conversation_id=reminder.source_conversation_id,
+                    kind=ConversationKind.EPHEMERAL,
+                    title=self._execution_title("提醒", run.started_at),
+                )
+            except InvalidStateError:
+                branch = None
+            except NotFoundError:
+                logger.warning(
+                    "Reminder run %s failed: source conversation is gone", run.id
+                )
+                self._reminder_repository.mark_fired(reminder.id)
+                return self._finish(
+                    run.id,
+                    TaskRunStatus.FAILED,
+                    error="来源会话已删除，无法执行该提醒。",
+                    reminder=reminder,
+                )
+            if branch is not None:
+                run = self._run_repository.link_conversation(run.id, branch.id)
         self._reminder_repository.mark_fired(reminder.id)
         spawned = asyncio.create_task(
             self._execute_reminder(run.id, reminder)
@@ -266,6 +310,46 @@ class TaskWorker:
             retryable=True,
             reminder=reminder,
         )
+
+    def _ensure_branch(self, task, run: TaskRun) -> Optional[Conversation]:
+        assert self._chat_repository is not None
+        previous = [
+            item
+            for item in self._run_repository.list_runs(task_id=task.id)
+            if item.id != run.id
+        ]
+        if previous:
+            last = previous[-1]
+            if last.conversation_id != task.source_conversation_id:
+                try:
+                    candidate = self._chat_repository.get_conversation(
+                        last.conversation_id
+                    )
+                except NotFoundError:
+                    candidate = None
+                if (
+                    candidate is not None
+                    and candidate.parent_conversation_id
+                    == task.source_conversation_id
+                ):
+                    return candidate
+        try:
+            return self._chat_repository.create_branch(
+                parent_conversation_id=task.source_conversation_id,
+                kind=ConversationKind.EPHEMERAL,
+                title=self._execution_title(task.title, run.started_at),
+            )
+        except InvalidStateError:
+            return None
+
+    @staticmethod
+    def _execution_title(title: str, started_at: str) -> str:
+        try:
+            moment = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            stamp = moment.strftime("%m-%d %H:%M")
+        except ValueError:
+            stamp = started_at[:16]
+        return f"《{title}》· 执行 @{stamp}"
 
     def _finish(
         self,

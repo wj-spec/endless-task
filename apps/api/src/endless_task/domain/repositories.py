@@ -12,9 +12,14 @@ from .models import (
     ArtifactVersionOperation,
     ArtifactVersionRecord,
     Conversation,
+    ConversationKind,
     ConversationSnapshot,
     ConversationStatus,
     FinishReason,
+    KnowledgeSource,
+    KnowledgeSourceKind,
+    KnowledgeSourceOrigin,
+    KnowledgeSourceStatus,
     MemoryKind,
     MemoryProposal,
     MemoryRecord,
@@ -62,7 +67,27 @@ class ChatRepository(Protocol):
         *,
         status: ConversationStatus = ConversationStatus.ACTIVE,
         title_query: Optional[str] = None,
+        kind: Optional[ConversationKind] = None,
     ) -> Sequence[Conversation]:
+        ...
+
+    def create_branch(
+        self,
+        *,
+        parent_conversation_id: str,
+        fork_turn_id: Optional[str] = None,
+        kind: ConversationKind = ConversationKind.EPHEMERAL,
+        title: Optional[str] = None,
+    ) -> Conversation:
+        ...
+
+    def promote_conversation(self, conversation_id: str) -> Conversation:
+        ...
+
+    def list_branches(self, conversation_id: str) -> Sequence[Conversation]:
+        ...
+
+    def list_lineage_turns(self, conversation_id: str) -> Sequence[TurnSnapshot]:
         ...
 
     def rename_conversation(self, conversation_id: str, title: str) -> Conversation:
@@ -167,6 +192,51 @@ class MemoryRepository(Protocol):
         ...
 
     def delete_memory(self, memory_id: str) -> MemoryRecord:
+        ...
+
+
+class KnowledgeRepository(Protocol):
+    def create_source(
+        self,
+        *,
+        kind: KnowledgeSourceKind,
+        origin: KnowledgeSourceOrigin,
+        title: str,
+        content: str,
+        file_name: Optional[str] = None,
+        source_conversation_id: Optional[str] = None,
+        proposed_by_turn_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
+    ) -> KnowledgeSource:
+        ...
+
+    def get_source(self, source_id: str) -> KnowledgeSource:
+        ...
+
+    def list_sources(
+        self, status: KnowledgeSourceStatus = KnowledgeSourceStatus.ACTIVE
+    ) -> Sequence[KnowledgeSource]:
+        ...
+
+    def update_source(
+        self,
+        source_id: str,
+        *,
+        title: Optional[str] = None,
+        content: Optional[str] = None,
+        file_name: Optional[str] = None,
+        expires_at: Optional[str] = None,
+        by_user: bool = True,
+    ) -> KnowledgeSource:
+        ...
+
+    def expire_source(self, source_id: str) -> KnowledgeSource:
+        ...
+
+    def restore_source(self, source_id: str) -> KnowledgeSource:
+        ...
+
+    def delete_source(self, source_id: str) -> KnowledgeSource:
         ...
 
 

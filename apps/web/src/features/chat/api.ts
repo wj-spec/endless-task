@@ -11,6 +11,7 @@ import type {
   ConversationStatus,
   HealthSnapshot,
   MemoryProposal,
+  KnowledgeSource,
   MemoryRecord,
   PermissionSettings,
   RuntimeEvent,
@@ -131,6 +132,19 @@ export const chatApi = {
     request<void>(`/conversations/${conversationId}/files/${fileId}`, {
       method: "DELETE",
     }),
+  createBranch: (conversationId: string, forkTurnId?: string) =>
+    request<{ conversation: Conversation }>(
+      `/conversations/${conversationId}/branches`,
+      {
+        method: "POST",
+        body: JSON.stringify(forkTurnId ? { forkTurnId } : {}),
+      },
+    ),
+  promoteConversation: (conversationId: string) =>
+    request<{ conversation: Conversation }>(
+      `/conversations/${conversationId}/promote`,
+      { method: "POST" },
+    ),
   createTurn: (conversationId: string, content: string, idempotencyKey: string) =>
     request<TurnCommandResponse>(`/conversations/${conversationId}/turns`, {
       method: "POST",
@@ -260,6 +274,48 @@ export const chatApi = {
     );
     return response.items;
   },
+  listKnowledgeSources: async (status = "active") => {
+    const response = await request<{ items: KnowledgeSource[] }>(
+      `/knowledge-sources?status=${status}`,
+    );
+    return response.items;
+  },
+  createKnowledgeSource: (body: {
+    kind: "file" | "note";
+    title: string;
+    content: string;
+    fileName?: string;
+    expiresAt?: string;
+  }) =>
+    request<{ source: KnowledgeSource }>("/knowledge-sources", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateKnowledgeSource: (
+    sourceId: string,
+    body: {
+      title?: string;
+      content?: string;
+      fileName?: string;
+      expiresAt?: string;
+    },
+  ) =>
+    request<{ source: KnowledgeSource }>(`/knowledge-sources/${sourceId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  expireKnowledgeSource: (sourceId: string) =>
+    request<{ source: KnowledgeSource }>(
+      `/knowledge-sources/${sourceId}/expire`,
+      { method: "POST" },
+    ),
+  restoreKnowledgeSource: (sourceId: string) =>
+    request<{ source: KnowledgeSource }>(
+      `/knowledge-sources/${sourceId}/restore`,
+      { method: "POST" },
+    ),
+  deleteKnowledgeSource: (sourceId: string) =>
+    request<void>(`/knowledge-sources/${sourceId}`, { method: "DELETE" }),
   listMemories: async (includeDeleted = false) => {
     const response = await request<{ items: MemoryRecord[] }>(
       `/memories?include_deleted=${includeDeleted}`,

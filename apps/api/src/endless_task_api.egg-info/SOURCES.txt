@@ -43,6 +43,7 @@ src/endless_task/storage/sqlite_artifact_repository.py
 src/endless_task/storage/sqlite_chat_repository.py
 src/endless_task/storage/sqlite_context_repository.py
 src/endless_task/storage/sqlite_file_repository.py
+src/endless_task/storage/sqlite_knowledge_repository.py
 src/endless_task/storage/sqlite_memory_proposal_repository.py
 src/endless_task/storage/sqlite_memory_repository.py
 src/endless_task/storage/sqlite_notification_repository.py
@@ -75,6 +76,8 @@ src/endless_task/storage/migrations/020_task_run_awaiting.sql
 src/endless_task/storage/migrations/021_task_notifications.sql
 src/endless_task/storage/migrations/022_task_run_reliability.sql
 src/endless_task/storage/migrations/023_task_reminders.sql
+src/endless_task/storage/migrations/024_conversation_branches.sql
+src/endless_task/storage/migrations/025_knowledge.sql
 src/endless_task/storage/migrations/__init__.py
 src/endless_task/tasks/__init__.py
 src/endless_task/tasks/notification_service.py
@@ -103,8 +106,10 @@ tests/test_artifact_versioning.py
 tests/test_artifact_workspace.py
 tests/test_assistant_runtime.py
 tests/test_context_builder.py
+tests/test_conversation_branches.py
 tests/test_file_tool.py
 tests/test_global_permission.py
+tests/test_knowledge.py
 tests/test_memory_injection.py
 tests/test_memory_lifecycle.py
 tests/test_memory_management.py

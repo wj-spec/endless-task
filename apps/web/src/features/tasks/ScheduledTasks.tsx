@@ -246,7 +246,11 @@ export function ScheduledTasksContent({
                 <div className="memory-actions">
                   {awaiting ? (
                     <button
-                      onClick={() => onOpenConversation(task.sourceConversationId)}
+                      onClick={() =>
+                        onOpenConversation(
+                          lastRun?.conversationId ?? task.sourceConversationId,
+                        )
+                      }
                       type="button"
                     >
                       去处理
@@ -321,7 +325,11 @@ export function ScheduledTasksContent({
                 <div className="memory-actions">
                   {awaiting ? (
                     <button
-                      onClick={() => onOpenConversation(reminder.sourceConversationId)}
+                      onClick={() =>
+                        onOpenConversation(
+                          lastRun?.conversationId ?? reminder.sourceConversationId,
+                        )
+                      }
                       type="button"
                     >
                       去处理

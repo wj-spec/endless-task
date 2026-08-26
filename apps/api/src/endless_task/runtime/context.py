@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Protocol, Sequence, Tuple
 
 from endless_task.domain.models import ResponseVariantStatus, TurnSnapshot
@@ -206,6 +206,9 @@ class P0ContextBuilder:
         max_artifacts_in_context: int = 10,
         task_repository=None,
         max_tasks_in_context: int = 10,
+        knowledge_repository=None,
+        max_knowledge_hits_in_context: int = 3,
+        max_knowledge_chars: int = 1500,
         token_estimator: Optional[TokenEstimator] = None,
         summarizer: Optional[ExtractiveConversationSummarizer] = None,
     ) -> None:
@@ -237,6 +240,9 @@ class P0ContextBuilder:
         self._max_artifacts_in_context = max_artifacts_in_context
         self._task_repository = task_repository
         self._max_tasks_in_context = max_tasks_in_context
+        self._knowledge_repository = knowledge_repository
+        self._max_knowledge_hits = max_knowledge_hits_in_context
+        self._max_knowledge_chars = max_knowledge_chars
         self._token_estimator = token_estimator or ApproximateTokenEstimator()
         self._summarizer = summarizer or ExtractiveConversationSummarizer()
 
@@ -267,7 +273,9 @@ class P0ContextBuilder:
         )
         system_message = ProviderMessage(
             role="system",
-            content=self._system_content(current.turn.conversation_id),
+            content=self._system_content(
+                current.turn.conversation_id, current.user_message.content
+            ),
         )
         current_message = ProviderMessage(role="user", content=current.user_message.content)
         required_messages = (system_message, current_message)
@@ -278,7 +286,15 @@ class P0ContextBuilder:
                 "当前消息超过模型可用上下文，请缩短后重试。",
             )
 
-        history = self._canonical_history(conversation.turns, current.turn.ordinal)
+        if conversation.conversation.parent_conversation_id is None:
+            history = self._canonical_history(conversation.turns, current.turn.ordinal)
+            persist_summary = True
+        else:
+            lineage = self._repository.list_lineage_turns(current.turn.conversation_id)
+            history = self._lineage_history(
+                lineage, conversation.turns, current.turn.ordinal
+            )
+            persist_summary = False
         all_history_messages = self._messages_for(history)
         if self._token_estimator.estimate_messages(
             (system_message, *all_history_messages, current_message)
@@ -293,6 +309,7 @@ class P0ContextBuilder:
             )
             summary_revision = self._summary_for(
                 conversation_id=current.turn.conversation_id,
+                persist=persist_summary,
                 turns=omitted,
                 available_tokens=input_budget
                 - self._token_estimator.estimate_messages(
@@ -339,7 +356,7 @@ class P0ContextBuilder:
             snapshot=snapshot,
         )
 
-    def _system_content(self, conversation_id: str) -> str:
+    def _system_content(self, conversation_id: str, user_content: str = "") -> str:
         content = self._system_prompt
         if self._file_repository is not None:
             files = self._file_repository.list_files(conversation_id)
@@ -367,6 +384,9 @@ class P0ContextBuilder:
         memory_block = self._memory_block()
         if memory_block:
             content = f"{content}\n\n{memory_block}"
+        knowledge_block = self._knowledge_block(user_content)
+        if knowledge_block:
+            content = f"{content}\n\n{knowledge_block}"
         artifact_proposal_block = self._artifact_proposal_block(conversation_id)
         if artifact_proposal_block:
             content = f"{content}\n\n{artifact_proposal_block}"
@@ -377,6 +397,61 @@ class P0ContextBuilder:
         if task_list_block:
             content = f"{content}\n\n{task_list_block}"
         return content
+
+    _KNOWLEDGE_SCOPE_LABELS = {
+        "source": "知识源",
+        "memory": "记忆",
+        "artifact": "成果",
+        "conversation": "历史对话",
+    }
+
+    def _knowledge_block(self, user_content: str) -> str:
+        if self._knowledge_repository is None:
+            return ""
+        query = (user_content or "").strip()
+        if len(query) < 4:
+            return ""
+        try:
+            from ..domain.models import KnowledgeScope
+
+            grouped = self._knowledge_repository.search(
+                query,
+                [
+                    KnowledgeScope.SOURCE,
+                    KnowledgeScope.MEMORY,
+                    KnowledgeScope.ARTIFACT,
+                    KnowledgeScope.CONVERSATION,
+                ],
+                self._max_knowledge_hits,
+            )
+        except Exception:
+            return ""
+        lines: list[str] = []
+        used = 0
+        index = 0
+        for hits in grouped.values():
+            for hit in hits:
+                if index >= self._max_knowledge_hits:
+                    break
+                snippet = (hit.snippet or hit.title or "").strip()
+                if len(snippet) > 400:
+                    snippet = snippet[:400] + "…"
+                label = self._KNOWLEDGE_SCOPE_LABELS.get(hit.scope.value, "资料")
+                line = f"[K{index + 1}] {hit.title or label}（{label}）：{snippet}"
+                if used + len(line) > self._max_knowledge_chars:
+                    break
+                lines.append(line)
+                used += len(line)
+                index += 1
+            if index >= self._max_knowledge_hits:
+                break
+        if not lines:
+            return ""
+        return (
+            "相关知识（以下来自助手的个人知识库；回答如需依据其中的内容，"
+            "请在相应句子末尾用 [K1] [K2] 等标记引用，不要杜撰编号）：\n"
+            + "\n".join(lines)
+        )
 
     def _memory_block(self) -> str:
         if self._memory_repository is None:
@@ -464,28 +539,53 @@ class P0ContextBuilder:
         for snapshot in turns:
             if snapshot.turn.ordinal >= current_ordinal:
                 break
-            active_variant_id = snapshot.turn.active_response_variant_id
-            selected = next(
-                (
-                    item
-                    for item in snapshot.response_variants
-                    if item.variant.id == active_variant_id
-                ),
-                None,
-            )
-            if selected is None:
-                raise InvalidStateError("Historical turn has no active response variant")
-            if selected.variant.status is not ResponseVariantStatus.COMPLETED:
-                continue
-            history.append(
-                ContextSourceTurn(
-                    ordinal=snapshot.turn.ordinal,
-                    response_variant_id=selected.variant.id,
-                    user_content=snapshot.user_message.content,
-                    assistant_content=selected.assistant_message.content,
-                )
-            )
+            entry = self._history_entry(snapshot)
+            if entry is not None:
+                history.append(entry)
         return tuple(history)
+
+    def _lineage_history(
+        self,
+        lineage: Sequence[TurnSnapshot],
+        own_turns: Sequence[TurnSnapshot],
+        current_ordinal: int,
+    ) -> tuple[ContextSourceTurn, ...]:
+        entries: list[ContextSourceTurn] = []
+        for snapshot in lineage:
+            entry = self._history_entry(snapshot)
+            if entry is not None:
+                entries.append(entry)
+        for snapshot in own_turns:
+            if snapshot.turn.ordinal >= current_ordinal:
+                break
+            entry = self._history_entry(snapshot)
+            if entry is not None:
+                entries.append(entry)
+        return tuple(
+            replace(entry, ordinal=index + 1) for index, entry in enumerate(entries)
+        )
+
+    @staticmethod
+    def _history_entry(snapshot: TurnSnapshot) -> Optional[ContextSourceTurn]:
+        active_variant_id = snapshot.turn.active_response_variant_id
+        selected = next(
+            (
+                item
+                for item in snapshot.response_variants
+                if item.variant.id == active_variant_id
+            ),
+            None,
+        )
+        if selected is None:
+            raise InvalidStateError("Historical turn has no active response variant")
+        if selected.variant.status is not ResponseVariantStatus.COMPLETED:
+            return None
+        return ContextSourceTurn(
+            ordinal=snapshot.turn.ordinal,
+            response_variant_id=selected.variant.id,
+            user_content=snapshot.user_message.content,
+            assistant_content=selected.assistant_message.content,
+        )
 
     @staticmethod
     def _messages_for(turns: Sequence[ContextSourceTurn]) -> tuple[ProviderMessage, ...]:
@@ -529,11 +629,12 @@ class P0ContextBuilder:
         conversation_id: str,
         turns: Sequence[ContextSourceTurn],
         available_tokens: int,
+        persist: bool = True,
     ) -> Optional[ConversationSummaryRevision]:
         if not turns or available_tokens <= 4 or self._summary_token_limit == 0:
             return None
         through_ordinal = turns[-1].ordinal
-        if self._context_repository is not None:
+        if persist and self._context_repository is not None:
             existing = self._context_repository.get_summary_revision(
                 conversation_id=conversation_id,
                 through_turn_ordinal=through_ordinal,
@@ -553,7 +654,7 @@ class P0ContextBuilder:
         if not content:
             return None
         estimate = self._token_estimator.estimate_text(content)
-        if self._context_repository is None:
+        if not persist or self._context_repository is None:
             return ConversationSummaryRevision(
                 id="transient-summary",
                 conversation_id=conversation_id,

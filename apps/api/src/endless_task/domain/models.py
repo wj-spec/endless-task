@@ -13,6 +13,11 @@ class ConversationStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class ConversationKind(str, Enum):
+    NORMAL = "normal"
+    EPHEMERAL = "ephemeral"
+
+
 class TurnStatus(str, Enum):
     CREATED = "created"
     RUNNING = "running"
@@ -58,6 +63,10 @@ class Conversation:
     created_at: str
     updated_at: str
     archived_at: Optional[str] = None
+    parent_conversation_id: Optional[str] = None
+    fork_turn_id: Optional[str] = None
+    kind: ConversationKind = ConversationKind.NORMAL
+    promoted_at: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -393,6 +402,58 @@ class Notification:
     body: str
     created_at: str
     read_at: Optional[str] = None
+
+
+class KnowledgeSourceKind(str, Enum):
+    FILE = "file"
+    NOTE = "note"
+
+
+class KnowledgeSourceOrigin(str, Enum):
+    USER = "user"
+    AGENT = "agent"
+
+
+class KnowledgeSourceStatus(str, Enum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    DELETED = "deleted"
+
+
+class KnowledgeScope(str, Enum):
+    SOURCE = "source"
+    MEMORY = "memory"
+    ARTIFACT = "artifact"
+    CONVERSATION = "conversation"
+
+
+@dataclass(frozen=True)
+class KnowledgeSource:
+    id: str
+    kind: KnowledgeSourceKind
+    origin: KnowledgeSourceOrigin
+    title: str
+    content: str
+    status: KnowledgeSourceStatus
+    file_name: Optional[str] = None
+    source_conversation_id: Optional[str] = None
+    proposed_by_turn_id: Optional[str] = None
+    user_edited_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    expired_at: Optional[str] = None
+    deleted_at: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class KnowledgeHit:
+    scope: KnowledgeScope
+    ref_id: str
+    title: str
+    snippet: str
+    origin: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -40,6 +40,9 @@ export function useChatApplication() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, ConversationSnapshot>>({});
   const [liveTurns, setLiveTurns] = useState<Record<string, LiveTurn>>({});
+  const [sideConversationId, setSideConversationId] = useState<string | null>(null);
+  const [sideDraft, setSideDraft] = useState("");
+  const [sideLoading, setSideLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<ConversationStatus>("active");
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
@@ -204,9 +207,8 @@ export function useChatApplication() {
     [followTurn],
   );
 
-  const openConversation = useCallback(
+  const loadConversation = useCallback(
     async (conversationId: string) => {
-      setActiveConversationId(conversationId);
       setLoading(true);
       setError(null);
       try {
@@ -220,6 +222,49 @@ export function useChatApplication() {
       }
     },
     [hydrateActiveTurn],
+  );
+
+  const openConversation = useCallback(
+    async (conversationId: string) => {
+      setSideConversationId(null);
+      setActiveConversationId(conversationId);
+      await loadConversation(conversationId);
+    },
+    [loadConversation],
+  );
+
+  const openSideConversation = useCallback(
+    async (conversationId: string) => {
+      setSideConversationId(conversationId);
+      setSideDraft("");
+      setSideLoading(true);
+      setError(null);
+      try {
+        const snapshot = await chatApi.getConversation(conversationId);
+        setSnapshots((current) => ({ ...current, [conversationId]: snapshot }));
+        await hydrateActiveTurn(snapshot);
+      } catch (loadError) {
+        setError(readableError(loadError));
+      } finally {
+        setSideLoading(false);
+      }
+    },
+    [hydrateActiveTurn],
+  );
+
+  const closeSideConversation = useCallback(() => {
+    setSideConversationId(null);
+  }, []);
+
+  const openBranchInSide = useCallback(
+    async (branchId: string, parentId?: string) => {
+      if (parentId && parentId !== activeConversationId) {
+        setActiveConversationId(parentId);
+        await loadConversation(parentId);
+      }
+      await openSideConversation(branchId);
+    },
+    [activeConversationId, loadConversation, openSideConversation],
   );
 
   const loadConversationList = useCallback(
@@ -269,6 +314,17 @@ export function useChatApplication() {
   const activeTurnStatus = latestLiveTurn?.status ?? latestTurn?.turn.status;
   const isGenerating = activeTurnStatus === "created" || activeTurnStatus === "running";
 
+  const sideSnapshot = sideConversationId
+    ? snapshots[sideConversationId] ?? null
+    : null;
+  const sideLatestTurn = sideSnapshot?.turns.at(-1);
+  const sideLatestLiveTurn = sideLatestTurn
+    ? liveTurns[sideLatestTurn.turn.id]
+    : undefined;
+  const sideTurnStatus = sideLatestLiveTurn?.status ?? sideLatestTurn?.turn.status;
+  const sideIsGenerating =
+    sideTurnStatus === "created" || sideTurnStatus === "running";
+
   const runCommand = async (
     action: string,
     operation: () => Promise<TurnCommandResponse>,
@@ -302,6 +358,21 @@ export function useChatApplication() {
         return await chatApi.createTurn(activeConversationId, content, requestId());
       } catch (sendError) {
         setDraft(retainedDraft);
+        throw sendError;
+      }
+    });
+  };
+
+  const sendSide = async () => {
+    const content = sideDraft.trim();
+    if (!content || !sideConversationId || sideIsGenerating) return;
+    const retainedDraft = sideDraft;
+    setSideDraft("");
+    await runCommand("send", async () => {
+      try {
+        return await chatApi.createTurn(sideConversationId, content, requestId());
+      } catch (sendError) {
+        setSideDraft(retainedDraft);
         throw sendError;
       }
     });
@@ -373,6 +444,53 @@ export function useChatApplication() {
     }
   };
 
+  const createBranch = async (forkTurnId?: string) => {
+    if (!activeConversationId) return;
+    setPendingAction("branch");
+    setError(null);
+    try {
+      const { conversation } = await chatApi.createBranch(
+        activeConversationId,
+        forkTurnId,
+      );
+      setConversations((current) => [
+        conversation,
+        ...current.filter((item) => item.id !== conversation.id),
+      ]);
+      await openSideConversation(conversation.id);
+    } catch (branchError) {
+      setError(readableError(branchError));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const promoteConversation = async (conversationId?: string) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
+    setPendingAction("promote");
+    setError(null);
+    try {
+      const { conversation } = await chatApi.promoteConversation(targetId);
+      setConversations((current) =>
+        current.map((item) => (item.id === conversation.id ? conversation : item)),
+      );
+      setSnapshots((current) => {
+        const snapshot = current[conversation.id];
+        return snapshot
+          ? { ...current, [conversation.id]: { ...snapshot, conversation } }
+          : current;
+      });
+      if (targetId === sideConversationId) {
+        await openConversation(conversation.id);
+      }
+    } catch (promoteError) {
+      setError(readableError(promoteError));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
   const renameConversation = async (title: string, conversationId?: string) => {
     const targetId = conversationId ?? activeConversationId;
     if (!targetId) return;
@@ -429,6 +547,15 @@ export function useChatApplication() {
         return next;
       });
       if (targetId === activeConversationId) setActiveConversationId(null);
+      if (targetId === sideConversationId) {
+        setSideConversationId(null);
+      } else if (
+        sideConversationId &&
+        snapshots[sideConversationId]?.conversation.parentConversationId ===
+          targetId
+      ) {
+        setSideConversationId(null);
+      }
       await loadConversationList(statusFilter);
     } catch (deleteError) {
       setError(readableError(deleteError));
@@ -437,11 +564,19 @@ export function useChatApplication() {
     }
   };
 
-  const cancel = async () => {
-    if (!latestTurn) return;
+  const cancel = async (conversationId?: string) => {
+    const targetId = conversationId ?? activeConversationId;
+    const targetTurn = targetId ? snapshots[targetId]?.turns.at(-1) : latestTurn;
+    if (
+      !targetTurn ||
+      !targetId ||
+      targetTurn.turn.conversationId !== targetId
+    ) {
+      return;
+    }
     setPendingAction("cancel");
     try {
-      const compact = await chatApi.cancelTurn(latestTurn.turn.id);
+      const compact = await chatApi.cancelTurn(targetTurn.turn.id);
       setLiveTurns((current) => ({
         ...current,
         [compact.turnId]: liveFromSnapshot(compact),
@@ -483,13 +618,18 @@ export function useChatApplication() {
   const regenerate = async (turnId: string) =>
     runCommand("regenerate", () => chatApi.regenerateTurn(turnId, requestId()));
 
-  const selectVariant = async (turnId: string, variantId: string) => {
-    if (!activeConversationId) return;
+  const selectVariant = async (
+    turnId: string,
+    variantId: string,
+    conversationId?: string,
+  ) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
     setPendingAction("select");
     try {
       await chatApi.selectVariant(turnId, variantId);
-      const snapshot = await chatApi.getConversation(activeConversationId);
-      setSnapshots((current) => ({ ...current, [activeConversationId]: snapshot }));
+      const snapshot = await chatApi.getConversation(targetId);
+      setSnapshots((current) => ({ ...current, [targetId]: snapshot }));
       const compact = await chatApi.getTurn(turnId);
       setLiveTurns((current) => ({ ...current, [turnId]: liveFromSnapshot(compact) }));
     } catch (selectionError) {
@@ -509,7 +649,19 @@ export function useChatApplication() {
     activeConversationId,
     activeSnapshot,
     changeConversationStatus,
+    closeSideConversation,
     conversations: visibleConversations,
+    createBranch,
+    openBranchInSide,
+    openSideConversation,
+    promoteConversation,
+    sendSide,
+    setSideDraft,
+    sideConversationId,
+    sideDraft,
+    sideIsGenerating,
+    sideLoading,
+    sideSnapshot,
     cancel,
     deleteConversation,
     draft,

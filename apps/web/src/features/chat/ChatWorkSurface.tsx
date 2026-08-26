@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type {
   ArtifactRecordSummary,
   ConversationSnapshot,
@@ -27,10 +27,12 @@ type ChatWorkSurfaceProps = {
   pendingAction: string | null;
   onArchive: () => void;
   onCancel: () => void;
+  onCreateBranch: (forkTurnId?: string) => void;
   onDelete: () => void;
   onDismissError: () => void;
   onDraftChange: (value: string) => void;
   onMenu: () => void;
+  onPromote: () => void;
   onRegenerate: (turnId: string) => void;
   onResolveApproval: (
     turnId: string,
@@ -51,6 +53,8 @@ type ChatWorkSurfaceProps = {
   onResolveArtifactProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
+  onCloseSide?: () => void;
+  variant?: "main" | "side";
 };
 
 const statusText = {
@@ -79,10 +83,12 @@ export function ChatWorkSurface({
   pendingAction,
   onArchive,
   onCancel,
+  onCreateBranch,
   onDelete,
   onDismissError,
   onDraftChange,
   onMenu,
+  onPromote,
   onRegenerate,
   onResolveApproval,
   onRemoveFile,
@@ -99,15 +105,28 @@ export function ChatWorkSurface({
   onResolveArtifactProposal,
   onResolveMemoryProposal,
   onResolveTaskProposal,
+  onCloseSide,
+  variant = "main",
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const search = useConversationSearch(conversation, liveTurns, streamRef);
 
   const conversationId = conversation?.conversation.id;
+  const firstOwnTurnIndex = conversationId
+    ? (conversation?.turns ?? []).findIndex(
+        (item) => item.turn.conversationId === conversationId,
+      )
+    : -1;
+  const hasInheritedTurns =
+    firstOwnTurnIndex !== 0 &&
+    (conversation?.turns.some(
+      (item) => item.turn.conversationId !== conversationId,
+    ) ?? false);
   const latestTurnId = conversation?.turns.at(-1)?.turn.id;
   const latestLiveContent = latestTurnId ? liveTurns[latestTurnId]?.content : undefined;
 
@@ -119,6 +138,12 @@ export function ChatWorkSurface({
   useEffect(() => {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
   }, [conversation?.turns.length, latestLiveContent]);
+
+  useEffect(() => {
+    if (variant === "side" && !loading && conversation) {
+      composerRef.current?.focus();
+    }
+  }, [variant, loading, conversationId]);
 
   const submitTitle = () => {
     const title = titleDraft.trim();
@@ -132,9 +157,30 @@ export function ChatWorkSurface({
   const attachmentDisabled =
     !conversation || archived || isGenerating || pendingAction !== null;
 
+  const SurfaceRoot = variant === "side" ? "section" : "main";
+
   return (
-    <main className="chat-surface">
+    <SurfaceRoot
+      className={variant === "side" ? "chat-surface is-side" : "chat-surface"}
+    >
       <div className="surface-top">
+        {variant === "side" ? (
+          <header className="surface-header side-surface-header">
+            <div className="conversation-heading">
+              <h1>{conversation?.conversation.title ?? "临时会话"}</h1>
+            </div>
+            <div className="surface-header-side">
+              <button
+                aria-label="收起临时会话"
+                className="icon-button side-close"
+                onClick={onCloseSide}
+                type="button"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+          </header>
+        ) : (
         <header className="surface-header">
           <button className="icon-button mobile-menu" onClick={onMenu} type="button">
             <span aria-hidden="true">☰</span>
@@ -170,6 +216,20 @@ export function ChatWorkSurface({
                 >
                   <span aria-hidden="true">⌕</span>
                 </button>
+                <button
+                  aria-label="开临时会话"
+                  className="branch-toggle"
+                  disabled={
+                    isGenerating ||
+                    pendingAction !== null ||
+                    (conversation?.turns.length ?? 0) === 0
+                  }
+                  onClick={() => onCreateBranch()}
+                  title="基于当前对话开一个临时会话：深究或多方案并行，不污染原会话"
+                  type="button"
+                >
+                  <span aria-hidden="true">⑂</span>
+                </button>
                 <RowMenu
                   items={[
                     { label: "重命名", onSelect: () => setRenaming(true) },
@@ -190,6 +250,26 @@ export function ChatWorkSurface({
             ) : null}
           </div>
         </header>
+        )}
+
+        {conversation?.conversation.kind === "ephemeral" ? (
+          <div className="branch-banner" role="note">
+            <span className="branch-banner-text">
+              临时会话
+              {conversation.parentTitle
+                ? ` · 源自《${conversation.parentTitle}》`
+                : ""}
+              {" "}· 不写入记忆，用完可丢弃
+            </span>
+            <button
+              disabled={pendingAction !== null}
+              onClick={onPromote}
+              type="button"
+            >
+              升级为正式
+            </button>
+          </div>
+        ) : null}
 
         {search.open ? (
           <SearchBar
@@ -241,8 +321,29 @@ export function ChatWorkSurface({
               (item) => item.variant.id === persistedVariant.variant.id,
             );
 
+            const dividerHere =
+              hasInheritedTurns && turnIndex === firstOwnTurnIndex;
             return (
-              <section className="turn" key={turnSnapshot.turn.id}>
+              <Fragment key={turnSnapshot.turn.id}>
+              {dividerHere ? (
+                <div className="lineage-divider" role="note">
+                  以上继承自《{conversation.parentTitle ?? "主会话"}》，以下是本会话内容
+                </div>
+              ) : null}
+              <section className="turn">
+                {variant === "side" ? null : (
+                <button
+                  aria-label="从此处分叉"
+                  className="turn-fork"
+                  disabled={isGenerating || pendingAction !== null}
+                  onClick={() => onCreateBranch(turnSnapshot.turn.id)}
+                  title="从这里分叉：保留此前上下文，开一个临时会话尝试别的方案"
+                  type="button"
+                >
+                  <span aria-hidden="true">⑂</span>
+                  从此处分叉
+                </button>
+                )}
                 <article className="message-row user-row">
                   <div className="speaker-mark user-mark">你</div>
                   <div className="user-copy">{turnSnapshot.userMessage.content}</div>
@@ -327,7 +428,10 @@ export function ChatWorkSurface({
                       <div className="turn-notice">回答达到长度上限，内容可能不完整。</div>
                     ) : null}
 
-                    {isLatest && !["created", "running"].includes(status) ? (
+                    {isLatest &&
+                    turnSnapshot.turn.conversationId ===
+                      conversation?.conversation.id &&
+                    !["created", "running"].includes(status) ? (
                       <div className="response-actions">
                         {status === "failed" || status === "cancelled" ? (
                           <button
@@ -437,14 +541,20 @@ export function ChatWorkSurface({
                   );
                 })()}
               </section>
+              </Fragment>
             );
           })}
+          {hasInheritedTurns && firstOwnTurnIndex === -1 ? (
+            <div className="lineage-divider" role="note">
+              以上全部继承自《{conversation?.parentTitle ?? "主会话"}》，从这里开始是新内容
+            </div>
+          ) : null}
         </div>
       </div>
 
       <footer className="composer-region">
         <div className="composer">
-          {conversation?.files.length ? (
+          {variant !== "side" && conversation?.files.length ? (
             <div className="composer-files" aria-label="当前对话文件">
               {conversation.files.map((file) => (
                 <span className="composer-file" key={file.id}>
@@ -463,29 +573,34 @@ export function ChatWorkSurface({
             </div>
           ) : null}
           <div className="composer-input-row">
-            <input
-              ref={fileInputRef}
-              accept=".txt,.md,.markdown,.json,.csv,.tsv,.py,.js,.jsx,.ts,.tsx,.html,.css,.yaml,.yml,.toml"
-              className="file-input"
-              disabled={attachmentDisabled}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) onUploadFile(file);
-                event.target.value = "";
-              }}
-              type="file"
-            />
-            <button
-              aria-label="添加文本文件"
-              className="attach-button"
-              disabled={attachmentDisabled}
-              onClick={() => fileInputRef.current?.click()}
-              type="button"
-            >
-              <span aria-hidden="true">＋</span>
-            </button>
+            {variant === "side" ? null : (
+              <>
+                <input
+                  ref={fileInputRef}
+                  accept=".txt,.md,.markdown,.json,.csv,.tsv,.py,.js,.jsx,.ts,.tsx,.html,.css,.yaml,.yml,.toml"
+                  className="file-input"
+                  disabled={attachmentDisabled}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) onUploadFile(file);
+                    event.target.value = "";
+                  }}
+                  type="file"
+                />
+                <button
+                  aria-label="添加文本文件"
+                  className="attach-button"
+                  disabled={attachmentDisabled}
+                  onClick={() => fileInputRef.current?.click()}
+                  type="button"
+                >
+                  <span aria-hidden="true">＋</span>
+                </button>
+              </>
+            )}
             <textarea
               aria-label="给 Endless 发送消息"
+              ref={composerRef}
               disabled={composerDisabled || isGenerating}
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={(event) => {
@@ -499,7 +614,9 @@ export function ChatWorkSurface({
                   ? "恢复对话后继续"
                   : providerUnavailable
                     ? "请先配置模型服务"
-                    : "给 Endless 发送消息"
+                    : variant === "side"
+                      ? "在临时会话中发送消息"
+                      : "给 Endless 发送消息"
               }
               rows={1}
               value={draft}
@@ -566,7 +683,7 @@ export function ChatWorkSurface({
           title="删除对话"
         />
       ) : null}
-    </main>
+    </SurfaceRoot>
   );
 }
 

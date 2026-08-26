@@ -1,4 +1,5 @@
 export type ConversationStatus = "active" | "archived";
+export type ConversationKind = "normal" | "ephemeral";
 export type TurnStatus = "created" | "running" | "completed" | "failed" | "cancelled";
 export type ResponseVariantStatus = TurnStatus;
 export type ResponseVariantOperation = "create" | "retry" | "regenerate";
@@ -12,6 +13,10 @@ export type Conversation = {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  parentConversationId: string | null;
+  forkTurnId: string | null;
+  kind: ConversationKind;
+  promotedAt: string | null;
 };
 
 export type Message = {
@@ -71,6 +76,7 @@ export type ConversationSnapshot = {
   conversation: Conversation;
   turns: ConversationTurnSnapshot[];
   files: UploadedTextFile[];
+  parentTitle?: string | null;
 };
 
 export type UploadedTextFile = {
@@ -380,6 +386,24 @@ export type ArtifactDetailSnapshot = {
 };
 
 export type MemoryStatus = "active" | "expired" | "deleted";
+
+export type KnowledgeSourceStatus = "active" | "expired" | "deleted";
+
+export type KnowledgeSource = {
+  id: string;
+  kind: "file" | "note";
+  origin: "user" | "agent";
+  title: string;
+  content: string;
+  fileName: string | null;
+  status: KnowledgeSourceStatus;
+  sourceConversationId: string | null;
+  userEditedAt: string | null;
+  expiresAt: string | null;
+  expiredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type MemoryRecord = {
   id: string;

@@ -25,13 +25,20 @@ const splitBlocks = (source: string): Block[] => {
 };
 
 const inline = (source: string): ReactNode[] => {
-  const tokens = source.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  const tokens = source.split(/(`[^`]+`|\*\*[^*]+\*\*|\[K\d+\])/g);
   return tokens.map((token, index) => {
     if (token.startsWith("`") && token.endsWith("`")) {
       return <code key={index}>{token.slice(1, -1)}</code>;
     }
     if (token.startsWith("**") && token.endsWith("**")) {
       return <strong key={index}>{token.slice(2, -2)}</strong>;
+    }
+    if (/^\[K\d+\]$/.test(token)) {
+      return (
+        <sup className="citation-chip" key={index} title="来自相关知识">
+          {token.slice(1, -1)}
+        </sup>
+      );
     }
     return token;
   });

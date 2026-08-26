@@ -267,6 +267,10 @@
     grid-template-columns: 34px minmax(0, 1fr) auto;
     padding: 0 14px;
   }
+
+  .branch-banner {
+    padding: 7px 14px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -291,5 +295,108 @@
 @media (max-width: 760px) {
   .composer-hint {
     display: none;
+  }
+}
+
+/* 会话分支：临时会话顶栏横幅 */
+.branch-banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 28px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--warn-soft);
+}
+
+.branch-banner-text {
+  color: var(--warn-deep);
+  font-size: var(--fs-2);
+}
+
+.branch-banner button {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-s);
+  background: var(--paper);
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+
+.branch-banner button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.branch-banner button:disabled {
+  opacity: 0.5;
+}
+
+/* P4.5 修订：临时会话侧边面板 */
+.app-shell.side-open {
+  grid-template-columns: 268px minmax(0, 1fr) minmax(340px, 26vw);
+}
+
+/* 左侧栏折叠：桌面宽度拥挤或侧边面板/工作区挤占时收起 */
+@media (min-width: 761px) {
+  .app-shell.rail-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.rail-collapsed .session-rail {
+    display: none;
+  }
+
+  .app-shell.rail-collapsed.side-open {
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 26vw);
+  }
+
+  .app-shell.rail-collapsed.workspace-open {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+
+  .app-shell.rail-collapsed .mobile-menu {
+    display: grid;
+  }
+
+  .app-shell:not(.rail-collapsed) .rail-close {
+    display: grid;
+  }
+}
+
+.side-chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  background: var(--paper);
+  animation: drawer-in 200ms ease-out;
+}
+
+.side-scrim {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .side-chat-panel {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: var(--z-rail-scrim);
+    width: min(440px, 94vw);
+    box-shadow: -18px 0 42px rgb(8 10 18 / 22%);
+  }
+
+  .side-scrim {
+    position: fixed;
+    z-index: calc(var(--z-rail-scrim) - 1);
+    display: block;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--scrim);
   }
 }

@@ -20,7 +20,13 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from endless_task.domain.task_schedule import ReminderDue
 from endless_task.domain.models import (
+    ConversationKind,
+    ConversationSnapshot,
     ConversationStatus,
+    KnowledgeScope,
+    KnowledgeSourceKind,
+    KnowledgeSourceOrigin,
+    KnowledgeSourceStatus,
     PermissionMode,
     TurnStatus,
 )
@@ -73,6 +79,7 @@ from endless_task.storage import (
     SqliteChatRepository,
     SqliteContextRepository,
     SqliteMemoryProposalRepository,
+    SqliteKnowledgeRepository,
     SqliteMemoryRepository,
     SqlitePreferencesRepository,
     SqliteTextFileRepository,
@@ -90,6 +97,7 @@ from .serialization import (
     artifact_proposal_json,
     artifact_version_json,
     memory_proposal_json,
+    knowledge_source_json,
     memory_record_json,
     approval_request_json,
     compact_turn_snapshot_json,
@@ -366,6 +374,7 @@ class AppContainer:
     task_run_repository: SqliteTaskRunRepository
     notification_repository: SqliteNotificationRepository
     reminder_repository: SqliteReminderRepository
+    knowledge_repository: SqliteKnowledgeRepository
     task_notification_service: Optional[TaskNotificationService]
     task_worker: TaskWorker
     task_scheduler: TaskScheduler
@@ -384,6 +393,12 @@ class ConversationPatch(BaseModel):
 
     title: Optional[str] = None
     status: Optional[ConversationStatus] = None
+
+
+class CreateBranchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    forkTurnId: Optional[str] = None
 
 
 class CreateTurnBody(BaseModel):
@@ -541,6 +556,7 @@ def _build_container(
     task_run_repository = SqliteTaskRunRepository(database)
     notification_repository = SqliteNotificationRepository(database)
     reminder_repository = SqliteReminderRepository(database)
+    knowledge_repository = SqliteKnowledgeRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -575,6 +591,7 @@ def _build_container(
             artifact_proposal_repository=artifact_proposal_repository,
             artifact_repository=artifact_repository,
             task_repository=task_repository,
+            knowledge_repository=knowledge_repository,
         ),
         provider=selected_provider,
         configuration=RuntimeConfiguration(
@@ -642,7 +659,14 @@ def _build_container(
             )
             if active is None or not active.assistant_message.content.strip():
                 return
-            if memory_proposal_service is not None:
+            try:
+                conversation = chat_repository.get_conversation(
+                    snapshot.turn.conversation_id
+                )
+            except NotFoundError:
+                return
+            ephemeral = conversation.kind is ConversationKind.EPHEMERAL
+            if memory_proposal_service is not None and not ephemeral:
                 await memory_proposal_service.generate_for_turn(
                     conversation_id=snapshot.turn.conversation_id,
                     turn_id=snapshot.turn.id,
@@ -683,6 +707,7 @@ def _build_container(
         task_repository=task_repository,
         run_repository=task_run_repository,
         controller=controller,
+        chat_repository=chat_repository,
         max_concurrent_task_runs=settings.max_concurrent_task_runs,
         review_service=task_run_review_service,
         notification_service=task_notification_service,
@@ -692,6 +717,7 @@ def _build_container(
         task_repository=task_repository,
         run_repository=task_run_repository,
         reminder_repository=reminder_repository,
+        knowledge_repository=knowledge_repository,
         max_attempts=settings.task_max_attempts,
         retry_backoff=(
             timedelta(seconds=settings.task_retry_backoff_seconds),
@@ -717,6 +743,7 @@ def _build_container(
         task_run_repository=task_run_repository,
         notification_repository=notification_repository,
         reminder_repository=reminder_repository,
+        knowledge_repository=knowledge_repository,
         task_notification_service=task_notification_service,
         task_worker=task_worker,
         task_scheduler=task_scheduler,
@@ -747,6 +774,32 @@ def _provider_from_settings(settings: AppSettings) -> ModelProvider:
         base_url=settings.base_url,
         timeout_seconds=settings.provider_timeout_seconds,
     )
+
+
+class KnowledgeSourceBody(BaseModel):
+    kind: str
+    title: str
+    content: str
+    fileName: Optional[str] = None
+    expiresAt: Optional[str] = None
+
+
+class KnowledgeSourcePatch(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    fileName: Optional[str] = None
+    expiresAt: Optional[str] = None
+
+
+class SearchBody(BaseModel):
+    query: str
+    scopes: list[str] = [
+        "source",
+        "memory",
+        "artifact",
+        "conversation",
+    ]
+    limit: int = 8
 
 
 def create_app(
@@ -916,6 +969,12 @@ def create_app(
     @app.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str) -> dict[str, object]:
         snapshot = container.chat_repository.get_conversation_snapshot(conversation_id)
+        if snapshot.conversation.parent_conversation_id is not None:
+            lineage = container.chat_repository.list_lineage_turns(conversation_id)
+            snapshot = ConversationSnapshot(
+                conversation=snapshot.conversation,
+                turns=tuple(lineage) + tuple(snapshot.turns),
+            )
         payload = conversation_snapshot_json(
             snapshot,
             events_by_turn={
@@ -929,6 +988,14 @@ def create_app(
             uploaded_text_file_json(item)
             for item in container.file_repository.list_files(conversation_id)
         ]
+        if snapshot.conversation.parent_conversation_id is not None:
+            try:
+                parent = container.chat_repository.get_conversation(
+                    snapshot.conversation.parent_conversation_id
+                )
+                payload["parentTitle"] = parent.title
+            except NotFoundError:
+                payload["parentTitle"] = None
         return payload
 
     @app.post("/conversations/{conversation_id}/files", status_code=201)
@@ -987,20 +1054,46 @@ def create_app(
 
     @app.delete("/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str) -> Response:
-        container.reminder_repository.cancel_reminders_for_conversation(
+        descendant_ids = container.chat_repository.list_descendant_ids(
             conversation_id
         )
-        container.task_repository.cancel_tasks_for_conversation(
-            conversation_id
-        )
-        container.task_proposal_repository.cancel_proposals_for_conversation(
-            conversation_id
-        )
-        container.proposal_repository.cancel_proposals_for_conversation(
-            conversation_id
-        )
+        for target_id in (conversation_id, *descendant_ids):
+            container.reminder_repository.cancel_reminders_for_conversation(
+                target_id
+            )
+            container.task_repository.cancel_tasks_for_conversation(target_id)
+            container.task_proposal_repository.cancel_proposals_for_conversation(
+                target_id
+            )
+            container.proposal_repository.cancel_proposals_for_conversation(
+                target_id
+            )
         container.chat_repository.delete_conversation(conversation_id)
         return Response(status_code=204)
+
+    @app.post("/conversations/{conversation_id}/branches", status_code=201)
+    async def create_branch(
+        conversation_id: str,
+        body: CreateBranchBody,
+    ) -> dict[str, object]:
+        branch = container.chat_repository.create_branch(
+            parent_conversation_id=conversation_id,
+            fork_turn_id=body.forkTurnId,
+            kind=ConversationKind.EPHEMERAL,
+        )
+        return {"conversation": conversation_json(branch)}
+
+    @app.get("/conversations/{conversation_id}/branches")
+    async def list_branches(conversation_id: str) -> dict[str, object]:
+        branches = container.chat_repository.list_branches(conversation_id)
+        return {"items": [conversation_json(item) for item in branches]}
+
+    @app.post("/conversations/{conversation_id}/promote")
+    async def promote_conversation(conversation_id: str) -> dict[str, object]:
+        conversation = container.chat_repository.promote_conversation(
+            conversation_id
+        )
+        return {"conversation": conversation_json(conversation)}
 
     @app.get("/memories")
     async def list_memories(include_deleted: bool = False) -> dict[str, object]:
@@ -1022,6 +1115,115 @@ def create_app(
     async def delete_memory(memory_id: str) -> Response:
         container.memory_repository.delete_memory(memory_id)
         return Response(status_code=204)
+
+    # ---------- P5 知识源与联合检索 ----------
+
+    @app.get("/knowledge-sources")
+    async def list_knowledge_sources(status: str = "active") -> dict[str, object]:
+        try:
+            status_enum = KnowledgeSourceStatus(status)
+        except ValueError as error:
+            raise ValidationError(f"Unknown knowledge source status: {status}") from error
+        sources = container.knowledge_repository.list_sources(status=status_enum)
+        return {"items": [knowledge_source_json(item) for item in sources]}
+
+    @app.post("/knowledge-sources", status_code=201)
+    async def create_knowledge_source(body: KnowledgeSourceBody) -> dict[str, object]:
+        try:
+            kind = KnowledgeSourceKind(body.kind)
+        except ValueError as error:
+            raise ValidationError(f"Unknown knowledge source kind: {body.kind}") from error
+        source = container.knowledge_repository.create_source(
+            kind=kind,
+            origin=KnowledgeSourceOrigin.USER,
+            title=body.title,
+            content=body.content,
+            file_name=body.fileName,
+            expires_at=body.expiresAt,
+        )
+        return {"source": knowledge_source_json(source)}
+
+    @app.patch("/knowledge-sources/{source_id}")
+    async def update_knowledge_source(
+        source_id: str, body: KnowledgeSourcePatch
+    ) -> dict[str, object]:
+        source = container.knowledge_repository.update_source(
+            source_id,
+            title=body.title,
+            content=body.content,
+            file_name=body.fileName,
+            expires_at=body.expiresAt,
+        )
+        return {"source": knowledge_source_json(source)}
+
+    @app.post("/knowledge-sources/{source_id}/expire")
+    async def expire_knowledge_source(source_id: str) -> dict[str, object]:
+        source = container.knowledge_repository.expire_source(source_id)
+        return {"source": knowledge_source_json(source)}
+
+    @app.post("/knowledge-sources/{source_id}/restore")
+    async def restore_knowledge_source(source_id: str) -> dict[str, object]:
+        source = container.knowledge_repository.restore_source(source_id)
+        return {"source": knowledge_source_json(source)}
+
+    @app.delete("/knowledge-sources/{source_id}", status_code=204)
+    async def delete_knowledge_source(source_id: str) -> Response:
+        container.knowledge_repository.delete_source(source_id)
+        return Response(status_code=204)
+
+    @app.post("/search")
+    async def search_knowledge(body: SearchBody) -> dict[str, object]:
+        scopes: list[KnowledgeScope] = []
+        for value in body.scopes:
+            try:
+                scopes.append(KnowledgeScope(value))
+            except ValueError as error:
+                raise ValidationError(f"Unknown search scope: {value}") from error
+        limit = max(1, min(body.limit, 20))
+        grouped = container.knowledge_repository.search(body.query, scopes, limit)
+        groups: list[dict[str, object]] = []
+        for scope in scopes:
+            hits = grouped.get(scope, [])
+            items: list[dict[str, object]] = []
+            for hit in hits:
+                entry: dict[str, object] = {
+                    "refId": hit.ref_id,
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                }
+                if scope is KnowledgeScope.SOURCE:
+                    try:
+                        source = container.knowledge_repository.get_source(hit.ref_id)
+                    except NotFoundError:
+                        continue
+                    entry["origin"] = source.origin.value
+                    entry["kind"] = source.kind.value
+                    entry["updatedAt"] = source.updated_at
+                elif scope is KnowledgeScope.MEMORY:
+                    try:
+                        memory = container.memory_repository.get_memory(hit.ref_id)
+                    except NotFoundError:
+                        continue
+                    entry["updatedAt"] = memory.updated_at
+                elif scope is KnowledgeScope.ARTIFACT:
+                    try:
+                        artifact = container.artifact_repository.get_artifact(hit.ref_id)
+                    except NotFoundError:
+                        continue
+                    entry["updatedAt"] = artifact.updated_at
+                elif scope is KnowledgeScope.CONVERSATION:
+                    with container.database.connect() as connection:
+                        row = connection.execute(
+                            "SELECT conversation_id FROM turns WHERE id = ?",
+                            (hit.ref_id,),
+                        ).fetchone()
+                    if row is None:
+                        continue
+                    entry["conversationId"] = row["conversation_id"]
+                items.append(entry)
+            if items:
+                groups.append({"scope": scope.value, "hits": items})
+        return {"groups": groups}
 
     @app.post("/memory-proposals/{proposal_id}/resolve")
     async def resolve_memory_proposal(

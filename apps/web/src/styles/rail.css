@@ -290,3 +290,99 @@
     opacity: 1;
   }
 }
+
+/* 会话分支：临时会话徽标与子列表 */
+.branch-badge {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-1);
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.session-item:hover .branch-badge,
+.session-item.is-active .branch-badge,
+.branch-badge.is-open {
+  opacity: 1;
+}
+
+.branch-badge.is-open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.branch-children {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 6px 18px;
+}
+
+.branch-child {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  min-width: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: var(--fs-2);
+}
+
+.branch-child-main {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 6px 8px;
+  text-align: left;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.branch-child:hover {
+  background: var(--sheen-strong);
+  color: var(--ink-raise);
+}
+
+.branch-child.is-active {
+  border-left-color: var(--accent);
+  background: var(--sheen-soft);
+  color: var(--ink-raise);
+}
+
+.branch-child-title {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-child-time {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.branch-row-menu {
+  flex: none;
+}
+
+.branch-child .session-menu-button {
+  opacity: 0;
+}
+
+.branch-child:hover .session-menu-button,
+.branch-child.is-active .session-menu-button,
+.branch-child:focus-within .session-menu-button {
+  opacity: 1;
+}

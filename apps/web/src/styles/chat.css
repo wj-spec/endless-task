@@ -5,6 +5,25 @@
   scroll-behavior: smooth;
 }
 
+/* P4.5 谱系分界线：继承轮次与自有轮次的视觉边界 */
+.lineage-divider {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 16px 0 12px;
+  color: var(--faint);
+  font-size: var(--fs-3);
+  text-align: center;
+}
+
+.lineage-divider::before,
+.lineage-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 .message-column {
   width: min(760px, 100%);
   margin: 0 auto;
@@ -13,6 +32,7 @@
 .turn {
   padding: 34px 0 30px;
   border-bottom: 1px solid var(--line-soft);
+  position: relative;
 }
 
 .turn:last-child {
@@ -535,4 +555,75 @@
   margin-left: 2px;
   color: var(--accent-deep);
   animation: cursor-blink 1s steps(2, start) infinite;
+}
+
+/* 会话分支：turn 级「从此处分叉」入口 */
+.turn-fork {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--faint);
+  font-size: var(--fs-1);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.turn:hover .turn-fork:not(:disabled),
+.turn:focus-within .turn-fork:not(:disabled) {
+  opacity: 1;
+}
+
+.turn-fork:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* P4.5 修订：侧边临时会话紧凑样式 */
+.chat-surface.is-side .surface-header {
+  height: 52px;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.chat-surface.is-side .conversation-heading h1 {
+  font-size: var(--fs-3);
+}
+
+.chat-surface.is-side .conversation-stream {
+  padding: 0 18px;
+}
+
+.chat-surface.is-side .turn {
+  padding: 22px 0 20px;
+}
+
+.chat-surface.is-side .composer-hint {
+  display: none;
+}
+
+.chat-surface.is-side .empty-conversation {
+  padding: 0 8px;
+}
+
+/* P5 知识引用角标 */
+.citation-chip {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 5px;
+  border: 1px solid var(--line-accent);
+  border-radius: 999px;
+  background: var(--sheen-soft);
+  color: var(--accent);
+  font-size: var(--fs-4);
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: baseline;
+  cursor: default;
 }

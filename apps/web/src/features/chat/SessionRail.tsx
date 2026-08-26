@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { Conversation, ConversationStatus } from "./apiTypes";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -9,6 +9,7 @@ type SessionRailProps = {
   conversations: Conversation[];
   open: boolean;
   search: string;
+  sideConversationId: string | null;
   statusFilter: ConversationStatus;
   onChangeConversationStatus: (
     conversationId: string,
@@ -17,8 +18,10 @@ type SessionRailProps = {
   onClose: () => void;
   onDeleteConversation: (conversationId: string) => void;
   onNewConversation: () => void;
+  onPromoteConversation: (conversationId: string) => void;
   onRenameConversation: (conversationId: string, title: string) => void;
   onSearchChange: (value: string) => void;
+  onSelectBranch: (branchId: string, parentId: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onStatusFilterChange: (status: ConversationStatus) => void;
 };
@@ -43,19 +46,47 @@ export function SessionRail({
   conversations,
   open,
   search,
+  sideConversationId,
   statusFilter,
   onChangeConversationStatus,
   onClose,
   onDeleteConversation,
   onNewConversation,
+  onPromoteConversation,
   onRenameConversation,
   onSearchChange,
+  onSelectBranch,
   onSelectConversation,
   onStatusFilterChange,
 }: SessionRailProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+  const [expandedParentId, setExpandedParentId] = useState<string | null>(null);
+
+  const childMap = useMemo(() => {
+    const map = new Map<string, Conversation[]>();
+    for (const item of conversations) {
+      if (item.kind !== "ephemeral" || !item.parentConversationId) continue;
+      const list = map.get(item.parentConversationId) ?? [];
+      list.push(item);
+      map.set(item.parentConversationId, list);
+    }
+    return map;
+  }, [conversations]);
+  const primaryConversations = conversations.filter(
+    (item) => item.kind !== "ephemeral",
+  );
+
+  useEffect(() => {
+    if (!sideConversationId) return;
+    for (const [parentId, children] of childMap.entries()) {
+      if (children.some((item) => item.id === sideConversationId)) {
+        setExpandedParentId(parentId);
+        return;
+      }
+    }
+  }, [sideConversationId, childMap]);
 
   const startRename = (conversation: Conversation) => {
     setRenamingId(conversation.id);
@@ -127,13 +158,15 @@ export function SessionRail({
             title={search ? "没有匹配的对话" : "这里还没有对话"}
           />
         ) : null}
-        {conversations.map((conversation) => {
+        {primaryConversations.map((conversation) => {
           const isActive = conversation.id === activeConversationId;
           const archived = conversation.status === "archived";
+          const children = childMap.get(conversation.id) ?? [];
+          const expanded = expandedParentId === conversation.id;
           return (
+            <Fragment key={conversation.id}>
             <div
               className={isActive ? "session-item is-active" : "session-item"}
-              key={conversation.id}
             >
               {renamingId === conversation.id ? (
                 <div className="session-rename">
@@ -161,6 +194,18 @@ export function SessionRail({
                   </time>
                 </button>
               )}
+              {children.length > 0 ? (
+                <button
+                  aria-expanded={expanded}
+                  className={expanded ? "branch-badge is-open" : "branch-badge"}
+                  onClick={() =>
+                    setExpandedParentId(expanded ? null : conversation.id)
+                  }
+                  type="button"
+                >
+                  {children.length} 临时
+                </button>
+              ) : null}
               <RowMenu
                 className="session-row-menu"
                 items={[
@@ -183,6 +228,55 @@ export function SessionRail({
                 triggerClassName="session-menu-button"
               />
             </div>
+            {expanded && children.length > 0 ? (
+              <div className="branch-children">
+                {children.map((child) => {
+                  const childActive =
+                    child.id === activeConversationId ||
+                    child.id === sideConversationId;
+                  return (
+                    <div
+                      className={
+                        childActive ? "branch-child is-active" : "branch-child"
+                      }
+                      key={child.id}
+                    >
+                      <button
+                        className="branch-child-main"
+                        onClick={() => onSelectBranch(child.id, conversation.id)}
+                        type="button"
+                      >
+                        <span aria-hidden="true">↳</span>
+                        <span className="branch-child-title">{child.title}</span>
+                        <time
+                          className="branch-child-time"
+                          dateTime={child.updatedAt}
+                        >
+                          {formatRelativeTime(child.updatedAt)}
+                        </time>
+                      </button>
+                      <RowMenu
+                        className="branch-row-menu"
+                        items={[
+                          {
+                            label: "升级为正式对话",
+                            onSelect: () => onPromoteConversation(child.id),
+                          },
+                          {
+                            danger: true,
+                            label: "删除",
+                            onSelect: () => setDeleteTarget(child),
+                          },
+                        ]}
+                        triggerAriaLabel={`管理分支：${child.title}`}
+                        triggerClassName="session-menu-button"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            </Fragment>
           );
         })}
       </nav>

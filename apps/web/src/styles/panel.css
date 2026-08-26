@@ -687,3 +687,61 @@
     display: none;
   }
 }
+
+/* P5 知识源管理 */
+.knowledge-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.knowledge-toolbar .rail-filter {
+  margin: 0;
+}
+
+.knowledge-add-button {
+  margin: 0;
+  padding: 7px 12px;
+  font-size: var(--fs-3);
+}
+
+.knowledge-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.knowledge-form input,
+.knowledge-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--ink-raise);
+  font: inherit;
+  font-size: var(--fs-2);
+}
+
+.knowledge-title {
+  font-weight: 600;
+}
+
+.knowledge-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--fs-3);
+  color: var(--muted-strong);
+}
+
+.knowledge-badge.is-agent {
+  border-color: var(--accent);
+  color: var(--accent);
+}

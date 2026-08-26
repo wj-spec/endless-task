@@ -12,6 +12,7 @@ from endless_task.domain.repositories import (
 from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
 
+
 Clock = Callable[[], str]
 
 CONFIRMED_PROPOSAL_ORIGIN = "confirmed_proposal"

@@ -17,7 +17,10 @@ type ConversationProposalState = TurnProposals;
 
 const POLL_DELAYS_MS = [2000, 6000, 12000];
 
-export function useProposals(activeConversationId: string | null) {
+export function useProposals(
+  activeConversationId: string | null,
+  sideConversationId: string | null = null,
+) {
   const [byConversation, setByConversation] = useState<
     Record<string, ConversationProposalState>
   >({});
@@ -53,6 +56,15 @@ export function useProposals(activeConversationId: string | null) {
     watchedTurns.current.clear();
     if (activeConversationId) void fetchProposals(activeConversationId);
   }, [activeConversationId, fetchProposals]);
+
+  useEffect(() => {
+    if (sideConversationId) void fetchProposals(sideConversationId);
+  }, [sideConversationId, fetchProposals]);
+
+  const refreshVisibleProposals = useCallback(async () => {
+    if (activeConversationId) await fetchProposals(activeConversationId);
+    if (sideConversationId) await fetchProposals(sideConversationId);
+  }, [activeConversationId, fetchProposals, sideConversationId]);
 
   const watchTurn = useCallback((conversationId: string, turnId: string) => {
     const key = `${conversationId}:${turnId}`;
@@ -111,7 +123,7 @@ export function useProposals(activeConversationId: string | null) {
             [proposalId]: result.artifact as ArtifactRecordSummary,
           }));
         }
-        if (activeConversationId) await fetchProposals(activeConversationId);
+        await refreshVisibleProposals();
       } catch (error) {
         const message =
           error instanceof ApiClientError && error.status === 409
@@ -122,7 +134,7 @@ export function useProposals(activeConversationId: string | null) {
         setBusyProposalId(null);
       }
     },
-    [activeConversationId, clearError, fetchProposals],
+    [clearError, refreshVisibleProposals],
   );
 
   const resolveMemoryProposal = useCallback(
@@ -131,7 +143,7 @@ export function useProposals(activeConversationId: string | null) {
       clearError(proposalId);
       try {
         await chatApi.resolveMemoryProposal(proposalId, decision);
-        if (activeConversationId) await fetchProposals(activeConversationId);
+        await refreshVisibleProposals();
       } catch (error) {
         const message =
           error instanceof ApiClientError && error.status >= 400 && error.status < 500
@@ -142,7 +154,7 @@ export function useProposals(activeConversationId: string | null) {
         setBusyProposalId(null);
       }
     },
-    [activeConversationId, clearError, fetchProposals],
+    [clearError, refreshVisibleProposals],
   );
 
   const resolveTaskProposal = useCallback(
@@ -151,7 +163,7 @@ export function useProposals(activeConversationId: string | null) {
       clearError(proposalId);
       try {
         await chatApi.resolveTaskProposal(proposalId, decision);
-        if (activeConversationId) await fetchProposals(activeConversationId);
+        await refreshVisibleProposals();
       } catch (error) {
         const message =
           error instanceof ApiClientError && error.status === 409
@@ -162,7 +174,7 @@ export function useProposals(activeConversationId: string | null) {
         setBusyProposalId(null);
       }
     },
-    [activeConversationId, clearError, fetchProposals],
+    [clearError, refreshVisibleProposals],
   );
 
   const artifactProposalsFor = useCallback(

@@ -17,19 +17,56 @@ const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function App() {
   const chat = useChatApplication();
-  const proposals = useProposals(chat.activeConversationId);
+  const proposals = useProposals(
+    chat.activeConversationId,
+    chat.sideConversationId,
+  );
   const [railOpen, setRailOpen] = useState(false);
+  const [railPreferredCollapsed, setRailPreferredCollapsed] = useState(
+    () => window.innerWidth < 1180,
+  );
 
   const latestTurn = chat.activeSnapshot?.turns.at(-1);
-  const latestTurnStatus = latestTurn
-    ? (chat.liveTurns[latestTurn.turn.id]?.status ?? latestTurn.turn.status)
-    : undefined;
+  const sideLatestTurn = chat.sideSnapshot?.turns.at(-1);
 
   useEffect(() => {
-    if (!chat.activeConversationId || !latestTurn) return;
-    if (!latestTurnStatus || !TERMINAL_TURN_STATUSES.has(latestTurnStatus)) return;
-    proposals.watchTurn(chat.activeConversationId, latestTurn.turn.id);
-  }, [chat.activeConversationId, latestTurn, latestTurnStatus, proposals.watchTurn]);
+    const surfaces = [
+      { conversationId: chat.activeConversationId, turn: latestTurn },
+      { conversationId: chat.sideConversationId, turn: sideLatestTurn },
+    ];
+    for (const { conversationId, turn } of surfaces) {
+      if (!conversationId || !turn) continue;
+      if (turn.turn.conversationId !== conversationId) continue;
+      const status = chat.liveTurns[turn.turn.id]?.status ?? turn.turn.status;
+      if (!status || !TERMINAL_TURN_STATUSES.has(status)) continue;
+      proposals.watchTurn(conversationId, turn.turn.id);
+    }
+  }, [
+    chat.activeConversationId,
+    chat.sideConversationId,
+    chat.liveTurns,
+    latestTurn,
+    sideLatestTurn,
+    proposals.watchTurn,
+  ]);
+
+  useEffect(() => {
+    if (!chat.sideConversationId) return;
+    setWorkspaceCollapsed(true);
+    setWorkspaceDrawerOpen(false);
+    setAssistantOpen(false);
+  }, [chat.sideConversationId]);
+
+  useEffect(() => {
+    if (!chat.sideConversationId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector("[role='dialog']")) return;
+      chat.closeSideConversation();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [chat.sideConversationId, chat.closeSideConversation]);
 
   const pendingArtifactProposalCount = useMemo(
     () =>
@@ -41,6 +78,19 @@ export function App() {
   const workspace = useWorkspace(chat.activeConversationId, pendingArtifactProposalCount);
   const workspaceVisible = workspace.workspace?.visible === true;
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth < 1180) setRailPreferredCollapsed(true);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const crowdPanelOpen =
+    !!chat.sideConversationId || (workspaceVisible && !workspaceCollapsed);
+  const railCollapsed = crowdPanelOpen || railPreferredCollapsed;
+
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantTab, setAssistantTab] = useState<AssistantPanelTab>("notifications");
@@ -93,6 +143,7 @@ export function App() {
   };
 
   const openWorkspacePanel = () => {
+    chat.closeSideConversation();
     setAssistantOpen(false);
     setWorkspaceCollapsed(false);
     setWorkspaceDrawerOpen(true);
@@ -112,6 +163,8 @@ export function App() {
     <div
       className={`app-shell${
         workspaceVisible && !workspaceCollapsed ? " workspace-open" : ""
+      }${chat.sideConversationId ? " side-open" : ""}${
+        railCollapsed ? " rail-collapsed" : ""
       }`}
     >
       <SessionRail
@@ -119,13 +172,21 @@ export function App() {
         conversations={chat.conversations}
         open={railOpen}
         search={chat.search}
+        sideConversationId={chat.sideConversationId}
         statusFilter={chat.statusFilter}
-        onClose={() => setRailOpen(false)}
+        onClose={() => {
+          setRailOpen(false);
+          setRailPreferredCollapsed(true);
+        }}
         onNewConversation={() => {
           void chat.newConversation();
           setRailOpen(false);
         }}
         onSearchChange={chat.setSearch}
+        onSelectBranch={(branchId, parentId) => {
+          void chat.openBranchInSide(branchId, parentId);
+          setRailOpen(false);
+        }}
         onSelectConversation={(conversationId) => {
           void chat.openConversation(conversationId);
           setRailOpen(false);
@@ -137,6 +198,10 @@ export function App() {
         onDeleteConversation={(conversationId) =>
           void chat.deleteConversation(conversationId)
         }
+        onPromoteConversation={(conversationId) => {
+          void chat.promoteConversation(conversationId);
+          setRailOpen(false);
+        }}
         onRenameConversation={(conversationId, title) =>
           void chat.renameConversation(title, conversationId)
         }
@@ -152,10 +217,15 @@ export function App() {
         pendingAction={chat.pendingAction}
         onArchive={() => void chat.changeConversationStatus("archived")}
         onCancel={() => void chat.cancel()}
+        onCreateBranch={(forkTurnId) => void chat.createBranch(forkTurnId)}
         onDelete={() => void chat.deleteConversation()}
         onDismissError={() => chat.setError(null)}
         onDraftChange={chat.setDraft}
-        onMenu={() => setRailOpen(true)}
+        onMenu={() => {
+          if (window.innerWidth <= 760) setRailOpen(true);
+          else setRailPreferredCollapsed(false);
+        }}
+        onPromote={() => void chat.promoteConversation()}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
         onResolveApproval={(turnId, approvalId, decision) =>
           void chat.resolveApproval(turnId, approvalId, decision)
@@ -189,6 +259,70 @@ export function App() {
           void proposals.resolveTaskProposal(proposalId, decision).then(hub.refresh)
         }
       />
+      {chat.sideConversationId ? (
+        <section aria-label="临时会话" className="side-chat-panel">
+          <ChatWorkSurface
+            conversation={chat.sideSnapshot}
+            draft={chat.sideDraft}
+            error={chat.error}
+            health={chat.health}
+            isGenerating={chat.sideIsGenerating}
+            liveTurns={chat.liveTurns}
+            loading={chat.sideLoading}
+            pendingAction={chat.pendingAction}
+            variant="side"
+            onArchive={() => {}}
+            onCancel={() => void chat.cancel(chat.sideConversationId ?? undefined)}
+            onCloseSide={chat.closeSideConversation}
+            onCreateBranch={() => {}}
+            onDelete={() => {}}
+            onDismissError={() => chat.setError(null)}
+            onDraftChange={chat.setSideDraft}
+            onMenu={() => {}}
+            onPromote={() =>
+              void chat.promoteConversation(chat.sideConversationId ?? undefined)
+            }
+            onRegenerate={(turnId) => void chat.regenerate(turnId)}
+            onResolveApproval={(turnId, approvalId, decision) =>
+              void chat.resolveApproval(turnId, approvalId, decision)
+            }
+            onRemoveFile={() => {}}
+            onRename={() => {}}
+            onRestore={() => {}}
+            onRetry={(turnId) => void chat.retry(turnId)}
+            onSelectVariant={(turnId, variantId) =>
+              void chat.selectVariant(
+                turnId,
+                variantId,
+                chat.sideConversationId ?? undefined,
+              )
+            }
+            onSend={() => void chat.sendSide()}
+            onUploadFile={() => {}}
+            proposalBusyId={proposals.busyProposalId}
+            proposalErrors={proposals.resolveErrors}
+            resolvedArtifacts={proposals.resolvedArtifacts}
+            turnProposals={(turnId) =>
+              proposals.forTurn(chat.sideConversationId, turnId)
+            }
+            onResolveArtifactProposal={(proposalId, decision) =>
+              void proposals
+                .resolveArtifactProposal(proposalId, decision)
+                .then(hub.refresh)
+            }
+            onResolveMemoryProposal={(proposalId, decision) =>
+              void proposals
+                .resolveMemoryProposal(proposalId, decision)
+                .then(hub.refresh)
+            }
+            onResolveTaskProposal={(proposalId, decision) =>
+              void proposals
+                .resolveTaskProposal(proposalId, decision)
+                .then(hub.refresh)
+            }
+          />
+        </section>
+      ) : null}
       {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
         <WorkspacePanel
           conversationId={workspace.workspace!.conversationId}
@@ -240,6 +374,14 @@ export function App() {
           aria-label="关闭会话列表"
           className="rail-scrim"
           onClick={() => setRailOpen(false)}
+          type="button"
+        />
+      ) : null}
+      {chat.sideConversationId ? (
+        <button
+          aria-label="收起临时会话"
+          className="side-scrim"
+          onClick={chat.closeSideConversation}
           type="button"
         />
       ) : null}

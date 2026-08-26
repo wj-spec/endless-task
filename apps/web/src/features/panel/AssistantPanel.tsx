@@ -1,9 +1,10 @@
 import type { PendingProposal } from "../chat/apiTypes";
+import { KnowledgeContent } from "../knowledge/KnowledgeManagement";
 import { MemoryContent } from "../memory/MemoryManagement";
 import { NotificationsContent } from "../notifications/NotificationsDrawer";
 import { ScheduledTasksContent } from "../tasks/ScheduledTasks";
 
-export type AssistantPanelTab = "notifications" | "scheduled" | "memory";
+export type AssistantPanelTab = "notifications" | "scheduled" | "memory" | "knowledge";
 
 type AssistantPanelProps = {
   onClose: () => void;
@@ -50,6 +51,14 @@ export function AssistantPanel({
           >
             记忆
           </button>
+          <button
+            aria-selected={tab === "knowledge"}
+            onClick={() => onTabChange("knowledge")}
+            role="tab"
+            type="button"
+          >
+            知识
+          </button>
         </div>
         <button className="assistant-panel-close" onClick={onClose} type="button">
           关闭
@@ -63,8 +72,10 @@ export function AssistantPanel({
           />
         ) : tab === "scheduled" ? (
           <ScheduledTasksContent onOpenConversation={onOpenConversation} />
-        ) : (
+        ) : tab === "memory" ? (
           <MemoryContent />
+        ) : (
+          <KnowledgeContent />
         )}
       </div>
     </aside>

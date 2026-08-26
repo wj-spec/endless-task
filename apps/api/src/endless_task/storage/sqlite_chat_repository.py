@@ -7,6 +7,7 @@ from typing import Callable, Optional, Sequence
 
 from endless_task.domain.models import (
     Conversation,
+    ConversationKind,
     ConversationSnapshot,
     ConversationStatus,
     FinishReason,
@@ -30,9 +31,10 @@ from endless_task.domain.repositories import (
 
 from .database import Database
 
-
 Clock = Callable[[], str]
 IdFactory = Callable[[str], str]
+
+MAX_BRANCH_DEPTH = 8
 
 
 def utc_now() -> str:
@@ -77,6 +79,7 @@ class SqliteChatRepository:
                 SELECT c.*
                 FROM conversations c
                 WHERE c.status = 'active'
+                  AND c.kind = 'normal'
                   AND NOT EXISTS (
                       SELECT 1 FROM turns t WHERE t.conversation_id = c.id
                   )
@@ -109,12 +112,16 @@ class SqliteChatRepository:
         *,
         status: ConversationStatus = ConversationStatus.ACTIVE,
         title_query: Optional[str] = None,
+        kind: Optional[ConversationKind] = None,
     ) -> Sequence[Conversation]:
         sql = "SELECT * FROM conversations WHERE status = ?"
         params: list[object] = [status.value]
         if title_query and title_query.strip():
             sql += " AND instr(lower(title), lower(?)) > 0"
             params.append(title_query.strip())
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind.value)
         sql += " ORDER BY updated_at DESC, id DESC"
 
         with self._database.connect() as connection:
@@ -169,21 +176,177 @@ class SqliteChatRepository:
                     conversation_id,
                 ),
             )
-            return self._get_conversation(connection, conversation_id)
+            conversation = self._get_conversation(connection, conversation_id)
+        return conversation
 
     def delete_conversation(self, conversation_id: str) -> None:
         with self._database.transaction() as connection:
             self._get_conversation(connection, conversation_id)
             active = connection.execute(
                 """
+                WITH RECURSIVE subtree(id) AS (
+                    SELECT id FROM conversations WHERE id = ?
+                    UNION ALL
+                    SELECT c.id FROM conversations c
+                    JOIN subtree s ON c.parent_conversation_id = s.id
+                )
                 SELECT 1 FROM turns
-                WHERE conversation_id = ? AND status IN ('created', 'running')
+                WHERE conversation_id IN (SELECT id FROM subtree)
+                  AND status IN ('created', 'running')
                 """,
                 (conversation_id,),
             ).fetchone()
             if active:
                 raise InvalidStateError("Stop the active turn before deleting the conversation")
             connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+    def create_branch(
+        self,
+        *,
+        parent_conversation_id: str,
+        fork_turn_id: Optional[str] = None,
+        kind: ConversationKind = ConversationKind.EPHEMERAL,
+        title: Optional[str] = None,
+    ) -> Conversation:
+        with self._database.transaction() as connection:
+            parent = self._get_conversation(connection, parent_conversation_id)
+            depth = self._branch_depth(connection, parent_conversation_id)
+            if depth >= MAX_BRANCH_DEPTH:
+                raise InvalidStateError("Branch nesting is too deep")
+
+            if fork_turn_id is None:
+                fork_row = connection.execute(
+                    "SELECT * FROM turns WHERE conversation_id = ? ORDER BY ordinal DESC LIMIT 1",
+                    (parent_conversation_id,),
+                ).fetchone()
+                if fork_row is None:
+                    raise InvalidStateError("Cannot branch a conversation without turns")
+            else:
+                fork_row = connection.execute(
+                    "SELECT * FROM turns WHERE id = ? AND conversation_id = ?",
+                    (fork_turn_id, parent_conversation_id),
+                ).fetchone()
+                if fork_row is None:
+                    raise NotFoundError("Fork turn not found in parent conversation")
+
+            branch_id = self._id_factory("conv")
+            now = self._clock()
+            normalized = " ".join((title or "").split())
+            branch_title = normalized or f"《{parent.title}》· 分支"
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, status, next_turn_ordinal, title_is_manual,
+                    created_at, updated_at, archived_at,
+                    parent_conversation_id, fork_turn_id, kind
+                ) VALUES (?, ?, 'active', 1, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    branch_id,
+                    branch_title,
+                    1 if normalized else 0,
+                    now,
+                    now,
+                    parent_conversation_id,
+                    fork_row["id"],
+                    kind.value,
+                ),
+            )
+            return self._get_conversation(connection, branch_id)
+
+    def promote_conversation(self, conversation_id: str) -> Conversation:
+        with self._database.transaction() as connection:
+            conversation = self._get_conversation(connection, conversation_id)
+            if conversation.kind is ConversationKind.NORMAL:
+                raise ConflictError("Only ephemeral conversations can be promoted")
+            connection.execute(
+                """
+                UPDATE conversations
+                SET kind = ?, promoted_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (ConversationKind.NORMAL.value, self._clock(), self._clock(), conversation_id),
+            )
+            promoted = self._get_conversation(connection, conversation_id)
+        return promoted
+
+    def list_branches(self, conversation_id: str) -> Sequence[Conversation]:
+        with self._database.connect() as connection:
+            self._get_conversation(connection, conversation_id)
+            rows = connection.execute(
+                """
+                SELECT * FROM conversations
+                WHERE parent_conversation_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (conversation_id,),
+            ).fetchall()
+            return tuple(self._conversation_from_row(row) for row in rows)
+
+    def list_lineage_turns(self, conversation_id: str) -> Sequence[TurnSnapshot]:
+        with self._database.connect() as connection:
+            hops: list[tuple[str, str]] = []
+            current_id = conversation_id
+            for _ in range(MAX_BRANCH_DEPTH + 1):
+                conversation = self._get_conversation(connection, current_id)
+                if conversation.parent_conversation_id is None:
+                    break
+                if conversation.fork_turn_id is None:
+                    raise InvalidStateError("Branch is missing its fork turn")
+                hops.append((conversation.parent_conversation_id, conversation.fork_turn_id))
+                current_id = conversation.parent_conversation_id
+            else:
+                raise InvalidStateError("Branch nesting is too deep")
+
+            lineage: list[TurnSnapshot] = []
+            for ancestor_id, fork_turn_id in reversed(hops):
+                fork_turn = self._get_turn(connection, fork_turn_id)
+                if fork_turn.conversation_id != ancestor_id:
+                    raise InvalidStateError("Fork turn does not belong to its ancestor")
+                rows = connection.execute(
+                    """
+                    SELECT id FROM turns
+                    WHERE conversation_id = ? AND ordinal <= ?
+                    ORDER BY ordinal
+                    """,
+                    (ancestor_id, fork_turn.ordinal),
+                ).fetchall()
+                lineage.extend(
+                    self._get_turn_snapshot(connection, row["id"]) for row in rows
+                )
+            return tuple(lineage)
+
+    def list_descendant_ids(self, conversation_id: str) -> Sequence[str]:
+        with self._database.connect() as connection:
+            self._get_conversation(connection, conversation_id)
+            rows = connection.execute(
+                """
+                WITH RECURSIVE subtree(id) AS (
+                    SELECT c.id FROM conversations c
+                    WHERE c.parent_conversation_id = ?
+                    UNION ALL
+                    SELECT c.id FROM conversations c
+                    JOIN subtree s ON c.parent_conversation_id = s.id
+                )
+                SELECT id FROM subtree
+                """,
+                (conversation_id,),
+            ).fetchall()
+            return tuple(row["id"] for row in rows)
+
+    def _branch_depth(self, connection: sqlite3.Connection, conversation_id: str) -> int:
+        depth = 0
+        current_id = conversation_id
+        for _ in range(MAX_BRANCH_DEPTH + 1):
+            row = connection.execute(
+                "SELECT parent_conversation_id FROM conversations WHERE id = ?",
+                (current_id,),
+            ).fetchone()
+            if row is None or row["parent_conversation_id"] is None:
+                return depth
+            depth += 1
+            current_id = row["parent_conversation_id"]
+        raise InvalidStateError("Branch nesting is too deep")
 
     def create_turn(
         self,
@@ -730,6 +893,10 @@ class SqliteChatRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             archived_at=row["archived_at"],
+            parent_conversation_id=row["parent_conversation_id"],
+            fork_turn_id=row["fork_turn_id"],
+            kind=ConversationKind(row["kind"]),
+            promoted_at=row["promoted_at"],
         )
 
     @staticmethod

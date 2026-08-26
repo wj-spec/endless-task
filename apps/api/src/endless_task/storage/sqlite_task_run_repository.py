@@ -112,6 +112,25 @@ class SqliteTaskRunRepository:
             ).fetchone()
         return row is not None
 
+    def link_conversation(self, run_id: str, conversation_id: str) -> TaskRun:
+        if not conversation_id.strip():
+            raise ValidationError("Task run conversation id must not be blank.")
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Task run not found: {run_id}")
+            if row["status"] != TaskRunStatus.RUNNING.value:
+                raise InvalidStateError(
+                    "Only running task runs can change conversation."
+                )
+            connection.execute(
+                "UPDATE task_runs SET conversation_id = ? WHERE id = ?",
+                (conversation_id.strip(), run_id),
+            )
+        return self.get_run(run_id)
+
     def link_turn(self, run_id: str, turn_id: str) -> TaskRun:
         if not turn_id.strip():
             raise ValidationError("Task run turn id must not be blank.")

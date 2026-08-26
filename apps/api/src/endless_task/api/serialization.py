@@ -430,6 +430,24 @@ def memory_proposal_json(proposal) -> dict[str, object]:
     }
 
 
+def knowledge_source_json(source) -> dict[str, object]:
+    return {
+        "id": source.id,
+        "kind": source.kind.value,
+        "origin": source.origin.value,
+        "title": source.title,
+        "content": source.content,
+        "fileName": source.file_name,
+        "status": source.status.value,
+        "sourceConversationId": source.source_conversation_id,
+        "userEditedAt": source.user_edited_at,
+        "expiresAt": source.expires_at,
+        "expiredAt": source.expired_at,
+        "createdAt": source.created_at,
+        "updatedAt": source.updated_at,
+    }
+
+
 def memory_record_json(record) -> dict[str, object]:
     return {
         "id": record.id,

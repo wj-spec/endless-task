@@ -51,6 +51,7 @@ class TaskScheduler:
             timedelta(seconds=300),
         ),
         reminder_repository: Optional[SqliteReminderRepository] = None,
+        knowledge_repository=None,
         clock: Clock = lambda: datetime.now(timezone.utc),
     ) -> None:
         if tick_seconds <= 0:
@@ -66,6 +67,7 @@ class TaskScheduler:
         self._max_attempts = max_attempts
         self._retry_backoff = retry_backoff
         self._reminder_repository = reminder_repository
+        self._knowledge_repository = knowledge_repository
         self._clock = clock
 
     async def run(self) -> None:
@@ -119,6 +121,15 @@ class TaskScheduler:
                     )
                     continue
                 started += 1
+        if self._knowledge_repository is not None:
+            now_iso = (
+                moment.isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+            try:
+                self._knowledge_repository.expire_due(now_iso)
+            except Exception:  # noqa: BLE001 - 过期扫描失败不阻断调度
+                logger.warning("Knowledge expiry sweep failed", exc_info=True)
         return started
 
     def _retry_attempt(

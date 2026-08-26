@@ -18,6 +18,7 @@ export default defineConfig({
       "/memories": "http://127.0.0.1:8000",
       "/memory-proposals": "http://127.0.0.1:8000",
       "/settings": "http://127.0.0.1:8000",
+      "/knowledge-sources": "http://127.0.0.1:8000",
     },
   },
 });
