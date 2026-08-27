@@ -33,6 +33,10 @@ def artifact_record_from_row(row) -> ArtifactRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         deleted_at=row["deleted_at"],
+        storage_path=row["storage_path"] if "storage_path" in row.keys() else None,
+        content_sha256=(
+            row["content_sha256"] if "content_sha256" in row.keys() else None
+        ),
     )
 
 
@@ -48,6 +52,12 @@ def _artifact_version_from_row(row) -> ArtifactVersionRecord:
         source_labels=tuple(json.loads(row["source_labels"])),
         note=row["note"],
         created_at=row["created_at"],
+        storage_path=(
+            row["storage_path"] if "storage_path" in row.keys() else None
+        ),
+        content_sha256=(
+            row["content_sha256"] if "content_sha256" in row.keys() else None
+        ),
     )
 
 
@@ -64,23 +74,33 @@ def insert_artifact_with_first_version(
     timestamp: str,
     source_labels_json: str = "[]",
     note: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    content_sha256: Optional[str] = None,
 ) -> None:
     connection.execute(
         """
         INSERT INTO artifacts (
             id, title, kind, status, current_version_ordinal,
-            created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, 'active', 1, ?, ?, NULL)
+            created_at, updated_at, deleted_at, storage_path, content_sha256
+        ) VALUES (?, ?, ?, 'active', 1, ?, ?, NULL, ?, ?)
         """,
-        (artifact_id, title, kind.value, timestamp, timestamp),
+        (
+            artifact_id,
+            title,
+            kind.value,
+            timestamp,
+            timestamp,
+            storage_path,
+            content_sha256,
+        ),
     )
     connection.execute(
         """
         INSERT INTO artifact_versions (
             id, artifact_id, ordinal, content, operation,
             source_conversation_id, source_turn_id, source_labels,
-            note, created_at
-        ) VALUES (?, ?, 1, ?, 'create', ?, ?, ?, ?, ?)
+            note, created_at, storage_path, content_sha256
+        ) VALUES (?, ?, 1, ?, 'create', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             version_id,
@@ -91,6 +111,8 @@ def insert_artifact_with_first_version(
             source_labels_json,
             note,
             timestamp,
+            storage_path,
+            content_sha256,
         ),
     )
 
@@ -115,6 +137,11 @@ class SqliteArtifactRepository:
         self._clock = clock
         self._id_factory = id_factory
         self._embedding_hook = None
+        self._artifact_store = None
+
+    def set_artifact_store(self, store) -> None:
+        """注入文件事实源存储（工作区 Artifact 落盘/快照）。"""
+        self._artifact_store = store
 
     # ---------- R5.8 索引钩子 ----------
 
@@ -181,6 +208,8 @@ class SqliteArtifactRepository:
         source_turn_id: str,
         source_labels: Sequence[str] = (),
         note: Optional[str] = None,
+        storage_path: Optional[str] = None,
+        content_sha256: Optional[str] = None,
     ) -> ArtifactSnapshot:
         validated_operation = self._validate_append_operation(operation)
         validated_content = self._validate_content(content)
@@ -203,8 +232,8 @@ class SqliteArtifactRepository:
                 INSERT INTO artifact_versions (
                     id, artifact_id, ordinal, content, operation,
                     source_conversation_id, source_turn_id, source_labels,
-                    note, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    note, created_at, storage_path, content_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
@@ -217,6 +246,8 @@ class SqliteArtifactRepository:
                     labels_json,
                     note,
                     now,
+                    storage_path,
+                    content_sha256,
                 ),
             )
             connection.execute(
@@ -313,6 +344,8 @@ class SqliteArtifactRepository:
         source_conversation_id: str,
         source_turn_id: str,
         note: Optional[str] = None,
+        storage_path: Optional[str] = None,
+        content_sha256: Optional[str] = None,
     ) -> ArtifactSnapshot:
         if (
             isinstance(target_ordinal, bool)
@@ -361,8 +394,8 @@ class SqliteArtifactRepository:
                 INSERT INTO artifact_versions (
                     id, artifact_id, ordinal, content, operation,
                     source_conversation_id, source_turn_id, source_labels,
-                    note, created_at
-                ) VALUES (?, ?, ?, ?, 'rollback', ?, ?, ?, ?, ?)
+                    note, created_at, storage_path, content_sha256
+                ) VALUES (?, ?, ?, ?, 'rollback', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
@@ -374,6 +407,8 @@ class SqliteArtifactRepository:
                     target_row["source_labels"],
                     resolved_note,
                     now,
+                    storage_path,
+                    content_sha256,
                 ),
             )
             connection.execute(
@@ -382,6 +417,19 @@ class SqliteArtifactRepository:
                 (ordinal, now, artifact_id),
             )
         self._notify_hook("submit", artifact_id)
+        if self._artifact_store is not None and row["storage_path"]:
+            binding = self._artifact_store.binding_for(
+                source_conversation_id.strip()
+            )
+            if binding is not None:
+                try:
+                    self._artifact_store.restore(
+                        binding,
+                        row["storage_path"],
+                        target_row["content"],
+                    )
+                except Exception:  # noqa: BLE001 文件恢复失败不阻断 DB
+                    pass
         return self.get_artifact_snapshot(artifact_id)
 
     def get_artifact_snapshot(self, artifact_id: str) -> ArtifactSnapshot:

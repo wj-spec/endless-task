@@ -65,6 +65,7 @@ class AssistantRuntime:
         knowledge_query_rewriter=None,
         knowledge_reranker=None,
         knowledge_repository=None,
+        workspace_resolver=None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime_repository = runtime_repository
@@ -82,6 +83,7 @@ class AssistantRuntime:
         self._knowledge_query_rewriter = knowledge_query_rewriter
         self._knowledge_reranker = knowledge_reranker
         self._knowledge_repository = knowledge_repository
+        self._workspace_resolver = workspace_resolver
 
     async def execute(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
         token = await self._cancellation_manager.acquire(turn_id, variant_id)
@@ -139,6 +141,9 @@ class AssistantRuntime:
                 )
                 await self._publish(event)
 
+            tool_filter = self._tool_filter_for_conversation(
+                self._chat_repository.get_turn(turn_id).turn.conversation_id
+            )
             agent_loop = AgentLoop(
                 provider=self._provider,
                 tool_registry=self._tool_registry,
@@ -157,6 +162,7 @@ class AssistantRuntime:
                     permission_mode_provider=self._permission_mode_provider,
                 ),
                 active_timeout_seconds=self._configuration.agent_timeout_seconds,
+                tool_filter=tool_filter,
             )
             result = await agent_loop.run(
                 request_id=variant_id,
@@ -309,6 +315,28 @@ class AssistantRuntime:
 
     async def request_cancel(self, *, turn_id: str, variant_id: str) -> bool:
         return await self._cancellation_manager.cancel(turn_id, variant_id)
+
+    _WORKSPACE_TOOLS = frozenset(
+        {
+            "read_workspace_file",
+            "write_workspace_file",
+            "list_workspace_dir",
+            "delete_workspace_file",
+            "run_shell",
+        }
+    )
+
+    def _tool_filter_for_conversation(self, conversation_id: str):
+        """工作区运行时工具仅在「已绑定本地目录的工作区会话」可见。"""
+        if self._workspace_resolver is None:
+            return None
+        binding = self._workspace_resolver.resolve_binding(conversation_id)
+        if binding is None:
+            def filter_out(name: str) -> bool:
+                return name not in self._WORKSPACE_TOOLS
+
+            return filter_out
+        return None
 
     async def resolve_approval(
         self,

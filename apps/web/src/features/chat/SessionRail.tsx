@@ -3,6 +3,7 @@ import type { Conversation, ConversationStatus, Workspace } from "./apiTypes";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { RowMenu } from "../ui/RowMenu";
+import { WorkspaceSettingsModal } from "../workspace/WorkspaceSettingsModal";
 
 type SessionRailProps = {
   activeConversationId: string | null;
@@ -15,6 +16,7 @@ type SessionRailProps = {
   workspaces: Workspace[];
   onCreateWorkspace: (name: string) => Promise<unknown>;
   onSelectWorkspace: (workspaceId: string | null) => void;
+  onRefreshWorkspaces: () => void;
   onChangeConversationStatus: (
     conversationId: string,
     status: ConversationStatus,
@@ -56,6 +58,7 @@ export function SessionRail({
   workspaces,
   onCreateWorkspace,
   onSelectWorkspace,
+  onRefreshWorkspaces,
   onChangeConversationStatus,
   onClose,
   onDeleteConversation,
@@ -70,6 +73,11 @@ export function SessionRail({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const workspace = useMemo(
+    () => workspaces.find((item) => item.id === workspaceId) ?? null,
+    [workspaces, workspaceId],
+  );
 
   const handleWorkspaceChange = async (value: string) => {
     if (value === "__create__") {
@@ -157,7 +165,26 @@ export function SessionRail({
           ))}
           <option value="__create__">＋ 新建工作区…</option>
         </select>
+        <button
+          aria-label="工作区设置"
+          className="icon-button workspace-settings-button"
+          disabled={!workspaceId}
+          onClick={() => setSettingsOpen(true)}
+          title="工作区设置（绑定目录 / 命令历史）"
+          type="button"
+        >
+          ⚙
+        </button>
       </div>
+      {settingsOpen && workspace && (
+        <WorkspaceSettingsModal
+          onClose={() => setSettingsOpen(false)}
+          onWorkspaceUpdated={() => {
+            onRefreshWorkspaces();
+          }}
+          workspace={workspace}
+        />
+      )}
 
       <button className="new-chat-button" onClick={onNewConversation} type="button">
         <span aria-hidden="true">＋</span>

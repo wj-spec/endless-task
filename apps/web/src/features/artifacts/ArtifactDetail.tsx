@@ -19,6 +19,7 @@ type ArtifactDetailProps = {
   latestTurnId: string | null;
   onBack: () => void;
   onChanged: () => void;
+  workspaceRootPath?: string | null;
 };
 
 const kindLabel = { markdown: "文档", text: "纯文本" } as const;
@@ -71,6 +72,7 @@ export function ArtifactDetail({
   latestTurnId,
   onBack,
   onChanged,
+  workspaceRootPath,
 }: ArtifactDetailProps) {
   const [detail, setDetail] = useState<ArtifactDetailSnapshot | null>(null);
   const [versions, setVersions] = useState<ArtifactVersionRecord[]>([]);
@@ -197,6 +199,38 @@ export function ArtifactDetail({
                 </button>
               ))}
             </div>
+            {detail.artifact.storagePath ? (
+              <div className="artifact-file-row">
+                <code>{detail.artifact.storagePath}</code>
+                <button
+                  disabled={!workspaceRootPath}
+                  onClick={() => {
+                    if (!workspaceRootPath) return;
+                    void chatApi.revealInFinder(
+                      `${workspaceRootPath}/${detail.artifact.storagePath}`,
+                    );
+                  }}
+                  title={
+                    workspaceRootPath
+                      ? "在访达中显示该文件"
+                      : "需要先在工作区设置中绑定本地目录"
+                  }
+                  type="button"
+                >
+                  在访达中显示
+                </button>
+                <button
+                  onClick={() => {
+                    void navigator.clipboard
+                      ?.writeText(detail.artifact.storagePath ?? "")
+                      .catch(() => undefined);
+                  }}
+                  type="button"
+                >
+                  复制路径
+                </button>
+              </div>
+            ) : null}
             {exportError ? (
               <div className="proposal-error" role="alert">
                 {exportError}

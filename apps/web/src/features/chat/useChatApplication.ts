@@ -688,10 +688,20 @@ export function useChatApplication() {
     return workspace;
   };
 
+  const refreshWorkspaces = async () => {
+    try {
+      const items = await chatApi.listWorkspaces();
+      setWorkspaces(items);
+    } catch {
+      // 列表刷新失败保持现有状态，忽略。
+    }
+  };
+
   return {
     activeConversationId,
     activeSnapshot,
     createWorkspace,
+    refreshWorkspaces,
     selectWorkspace,
     workspaceId,
     workspaces,

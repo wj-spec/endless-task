@@ -109,7 +109,14 @@ class RuntimeToolExecutionObserver:
                 if self._permission_mode_provider is not None
                 else PermissionMode.CONFIRM_EVERY_TIME
             )
-            if mode.covers(tool.definition.effect.value):
+            force_confirm = False
+            judge = getattr(tool, "requires_explicit_confirmation", None)
+            if callable(judge):
+                try:
+                    force_confirm = bool(judge(call))
+                except Exception:
+                    force_confirm = True  # 判定失败按需确认处理（安全默认）
+            if mode.covers(tool.definition.effect.value) and not force_confirm:
                 auto_authorized = True
             else:
                 prompt = self._approval_prompt(tool, call)

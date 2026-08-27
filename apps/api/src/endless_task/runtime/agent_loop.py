@@ -99,6 +99,7 @@ class AgentLoop:
         max_tool_calls: int,
         tool_observer: Optional[ToolExecutionObserver] = None,
         active_timeout_seconds: Optional[float] = None,
+        tool_filter: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._provider = provider
         self._tool_registry = tool_registry
@@ -109,6 +110,7 @@ class AgentLoop:
         self._max_tool_calls = max_tool_calls
         self._tool_observer = tool_observer or NullToolExecutionObserver()
         self._active_timeout_seconds = active_timeout_seconds
+        self._tool_filter = tool_filter
 
     async def run(
         self,
@@ -122,7 +124,7 @@ class AgentLoop:
         on_text_delta: Callable[[str], Awaitable[None]],
     ) -> AgentLoopResult:
         provider_messages = list(messages)
-        definitions = self._tool_registry.definitions()
+        definitions = self._visible_definitions()
         provider_tools = tuple(
             ProviderToolDefinition(
                 name=definition.name,
@@ -251,7 +253,22 @@ class AgentLoop:
                         "模型重复提交了同一个工具调用，已安全停止。",
                         retryable=False,
                     )
-                tool = self._resolve_tool(provider_call.name)
+                try:
+                    tool = self._resolve_tool(provider_call.name)
+                except ToolError as error:
+                    provider_messages.append(
+                        ProviderMessage(
+                            role="tool",
+                            content=(
+                                f"工具执行失败（{error.code}）：{error.safe_message} "
+                                "不要原样重复同一调用；可以在无该工具的情况下继续，"
+                                "或向用户说明情况。"
+                            ),
+                            tool_call_id=provider_call.id,
+                            name=provider_call.name,
+                        )
+                    )
+                    continue
                 initial_status = (
                     ToolCallStatus.WAITING_APPROVAL
                     if tool.definition.approval_mode is ToolApprovalMode.REQUIRED
@@ -367,7 +384,23 @@ class AgentLoop:
 
         raise AssertionError("Agent loop ended without a terminal result")
 
+    def _visible_definitions(self):
+        definitions = self._tool_registry.definitions()
+        if self._tool_filter is None:
+            return definitions
+        return tuple(
+            definition
+            for definition in definitions
+            if self._tool_filter(definition.name)
+        )
+
     def _resolve_tool(self, name: str):
+        if self._tool_filter is not None and not self._tool_filter(name):
+            raise ToolError(
+                "tool_not_available",
+                "该工具在当前会话不可用（例如工作区工具需要绑定本地目录）。",
+                retryable=False,
+            )
         try:
             return self._tool_registry.resolve(name)
         except ToolValidationError as error:

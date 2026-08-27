@@ -67,6 +67,17 @@ from endless_task.artifacts.export_service import (
     export_filename,
 )
 from endless_task.artifacts.read_tool import ReadArtifactTool
+from endless_task.workspace_runtime import (
+    DeleteWorkspaceFileTool,
+    EffectLog,
+    ListWorkspaceDirTool,
+    ReadWorkspaceFileTool,
+    RunShellTool,
+    WorkspaceResolver,
+    WriteWorkspaceFileTool,
+)
+from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
+from endless_task.workspace_runtime.browse import browse_directory
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import (
     CitationFeedbackProvider,
@@ -266,6 +277,10 @@ class AppSettings:
     notifications_enabled: bool = True
     task_max_attempts: int = 3
     task_retry_backoff_seconds: float = 60.0
+    shell_timeout_seconds: float = 120.0
+    shell_no_change_timeout_seconds: float = 60.0
+    shell_max_output_bytes: int = 65_536
+    workspace_max_write_bytes: int = 512_000
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -421,6 +436,18 @@ class AppSettings:
             task_retry_backoff_seconds=float(
                 env.get("ENDLESS_TASK_TASK_RETRY_BACKOFF", "60")
             ),
+            shell_timeout_seconds=float(
+                env.get("ENDLESS_TASK_SHELL_TIMEOUT_SECONDS", "120")
+            ),
+            shell_no_change_timeout_seconds=float(
+                env.get("ENDLESS_TASK_SHELL_NO_CHANGE_TIMEOUT_SECONDS", "60")
+            ),
+            shell_max_output_bytes=int(
+                env.get("ENDLESS_TASK_SHELL_MAX_OUTPUT_BYTES", "65536")
+            ),
+            workspace_max_write_bytes=int(
+                env.get("ENDLESS_TASK_WORKSPACE_MAX_WRITE_BYTES", "512000")
+            ),
             scheduler_tick_seconds=float(
                 env.get("ENDLESS_TASK_SCHEDULER_TICK", "30")
             ),
@@ -503,6 +530,9 @@ class AppContainer:
     knowledge_repository: SqliteKnowledgeRepository
     retrieval_event_repository: SqliteRetrievalEventRepository
     workspace_repository: SqliteWorkspaceRepository
+    workspace_resolver: WorkspaceResolver
+    effect_log: EffectLog
+    artifact_file_store: ArtifactFileStore
     knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
@@ -561,6 +591,13 @@ class WorkspaceBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    rootPath: Optional[str] = None
+
+
+class WorkspacePatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rootPath: Optional[str] = None
 
 
 class CreateConversationBody(BaseModel):
@@ -573,6 +610,12 @@ class RollbackArtifactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     targetOrdinal: int
+
+
+class RevealPathBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
     sourceConversationId: str
     sourceTurnId: str
     note: Optional[str] = None
@@ -728,6 +771,7 @@ def _build_container(
     proposal_repository = SqliteMemoryProposalRepository(database)
     preferences_repository = SqlitePreferencesRepository(database)
     artifact_repository = SqliteArtifactRepository(database)
+    workspace_repository = SqliteWorkspaceRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
     task_proposal_repository = SqliteTaskProposalRepository(database)
@@ -736,7 +780,6 @@ def _build_container(
     reminder_repository = SqliteReminderRepository(database)
     knowledge_proposal_repository = SqliteKnowledgeProposalRepository(database)
     retrieval_event_repository = SqliteRetrievalEventRepository(database)
-    workspace_repository = SqliteWorkspaceRepository(database)
     scope_weights = None
     if settings.knowledge_scope_weights:
         scope_weights = {
@@ -786,9 +829,39 @@ def _build_container(
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
     selected_tool_registry = tool_registry or ToolRegistry()
+    workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
+    effect_log = EffectLog(settings.database_path.parent / "logs")
+    artifact_file_store = ArtifactFileStore(workspace_resolver)
+    artifact_proposal_repository.set_artifact_store(artifact_file_store)
+    artifact_repository.set_artifact_store(artifact_file_store)
     if tool_registry is None:
         selected_tool_registry.register(ReadTextFileTool(file_repository))
         selected_tool_registry.register(ReadArtifactTool(artifact_repository))
+        selected_tool_registry.register(
+            ReadWorkspaceFileTool(
+                workspace_resolver, max_file_bytes=settings.max_file_bytes
+            )
+        )
+        selected_tool_registry.register(
+            WriteWorkspaceFileTool(
+                workspace_resolver,
+                effect_log,
+                max_write_bytes=settings.workspace_max_write_bytes,
+            )
+        )
+        selected_tool_registry.register(ListWorkspaceDirTool(workspace_resolver))
+        selected_tool_registry.register(
+            DeleteWorkspaceFileTool(workspace_resolver, effect_log)
+        )
+        selected_tool_registry.register(
+            RunShellTool(
+                workspace_resolver,
+                effect_log,
+                timeout_seconds=settings.shell_timeout_seconds,
+                no_change_timeout_seconds=settings.shell_no_change_timeout_seconds,
+                max_output_bytes=settings.shell_max_output_bytes,
+            )
+        )
     system_prompt = settings.system_prompt
     system_prompt_version = settings.system_prompt_version
     if settings.artifact_proposals_enabled:
@@ -841,6 +914,7 @@ def _build_container(
         tool_registry=selected_tool_registry,
         event_publisher=broker,
         permission_mode_provider=lambda: preferences_repository.get_permission_mode()[0],
+        workspace_resolver=workspace_resolver,
     )
     artifact_proposal_service: Optional[ArtifactProposalService] = None
     if settings.artifact_proposals_enabled:
@@ -1047,6 +1121,9 @@ def _build_container(
         knowledge_repository=knowledge_repository,
         retrieval_event_repository=retrieval_event_repository,
         workspace_repository=workspace_repository,
+        workspace_resolver=workspace_resolver,
+        effect_log=effect_log,
+        artifact_file_store=artifact_file_store,
         knowledge_lifecycle_service=knowledge_lifecycle_service,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
@@ -1548,7 +1625,71 @@ def create_app(
     @app.post("/workspaces", status_code=201)
     async def create_workspace(body: WorkspaceBody) -> dict[str, object]:
         workspace = container.workspace_repository.create_workspace(body.name)
+        if body.rootPath is not None and body.rootPath.strip():
+            workspace = container.workspace_repository.bind_root_path(
+                workspace.id, body.rootPath
+            )
         return {"workspace": workspace_json(workspace)}
+
+    @app.patch("/workspaces/{workspace_id}")
+    async def patch_workspace(
+        workspace_id: str, body: WorkspacePatchBody
+    ) -> dict[str, object]:
+        if body.rootPath is None:
+            workspace = container.workspace_repository.unbind_root_path(workspace_id)
+        else:
+            workspace = container.workspace_repository.bind_root_path(
+                workspace_id, body.rootPath
+            )
+        return {"workspace": workspace_json(workspace)}
+
+    @app.get("/filesystem/browse")
+    async def browse_filesystem(
+        path: Optional[str] = Query(None),
+        show_hidden: bool = Query(False),
+    ) -> dict[str, object]:
+        current, items = browse_directory(
+            path, show_hidden=show_hidden, home=Path.home()
+        )
+        return {
+            "currentPath": current,
+            "items": [
+                {
+                    "name": item.name,
+                    "path": item.path,
+                    "kind": item.kind,
+                    "size": item.size,
+                    "writable": item.writable,
+                    "isHidden": item.is_hidden,
+                }
+                for item in items
+            ],
+        }
+
+    @app.post("/filesystem/reveal")
+    async def reveal_path(body: RevealPathBody) -> dict[str, object]:
+        import subprocess
+
+        target = Path(body.path).expanduser().resolve()
+        if not target.exists():
+            raise ValidationError("路径不存在，无法在访达中显示。")
+        if sys.platform != "darwin":
+            return {"revealed": False, "message": "当前平台不支持打开系统文件管理器。"}
+        try:
+            subprocess.Popen(["open", "-R", str(target)])
+        except OSError as error:
+            raise ValidationError("无法打开系统文件管理器。") from error
+        return {"revealed": True}
+
+    @app.get("/workspaces/{workspace_id}/shell-log")
+    async def list_shell_log(
+        workspace_id: str, limit: int = Query(100, ge=1, le=500)
+    ) -> dict[str, object]:
+        container.workspace_repository.get_workspace(workspace_id)
+        entries = container.effect_log.list_for_workspace(
+            workspace_id, limit=limit
+        )
+        return {"items": entries}
 
     @app.get("/knowledge-sources")
     async def list_knowledge_sources(
@@ -2083,6 +2224,20 @@ def create_app(
             source_turn_id=body.sourceTurnId,
             note=body.note,
         )
+        artifact = snapshot.artifact
+        if artifact.storage_path and body.sourceConversationId:
+            binding = container.artifact_file_store.binding_for(
+                body.sourceConversationId
+            )
+            if binding is not None:
+                try:
+                    container.artifact_file_store.restore(
+                        binding,
+                        artifact.storage_path,
+                        snapshot.current_version.content,
+                    )
+                except Exception:  # noqa: BLE001 文件恢复失败不阻断 DB
+                    pass
         return {
             "artifact": artifact_json(snapshot.artifact),
             "currentVersion": artifact_version_json(snapshot.current_version),

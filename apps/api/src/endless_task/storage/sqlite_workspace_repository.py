@@ -59,6 +59,53 @@ class SqliteWorkspaceRepository:
             )
         return self.get_workspace(workspace_id)
 
+    def bind_root_path(self, workspace_id: str, root_path: str) -> Workspace:
+        from pathlib import Path
+
+        from endless_task.workspace_runtime.path_safety import validate_bind_root
+
+        normalized = (root_path or "").strip()
+        if not normalized:
+            raise ValidationError("Workspace root path is required.")
+        reason = validate_bind_root(Path(normalized))
+        if reason is not None:
+            raise ValidationError(reason)
+        resolved = str(Path(normalized).expanduser().resolve(strict=True))
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT id FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Workspace not found: {workspace_id}")
+            other = connection.execute(
+                "SELECT id FROM workspaces WHERE root_path = ? AND id != ?",
+                (resolved, workspace_id),
+            ).fetchone()
+            if other is not None:
+                raise ConflictError(
+                    "This directory is already bound to another workspace."
+                )
+            now = self._clock()
+            connection.execute(
+                "UPDATE workspaces SET root_path = ?, updated_at = ? WHERE id = ?",
+                (resolved, now, workspace_id),
+            )
+        return self.get_workspace(workspace_id)
+
+    def unbind_root_path(self, workspace_id: str) -> Workspace:
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT id FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Workspace not found: {workspace_id}")
+            now = self._clock()
+            connection.execute(
+                "UPDATE workspaces SET root_path = NULL, updated_at = ? WHERE id = ?",
+                (now, workspace_id),
+            )
+        return self.get_workspace(workspace_id)
+
     def get_workspace(self, workspace_id: str) -> Workspace:
         with self._database.connect() as connection:
             row = connection.execute(

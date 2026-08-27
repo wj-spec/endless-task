@@ -10,6 +10,7 @@ type WorkspacePanelProps = {
   drawerOpen: boolean;
   onCollapse: () => void;
   onWorkspaceRefresh: () => void;
+  workspaceRootPath?: string | null;
 };
 
 const kindLabel = { markdown: "文档", text: "纯文本" } as const;
@@ -21,6 +22,7 @@ export function WorkspacePanel({
   drawerOpen,
   onCollapse,
   onWorkspaceRefresh,
+  workspaceRootPath,
 }: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
 
@@ -60,6 +62,7 @@ export function WorkspacePanel({
           latestTurnId={latestTurnId}
           onBack={() => setSelectedArtifactId(null)}
           onChanged={onWorkspaceRefresh}
+          workspaceRootPath={workspaceRootPath}
         />
       ) : (
         <ul className="workspace-list">

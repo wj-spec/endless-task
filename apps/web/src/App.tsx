@@ -178,6 +178,9 @@ export function App() {
         workspaces={chat.workspaces}
         onCreateWorkspace={(name) => chat.createWorkspace(name)}
         onSelectWorkspace={chat.selectWorkspace}
+        onRefreshWorkspaces={() => {
+          void chat.refreshWorkspaces();
+        }}
         onClose={() => {
           setRailOpen(false);
           setRailPreferredCollapsed(true);
@@ -358,6 +361,10 @@ export function App() {
           }}
           onWorkspaceRefresh={() => void workspace.refresh()}
           workspace={workspace.workspace!}
+          workspaceRootPath={
+            chat.workspaces.find((item) => item.id === chat.workspaceId)?.rootPath ??
+            null
+          }
         />
       ) : null}
       {workspaceVisible && workspaceCollapsed && !workspaceDrawerOpen ? (

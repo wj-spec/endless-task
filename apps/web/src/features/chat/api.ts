@@ -18,6 +18,8 @@ import type { KnowledgeProposal,
   RuntimeEvent,
   TurnCommandResponse,
   UploadedTextFile,
+  BrowseItem,
+  EffectLogEntry,
   Workspace,
   WorkspaceSnapshot,
   TaskProposal,
@@ -125,6 +127,29 @@ export const chatApi = {
     });
     return response.workspace;
   },
+  patchWorkspace: (workspaceId: string, rootPath: string | null) =>
+    request<{ workspace: Workspace }>(`/workspaces/${workspaceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ rootPath }),
+    }).then((response) => response.workspace),
+  browseFilesystem: async (path?: string, showHidden = false) => {
+    const parameters = new URLSearchParams();
+    if (path) parameters.set("path", path);
+    if (showHidden) parameters.set("showHidden", "true");
+    const response = await request<{ currentPath: string; items: BrowseItem[] }>(
+      `/filesystem/browse?${parameters.toString()}`,
+    );
+    return response;
+  },
+  shellLog: (workspaceId: string, limit = 100) =>
+    request<{ items: EffectLogEntry[] }>(
+      `/workspaces/${workspaceId}/shell-log?limit=${limit}`,
+    ).then((response) => response.items),
+  revealInFinder: (path: string) =>
+    request<{ revealed: boolean }>("/filesystem/reveal", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
   getConversation: (conversationId: string) =>
     request<ConversationSnapshot>(`/conversations/${conversationId}`),
   patchConversation: (

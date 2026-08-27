@@ -251,6 +251,8 @@ class ArtifactRecord:
     created_at: str
     updated_at: str
     deleted_at: Optional[str] = None
+    storage_path: Optional[str] = None
+    content_sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +267,8 @@ class ArtifactVersionRecord:
     source_labels: Tuple[str, ...]
     note: Optional[str]
     created_at: str
+    storage_path: Optional[str] = None
+    content_sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)

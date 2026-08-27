@@ -193,10 +193,10 @@ class ToolDefinition:
                 "approval_required",
                 "Write and external-action tools must require approval",
             )
-        if not 0 < self.timeout_seconds <= 300:
+        if not 0 < self.timeout_seconds <= 600:
             raise ToolValidationError(
                 "invalid_tool_timeout",
-                "Tool timeout must be greater than 0 and at most 300 seconds",
+                "Tool timeout must be greater than 0 and at most 600 seconds",
             )
         if self.max_output_characters <= 0:
             raise ToolValidationError(

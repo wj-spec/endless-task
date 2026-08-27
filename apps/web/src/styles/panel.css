@@ -815,3 +815,188 @@
   border-color: var(--line);
   color: var(--faint);
 }
+
+/* R5.12 工作区设置面板：目录选择器与命令历史 */
+.workspace-settings-panel {
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-settings-panel .overlay-body {
+  overflow: auto;
+}
+
+.workspace-binding {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-md, 8px);
+  padding: 12px 14px;
+  margin: 10px 0;
+}
+
+.workspace-binding-path {
+  margin: 0 0 6px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: var(--fs-2, 13px);
+  word-break: break-all;
+}
+
+.workspace-binding-empty {
+  margin: 10px 0;
+}
+
+.workspace-binding-error {
+  color: var(--danger, #c0392b);
+  font-size: var(--fs-2, 13px);
+}
+
+.directory-picker {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.directory-picker-nav {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.directory-picker-path {
+  margin: 0 0 6px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: var(--fs-2, 13px);
+  word-break: break-all;
+  color: var(--faint);
+}
+
+.directory-picker-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.directory-picker-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--fs-2, 13px);
+  cursor: pointer;
+}
+
+.directory-hidden-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: var(--fs-2, 13px);
+  color: var(--faint);
+  margin-left: auto;
+}
+
+.directory-picker-list {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.directory-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+}
+
+.directory-picker-row:hover {
+  background: var(--surface-2);
+}
+
+.directory-picker-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-bind-button {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-2, 13px);
+  cursor: pointer;
+}
+
+.shell-log {
+  margin-top: 14px;
+}
+
+.shell-log ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shell-log-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+  margin-bottom: 6px;
+}
+
+.shell-log-entry code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: var(--fs-2, 13px);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.shell-log-meta {
+  color: var(--faint);
+  font-size: var(--fs-2, 13px);
+}
+
+/* R5.12 Artifact 文件行 */
+.artifact-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+
+.artifact-file-row code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: var(--fs-2, 13px);
+  word-break: break-all;
+  flex: 1;
+  min-width: 120px;
+}
+
+.artifact-file-row button {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--fs-2, 13px);
+  cursor: pointer;
+}

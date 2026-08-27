@@ -18,6 +18,10 @@ class RegisteredTool(Protocol):
     ) -> ToolResult:
         ...
 
+    def requires_explicit_confirmation(self, call: ToolCall) -> bool:
+        """参数级恒确认判定：返回 True 时即使提权模式也弹审批（如删除/危险命令）。"""
+        return False
+
 
 class ToolRegistry:
     """An immutable-by-name registry; execution orchestration belongs to R1.1."""

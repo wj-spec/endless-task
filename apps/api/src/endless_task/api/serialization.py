@@ -341,7 +341,7 @@ def task_run_json(record) -> dict[str, object]:
 
 
 def artifact_json(record) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "id": record.id,
         "title": record.title,
         "kind": record.kind.value,
@@ -351,6 +351,10 @@ def artifact_json(record) -> dict[str, object]:
         "updatedAt": record.updated_at,
         "deletedAt": record.deleted_at,
     }
+    if getattr(record, "storage_path", None):
+        payload["storagePath"] = record.storage_path
+        payload["contentSha256"] = record.content_sha256
+    return payload
 
 
 def source_reference_json(reference) -> dict[str, object]:

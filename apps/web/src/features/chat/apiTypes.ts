@@ -12,6 +12,36 @@ export type Workspace = {
   updatedAt: string;
 };
 
+export type BrowseItem = {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  size: number;
+  writable: boolean;
+  isHidden: boolean;
+};
+
+export type EffectLogEntry = {
+  time: string;
+  conversationId: string;
+  workspaceId: string;
+  workspaceRoot: string;
+  operation: string;
+  detail: string;
+  receipt: {
+    kind: string;
+    path: string;
+    sha256: string;
+    executedAt: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    truncated: boolean;
+    unknownOutcome: boolean;
+  };
+  approver: string;
+  durationMs: number;
+};
+
 export type Conversation = {
   id: string;
   title: string;
@@ -243,6 +273,8 @@ export type ArtifactRecordSummary = {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  storagePath?: string;
+  contentSha256?: string;
 };
 
 export type MemoryProposalStatus = "pending" | "accepted" | "rejected" | "cancelled";

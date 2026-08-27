@@ -36,6 +36,7 @@ class SqliteArtifactProposalRepository:
         max_reason_chars: int = 200,
         clock: Clock = utc_now,
         id_factory: IdFactory = new_id,
+        artifact_store=None,
     ) -> None:
         if max_title_chars <= 0 or max_content_chars <= 0 or max_reason_chars <= 0:
             raise ValueError("Proposal limits must be positive")
@@ -45,6 +46,10 @@ class SqliteArtifactProposalRepository:
         self._max_reason_chars = max_reason_chars
         self._clock = clock
         self._id_factory = id_factory
+        self._artifact_store = artifact_store
+
+    def set_artifact_store(self, store) -> None:
+        self._artifact_store = store
 
     def create_proposal(
         self,
@@ -164,6 +169,10 @@ class SqliteArtifactProposalRepository:
     def accept_proposal(
         self, proposal_id: str
     ) -> Tuple[ArtifactProposal, ArtifactRecord]:
+        from endless_task.workspace_runtime.artifact_store import (
+            plan_new,
+            plan_update,
+        )
         now = self._clock()
         artifact_id = self._id_factory("art")
         version_id = self._id_factory("artv")
@@ -181,6 +190,8 @@ class SqliteArtifactProposalRepository:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+            plan = None
+            previous_content: Optional[str] = None
             if proposal.target_artifact_id:
                 artifact_id = proposal.target_artifact_id
                 target_row = connection.execute(
@@ -200,13 +211,38 @@ class SqliteArtifactProposalRepository:
                         "latest artifact content"
                     )
                 ordinal = target_row["current_version_ordinal"] + 1
+                if self._artifact_store is not None:
+                    binding = self._artifact_store.binding_for(
+                        proposal.conversation_id
+                    )
+                    if binding is not None:
+                        plan = plan_update(
+                            binding,
+                            artifact_id,
+                            proposal.title,
+                            proposal.kind,
+                            proposal.content,
+                            new_ordinal=ordinal,
+                            existing_storage_path=target_row["storage_path"],
+                        )
+                        previous_row = connection.execute(
+                            "SELECT content FROM artifact_versions "
+                            "WHERE artifact_id = ? AND ordinal = ?",
+                            (
+                                artifact_id,
+                                target_row["current_version_ordinal"],
+                            ),
+                        ).fetchone()
+                        previous_content = (
+                            previous_row["content"] if previous_row else None
+                        )
                 connection.execute(
                     """
                     INSERT INTO artifact_versions (
                         id, artifact_id, ordinal, content, operation,
                         source_conversation_id, source_turn_id, source_labels,
-                        note, created_at
-                    ) VALUES (?, ?, ?, ?, 'chat_continue', ?, ?, ?, ?, ?)
+                        note, created_at, storage_path, content_sha256
+                    ) VALUES (?, ?, ?, ?, 'chat_continue', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         version_id,
@@ -218,6 +254,8 @@ class SqliteArtifactProposalRepository:
                         labels_json,
                         proposal.reason,
                         now,
+                        plan.version_storage_path if plan else None,
+                        plan.content_sha256 if plan else None,
                     ),
                 )
                 connection.execute(
@@ -225,7 +263,33 @@ class SqliteArtifactProposalRepository:
                     "updated_at = ? WHERE id = ?",
                     (ordinal, now, artifact_id),
                 )
+                if (
+                    plan is not None
+                    and target_row["storage_path"] is None
+                ):
+                    # 惰性迁移：存量数据库全文 Artifact 首次在工作区会话更新时落盘
+                    connection.execute(
+                        "UPDATE artifacts SET storage_path = ?, content_sha256 = ? "
+                        "WHERE id = ?",
+                        (
+                            plan.storage_path,
+                            plan.content_sha256,
+                            artifact_id,
+                        ),
+                    )
             else:
+                if self._artifact_store is not None:
+                    binding = self._artifact_store.binding_for(
+                        proposal.conversation_id
+                    )
+                    if binding is not None:
+                        plan = plan_new(
+                            binding,
+                            artifact_id,
+                            proposal.title,
+                            proposal.kind,
+                            proposal.content,
+                        )
                 insert_artifact_with_first_version(
                     connection,
                     artifact_id=artifact_id,
@@ -237,6 +301,8 @@ class SqliteArtifactProposalRepository:
                     source_turn_id=proposal.turn_id,
                     timestamp=now,
                     source_labels_json=labels_json,
+                    storage_path=plan.storage_path if plan else None,
+                    content_sha256=plan.content_sha256 if plan else None,
                 )
             connection.execute(
                 """
@@ -256,6 +322,22 @@ class SqliteArtifactProposalRepository:
             artifact_row = connection.execute(
                 "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
             ).fetchone()
+        if (
+            plan is not None
+            and self._artifact_store is not None
+            and artifact_row is not None
+        ):
+            binding = self._artifact_store.binding_for(proposal.conversation_id)
+            if binding is not None:
+                try:
+                    self._artifact_store.materialize(
+                        binding,
+                        plan,
+                        proposal.content,
+                        previous_content=previous_content,
+                    )
+                except Exception:  # noqa: BLE001 文件落盘失败不阻断 DB（内容已双写）
+                    pass
         return self.get_proposal(proposal_id), artifact_record_from_row(artifact_row)
 
     def reject_proposal(self, proposal_id: str) -> ArtifactProposal:
