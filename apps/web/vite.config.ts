@@ -21,6 +21,8 @@ export default defineConfig({
       "/knowledge-sources": "http://127.0.0.1:8000",
       "/knowledge-proposals": "http://127.0.0.1:8000",
       "/proposals": "http://127.0.0.1:8000",
+      "/reminders": "http://127.0.0.1:8000",
+      "/search": "http://127.0.0.1:8000",
     },
   },
 });
