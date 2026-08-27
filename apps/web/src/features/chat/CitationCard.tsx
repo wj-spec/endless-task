@@ -42,7 +42,12 @@ export function CitationCard({
               ×
             </button>
           </div>
-          <div className="citation-card-title">{citation.title}</div>
+          <div className="citation-card-title">
+            {citation.title}
+            {typeof citation.chunkSeq === "number"
+              ? ` · 第 ${citation.chunkSeq + 1} 段`
+              : ""}
+          </div>
           {citation.snippet ? (
             <p className="citation-card-snippet">{citation.snippet}</p>
           ) : null}

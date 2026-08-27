@@ -779,3 +779,39 @@
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* R5.11 知识归属选择与徽标 */
+.knowledge-scope-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-2, 13px);
+  color: var(--faint);
+}
+
+.knowledge-scope-picker select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-2, 13px);
+}
+
+.knowledge-scope-hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--fs-3, 12px);
+  color: var(--faint);
+}
+
+.knowledge-badge.is-global {
+  border-color: color-mix(in srgb, var(--accent, #7c5cff) 45%, transparent);
+  color: var(--accent, #7c5cff);
+}
+
+.knowledge-badge.is-workspace {
+  border-color: var(--line);
+  color: var(--faint);
+}

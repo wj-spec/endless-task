@@ -183,11 +183,15 @@ export function useProposals(
   );
 
   const resolveKnowledgeProposal = useCallback(
-    async (proposalId: string, decision: "accept" | "reject") => {
+    async (
+      proposalId: string,
+      decision: "accept" | "reject",
+      workspaceId?: string | null,
+    ) => {
       setBusyProposalId(proposalId);
       clearError(proposalId);
       try {
-        await chatApi.resolveKnowledgeProposal(proposalId, decision);
+        await chatApi.resolveKnowledgeProposal(proposalId, decision, workspaceId);
         await refreshVisibleProposals();
       } catch (error) {
         const message =

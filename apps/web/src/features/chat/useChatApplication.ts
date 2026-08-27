@@ -10,7 +10,19 @@ import type {
   LiveTurn,
   RuntimeEvent,
   TurnCommandResponse,
+  Workspace,
 } from "./apiTypes";
+
+const WORKSPACE_STORAGE_KEY = "endless-task.workspace";
+
+const readStoredWorkspace = (): string | null => {
+  try {
+    const value = globalThis.localStorage?.getItem(WORKSPACE_STORAGE_KEY);
+    return value && value !== "general" ? value : null;
+  } catch {
+    return null;
+  }
+};
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
 
@@ -45,6 +57,10 @@ export function useChatApplication() {
   const [sideLoading, setSideLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<ConversationStatus>("active");
   const [search, setSearch] = useState("");
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(
+    readStoredWorkspace,
+  );
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -272,9 +288,9 @@ export function useChatApplication() {
       setLoading(true);
       setError(null);
       try {
-        let items = await chatApi.listConversations(status);
+        let items = await chatApi.listConversations(status, undefined, workspaceId);
         if (status === "active" && items.length === 0) {
-          const created = await chatApi.createConversation();
+          const created = await chatApi.createConversation(workspaceId);
           items = [created];
         }
         setConversations(items);
@@ -290,13 +306,21 @@ export function useChatApplication() {
         setLoading(false);
       }
     },
-    [openConversation],
+    [openConversation, workspaceId],
   );
 
   useEffect(() => {
     void chatApi.health().then(setHealth).catch(() => setHealth(null));
+    void chatApi
+      .listWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => setWorkspaces([]));
+  }, []);
+
+  useEffect(() => {
     void loadConversationList(statusFilter, activeConversationId ?? undefined);
-  }, [statusFilter]); // The active id is intentionally not a reload trigger.
+    // active id 不作为重载触发；切换工作区时列表整体换防。
+  }, [statusFilter, workspaceId]);
 
   useEffect(
     () => () => {
@@ -430,7 +454,7 @@ export function useChatApplication() {
     setPendingAction("new");
     setError(null);
     try {
-      const conversation = await chatApi.createConversation();
+      const conversation = await chatApi.createConversation(workspaceId);
       setStatusFilter("active");
       setConversations((current) => [
         conversation,
@@ -645,9 +669,32 @@ export function useChatApplication() {
     return conversations.filter((item) => item.title.toLocaleLowerCase().includes(query));
   }, [conversations, search]);
 
+  const selectWorkspace = (nextWorkspaceId: string | null) => {
+    setWorkspaceId(nextWorkspaceId);
+    try {
+      globalThis.localStorage?.setItem(
+        WORKSPACE_STORAGE_KEY,
+        nextWorkspaceId ?? "general",
+      );
+    } catch {
+      // 存储不可用时仅内存态，忽略。
+    }
+  };
+
+  const createWorkspace = async (name: string) => {
+    const workspace = await chatApi.createWorkspace(name);
+    setWorkspaces((current) => [...current, workspace]);
+    selectWorkspace(workspace.id);
+    return workspace;
+  };
+
   return {
     activeConversationId,
     activeSnapshot,
+    createWorkspace,
+    selectWorkspace,
+    workspaceId,
+    workspaces,
     changeConversationStatus,
     closeSideConversation,
     conversations: visibleConversations,

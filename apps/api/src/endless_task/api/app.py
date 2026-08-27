@@ -46,6 +46,7 @@ from endless_task.runtime import (
     AssistantRuntime,
     FakeProvider,
     KnowledgeQueryRewriter,
+    KnowledgeReranker,
     OpenAICompatibleProvider,
     P0ContextBuilder,
     RuntimeConfiguration,
@@ -68,7 +69,9 @@ from endless_task.artifacts.export_service import (
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import (
+    CitationFeedbackProvider,
     EmbeddingIndexer,
+    KnowledgeLifecycleService,
     KnowledgeProposalService,
     build_embedder,
 )
@@ -101,6 +104,7 @@ from endless_task.storage import (
     SqliteReminderRepository,
     SqliteRetrievalEventRepository,
     SqliteTaskRunRepository,
+    SqliteWorkspaceRepository,
 )
 from endless_task.storage.sqlite_knowledge_repository import scope_tier
 from endless_task.tooling import ApprovalStatus, ToolRegistry
@@ -113,6 +117,7 @@ from .serialization import (
     knowledge_proposal_json,
     knowledge_source_json,
     memory_record_json,
+    workspace_json,
     approval_request_json,
     compact_turn_snapshot_json,
     conversation_json,
@@ -233,8 +238,15 @@ class AppSettings:
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
     knowledge_query_rewrite_enabled: bool = False
+    knowledge_rerank_enabled: bool = False
     knowledge_scope_weights: dict = field(default_factory=dict)
     knowledge_synonym_map: dict = field(default_factory=dict)
+    knowledge_duplicate_threshold: float = 0.5
+    knowledge_decay_enabled: bool = True
+    knowledge_decay_min_age_days: int = 30
+    knowledge_decay_recheck_days: int = 90
+    knowledge_decay_interval_hours: float = 24.0
+    knowledge_feedback_enabled: bool = True
     embedding_enabled: bool = False
     embedding_backend: str = "local"
     embedding_model: Optional[str] = None
@@ -280,6 +292,12 @@ class AppSettings:
             raise ValueError("Embedding limits must be positive")
         if self.hybrid_literal_weight < 0 or self.hybrid_semantic_weight < 0:
             raise ValueError("Hybrid weights cannot be negative")
+        if not 0 < self.knowledge_duplicate_threshold <= 1:
+            raise ValueError("Knowledge duplicate threshold must be in (0, 1]")
+        if self.knowledge_decay_min_age_days < 1 or self.knowledge_decay_recheck_days < 1:
+            raise ValueError("Knowledge decay windows must be positive")
+        if self.knowledge_decay_interval_hours <= 0:
+            raise ValueError("Knowledge decay interval must be positive")
         if self.task_max_attempts < 1:
             raise ValueError("Task max attempts must be positive")
         if self.task_retry_backoff_seconds <= 0:
@@ -331,11 +349,32 @@ class AppSettings:
             knowledge_query_rewrite_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_KNOWLEDGE_QUERY_REWRITE", "0")
             ),
+            knowledge_rerank_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_KNOWLEDGE_RERANK", "0")
+            ),
             knowledge_scope_weights=_parse_json_mapping(
                 env.get("ENDLESS_TASK_KNOWLEDGE_SCOPE_WEIGHTS", "")
             ),
             knowledge_synonym_map=_parse_json_mapping(
                 env.get("ENDLESS_TASK_KNOWLEDGE_SYNONYMS", "")
+            ),
+            knowledge_duplicate_threshold=float(
+                env.get("ENDLESS_TASK_KNOWLEDGE_DUPLICATE_THRESHOLD", "0.5")
+            ),
+            knowledge_decay_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_KNOWLEDGE_DECAY", "1")
+            ),
+            knowledge_decay_min_age_days=int(
+                env.get("ENDLESS_TASK_KNOWLEDGE_DECAY_MIN_AGE_DAYS", "30")
+            ),
+            knowledge_decay_recheck_days=int(
+                env.get("ENDLESS_TASK_KNOWLEDGE_DECAY_RECHECK_DAYS", "90")
+            ),
+            knowledge_decay_interval_hours=float(
+                env.get("ENDLESS_TASK_KNOWLEDGE_DECAY_INTERVAL_HOURS", "24")
+            ),
+            knowledge_feedback_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_KNOWLEDGE_FEEDBACK", "1")
             ),
             embedding_enabled=_parse_flag(env.get("ENDLESS_TASK_EMBEDDING", "0")),
             embedding_backend=env.get(
@@ -463,6 +502,8 @@ class AppContainer:
     knowledge_proposal_service: Optional[KnowledgeProposalService]
     knowledge_repository: SqliteKnowledgeRepository
     retrieval_event_repository: SqliteRetrievalEventRepository
+    workspace_repository: SqliteWorkspaceRepository
+    knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
     task_notification_service: Optional[TaskNotificationService]
@@ -513,6 +554,19 @@ class ResolveKnowledgeProposalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["accept", "reject"]
+    workspaceId: Optional[str] = None
+
+
+class WorkspaceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class CreateConversationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspaceId: Optional[str] = None
 
 
 class RollbackArtifactBody(BaseModel):
@@ -682,6 +736,7 @@ def _build_container(
     reminder_repository = SqliteReminderRepository(database)
     knowledge_proposal_repository = SqliteKnowledgeProposalRepository(database)
     retrieval_event_repository = SqliteRetrievalEventRepository(database)
+    workspace_repository = SqliteWorkspaceRepository(database)
     scope_weights = None
     if settings.knowledge_scope_weights:
         scope_weights = {
@@ -766,6 +821,14 @@ def _build_container(
             if settings.knowledge_query_rewrite_enabled
             else None
         ),
+        knowledge_reranker=(
+            KnowledgeReranker(selected_provider, model=settings.model)
+            if settings.knowledge_rerank_enabled
+            else None
+        ),
+        knowledge_repository=(
+            knowledge_repository if settings.knowledge_rerank_enabled else None
+        ),
         configuration=RuntimeConfiguration(
             model=settings.model,
             max_output_tokens=settings.max_output_tokens,
@@ -832,6 +895,31 @@ def _build_container(
             proposal_repository=knowledge_proposal_repository,
             knowledge_repository=knowledge_repository,
             model=settings.model,
+            chat_repository=chat_repository,
+        )
+
+    knowledge_lifecycle_service = KnowledgeLifecycleService(
+        knowledge_repository=knowledge_repository,
+        proposal_repository=knowledge_proposal_repository,
+        retrieval_event_repository=retrieval_event_repository,
+        chat_repository=chat_repository,
+        budget=proposal_budget,
+        duplicate_threshold=settings.knowledge_duplicate_threshold,
+        decay_min_age_days=settings.knowledge_decay_min_age_days,
+        decay_recheck_days=settings.knowledge_decay_recheck_days,
+    )
+    if settings.knowledge_feedback_enabled:
+        def _resolve_feedback_chunk(ref_id: str):
+            try:
+                return knowledge_repository.get_chunk(ref_id)
+            except NotFoundError:
+                return None
+
+        knowledge_repository.set_feedback_provider(
+            CitationFeedbackProvider(
+                retrieval_event_repository,
+                source_resolver=_resolve_feedback_chunk,
+            )
         )
 
     if (
@@ -958,6 +1046,8 @@ def _build_container(
         knowledge_proposal_service=knowledge_proposal_service,
         knowledge_repository=knowledge_repository,
         retrieval_event_repository=retrieval_event_repository,
+        workspace_repository=workspace_repository,
+        knowledge_lifecycle_service=knowledge_lifecycle_service,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
         task_notification_service=task_notification_service,
@@ -998,6 +1088,7 @@ class KnowledgeSourceBody(BaseModel):
     content: str
     fileName: Optional[str] = None
     expiresAt: Optional[str] = None
+    workspaceId: Optional[str] = None
 
 
 class KnowledgeSourcePatch(BaseModel):
@@ -1016,6 +1107,7 @@ class SearchBody(BaseModel):
         "conversation",
     ]
     limit: int = 8
+    workspaceId: Optional[str] = None
 
 
 class RetrievalEventBody(BaseModel):
@@ -1028,6 +1120,21 @@ class RetrievalEventBody(BaseModel):
     query: Optional[str] = None
     turnId: Optional[str] = None
     conversationId: Optional[str] = None
+
+
+async def _run_knowledge_decay_loop(container: "AppContainer") -> None:
+    """R5.10：周期性衰减确认。启动后先做一轮补偿检查，之后按间隔循环。"""
+    interval_seconds = (
+        max(container.settings.knowledge_decay_interval_hours, 0.25) * 3600.0
+    )
+    await asyncio.sleep(min(300.0, interval_seconds))
+    while True:
+        try:
+            if container.knowledge_lifecycle_service is not None:
+                container.knowledge_lifecycle_service.check_decay()
+        except Exception:  # noqa: BLE001 周期检查失败不影响服务
+            logger.debug("Knowledge decay check failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
 
 
 def create_app(
@@ -1063,6 +1170,12 @@ def create_app(
             scheduler_task = asyncio.create_task(
                 container.task_scheduler.run()
             )
+        decay_task: Optional[asyncio.Task[None]] = None
+        if (
+            container.settings.knowledge_decay_enabled
+            and container.knowledge_lifecycle_service is not None
+        ):
+            decay_task = asyncio.create_task(_run_knowledge_decay_loop(container))
         try:
             yield
         finally:
@@ -1072,6 +1185,12 @@ def create_app(
                 scheduler_task.cancel()
                 try:
                     await scheduler_task
+                except asyncio.CancelledError:
+                    pass
+            if decay_task is not None:
+                decay_task.cancel()
+                try:
+                    await decay_task
                 except asyncio.CancelledError:
                     pass
             await container.task_worker.drain()
@@ -1199,19 +1318,38 @@ def create_app(
         return {"mode": mode.value, "updatedAt": updated_at}
 
     @app.post("/conversations", status_code=201)
-    async def create_conversation() -> dict[str, object]:
+    async def create_conversation(
+        body: Optional[CreateConversationBody] = None,
+    ) -> dict[str, object]:
+        workspace_id = _resolve_workspace_reference(
+            body.workspaceId if body is not None else None
+        )
         return conversation_json(
-            container.chat_repository.create_or_reuse_empty_conversation()
+            container.chat_repository.create_or_reuse_empty_conversation(
+                workspace_id
+            )
         )
 
     @app.get("/conversations")
     async def list_conversations(
         status: ConversationStatus = Query(ConversationStatus.ACTIVE),
         query: Optional[str] = Query(None),
+        workspace: Optional[str] = Query(None),
     ) -> dict[str, object]:
+        workspace_id: Optional[str] = None
+        general_only = False
+        text = (workspace or "").strip()
+        if text == "general":
+            general_only = True
+        elif text:
+            workspace_id = _resolve_workspace_reference(text)
+            if workspace_id is None:
+                general_only = True
         conversations = container.chat_repository.list_conversations(
             status=status,
             title_query=query,
+            workspace_id=workspace_id,
+            general_only=general_only,
         )
         return {"items": [conversation_json(item) for item in conversations]}
 
@@ -1385,13 +1523,51 @@ def create_app(
 
     # ---------- P5 知识源与联合检索 ----------
 
+    def _resolve_workspace_reference(value: Optional[str]) -> Optional[str]:
+        """把请求里的归属值落为列值："general"/空 → None（全局）；其余校验存在。"""
+        text = (value or "").strip()
+        if not text or text == "general":
+            return None
+        container.workspace_repository.get_workspace(text)
+        return text
+
+    def _emit_knowledge_duplicates(source) -> None:
+        service = container.knowledge_lifecycle_service
+        if service is None:
+            return
+        try:
+            service.detect_duplicates(source)
+        except Exception:  # noqa: BLE001 去重检测不影响写入本身
+            logger.debug("Knowledge duplicate detection failed", exc_info=True)
+
+    @app.get("/workspaces")
+    async def list_workspaces() -> dict[str, object]:
+        workspaces = container.workspace_repository.list_workspaces()
+        return {"items": [workspace_json(item) for item in workspaces]}
+
+    @app.post("/workspaces", status_code=201)
+    async def create_workspace(body: WorkspaceBody) -> dict[str, object]:
+        workspace = container.workspace_repository.create_workspace(body.name)
+        return {"workspace": workspace_json(workspace)}
+
     @app.get("/knowledge-sources")
-    async def list_knowledge_sources(status: str = "active") -> dict[str, object]:
+    async def list_knowledge_sources(
+        status: str = "active", workspace: Optional[str] = Query(None)
+    ) -> dict[str, object]:
         try:
             status_enum = KnowledgeSourceStatus(status)
         except ValueError as error:
             raise ValidationError(f"Unknown knowledge source status: {status}") from error
-        sources = container.knowledge_repository.list_sources(status=status_enum)
+        workspace_value = (workspace or "").strip() or None
+        workspace_filter: Optional[str] = None
+        if workspace_value is not None:
+            if workspace_value == "general":
+                workspace_filter = container.knowledge_repository.WORKSPACE_GENERAL
+            else:
+                workspace_filter = _resolve_workspace_reference(workspace_value)
+        sources = container.knowledge_repository.list_sources(
+            status=status_enum, workspace_id=workspace_filter
+        )
         return {"items": [knowledge_source_json(item) for item in sources]}
 
     @app.post("/knowledge-sources", status_code=201)
@@ -1407,7 +1583,9 @@ def create_app(
             content=body.content,
             file_name=body.fileName,
             expires_at=body.expiresAt,
+            workspace_id=_resolve_workspace_reference(body.workspaceId),
         )
+        _emit_knowledge_duplicates(source)
         return {"source": knowledge_source_json(source)}
 
     @app.patch("/knowledge-sources/{source_id}")
@@ -1442,6 +1620,7 @@ def create_app(
     async def import_knowledge_source(
         file: UploadFile = File(...),
         title: Optional[str] = Form(default=None),
+        workspaceId: Optional[str] = Form(default=None),
     ) -> dict[str, object]:
         raw = await file.read()
         file_name = (file.filename or "").strip() or "未命名文件"
@@ -1459,7 +1638,9 @@ def create_app(
             file_name=file_name,
             file_size=ingested.size,
             file_sha256=ingested.sha256,
+            workspace_id=_resolve_workspace_reference(workspaceId),
         )
+        _emit_knowledge_duplicates(source)
         return {
             "source": knowledge_source_json(source),
             "truncated": ingested.truncated,
@@ -1515,6 +1696,19 @@ def create_app(
     async def get_retrieval_stats() -> dict[str, object]:
         return {"stats": container.retrieval_event_repository.summarize()}
 
+    @app.post("/knowledge-lifecycle/decay-check")
+    async def run_knowledge_decay_check() -> dict[str, object]:
+        service = container.knowledge_lifecycle_service
+        if service is None:
+            raise ApiRequestError(
+                "not_available", "知识生命周期服务未启用。", status_code=400
+            )
+        proposals = service.check_decay()
+        return {
+            "created": len(proposals),
+            "items": [knowledge_proposal_json(item) for item in proposals],
+        }
+
     @app.post("/search")
     async def search_knowledge(body: SearchBody) -> dict[str, object]:
         scopes: list[KnowledgeScope] = []
@@ -1524,7 +1718,16 @@ def create_app(
             except ValueError as error:
                 raise ValidationError(f"Unknown search scope: {value}") from error
         limit = max(1, min(body.limit, 20))
-        grouped = container.knowledge_repository.search(body.query, scopes, limit)
+        workspace_filter: Optional[str] = None
+        if body.workspaceId is not None:
+            text = body.workspaceId.strip()
+            if text == "general":
+                workspace_filter = container.knowledge_repository.WORKSPACE_GENERAL
+            elif text:
+                workspace_filter = _resolve_workspace_reference(text)
+        grouped = container.knowledge_repository.search(
+            body.query, scopes, limit, workspace_id=workspace_filter
+        )
         # 分组顺序对齐注入优先级：curated（知识源/记忆）在前，层内按配置顺序。
         ordered_scopes = sorted(
             scopes,
@@ -1545,13 +1748,17 @@ def create_app(
                     "snippet": hit.snippet,
                 }
                 if scope is KnowledgeScope.SOURCE:
+                    source_id = hit.source_id or hit.ref_id
                     try:
-                        source = container.knowledge_repository.get_source(hit.ref_id)
+                        source = container.knowledge_repository.get_source(source_id)
                     except NotFoundError:
                         continue
                     entry["origin"] = source.origin.value
                     entry["kind"] = source.kind.value
                     entry["updatedAt"] = source.updated_at
+                    if hit.chunk_seq is not None:
+                        entry["sourceId"] = source_id
+                        entry["chunkSeq"] = hit.chunk_seq
                 elif scope is KnowledgeScope.MEMORY:
                     try:
                         memory = container.memory_repository.get_memory(hit.ref_id)
@@ -1633,9 +1840,14 @@ def create_app(
                 proposal_id
             )
             return {"proposal": knowledge_proposal_json(proposal)}
+        workspace_override = container.knowledge_proposal_repository._UNSET_WORKSPACE
+        if body.workspaceId is not None:
+            workspace_override = _resolve_workspace_reference(body.workspaceId)
         proposal, source = container.knowledge_proposal_repository.accept_proposal(
-            proposal_id
+            proposal_id, workspace_override=workspace_override
         )
+        if proposal.proposal_type is KnowledgeProposalType.ADD_SOURCE:
+            _emit_knowledge_duplicates(source)
         return {
             "proposal": knowledge_proposal_json(proposal),
             "source": knowledge_source_json(source),

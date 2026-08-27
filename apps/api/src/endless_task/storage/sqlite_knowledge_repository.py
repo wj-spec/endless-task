@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import replace
 from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from endless_task.domain.models import (
@@ -19,6 +20,7 @@ from endless_task.domain.repositories import (
     NotFoundError,
     ValidationError,
 )
+from .knowledge_chunking import DEFAULT_CHUNK_MAX_CHARS, chunk_text
 
 from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
@@ -90,6 +92,7 @@ class SqliteKnowledgeRepository:
         self._hybrid_semantic_weight = float(hybrid_semantic_weight)
         self._semantic_searcher = None
         self._embedding_hook = None
+        self._feedback_provider = None
 
     # ---------- R5.8 语义注入点 ----------
 
@@ -101,15 +104,31 @@ class SqliteKnowledgeRepository:
         """注入索引钩子（submit/remove），写侧增量建向量。"""
         self._embedding_hook = hook
 
-    def _notify_hook(self, action: str, ref_id: str) -> None:
+    def set_feedback_provider(self, provider) -> None:
+        """R5.10：注入引用反馈权重提供器；None 时排序不受反馈影响。"""
+        self._feedback_provider = provider
+
+    def _notify_hook(
+        self, action: str, source_id: str, kind, stale_ref_ids: Sequence[str] = ()
+    ) -> None:
+        """R5.9：note 源按整体索引；file 源按分块索引（ref_id=chunk id）。"""
         hook = self._embedding_hook
         if hook is None:
             return
+        scope_value = KnowledgeScope.SOURCE.value
         try:
+            for stale_id in stale_ref_ids:
+                hook.remove(scope_value, stale_id)
             if action == "submit":
-                hook.submit(KnowledgeScope.SOURCE.value, ref_id)
+                if kind is KnowledgeSourceKind.FILE:
+                    for chunk_id in self.list_chunk_ids(source_id):
+                        hook.submit(scope_value, chunk_id)
+                else:
+                    hook.submit(scope_value, source_id)
             else:
-                hook.remove(KnowledgeScope.SOURCE.value, ref_id)
+                hook.remove(scope_value, source_id)
+                for chunk_id in self.list_chunk_ids(source_id):
+                    hook.remove(scope_value, chunk_id)
         except Exception:  # noqa: BLE001 钩子失败不影响写操作
             pass
 
@@ -128,6 +147,7 @@ class SqliteKnowledgeRepository:
         expires_at: Optional[str] = None,
         file_size: Optional[int] = None,
         file_sha256: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> KnowledgeSource:
         normalized_title = self._validate_title(title)
         normalized_content = self._validate_content(content)
@@ -144,9 +164,9 @@ class SqliteKnowledgeRepository:
                     id, kind, origin, title, content, file_name, status,
                     source_conversation_id, proposed_by_turn_id,
                     expires_at, created_at, updated_at,
-                    file_size, file_sha256
+                    file_size, file_sha256, workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_id,
@@ -162,9 +182,12 @@ class SqliteKnowledgeRepository:
                     now,
                     file_size,
                     file_sha256,
+                    workspace_id,
                 ),
             )
-        self._notify_hook("submit", source_id)
+            if kind is KnowledgeSourceKind.FILE:
+                self._replace_chunks(connection, source_id, normalized_content)
+        self._notify_hook("submit", source_id, kind)
         return self.get_source(source_id)
 
     def get_source(self, source_id: str) -> KnowledgeSource:
@@ -177,14 +200,38 @@ class SqliteKnowledgeRepository:
         return self._from_row(row)
 
     def list_sources(
-        self, status: KnowledgeSourceStatus = KnowledgeSourceStatus.ACTIVE
+        self,
+        status: KnowledgeSourceStatus = KnowledgeSourceStatus.ACTIVE,
+        workspace_id: Optional[str] = None,
     ) -> Sequence[KnowledgeSource]:
+        """workspace_id：None 不过滤；"general" 仅全局；区 id = 该区 ∪ 全局。"""
+        sql = "SELECT * FROM knowledge_sources WHERE status = ?"
+        params: list = [status.value]
+        if workspace_id == self.WORKSPACE_GENERAL:
+            sql += " AND workspace_id IS NULL"
+        elif workspace_id is not None:
+            sql += " AND (workspace_id IS NULL OR workspace_id = ?)"
+            params.append(workspace_id)
+        sql += " ORDER BY updated_at DESC, id DESC"
         with self._database.connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM knowledge_sources WHERE status = ? "
-                "ORDER BY updated_at DESC, id DESC",
-                (status.value,),
-            ).fetchall()
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def list_sources_in_partition(
+        self, workspace_id: Optional[str]
+    ) -> Sequence[KnowledgeSource]:
+        """R5.11 同分区活跃源（精确匹配）：去重检测只在本分区内比较。"""
+        sql = "SELECT * FROM knowledge_sources WHERE status = 'active'"
+        params: tuple
+        if workspace_id is None:
+            sql += " AND workspace_id IS NULL"
+            params = ()
+        else:
+            sql += " AND workspace_id = ?"
+            params = (workspace_id,)
+        sql += " ORDER BY updated_at DESC, id DESC"
+        with self._database.connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
         return [self._from_row(row) for row in rows]
 
     # ---------- 更新 ----------
@@ -202,6 +249,11 @@ class SqliteKnowledgeRepository:
         current = self.get_source(source_id)
         if current.status is KnowledgeSourceStatus.DELETED:
             raise InvalidStateError("Deleted knowledge sources cannot be updated.")
+        stale_chunk_ids = (
+            self.list_chunk_ids(source_id)
+            if current.kind is KnowledgeSourceKind.FILE
+            else ()
+        )
         new_title = self._validate_title(title) if title is not None else current.title
         new_content = (
             self._validate_content(content) if content is not None else current.content
@@ -226,7 +278,11 @@ class SqliteKnowledgeRepository:
                     source_id,
                 ),
             )
-        self._notify_hook("submit", source_id)
+            if current.kind is KnowledgeSourceKind.FILE:
+                self._replace_chunks(connection, source_id, new_content)
+        self._notify_hook(
+            "submit", source_id, current.kind, stale_ref_ids=stale_chunk_ids
+        )
         return self.get_source(source_id)
 
     # ---------- 生命周期 ----------
@@ -242,7 +298,7 @@ class SqliteKnowledgeRepository:
                 "updated_at = ? WHERE id = ?",
                 (now, now, source_id),
             )
-        self._notify_hook("remove", source_id)
+        self._notify_hook("remove", source_id, current.kind)
         return self.get_source(source_id)
 
     def restore_source(self, source_id: str) -> KnowledgeSource:
@@ -256,7 +312,7 @@ class SqliteKnowledgeRepository:
                 "updated_at = ? WHERE id = ?",
                 (now, source_id),
             )
-        self._notify_hook("submit", source_id)
+        self._notify_hook("submit", source_id, current.kind)
         return self.get_source(source_id)
 
     def delete_source(self, source_id: str) -> KnowledgeSource:
@@ -265,12 +321,13 @@ class SqliteKnowledgeRepository:
             raise InvalidStateError("Knowledge source is already deleted.")
         now = self._clock()
         with self._database.transaction() as connection:
+            # expired_at 同步置空：表 CHECK 要求 expired 状态与 expired_at 同现。
             connection.execute(
                 "UPDATE knowledge_sources SET status = 'deleted', deleted_at = ?, "
-                "updated_at = ? WHERE id = ?",
+                "expired_at = NULL, updated_at = ? WHERE id = ?",
                 (now, now, source_id),
             )
-        self._notify_hook("remove", source_id)
+        self._notify_hook("remove", source_id, current.kind)
         return self.get_source(source_id)
 
     def expire_due(self, now: str) -> Sequence[KnowledgeSource]:
@@ -286,28 +343,79 @@ class SqliteKnowledgeRepository:
             expired.append(self.expire_source(row["id"]))
         return expired
 
+    # ---------- R5.9 分块 ----------
+
+    def _replace_chunks(self, connection, source_id: str, content: str) -> None:
+        """事务内重切分块：删旧建新（file 源检索单元 = 分块）。"""
+        connection.execute(
+            "DELETE FROM knowledge_chunks WHERE source_id = ?", (source_id,)
+        )
+        now = self._clock()
+        for seq, chunk in enumerate(chunk_text(content, DEFAULT_CHUNK_MAX_CHARS)):
+            connection.execute(
+                "INSERT INTO knowledge_chunks (id, source_id, seq, content, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (self._id_factory("kchk"), source_id, seq, chunk, now),
+            )
+
+    def list_chunk_ids(self, source_id: str) -> List[str]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM knowledge_chunks WHERE source_id = ? ORDER BY seq",
+                (source_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def get_chunk(self, chunk_id: str):
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_chunks WHERE id = ?", (chunk_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Knowledge chunk not found: {chunk_id}")
+        return row
+
     # ---------- 内部 ----------
 
     _MAX_FRAGMENTS = 24
 
     _SCOPE_QUERIES = {
         "source": (
-            "SELECT id AS ref_id, title, content AS body "
-            "FROM knowledge_sources WHERE status = 'active' AND ({match})"
+            "SELECT ks.id AS ref_id, ks.title, ks.content AS body, "
+            "NULL AS parent_id, NULL AS chunk_seq "
+            "FROM knowledge_sources ks "
+            "WHERE ks.status = 'active' AND ks.kind = 'note' AND ({match}){ws} "
+            "UNION ALL "
+            "SELECT kc.id AS ref_id, ks.title, kc.content AS body, "
+            "ks.id AS parent_id, kc.seq AS chunk_seq "
+            "FROM knowledge_chunks kc "
+            "JOIN knowledge_sources ks ON ks.id = kc.source_id "
+            "WHERE ks.status = 'active' AND ks.kind = 'file' AND ({match}){ws} "
+            "UNION ALL "
+            "SELECT ks.id AS ref_id, ks.title, ks.content AS body, "
+            "NULL AS parent_id, NULL AS chunk_seq "
+            "FROM knowledge_sources ks "
+            "WHERE ks.status = 'active' AND ks.kind = 'file' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM knowledge_chunks kc WHERE kc.source_id = ks.id"
+            ") AND ({match}){ws}"
         ),
         "memory": (
-            "SELECT id AS ref_id, '记忆' AS title, content AS body "
+            "SELECT id AS ref_id, '记忆' AS title, content AS body, "
+            "NULL AS parent_id, NULL AS chunk_seq "
             "FROM memories WHERE status = 'active' AND ({match})"
         ),
         "artifact": (
-            "SELECT a.id AS ref_id, a.title, v.content AS body "
+            "SELECT a.id AS ref_id, a.title, v.content AS body, "
+            "NULL AS parent_id, NULL AS chunk_seq "
             "FROM artifacts a "
             "JOIN artifact_versions v ON v.artifact_id = a.id "
             "AND v.ordinal = a.current_version_ordinal "
             "WHERE a.status = 'active' AND ({match})"
         ),
         "conversation": (
-            "SELECT m.turn_id AS ref_id, c.title, m.content AS body "
+            "SELECT m.turn_id AS ref_id, c.title, m.content AS body, "
+            "NULL AS parent_id, NULL AS chunk_seq "
             "FROM messages m "
             "JOIN turns t ON t.id = m.turn_id "
             "JOIN conversations c ON c.id = m.conversation_id "
@@ -316,11 +424,17 @@ class SqliteKnowledgeRepository:
         ),
     }
 
+    #: 分区哨兵：指代「通用/全局」（workspace_id IS NULL）。
+    WORKSPACE_GENERAL = "general"
+
+    _WORKSPACE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
     def search(
         self,
         query: str,
         scopes: Sequence[KnowledgeScope],
         limit: int = 8,
+        workspace_id: Optional[str] = None,
     ) -> Dict[KnowledgeScope, List[KnowledgeHit]]:
         """读时联合检索：query 归一化 + 三字符片段 OR 匹配，按加权命中数排序。
 
@@ -334,6 +448,7 @@ class SqliteKnowledgeRepository:
         cleaned = self._expand_synonyms(cleaned)
         fragments = self._fragments(cleaned)
         query_vector = self._embed_query(cleaned)
+        ws_clause = self._workspace_clause(workspace_id)
         grouped: Dict[KnowledgeScope, List[KnowledgeHit]] = {}
         with self._database.connect() as connection:
             for scope in scopes:
@@ -341,11 +456,30 @@ class SqliteKnowledgeRepository:
                 if template is None:
                     continue
                 hits = self._search_scope(
-                    connection, scope, template, fragments, limit, query_vector
+                    connection, scope, template, fragments, limit,
+                    query_vector, ws_clause,
                 )
                 if hits:
                     grouped[scope] = hits
         return grouped
+
+    @classmethod
+    def _workspace_clause(cls, workspace_id: Optional[str]) -> str:
+        """R5.11 source 作用域可见性：工作区 ∪ 全局；None 不过滤。
+
+        workspace_id 校验后以字面量拼入（模板参数已被 {match} 占满），
+        只允许仓储生成的 [A-Za-z0-9_] id。
+        """
+        if workspace_id is None:
+            return ""
+        if workspace_id == cls.WORKSPACE_GENERAL:
+            return " AND ks.workspace_id IS NULL"
+        if not cls._WORKSPACE_ID_RE.match(workspace_id):
+            raise ValidationError(f"Invalid workspace id: {workspace_id}")
+        return (
+            " AND (ks.workspace_id IS NULL OR "
+            f"ks.workspace_id = '{workspace_id}')"
+        )
 
     def _embed_query(self, query: str):
         if self._semantic_searcher is None:
@@ -364,7 +498,9 @@ class SqliteKnowledgeRepository:
         if template is None:
             return []
         with self._database.connect() as connection:
-            return connection.execute(template.format(match="1=1")).fetchall()
+            return connection.execute(
+                template.format(match="1=1", ws="")
+            ).fetchall()
 
     def _search_scope(
         self,
@@ -374,15 +510,20 @@ class SqliteKnowledgeRepository:
         fragments: Sequence[str],
         limit: int,
         query_vector=None,
+        ws_clause: str = "",
     ) -> List[KnowledgeHit]:
         clause = " OR ".join(["title LIKE ? OR body LIKE ?"] * len(fragments))
-        params: List[str] = []
+        single_params: List[str] = []
         for fragment in fragments:
             like = f"%{fragment}%"
-            params.extend((like, like))
-        rows = connection.execute(template.format(match=clause), params).fetchall()
+            single_params.extend((like, like))
+        # UNION 分支各含一个 {match}：参数按占位段数重复。
+        params = single_params * template.count("{match}")
+        rows = connection.execute(
+            template.format(match=clause, ws=ws_clause), params
+        ).fetchall()
         weight = self._scope_weights.get(scope, 1.0)
-        best: Dict[str, tuple[int, str, str, str]] = {}
+        best: Dict[str, tuple[int, str, str, str, Optional[str], Optional[int]]] = {}
         for row in rows:
             body = row["body"] or ""
             title = row["title"] or ""
@@ -392,43 +533,85 @@ class SqliteKnowledgeRepository:
             )
             current = best.get(row["ref_id"])
             if current is None or score > current[0]:
-                best[row["ref_id"]] = (score, row["ref_id"], title, body)
+                best[row["ref_id"]] = (
+                    score,
+                    row["ref_id"],
+                    title,
+                    body,
+                    row["parent_id"],
+                    row["chunk_seq"],
+                )
         if query_vector is not None and self._semantic_searcher is not None:
             semantic_scores, visible_map = self._semantic_scores(
-                connection, scope, template, query_vector
+                connection, scope, template, query_vector, ws_clause
             )
             if semantic_scores:
-                return self._fuse_hits(
-                    scope, weight, fragments, limit, best, semantic_scores,
-                    visible_map,
+                return self._apply_feedback(
+                    scope,
+                    self._fuse_hits(
+                        scope, weight, fragments, limit, best, semantic_scores,
+                        visible_map,
+                    ),
                 )
         ordered = sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
-        return [
+        hits = [
             KnowledgeHit(
                 scope=scope,
                 ref_id=ref_id,
                 title=title,
                 snippet=self._plain_snippet(body, fragments),
                 score=raw_score * weight,
+                source_id=parent_id,
+                chunk_seq=chunk_seq,
             )
-            for raw_score, ref_id, title, body in ordered
+            for raw_score, ref_id, title, body, parent_id, chunk_seq in ordered
         ]
+        return self._apply_feedback(scope, hits)
+
+    def _apply_feedback(self, scope: KnowledgeScope, hits: List[KnowledgeHit]):
+        """R5.10：source 作用域命中乘以引用反馈因子并重排（仅局部序）。"""
+        provider = self._feedback_provider
+        if provider is None or scope is not KnowledgeScope.SOURCE or not hits:
+            return hits
+        adjusted: List[KnowledgeHit] = []
+        changed = False
+        for hit in hits:
+            try:
+                factor = provider.factor(hit.ref_id, hit.source_id)
+            except Exception:  # noqa: BLE001 反馈失败退回原序
+                factor = 1.0
+            if factor == 1.0:
+                adjusted.append(hit)
+                continue
+            changed = True
+            adjusted.append(replace(hit, score=hit.score * factor))
+        if changed:
+            adjusted.sort(key=lambda item: item.score, reverse=True)
+        return adjusted
 
     def _semantic_scores(
-        self, connection, scope: KnowledgeScope, template: str, query_vector
-    ) -> tuple[Dict[str, float], Dict[str, tuple[str, str]]]:
+        self, connection, scope: KnowledgeScope, template: str, query_vector,
+        ws_clause: str = "",
+    ) -> tuple[Dict[str, float], Dict[str, tuple[str, str, Optional[str], Optional[int]]]]:
         """向量召回：仅对当前可见行评分（临时/归档/过期永不进入检索）。
 
         返回（余弦分映射，可见行 title/body 映射）；评分失败返回空映射，
         调用方退回纯字面路径。
         """
-        visible = connection.execute(template.format(match="1=1")).fetchall()
+        visible = connection.execute(
+            template.format(match="1=1", ws=ws_clause)
+        ).fetchall()
         ref_ids: List[str] = []
-        visible_map: Dict[str, tuple[str, str]] = {}
+        visible_map: Dict[str, tuple[str, str, Optional[str], Optional[int]]] = {}
         for row in visible:
             ref_id = row["ref_id"]
             if ref_id not in visible_map:
-                visible_map[ref_id] = (row["title"] or "", row["body"] or "")
+                visible_map[ref_id] = (
+                    row["title"] or "",
+                    row["body"] or "",
+                    row["parent_id"],
+                    row["chunk_seq"],
+                )
                 ref_ids.append(ref_id)
         if not ref_ids:
             return {}, {}
@@ -446,13 +629,13 @@ class SqliteKnowledgeRepository:
         weight: float,
         fragments: Sequence[str],
         limit: int,
-        best: Dict[str, tuple[int, str, str, str]],
+        best: Dict[str, tuple[int, str, str, str, Optional[str], Optional[int]]],
         semantic_scores: Dict[str, float],
-        visible_map: Dict[str, tuple[str, str]],
+        visible_map: Dict[str, tuple[str, str, Optional[str], Optional[int]]],
     ) -> List[KnowledgeHit]:
         """加权融合：字面分归一化后与余弦分线性组合（默认 0.4/0.6）。"""
         max_literal = max((item[0] for item in best.values()), default=0)
-        scored: List[tuple[float, str, str, str]] = []
+        scored: List[tuple[float, str, str, str, Optional[str], Optional[int]]] = []
         for ref_id in set(best) | set(semantic_scores):
             literal_entry = best.get(ref_id)
             literal_norm = 0.0
@@ -466,11 +649,20 @@ class SqliteKnowledgeRepository:
             if fused <= 0:
                 continue
             if literal_entry is not None:
-                _, _, title, body = literal_entry
+                _, _, title, body, parent_id, chunk_seq = literal_entry
             else:
-                title, body = visible_map.get(ref_id, ("", ""))
+                title, body, parent_id, chunk_seq = visible_map.get(
+                    ref_id, ("", "", None, None)
+                )
             scored.append(
-                (fused, ref_id, title, self._plain_snippet(body, fragments))
+                (
+                    fused,
+                    ref_id,
+                    title,
+                    self._plain_snippet(body, fragments),
+                    parent_id,
+                    chunk_seq,
+                )
             )
         ordered = sorted(scored, key=lambda item: item[0], reverse=True)[:limit]
         return [
@@ -480,8 +672,10 @@ class SqliteKnowledgeRepository:
                 title=title,
                 snippet=snippet,
                 score=fused * weight,
+                source_id=parent_id,
+                chunk_seq=chunk_seq,
             )
-            for fused, ref_id, title, snippet in ordered
+            for fused, ref_id, title, snippet, parent_id, chunk_seq in ordered
         ]
 
     def _expand_synonyms(self, query: str) -> str:
@@ -570,4 +764,5 @@ class SqliteKnowledgeRepository:
             updated_at=row["updated_at"],
             file_size=row["file_size"],
             file_sha256=row["file_sha256"],
+            workspace_id=row["workspace_id"],
         )

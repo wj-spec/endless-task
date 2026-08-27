@@ -1,4 +1,4 @@
-import type { PendingProposal } from "../chat/apiTypes";
+import type { PendingProposal, Workspace } from "../chat/apiTypes";
 import { KnowledgeContent } from "../knowledge/KnowledgeManagement";
 import { MemoryContent } from "../memory/MemoryManagement";
 import { NotificationsContent } from "../notifications/NotificationsDrawer";
@@ -13,6 +13,8 @@ type AssistantPanelProps = {
   pendingProposals: PendingProposal[];
   tab: AssistantPanelTab;
   unreadCount: number;
+  workspaceId: string | null;
+  workspaces: Workspace[];
 };
 
 export function AssistantPanel({
@@ -22,6 +24,8 @@ export function AssistantPanel({
   pendingProposals,
   tab,
   unreadCount,
+  workspaceId,
+  workspaces,
 }: AssistantPanelProps) {
   return (
     <aside aria-label="助手面板" className="assistant-panel">
@@ -75,7 +79,7 @@ export function AssistantPanel({
         ) : tab === "memory" ? (
           <MemoryContent onOpenConversation={onOpenConversation} />
         ) : (
-          <KnowledgeContent />
+          <KnowledgeContent workspaceId={workspaceId} workspaces={workspaces} />
         )}
       </div>
     </aside>

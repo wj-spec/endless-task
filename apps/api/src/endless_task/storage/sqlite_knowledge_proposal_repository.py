@@ -45,6 +45,7 @@ def knowledge_source_from_row(row) -> KnowledgeSource:
         updated_at=row["updated_at"],
         file_size=row["file_size"],
         file_sha256=row["file_sha256"],
+        workspace_id=row["workspace_id"],
     )
 
 
@@ -84,6 +85,10 @@ class SqliteKnowledgeProposalRepository:
         if proposal_type is KnowledgeProposalType.ADD_SOURCE:
             existing = self.find_pending_add_by_content(
                 str(normalized_payload["content"])
+            )
+        elif proposal_type is KnowledgeProposalType.MERGE_SOURCE:
+            existing = self.find_pending_merge_by_source(
+                str(normalized_payload["source_id"])
             )
         else:
             existing = self.find_pending_expire_by_source(
@@ -189,10 +194,53 @@ class SqliteKnowledgeProposalRepository:
                 return proposal
         return None
 
+    def find_pending_merge_by_source(
+        self, source_id: str
+    ) -> Optional[KnowledgeProposal]:
+        normalized = source_id.strip()
+        if not normalized:
+            return None
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM knowledge_proposals "
+                "WHERE status = ? AND proposal_type = ? ORDER BY created_at, id",
+                (
+                    KnowledgeProposalStatus.PENDING.value,
+                    KnowledgeProposalType.MERGE_SOURCE.value,
+                ),
+            ).fetchall()
+        for row in rows:
+            proposal = self._from_row(row)
+            if str(proposal.payload.get("source_id", "")).strip() == normalized:
+                return proposal
+        return None
+
+    def list_proposals_for_source(
+        self, source_id: str
+    ) -> Sequence[KnowledgeProposal]:
+        """R5.10：按 payload.source_id 回溯提案历史（任意状态，新→旧）。"""
+        normalized = source_id.strip()
+        if not normalized:
+            return ()
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM knowledge_proposals "
+                "ORDER BY created_at DESC, rowid DESC"
+            ).fetchall()
+        matches: list[KnowledgeProposal] = []
+        for row in rows:
+            proposal = self._from_row(row)
+            if str(proposal.payload.get("source_id", "")).strip() == normalized:
+                matches.append(proposal)
+        return tuple(matches)
+
     # ---------- 确认流 ----------
 
+    #: workspace_override 的未设置哨兵（区分「不覆盖」与「覆盖为全局 None」）。
+    _UNSET_WORKSPACE = object()
+
     def accept_proposal(
-        self, proposal_id: str
+        self, proposal_id: str, workspace_override: object = _UNSET_WORKSPACE
     ) -> tuple[KnowledgeProposal, KnowledgeSource]:
         now = self._clock()
         source_id = self._id_factory("ks")
@@ -211,9 +259,9 @@ class SqliteKnowledgeProposalRepository:
                     INSERT INTO knowledge_sources (
                         id, kind, origin, title, content, file_name, status,
                         source_conversation_id, proposed_by_turn_id,
-                        expires_at, created_at, updated_at
+                        expires_at, created_at, updated_at, workspace_id
                     )
-                    VALUES (?, 'note', 'agent', ?, ?, NULL, 'active', ?, ?, NULL, ?, ?)
+                    VALUES (?, 'note', 'agent', ?, ?, NULL, 'active', ?, ?, NULL, ?, ?, ?)
                     """,
                     (
                         source_id,
@@ -223,8 +271,41 @@ class SqliteKnowledgeProposalRepository:
                         proposal.turn_id,
                         now,
                         now,
+                        (
+                            workspace_override
+                            if workspace_override is not self._UNSET_WORKSPACE
+                            else proposal.payload.get("workspace_id")
+                        ),
                     ),
                 )
+            elif proposal.proposal_type is KnowledgeProposalType.MERGE_SOURCE:
+                duplicate_id = str(proposal.payload["source_id"])
+                keep_id = str(proposal.payload["target_id"])
+                keep_row = connection.execute(
+                    "SELECT * FROM knowledge_sources WHERE id = ?", (keep_id,)
+                ).fetchone()
+                if keep_row is None:
+                    raise NotFoundError(f"Knowledge source not found: {keep_id}")
+                if keep_row["status"] != KnowledgeSourceStatus.ACTIVE.value:
+                    raise InvalidStateError("Merge target must still be active.")
+                source_row = connection.execute(
+                    "SELECT * FROM knowledge_sources WHERE id = ?",
+                    (duplicate_id,),
+                ).fetchone()
+                if source_row is None:
+                    raise NotFoundError(
+                        f"Knowledge source not found: {duplicate_id}"
+                    )
+                if source_row["status"] != KnowledgeSourceStatus.ACTIVE.value:
+                    raise InvalidStateError(
+                        "Only active knowledge sources can expire."
+                    )
+                connection.execute(
+                    "UPDATE knowledge_sources SET status = 'expired', "
+                    "expired_at = ?, updated_at = ? WHERE id = ?",
+                    (now, now, duplicate_id),
+                )
+                source_id = duplicate_id
             else:
                 target_id = str(proposal.payload["source_id"])
                 source_row = connection.execute(
@@ -329,7 +410,41 @@ class SqliteKnowledgeProposalRepository:
                 title = title[: self._max_title_chars]
             if len(content) > self._max_content_chars:
                 content = content[: self._max_content_chars]
-            return {"title": title, "kind": "note", "content": content, "reason": reason}
+            normalized = {
+                "title": title,
+                "kind": "note",
+                "content": content,
+                "reason": reason,
+            }
+            workspace_id = payload.get("workspace_id")
+            if workspace_id is not None:
+                normalized["workspace_id"] = str(workspace_id).strip()
+            return normalized
+        if proposal_type is KnowledgeProposalType.MERGE_SOURCE:
+            source_id = str(payload.get("source_id", "")).strip()
+            target_id = str(payload.get("target_id", "")).strip()
+            if not source_id or not target_id or source_id == target_id:
+                raise ValidationError(
+                    "merge_source proposals require distinct source_id "
+                    "and target_id."
+                )
+            try:
+                overlap = float(payload.get("overlap", 0.0))
+            except (TypeError, ValueError):
+                overlap = 0.0
+            normalized = {
+                "source_id": source_id,
+                "target_id": target_id,
+                "overlap": max(0.0, min(overlap, 1.0)),
+                "reason": reason,
+            }
+            title = str(payload.get("title", "")).strip()
+            if title:
+                normalized["title"] = title[: self._max_title_chars]
+            target_title = str(payload.get("target_title", "")).strip()
+            if target_title:
+                normalized["target_title"] = target_title[: self._max_title_chars]
+            return normalized
         source_id = str(payload.get("source_id", "")).strip()
         if not source_id:
             raise ValidationError("expire_source proposals require source_id.")
@@ -337,6 +452,8 @@ class SqliteKnowledgeProposalRepository:
         title = str(payload.get("title", "")).strip()
         if title:
             normalized["title"] = title
+        if payload.get("decay"):
+            normalized["decay"] = True
         return normalized
 
     @staticmethod

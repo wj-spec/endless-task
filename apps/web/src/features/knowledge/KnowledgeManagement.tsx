@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
-import type { KnowledgeSource } from "../chat/apiTypes";
+import type { KnowledgeSource, Workspace } from "../chat/apiTypes";
 import { formatRelativeTime } from "../artifacts/time";
 
 type StatusFilter = "active" | "expired";
 
-export function KnowledgeContent() {
+type KnowledgeContentProps = {
+  workspaceId: string | null;
+  workspaces: Workspace[];
+};
+
+export function KnowledgeContent({
+  workspaceId,
+  workspaces,
+}: KnowledgeContentProps) {
+  const workspaceNameById = new Map(workspaces.map((item) => [item.id, item.name]));
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [loading, setLoading] = useState(true);
@@ -20,19 +29,29 @@ export function KnowledgeContent() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [draftScope, setDraftScope] = useState<"workspace" | "global">(
+    "workspace",
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const effectiveScope = workspaceId === null ? "global" : draftScope;
+  const draftWorkspaceId = effectiveScope === "global" ? null : workspaceId;
 
-  const load = useCallback(async (status: StatusFilter) => {
-    setLoading(true);
-    try {
-      setSources(await chatApi.listKnowledgeSources(status));
-      setLoadError(null);
-    } catch {
-      setLoadError("无法加载知识源，请重试。");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (status: StatusFilter) => {
+      setLoading(true);
+      try {
+        setSources(
+          await chatApi.listKnowledgeSources(status, workspaceId ?? "general"),
+        );
+        setLoadError(null);
+      } catch {
+        setLoadError("无法加载知识源，请重试。");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [workspaceId],
+  );
 
   useEffect(() => {
     void load(statusFilter);
@@ -51,7 +70,11 @@ export function KnowledgeContent() {
     setBusyId("new");
     setActionError(null);
     try {
-      const result = await chatApi.importKnowledgeFile(file);
+      const result = await chatApi.importKnowledgeFile(
+        file,
+        undefined,
+        draftWorkspaceId,
+      );
       resetDraft();
       await load(statusFilter);
       if (result.truncated) {
@@ -78,6 +101,7 @@ export function KnowledgeContent() {
         title,
         content,
         fileName: draftFileName ?? undefined,
+        workspaceId: draftWorkspaceId,
       });
       resetDraft();
       await load(statusFilter);
@@ -183,6 +207,31 @@ export function KnowledgeContent() {
             rows={5}
             value={draftContent}
           />
+          <div className="knowledge-scope-picker">
+            <label htmlFor="knowledge-scope-select">存入</label>
+            <select
+              id="knowledge-scope-select"
+              onChange={(event) =>
+                setDraftScope(event.target.value === "global" ? "global" : "workspace")
+              }
+              value={effectiveScope}
+            >
+              {workspaceId !== null ? (
+                <option value="workspace">
+                  当前工作区{(() => {
+                    const name = workspaceNameById.get(workspaceId);
+                    return name ? `《${name}》` : "";
+                  })()}
+                </option>
+              ) : null}
+              <option value="global">全局知识</option>
+            </select>
+            {effectiveScope === "global" ? (
+              <p className="knowledge-scope-hint">
+                全局知识在所有工作区可见，适合关于你本人的长期习惯与生活规则。
+              </p>
+            ) : null}
+          </div>
           <div className="memory-actions">
             <input
               accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log"
@@ -278,6 +327,17 @@ export function KnowledgeContent() {
               <div className="memory-meta">
                 <span className="knowledge-badge">
                   {source.kind === "file" ? "文件" : "笔记"}
+                </span>
+                <span
+                  className={
+                    source.workspaceId === null
+                      ? "knowledge-badge is-global"
+                      : "knowledge-badge is-workspace"
+                  }
+                >
+                  {source.workspaceId === null
+                    ? "全局"
+                    : workspaceNameById.get(source.workspaceId) ?? "工作区"}
                 </span>
                 <span
                   className={

@@ -79,6 +79,38 @@ class SqliteRetrievalEventRepository:
             detail=dict(detail or {}) if detail is not None else None,
         )
 
+    def last_use_for_source(self, source_id: str) -> Optional[str]:
+        """R5.10 衰减检测：该源最近一次被注入上下文的时间（无记录返回 None）。
+
+        遍历注入事件的 citations 明细，refId 或 sourceId 命中即视为被使用
+        （分块引用经 sourceId 归并到源）。
+        """
+        normalized = source_id.strip()
+        if not normalized:
+            return None
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT detail, created_at FROM retrieval_events "
+                "WHERE kind = ? AND detail IS NOT NULL "
+                "ORDER BY created_at DESC, rowid DESC",
+                (RetrievalEventKind.INJECTION.value,),
+            ).fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            citations = detail.get("citations") if isinstance(detail, dict) else None
+            for citation in citations or []:
+                if not isinstance(citation, dict):
+                    continue
+                if (
+                    citation.get("sourceId") == normalized
+                    or citation.get("refId") == normalized
+                ):
+                    return row["created_at"]
+        return None
+
     def latest_injection_for_turn(self, turn_id: str) -> Optional[RetrievalEvent]:
         with self._database.connect() as connection:
             row = connection.execute(

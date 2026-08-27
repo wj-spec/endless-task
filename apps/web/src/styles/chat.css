@@ -682,3 +682,28 @@ button.citation-chip:focus-visible {
   color: var(--ink-2, inherit);
   font-size: var(--fs-3, 13px);
 }
+
+/* R5.11 提案卡归属行 */
+.proposal-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: var(--fs-3, 12px);
+  color: var(--faint);
+}
+
+.proposal-scope button {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-3, 12px);
+  cursor: pointer;
+}
+
+.proposal-scope button:hover {
+  border-color: var(--accent, #7c5cff);
+  color: var(--accent, #7c5cff);
+}

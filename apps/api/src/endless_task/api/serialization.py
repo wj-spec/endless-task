@@ -445,6 +445,16 @@ def knowledge_proposal_json(proposal) -> dict[str, object]:
     }
 
 
+def workspace_json(workspace) -> dict[str, object]:
+    return {
+        "id": workspace.id,
+        "name": workspace.name,
+        "rootPath": workspace.root_path,
+        "createdAt": workspace.created_at,
+        "updatedAt": workspace.updated_at,
+    }
+
+
 def knowledge_source_json(source) -> dict[str, object]:
     return {
         "id": source.id,
@@ -462,6 +472,7 @@ def knowledge_source_json(source) -> dict[str, object]:
         "updatedAt": source.updated_at,
         "fileSize": source.file_size,
         "fileSha256": source.file_sha256,
+        "workspaceId": source.workspace_id,
     }
 
 

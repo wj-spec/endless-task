@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 from endless_task.domain.models import (
     KnowledgeProposal,
@@ -33,9 +33,12 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "随附“待确认/已有知识清单”：与已有知识语义相同的不要再提案；"
     "expire 的 source_id 必须取自清单中活跃知识的 id。"
     '只输出 JSON：{"proposals":[{"type":"add_source","title":"简短标题",'
-    '"content":"规范化后的资料文本","reason":"为什么值得长期保留"}'
+    '"content":"规范化后的资料文本","reason":"为什么值得长期保留",'
+    '"global":true（仅当内容明显是关于用户本人生活的知识时输出，否则省略该字段）}'
     '或{"type":"expire_source","source_id":"已有知识 id","reason":"为什么过时"}]}；'
     "没有合适内容时输出 {\"proposals\":[]}。"
+    "归属说明：关于用户本人生活的知识（个人习惯、生活偏好、家庭规范，"
+    "与工作/项目无关）才标 global；工作、项目、领域知识一律不标。"
 )
 
 PENDING_LIST_CAP = 10
@@ -57,6 +60,7 @@ class KnowledgeProposalService:
         proposal_repository: SqliteKnowledgeProposalRepository,
         knowledge_repository: SqliteKnowledgeRepository,
         model: str,
+        chat_repository=None,
         max_proposals_per_turn: int = 2,
         max_output_tokens: int = 600,
         min_assistant_chars: int = 40,
@@ -68,6 +72,7 @@ class KnowledgeProposalService:
         self._provider = provider
         self._proposal_repository = proposal_repository
         self._knowledge_repository = knowledge_repository
+        self._chat_repository = chat_repository
         self._model = model
         self._max_proposals_per_turn = max_proposals_per_turn
         self._max_output_tokens = max_output_tokens
@@ -141,10 +146,17 @@ class KnowledgeProposalService:
                 content = str(item.get("content", "")).strip()
                 if not content or content in active_contents:
                     continue
+                title = str(item.get("title", "")).strip() or content[:30]
+                reason = str(item.get("reason", "")).strip()
                 payload = {
-                    "title": str(item.get("title", "")).strip() or content[:30],
+                    "title": title,
                     "content": content,
-                    "reason": str(item.get("reason", "")).strip(),
+                    "reason": reason,
+                    "workspace_id": self._attribute_workspace(
+                        conversation_id,
+                        marked_global=bool(item.get("global")),
+                        text=f"{title}\n{content}\n{reason}",
+                    ),
                 }
             else:
                 source_id = str(item.get("source_id", "")).strip()
@@ -166,6 +178,38 @@ class KnowledgeProposalService:
                 continue
             created.append(proposal)
         return tuple(created)
+
+    #: 保守兜底：模型标了 global 但文本缺少「关于用户本人」的信号时，降级回工作区。
+    _PERSONAL_SIGNALS = (
+        "用户", "我个人", "我自己", "我家", "家里", "生活", "习惯",
+        "偏好", "喜欢", "讨厌", "过敏", "每天", "每周", "每月", "总是",
+    )
+
+    def _attribute_workspace(
+        self, conversation_id: str, *, marked_global: bool, text: str
+    ) -> Optional[str]:
+        """R5.11 归属判定：拿不准就落工作区，全局宁缺毋滥。
+
+        - 来源会话无工作区（通用会话）→ 全局（提取 prompt 已约束只收关于用户本人的内容）；
+        - 会话属于工作区且模型标 global 且文本有个人信号 → 全局；
+        - 其余 → 该工作区。
+        """
+        conversation_workspace: Optional[str] = None
+        if self._chat_repository is not None:
+            try:
+                conversation = self._chat_repository.get_conversation(
+                    conversation_id
+                )
+                conversation_workspace = conversation.workspace_id
+            except Exception:  # noqa: BLE001 归属失败退回默认分区
+                conversation_workspace = None
+        if conversation_workspace is None:
+            return None
+        if marked_global and any(
+            signal in text for signal in self._PERSONAL_SIGNALS
+        ):
+            return None
+        return conversation_workspace
 
     def _awareness_block(self) -> str:
         lines: list[str] = []

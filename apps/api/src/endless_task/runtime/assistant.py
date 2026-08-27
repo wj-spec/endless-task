@@ -63,6 +63,8 @@ class AssistantRuntime:
         approval_coordinator: Optional[ApprovalCoordinator] = None,
         permission_mode_provider: Optional[Callable[[], PermissionMode]] = None,
         knowledge_query_rewriter=None,
+        knowledge_reranker=None,
+        knowledge_repository=None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime_repository = runtime_repository
@@ -78,6 +80,8 @@ class AssistantRuntime:
         self._approval_coordinator = approval_coordinator or ApprovalCoordinator()
         self._permission_mode_provider = permission_mode_provider
         self._knowledge_query_rewriter = knowledge_query_rewriter
+        self._knowledge_reranker = knowledge_reranker
+        self._knowledge_repository = knowledge_repository
 
     async def execute(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
         token = await self._cancellation_manager.acquire(turn_id, variant_id)
@@ -110,6 +114,7 @@ class AssistantRuntime:
                 response_variant_id=variant_id,
                 reserved_output_tokens=self._configuration.max_output_tokens,
                 knowledge_query=await self._rewrite_knowledge_query(turn_id),
+                knowledge_ranking=await self._rerank_knowledge(turn_id),
             )
             token.raise_if_cancelled()
 
@@ -269,6 +274,38 @@ class AssistantRuntime:
         except Exception:  # noqa: BLE001 改写是增强项，任何失败都静默回退
             return None
         return await self._knowledge_query_rewriter.rewrite(user_content)
+
+    async def _rerank_knowledge(self, turn_id: str):
+        """R5.9：注入前对检索候选做 LLM 重排；失败返回 None（保持原排序）。"""
+        if self._knowledge_reranker is None or self._knowledge_repository is None:
+            return None
+        try:
+            snapshot = self._chat_repository.get_turn(turn_id)
+            user_content = snapshot.user_message.content
+            if len(user_content.strip()) < 4:
+                return None
+            workspace_id = self._chat_repository.get_conversation(
+                snapshot.turn.conversation_id
+            ).workspace_id
+            from endless_task.domain.models import KnowledgeScope
+            from endless_task.storage.sqlite_knowledge_repository import scope_tier
+
+            grouped = self._knowledge_repository.search(
+                user_content,
+                [
+                    KnowledgeScope.SOURCE,
+                    KnowledgeScope.MEMORY,
+                    KnowledgeScope.ARTIFACT,
+                    KnowledgeScope.CONVERSATION,
+                ],
+                self._knowledge_reranker.candidate_limit,
+                workspace_id=workspace_id,
+            )
+            candidates = [hit for hits in grouped.values() for hit in hits]
+            candidates.sort(key=lambda hit: (scope_tier(hit.scope), -hit.score))
+        except Exception:  # noqa: BLE001 重排是增强项，任何失败都静默回退
+            return None
+        return await self._knowledge_reranker.rerank(user_content, candidates)
 
     async def request_cancel(self, *, turn_id: str, variant_id: str) -> bool:
         return await self._cancellation_manager.cancel(turn_id, variant_id)

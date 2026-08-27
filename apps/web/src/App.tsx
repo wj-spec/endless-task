@@ -174,6 +174,10 @@ export function App() {
         search={chat.search}
         sideConversationId={chat.sideConversationId}
         statusFilter={chat.statusFilter}
+        workspaceId={chat.workspaceId}
+        workspaces={chat.workspaces}
+        onCreateWorkspace={(name) => chat.createWorkspace(name)}
+        onSelectWorkspace={chat.selectWorkspace}
         onClose={() => {
           setRailOpen(false);
           setRailPreferredCollapsed(true);
@@ -212,6 +216,7 @@ export function App() {
         error={chat.error}
         health={chat.health}
         isGenerating={chat.isGenerating}
+        workspaces={chat.workspaces}
         liveTurns={chat.liveTurns}
         loading={chat.loading}
         pendingAction={chat.pendingAction}
@@ -258,9 +263,9 @@ export function App() {
             .resolveArtifactProposal(proposalId, decision)
             .then(hub.refresh)
         }
-        onResolveKnowledgeProposal={(proposalId, decision) =>
+        onResolveKnowledgeProposal={(proposalId, decision, workspaceId) =>
           void proposals
-            .resolveKnowledgeProposal(proposalId, decision)
+            .resolveKnowledgeProposal(proposalId, decision, workspaceId)
             .then(hub.refresh)
         }
         onResolveMemoryProposal={(proposalId, decision) =>
@@ -281,6 +286,7 @@ export function App() {
             health={chat.health}
             isGenerating={chat.sideIsGenerating}
             liveTurns={chat.liveTurns}
+            workspaces={chat.workspaces}
             loading={chat.sideLoading}
             pendingAction={chat.pendingAction}
             variant="side"
@@ -323,9 +329,9 @@ export function App() {
                 .resolveArtifactProposal(proposalId, decision)
                 .then(hub.refresh)
             }
-            onResolveKnowledgeProposal={(proposalId, decision) =>
+            onResolveKnowledgeProposal={(proposalId, decision, workspaceId) =>
               void proposals
-                .resolveKnowledgeProposal(proposalId, decision)
+                .resolveKnowledgeProposal(proposalId, decision, workspaceId)
                 .then(hub.refresh)
             }
             onResolveMemoryProposal={(proposalId, decision) =>
@@ -421,6 +427,8 @@ export function App() {
           pendingProposals={hub.proposals}
           tab={assistantTab}
           unreadCount={hub.unread}
+          workspaceId={chat.workspaceId}
+          workspaces={chat.workspaces}
         />
       ) : null}
       <div className="toast-stack">

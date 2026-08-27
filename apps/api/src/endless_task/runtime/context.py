@@ -255,6 +255,7 @@ class P0ContextBuilder:
         response_variant_id: Optional[str] = None,
         reserved_output_tokens: int = 2_048,
         knowledge_query: Optional[str] = None,
+        knowledge_ranking: Optional[Sequence[str]] = None,
     ) -> BuiltContext:
         if reserved_output_tokens < 0:
             raise ValueError("reserved_output_tokens cannot be negative")
@@ -281,6 +282,8 @@ class P0ContextBuilder:
                 current.user_message.content,
                 knowledge_query=knowledge_query,
                 turn_id=turn_id,
+                ranking=knowledge_ranking,
+                workspace_id=conversation.conversation.workspace_id,
             ),
         )
         current_message = ProviderMessage(role="user", content=current.user_message.content)
@@ -369,6 +372,8 @@ class P0ContextBuilder:
         *,
         knowledge_query: Optional[str] = None,
         turn_id: Optional[str] = None,
+        ranking: Optional[Sequence[str]] = None,
+        workspace_id: Optional[str] = None,
     ) -> str:
         content = self._system_prompt
         if self._file_repository is not None:
@@ -402,6 +407,8 @@ class P0ContextBuilder:
             override_query=knowledge_query,
             conversation_id=conversation_id,
             turn_id=turn_id,
+            ranking=ranking,
+            workspace_id=workspace_id,
         )
         if knowledge_block:
             content = f"{content}\n\n{knowledge_block}"
@@ -430,6 +437,8 @@ class P0ContextBuilder:
         override_query: Optional[str] = None,
         conversation_id: Optional[str] = None,
         turn_id: Optional[str] = None,
+        ranking: Optional[Sequence[str]] = None,
+        workspace_id: Optional[str] = None,
     ) -> str:
         if self._knowledge_repository is None:
             return ""
@@ -449,6 +458,7 @@ class P0ContextBuilder:
                     KnowledgeScope.CONVERSATION,
                 ],
                 self._max_knowledge_hits,
+                workspace_id=workspace_id,
             )
         except Exception:
             return ""
@@ -456,6 +466,15 @@ class P0ContextBuilder:
         # 层内按加权分数排序；curated 有命中时天然占得首个注入槽位。
         candidates = [hit for hits in grouped.values() for hit in hits]
         candidates.sort(key=lambda hit: (scope_tier(hit.scope), -hit.score))
+        if ranking:
+            # R5.9 重排结果优先（按重排顺序），其余候选保持分层排序。
+            order = {ref_id: index for index, ref_id in enumerate(ranking)}
+            candidates.sort(
+                key=lambda hit: (
+                    0 if hit.ref_id in order else 1,
+                    order.get(hit.ref_id, 0),
+                )
+            )
         selected = candidates[: self._max_knowledge_hits]
         lines: list[str] = []
         citations: list[dict[str, object]] = []
@@ -469,15 +488,18 @@ class P0ContextBuilder:
             if used + len(line) > self._max_knowledge_chars:
                 break
             lines.append(line)
-            citations.append(
-                {
-                    "label": f"K{len(lines)}",
-                    "scope": hit.scope.value,
-                    "refId": hit.ref_id,
-                    "title": hit.title or label,
-                    "snippet": snippet[:200],
-                }
-            )
+            citation_entry: dict[str, object] = {
+                "label": f"K{len(lines)}",
+                "scope": hit.scope.value,
+                "refId": hit.ref_id,
+                "title": hit.title or label,
+                "snippet": snippet[:200],
+            }
+            if hit.source_id is not None:
+                citation_entry["sourceId"] = hit.source_id
+            if hit.chunk_seq is not None:
+                citation_entry["chunkSeq"] = hit.chunk_seq
+            citations.append(citation_entry)
             used += len(line)
         self._record_knowledge_injection(
             query=query,

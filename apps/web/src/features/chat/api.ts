@@ -18,6 +18,7 @@ import type { KnowledgeProposal,
   RuntimeEvent,
   TurnCommandResponse,
   UploadedTextFile,
+  Workspace,
   WorkspaceSnapshot,
   TaskProposal,
   TaskSummary,
@@ -91,16 +92,39 @@ async function responseError(response: Response): Promise<ApiClientError> {
 
 export const chatApi = {
   health: () => request<HealthSnapshot>("/health"),
-  listConversations: async (status: ConversationStatus, query?: string) => {
+  listConversations: async (
+    status: ConversationStatus,
+    query?: string,
+    workspace?: string | null,
+  ) => {
     const parameters = new URLSearchParams({ status });
     if (query?.trim()) parameters.set("query", query.trim());
+    if (workspace !== undefined) {
+      parameters.set("workspace", workspace ?? "general");
+    }
     const response = await request<{ items: Conversation[] }>(
       `/conversations?${parameters.toString()}`,
     );
     return response.items;
   },
-  createConversation: () =>
-    request<Conversation>("/conversations", { method: "POST" }),
+  createConversation: (workspaceId?: string | null) =>
+    request<Conversation>("/conversations", {
+      method: "POST",
+      body: JSON.stringify({
+        workspaceId: workspaceId === null ? "general" : workspaceId,
+      }),
+    }),
+  listWorkspaces: async () => {
+    const response = await request<{ items: Workspace[] }>("/workspaces");
+    return response.items;
+  },
+  createWorkspace: async (name: string) => {
+    const response = await request<{ workspace: Workspace }>("/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    return response.workspace;
+  },
   getConversation: (conversationId: string) =>
     request<ConversationSnapshot>(`/conversations/${conversationId}`),
   patchConversation: (
@@ -275,9 +299,16 @@ export const chatApi = {
     );
     return response.items;
   },
-  listKnowledgeSources: async (status = "active") => {
+  listKnowledgeSources: async (
+    status = "active",
+    workspace?: string | null,
+  ) => {
+    const parameters = new URLSearchParams({ status });
+    if (workspace !== undefined) {
+      parameters.set("workspace", workspace ?? "general");
+    }
     const response = await request<{ items: KnowledgeSource[] }>(
-      `/knowledge-sources?status=${status}`,
+      `/knowledge-sources?${parameters.toString()}`,
     );
     return response.items;
   },
@@ -287,6 +318,7 @@ export const chatApi = {
     content: string;
     fileName?: string;
     expiresAt?: string;
+    workspaceId?: string | null;
   }) =>
     request<{ source: KnowledgeSource }>("/knowledge-sources", {
       method: "POST",
@@ -317,10 +349,15 @@ export const chatApi = {
     ),
   deleteKnowledgeSource: (sourceId: string) =>
     request<void>(`/knowledge-sources/${sourceId}`, { method: "DELETE" }),
-  importKnowledgeFile: async (file: File, title?: string) => {
+  importKnowledgeFile: async (
+    file: File,
+    title?: string,
+    workspaceId?: string | null,
+  ) => {
     const form = new FormData();
     form.append("file", file);
     if (title?.trim()) form.append("title", title.trim());
+    form.append("workspaceId", workspaceId === null ? "general" : (workspaceId ?? "general"));
     const response = await fetch(url("/knowledge-sources/import"), {
       method: "POST",
       headers: { Accept: "application/json" },
@@ -364,10 +401,22 @@ export const chatApi = {
     );
     return response.items;
   },
-  resolveKnowledgeProposal: (proposalId: string, decision: "accept" | "reject") =>
+  resolveKnowledgeProposal: (
+    proposalId: string,
+    decision: "accept" | "reject",
+    workspaceId?: string | null,
+  ) =>
     request<{ proposal: KnowledgeProposal; source?: KnowledgeSource }>(
       `/knowledge-proposals/${proposalId}/resolve`,
-      { method: "POST", body: JSON.stringify({ decision }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          decision,
+          ...(decision === "accept" && workspaceId !== undefined
+            ? { workspaceId: workspaceId === null ? "general" : workspaceId }
+            : {}),
+        }),
+      },
     ),
   listMemories: async (includeDeleted = false) => {
     const response = await request<{ items: MemoryRecord[] }>(

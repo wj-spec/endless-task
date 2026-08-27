@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import type { Conversation, ConversationStatus } from "./apiTypes";
+import type { Conversation, ConversationStatus, Workspace } from "./apiTypes";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { RowMenu } from "../ui/RowMenu";
@@ -11,6 +11,10 @@ type SessionRailProps = {
   search: string;
   sideConversationId: string | null;
   statusFilter: ConversationStatus;
+  workspaceId: string | null;
+  workspaces: Workspace[];
+  onCreateWorkspace: (name: string) => Promise<unknown>;
+  onSelectWorkspace: (workspaceId: string | null) => void;
   onChangeConversationStatus: (
     conversationId: string,
     status: ConversationStatus,
@@ -48,6 +52,10 @@ export function SessionRail({
   search,
   sideConversationId,
   statusFilter,
+  workspaceId,
+  workspaces,
+  onCreateWorkspace,
+  onSelectWorkspace,
   onChangeConversationStatus,
   onClose,
   onDeleteConversation,
@@ -61,6 +69,24 @@ export function SessionRail({
 }: SessionRailProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+
+  const handleWorkspaceChange = async (value: string) => {
+    if (value === "__create__") {
+      if (creatingWorkspace) return;
+      const name = globalThis.window?.prompt("新工作区名称：");
+      const trimmed = (name ?? "").trim();
+      if (!trimmed) return;
+      setCreatingWorkspace(true);
+      try {
+        await onCreateWorkspace(trimmed);
+      } finally {
+        setCreatingWorkspace(false);
+      }
+      return;
+    }
+    onSelectWorkspace(value === "general" ? null : value);
+  };
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
   const [expandedParentId, setExpandedParentId] = useState<string | null>(null);
 
@@ -112,6 +138,26 @@ export function SessionRail({
           <span className="sr-only">关闭会话列表</span>
         </button>
       </header>
+
+      <div className="workspace-switcher">
+        <label className="sr-only" htmlFor="workspace-switcher-select">
+          当前工作区
+        </label>
+        <select
+          disabled={creatingWorkspace}
+          id="workspace-switcher-select"
+          onChange={(event) => void handleWorkspaceChange(event.target.value)}
+          value={workspaceId ?? "general"}
+        >
+          <option value="general">通用</option>
+          {workspaces.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </option>
+          ))}
+          <option value="__create__">＋ 新建工作区…</option>
+        </select>
+      </div>
 
       <button className="new-chat-button" onClick={onNewConversation} type="button">
         <span aria-hidden="true">＋</span>

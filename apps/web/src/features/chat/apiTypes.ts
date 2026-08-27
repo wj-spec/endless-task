@@ -4,6 +4,14 @@ export type TurnStatus = "created" | "running" | "completed" | "failed" | "cance
 export type ResponseVariantStatus = TurnStatus;
 export type ResponseVariantOperation = "create" | "retry" | "regenerate";
 
+export type Workspace = {
+  id: string;
+  name: string;
+  rootPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Conversation = {
   id: string;
   title: string;
@@ -17,6 +25,7 @@ export type Conversation = {
   forkTurnId: string | null;
   kind: ConversationKind;
   promotedAt: string | null;
+  workspaceId: string | null;
 };
 
 export type Message = {
@@ -387,7 +396,10 @@ export type ArtifactDetailSnapshot = {
 
 export type MemoryStatus = "active" | "expired" | "deleted";
 
-export type KnowledgeProposalType = "add_source" | "expire_source";
+export type KnowledgeProposalType =
+  | "add_source"
+  | "expire_source"
+  | "merge_source";
 
 export type KnowledgeProposal = {
   id: string;
@@ -399,6 +411,11 @@ export type KnowledgeProposal = {
     content?: string;
     reason?: string;
     source_id?: string;
+    target_id?: string;
+    target_title?: string;
+    overlap?: number;
+    decay?: boolean;
+    workspace_id?: string | null;
   };
   status: "pending" | "accepted" | "rejected" | "cancelled";
   createdAt: string;
@@ -425,6 +442,7 @@ export type KnowledgeSource = {
   updatedAt: string;
   fileSize: number | null;
   fileSha256: string | null;
+  workspaceId: string | null;
 };
 
 export type KnowledgeCitation = {
@@ -434,6 +452,8 @@ export type KnowledgeCitation = {
   title: string;
   snippet?: string;
   conversationId?: string;
+  sourceId?: string;
+  chunkSeq?: number;
 };
 
 export type MemoryRecord = {

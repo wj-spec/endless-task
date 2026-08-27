@@ -386,3 +386,19 @@
 .branch-child:focus-within .session-menu-button {
   opacity: 1;
 }
+
+/* R5.11 工作区切换器 */
+.workspace-switcher {
+  padding: 0 var(--space-3, 12px);
+  margin-bottom: var(--space-2, 8px);
+}
+
+.workspace-switcher select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-2, 13px);
+}

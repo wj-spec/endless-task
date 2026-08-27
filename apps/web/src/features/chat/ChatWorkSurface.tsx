@@ -6,6 +6,7 @@ import type {
   KnowledgeCitation,
   LiveTurn,
   ResponseVariantSnapshot,
+  Workspace,
 } from "./apiTypes";
 import { chatApi } from "./api";
 import { CitationCard } from "./CitationCard";
@@ -55,11 +56,16 @@ type ChatWorkSurfaceProps = {
   resolvedArtifacts: Record<string, ArtifactRecordSummary>;
   turnProposals: (turnId: string) => TurnProposals;
   onResolveArtifactProposal: (proposalId: string, decision: "accept" | "reject") => void;
-  onResolveKnowledgeProposal: (proposalId: string, decision: "accept" | "reject") => void;
+  onResolveKnowledgeProposal: (
+    proposalId: string,
+    decision: "accept" | "reject",
+    workspaceId?: string | null,
+  ) => void;
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onCloseSide?: () => void;
   onOpenAssistantTab?: (tab: "memory" | "knowledge") => void;
+  workspaces?: Workspace[];
   onOpenConversation?: (conversationId: string) => void;
   onOpenWorkspace?: () => void;
   variant?: "main" | "side";
@@ -118,6 +124,7 @@ export function ChatWorkSurface({
   onOpenAssistantTab,
   onOpenConversation,
   onOpenWorkspace,
+  workspaces,
   variant = "main",
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
@@ -602,12 +609,20 @@ export function ChatWorkSurface({
                       {proposals.knowledge.map((proposal) => (
                         <KnowledgeProposalCard
                           busy={proposalBusyId === proposal.id}
+                          conversationWorkspaceId={
+                            conversation?.conversation.workspaceId ?? null
+                          }
                           error={proposalErrors[proposal.id] ?? null}
                           key={proposal.id}
-                          onResolve={(decision) =>
-                            onResolveKnowledgeProposal(proposal.id, decision)
+                          onResolve={(decision, workspaceId) =>
+                            onResolveKnowledgeProposal(
+                              proposal.id,
+                              decision,
+                              workspaceId,
+                            )
                           }
                           proposal={proposal}
+                          workspaces={workspaces ?? []}
                         />
                       ))}
                       {proposals.memories.map((proposal) => (

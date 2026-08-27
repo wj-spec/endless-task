@@ -54,6 +54,15 @@ class FinishReason(str, Enum):
 
 
 @dataclass(frozen=True)
+class Workspace:
+    id: str
+    name: str
+    created_at: str
+    updated_at: str
+    root_path: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class Conversation:
     id: str
     title: str
@@ -67,6 +76,7 @@ class Conversation:
     fork_turn_id: Optional[str] = None
     kind: ConversationKind = ConversationKind.NORMAL
     promoted_at: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -446,6 +456,7 @@ class KnowledgeSource:
     updated_at: str = ""
     file_size: Optional[int] = None
     file_sha256: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -457,6 +468,8 @@ class KnowledgeHit:
     origin: Optional[str] = None
     updated_at: Optional[str] = None
     score: float = 0.0
+    source_id: Optional[str] = None
+    chunk_seq: Optional[int] = None
 
 
 class RetrievalEventKind(str, Enum):
@@ -481,6 +494,7 @@ class RetrievalEvent:
 class KnowledgeProposalType(str, Enum):
     ADD_SOURCE = "add_source"
     EXPIRE_SOURCE = "expire_source"
+    MERGE_SOURCE = "merge_source"
 
 
 class KnowledgeProposalStatus(str, Enum):

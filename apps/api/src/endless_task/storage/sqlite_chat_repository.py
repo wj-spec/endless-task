@@ -57,7 +57,9 @@ class SqliteChatRepository:
         self._clock = clock
         self._id_factory = id_factory
 
-    def create_conversation(self) -> Conversation:
+    def create_conversation(
+        self, workspace_id: Optional[str] = None
+    ) -> Conversation:
         conversation_id = self._id_factory("conv")
         now = self._clock()
         with self._database.transaction() as connection:
@@ -65,27 +67,32 @@ class SqliteChatRepository:
                 """
                 INSERT INTO conversations(
                     id, title, status, next_turn_ordinal, title_is_manual,
-                    created_at, updated_at, archived_at
-                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL)
+                    created_at, updated_at, archived_at, workspace_id
+                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?)
                 """,
-                (conversation_id, now, now),
+                (conversation_id, now, now, workspace_id),
             )
             return self._get_conversation(connection, conversation_id)
 
-    def create_or_reuse_empty_conversation(self) -> Conversation:
+    def create_or_reuse_empty_conversation(
+        self, workspace_id: Optional[str] = None
+    ) -> Conversation:
         with self._database.transaction() as connection:
+            # 空会话复用必须同工作区匹配（IS 为 NULL 安全等值）。
             existing = connection.execute(
                 """
                 SELECT c.*
                 FROM conversations c
                 WHERE c.status = 'active'
                   AND c.kind = 'normal'
+                  AND c.workspace_id IS ?
                   AND NOT EXISTS (
                       SELECT 1 FROM turns t WHERE t.conversation_id = c.id
                   )
                 ORDER BY c.updated_at DESC, c.id DESC
                 LIMIT 1
-                """
+                """,
+                (workspace_id,),
             ).fetchone()
             if existing:
                 return self._conversation_from_row(existing)
@@ -96,10 +103,10 @@ class SqliteChatRepository:
                 """
                 INSERT INTO conversations(
                     id, title, status, next_turn_ordinal, title_is_manual,
-                    created_at, updated_at, archived_at
-                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL)
+                    created_at, updated_at, archived_at, workspace_id
+                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?)
                 """,
-                (conversation_id, now, now),
+                (conversation_id, now, now, workspace_id),
             )
             return self._get_conversation(connection, conversation_id)
 
@@ -113,6 +120,8 @@ class SqliteChatRepository:
         status: ConversationStatus = ConversationStatus.ACTIVE,
         title_query: Optional[str] = None,
         kind: Optional[ConversationKind] = None,
+        workspace_id: Optional[str] = None,
+        general_only: bool = False,
     ) -> Sequence[Conversation]:
         sql = "SELECT * FROM conversations WHERE status = ?"
         params: list[object] = [status.value]
@@ -122,6 +131,11 @@ class SqliteChatRepository:
         if kind is not None:
             sql += " AND kind = ?"
             params.append(kind.value)
+        if general_only:
+            sql += " AND workspace_id IS NULL"
+        elif workspace_id is not None:
+            sql += " AND workspace_id = ?"
+            params.append(workspace_id)
         sql += " ORDER BY updated_at DESC, id DESC"
 
         with self._database.connect() as connection:
@@ -238,8 +252,8 @@ class SqliteChatRepository:
                 INSERT INTO conversations(
                     id, title, status, next_turn_ordinal, title_is_manual,
                     created_at, updated_at, archived_at,
-                    parent_conversation_id, fork_turn_id, kind
-                ) VALUES (?, ?, 'active', 1, ?, ?, ?, NULL, ?, ?, ?)
+                    parent_conversation_id, fork_turn_id, kind, workspace_id
+                ) VALUES (?, ?, 'active', 1, ?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
                 (
                     branch_id,
@@ -250,6 +264,7 @@ class SqliteChatRepository:
                     parent_conversation_id,
                     fork_row["id"],
                     kind.value,
+                    parent.workspace_id,
                 ),
             )
             return self._get_conversation(connection, branch_id)
@@ -897,6 +912,7 @@ class SqliteChatRepository:
             fork_turn_id=row["fork_turn_id"],
             kind=ConversationKind(row["kind"]),
             promoted_at=row["promoted_at"],
+            workspace_id=row["workspace_id"],
         )
 
     @staticmethod
