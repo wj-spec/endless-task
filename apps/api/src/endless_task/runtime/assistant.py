@@ -62,6 +62,7 @@ class AssistantRuntime:
         event_publisher: Optional[EventPublisher] = None,
         approval_coordinator: Optional[ApprovalCoordinator] = None,
         permission_mode_provider: Optional[Callable[[], PermissionMode]] = None,
+        knowledge_query_rewriter=None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime_repository = runtime_repository
@@ -76,6 +77,7 @@ class AssistantRuntime:
         self._event_publisher = event_publisher or NullEventPublisher()
         self._approval_coordinator = approval_coordinator or ApprovalCoordinator()
         self._permission_mode_provider = permission_mode_provider
+        self._knowledge_query_rewriter = knowledge_query_rewriter
 
     async def execute(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
         token = await self._cancellation_manager.acquire(turn_id, variant_id)
@@ -107,6 +109,7 @@ class AssistantRuntime:
                 turn_id,
                 response_variant_id=variant_id,
                 reserved_output_tokens=self._configuration.max_output_tokens,
+                knowledge_query=await self._rewrite_knowledge_query(turn_id),
             )
             token.raise_if_cancelled()
 
@@ -256,6 +259,16 @@ class AssistantRuntime:
             await self._cancellation_manager.release(turn_id, variant_id)
 
         return self._chat_repository.get_turn(turn_id)
+
+    async def _rewrite_knowledge_query(self, turn_id: str):
+        if self._knowledge_query_rewriter is None:
+            return None
+        try:
+            snapshot = self._chat_repository.get_turn(turn_id)
+            user_content = snapshot.user_message.content
+        except Exception:  # noqa: BLE001 改写是增强项，任何失败都静默回退
+            return None
+        return await self._knowledge_query_rewriter.rewrite(user_content)
 
     async def request_cancel(self, *, turn_id: str, variant_id: str) -> bool:
         return await self._cancellation_manager.cancel(turn_id, variant_id)

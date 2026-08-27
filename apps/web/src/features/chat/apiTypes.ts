@@ -423,6 +423,17 @@ export type KnowledgeSource = {
   expiredAt: string | null;
   createdAt: string;
   updatedAt: string;
+  fileSize: number | null;
+  fileSha256: string | null;
+};
+
+export type KnowledgeCitation = {
+  label: string;
+  scope: "source" | "memory" | "artifact" | "conversation";
+  refId: string;
+  title: string;
+  snippet?: string;
+  conversationId?: string;
 };
 
 export type MemoryRecord = {

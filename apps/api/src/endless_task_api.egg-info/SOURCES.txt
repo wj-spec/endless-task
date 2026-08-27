@@ -22,10 +22,13 @@ src/endless_task/files/models.py
 src/endless_task/files/protocol.py
 src/endless_task/files/read_tool.py
 src/endless_task/knowledge/__init__.py
+src/endless_task/knowledge/ingestion.py
 src/endless_task/knowledge/proposal_service.py
 src/endless_task/memory/__init__.py
 src/endless_task/memory/conflict_service.py
 src/endless_task/memory/proposal_service.py
+src/endless_task/proposals/__init__.py
+src/endless_task/proposals/budget.py
 src/endless_task/runtime/__init__.py
 src/endless_task/runtime/agent_loop.py
 src/endless_task/runtime/approval.py
@@ -35,6 +38,7 @@ src/endless_task/runtime/context.py
 src/endless_task/runtime/controller.py
 src/endless_task/runtime/events.py
 src/endless_task/runtime/fake_provider.py
+src/endless_task/runtime/knowledge_query_rewriter.py
 src/endless_task/runtime/openai_compatible_provider.py
 src/endless_task/runtime/provider.py
 src/endless_task/runtime/repository.py
@@ -52,6 +56,7 @@ src/endless_task/storage/sqlite_memory_repository.py
 src/endless_task/storage/sqlite_notification_repository.py
 src/endless_task/storage/sqlite_preferences_repository.py
 src/endless_task/storage/sqlite_reminder_repository.py
+src/endless_task/storage/sqlite_retrieval_event_repository.py
 src/endless_task/storage/sqlite_runtime_repository.py
 src/endless_task/storage/sqlite_task_proposal_repository.py
 src/endless_task/storage/sqlite_task_repository.py
@@ -82,6 +87,7 @@ src/endless_task/storage/migrations/023_task_reminders.sql
 src/endless_task/storage/migrations/024_conversation_branches.sql
 src/endless_task/storage/migrations/025_knowledge.sql
 src/endless_task/storage/migrations/026_knowledge_proposals.sql
+src/endless_task/storage/migrations/027_retrieval_events.sql
 src/endless_task/storage/migrations/__init__.py
 src/endless_task/tasks/__init__.py
 src/endless_task/tasks/notification_service.py

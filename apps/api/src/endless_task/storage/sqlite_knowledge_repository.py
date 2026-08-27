@@ -1,8 +1,10 @@
-"""P5 知识源仓储：file/note 源的增删改、过期与索引同步。"""
+"""P5 知识源仓储：file/note 源的增删改、过期与读时联合检索。"""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence
+import re
+import unicodedata
+from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from endless_task.domain.models import (
     KnowledgeHit,
@@ -24,6 +26,41 @@ from .sqlite_chat_repository import IdFactory, new_id, utc_now
 Clock = Callable[[], str]
 
 
+#: 作用域分层：curated（用户/助手精心维护）优先于 derived（派生语料）。
+CURATED_SCOPES: tuple[KnowledgeScope, ...] = (
+    KnowledgeScope.SOURCE,
+    KnowledgeScope.MEMORY,
+)
+DERIVED_SCOPES: tuple[KnowledgeScope, ...] = (
+    KnowledgeScope.ARTIFACT,
+    KnowledgeScope.CONVERSATION,
+)
+DEFAULT_SCOPE_WEIGHTS: Dict[KnowledgeScope, float] = {
+    KnowledgeScope.SOURCE: 1.0,
+    KnowledgeScope.MEMORY: 1.0,
+    KnowledgeScope.ARTIFACT: 0.8,
+    KnowledgeScope.CONVERSATION: 0.6,
+}
+
+_PUNCTUATION_RE = re.compile(
+    "[\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e"
+    "\u3000-\u303f\uff00-\uffef\u2000-\u206f]+"
+)
+
+
+def normalize_query(query: str) -> str:
+    """检索 query 归一化：NFKC 全半角统一、去标点、折叠空白、英文小写。"""
+    normalized = unicodedata.normalize("NFKC", query or "")
+    normalized = _PUNCTUATION_RE.sub(" ", normalized)
+    normalized = " ".join(normalized.split())
+    return normalized.casefold()
+
+
+def scope_tier(scope: KnowledgeScope) -> int:
+    """0 = curated（高优先），1 = derived。"""
+    return 0 if scope in CURATED_SCOPES else 1
+
+
 class SqliteKnowledgeRepository:
     def __init__(
         self,
@@ -31,10 +68,20 @@ class SqliteKnowledgeRepository:
         *,
         clock: Clock = utc_now,
         id_factory: IdFactory = new_id,
+        scope_weights: Optional[Mapping[KnowledgeScope, float]] = None,
+        synonym_map: Optional[Mapping[str, Sequence[str]]] = None,
     ) -> None:
         self._database = database
         self._clock = clock
         self._id_factory = id_factory
+        weights = dict(DEFAULT_SCOPE_WEIGHTS)
+        if scope_weights:
+            for scope, weight in scope_weights.items():
+                if weight < 0:
+                    raise ValidationError("Scope weights cannot be negative.")
+                weights[scope] = weight
+        self._scope_weights = weights
+        self._synonym_map = dict(synonym_map or {})
 
     # ---------- 创建与读取 ----------
 
@@ -49,11 +96,15 @@ class SqliteKnowledgeRepository:
         source_conversation_id: Optional[str] = None,
         proposed_by_turn_id: Optional[str] = None,
         expires_at: Optional[str] = None,
+        file_size: Optional[int] = None,
+        file_sha256: Optional[str] = None,
     ) -> KnowledgeSource:
         normalized_title = self._validate_title(title)
         normalized_content = self._validate_content(content)
         if kind is KnowledgeSourceKind.FILE and not (file_name or "").strip():
             raise ValidationError("File sources require a file name.")
+        if file_size is not None and file_size < 0:
+            raise ValidationError("File size cannot be negative.")
         now = self._clock()
         source_id = self._id_factory("ks")
         with self._database.transaction() as connection:
@@ -62,9 +113,10 @@ class SqliteKnowledgeRepository:
                 INSERT INTO knowledge_sources (
                     id, kind, origin, title, content, file_name, status,
                     source_conversation_id, proposed_by_turn_id,
-                    expires_at, created_at, updated_at
+                    expires_at, created_at, updated_at,
+                    file_size, file_sha256
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_id,
@@ -78,6 +130,8 @@ class SqliteKnowledgeRepository:
                     expires_at,
                     now,
                     now,
+                    file_size,
+                    file_sha256,
                 ),
             )
         return self.get_source(source_id)
@@ -233,15 +287,16 @@ class SqliteKnowledgeRepository:
         scopes: Sequence[KnowledgeScope],
         limit: int = 8,
     ) -> Dict[KnowledgeScope, List[KnowledgeHit]]:
-        """读时联合检索：三字符片段 OR 匹配，按命中片段数排序。
+        """读时联合检索：query 归一化 + 三字符片段 OR 匹配，按加权命中数排序。
 
         中文没有词边界，整句 LIKE 召回率太低，拆成 3 字滑窗 OR 匹配
         （与 FTS trigram 同思路，但不需要写时索引）；不足 3 字的查询退化为整句 LIKE。
-        结果在读时计算，永远新鲜。
+        结果在读时计算，永远新鲜。命中分 = 片段命中次数 × 作用域权重。
         """
-        cleaned = query.strip()
+        cleaned = normalize_query(query)
         if not cleaned or not scopes or limit <= 0:
             return {}
+        cleaned = self._expand_synonyms(cleaned)
         fragments = self._fragments(cleaned)
         grouped: Dict[KnowledgeScope, List[KnowledgeHit]] = {}
         with self._database.connect() as connection:
@@ -268,6 +323,7 @@ class SqliteKnowledgeRepository:
             like = f"%{fragment}%"
             params.extend((like, like))
         rows = connection.execute(template.format(match=clause), params).fetchall()
+        weight = self._scope_weights.get(scope, 1.0)
         best: Dict[str, tuple[int, str, str, str]] = {}
         for row in rows:
             body = row["body"] or ""
@@ -286,16 +342,39 @@ class SqliteKnowledgeRepository:
                 ref_id=ref_id,
                 title=title,
                 snippet=self._plain_snippet(body, fragments),
+                score=raw_score * weight,
             )
-            for _, ref_id, title, body in ordered
+            for raw_score, ref_id, title, body in ordered
         ]
+
+    def _expand_synonyms(self, query: str) -> str:
+        if not self._synonym_map:
+            return query
+        expansions: list[str] = []
+        for term, synonyms in self._synonym_map.items():
+            normalized_term = normalize_query(term)
+            if normalized_term and normalized_term in query:
+                expansions.extend(
+                    synonym
+                    for synonym in synonyms
+                    if normalize_query(synonym)
+                )
+        if not expansions:
+            return query
+        return " ".join([query, *[normalize_query(item) for item in expansions]])
 
     @staticmethod
     def _fragments(query: str) -> List[str]:
         fragments: List[str] = []
         seen: set[str] = set()
         for token in query.split():
-            if len(token) < 3:
+            if len(token) == 2:
+                # 双字词（中文常见）整体参与 LIKE 匹配；单字过泛，丢弃。
+                if token not in seen:
+                    seen.add(token)
+                    fragments.append(token)
+                continue
+            if len(token) < 2:
                 continue
             for start in range(len(token) - 2):
                 gram = token[start : start + 3]
@@ -352,4 +431,6 @@ class SqliteKnowledgeRepository:
             deleted_at=row["deleted_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            file_size=row["file_size"],
+            file_sha256=row["file_sha256"],
         )

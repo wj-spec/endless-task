@@ -209,6 +209,7 @@ class P0ContextBuilder:
         knowledge_repository=None,
         max_knowledge_hits_in_context: int = 3,
         max_knowledge_chars: int = 1500,
+        retrieval_event_repository=None,
         token_estimator: Optional[TokenEstimator] = None,
         summarizer: Optional[ExtractiveConversationSummarizer] = None,
     ) -> None:
@@ -243,6 +244,7 @@ class P0ContextBuilder:
         self._knowledge_repository = knowledge_repository
         self._max_knowledge_hits = max_knowledge_hits_in_context
         self._max_knowledge_chars = max_knowledge_chars
+        self._retrieval_event_repository = retrieval_event_repository
         self._token_estimator = token_estimator or ApproximateTokenEstimator()
         self._summarizer = summarizer or ExtractiveConversationSummarizer()
 
@@ -252,6 +254,7 @@ class P0ContextBuilder:
         *,
         response_variant_id: Optional[str] = None,
         reserved_output_tokens: int = 2_048,
+        knowledge_query: Optional[str] = None,
     ) -> BuiltContext:
         if reserved_output_tokens < 0:
             raise ValueError("reserved_output_tokens cannot be negative")
@@ -274,7 +277,10 @@ class P0ContextBuilder:
         system_message = ProviderMessage(
             role="system",
             content=self._system_content(
-                current.turn.conversation_id, current.user_message.content
+                current.turn.conversation_id,
+                current.user_message.content,
+                knowledge_query=knowledge_query,
+                turn_id=turn_id,
             ),
         )
         current_message = ProviderMessage(role="user", content=current.user_message.content)
@@ -356,7 +362,14 @@ class P0ContextBuilder:
             snapshot=snapshot,
         )
 
-    def _system_content(self, conversation_id: str, user_content: str = "") -> str:
+    def _system_content(
+        self,
+        conversation_id: str,
+        user_content: str = "",
+        *,
+        knowledge_query: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> str:
         content = self._system_prompt
         if self._file_repository is not None:
             files = self._file_repository.list_files(conversation_id)
@@ -384,7 +397,12 @@ class P0ContextBuilder:
         memory_block = self._memory_block()
         if memory_block:
             content = f"{content}\n\n{memory_block}"
-        knowledge_block = self._knowledge_block(user_content)
+        knowledge_block = self._knowledge_block(
+            user_content,
+            override_query=knowledge_query,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
         if knowledge_block:
             content = f"{content}\n\n{knowledge_block}"
         artifact_proposal_block = self._artifact_proposal_block(conversation_id)
@@ -405,14 +423,22 @@ class P0ContextBuilder:
         "conversation": "历史对话",
     }
 
-    def _knowledge_block(self, user_content: str) -> str:
+    def _knowledge_block(
+        self,
+        user_content: str,
+        *,
+        override_query: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> str:
         if self._knowledge_repository is None:
             return ""
-        query = (user_content or "").strip()
+        query = (override_query or user_content or "").strip()
         if len(query) < 4:
             return ""
         try:
             from ..domain.models import KnowledgeScope
+            from ..storage.sqlite_knowledge_repository import scope_tier
 
             grouped = self._knowledge_repository.search(
                 query,
@@ -426,25 +452,39 @@ class P0ContextBuilder:
             )
         except Exception:
             return ""
+        # 两层优先级：curated（知识源/记忆）整体优先于 derived（成果/历史对话），
+        # 层内按加权分数排序；curated 有命中时天然占得首个注入槽位。
+        candidates = [hit for hits in grouped.values() for hit in hits]
+        candidates.sort(key=lambda hit: (scope_tier(hit.scope), -hit.score))
+        selected = candidates[: self._max_knowledge_hits]
         lines: list[str] = []
+        citations: list[dict[str, object]] = []
         used = 0
-        index = 0
-        for hits in grouped.values():
-            for hit in hits:
-                if index >= self._max_knowledge_hits:
-                    break
-                snippet = (hit.snippet or hit.title or "").strip()
-                if len(snippet) > 400:
-                    snippet = snippet[:400] + "…"
-                label = self._KNOWLEDGE_SCOPE_LABELS.get(hit.scope.value, "资料")
-                line = f"[K{index + 1}] {hit.title or label}（{label}）：{snippet}"
-                if used + len(line) > self._max_knowledge_chars:
-                    break
-                lines.append(line)
-                used += len(line)
-                index += 1
-            if index >= self._max_knowledge_hits:
+        for hit in selected:
+            snippet = (hit.snippet or hit.title or "").strip()
+            if len(snippet) > 400:
+                snippet = snippet[:400] + "…"
+            label = self._KNOWLEDGE_SCOPE_LABELS.get(hit.scope.value, "资料")
+            line = f"[K{len(lines) + 1}] {hit.title or label}（{label}）：{snippet}"
+            if used + len(line) > self._max_knowledge_chars:
                 break
+            lines.append(line)
+            citations.append(
+                {
+                    "label": f"K{len(lines)}",
+                    "scope": hit.scope.value,
+                    "refId": hit.ref_id,
+                    "title": hit.title or label,
+                    "snippet": snippet[:200],
+                }
+            )
+            used += len(line)
+        self._record_knowledge_injection(
+            query=query,
+            citations=citations,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
         if not lines:
             return ""
         return (
@@ -452,6 +492,34 @@ class P0ContextBuilder:
             "请在相应句子末尾用 [K1] [K2] 等标记引用，不要杜撰编号）：\n"
             + "\n".join(lines)
         )
+
+    def _record_knowledge_injection(
+        self,
+        *,
+        query: str,
+        citations: list[dict[str, object]],
+        conversation_id: Optional[str],
+        turn_id: Optional[str],
+    ) -> None:
+        if self._retrieval_event_repository is None:
+            return
+        try:
+            from ..domain.models import RetrievalEventKind
+
+            hit_counts: dict[str, int] = {}
+            for citation in citations:
+                scope = str(citation.get("scope", ""))
+                hit_counts[scope] = hit_counts.get(scope, 0) + 1
+            self._retrieval_event_repository.record(
+                RetrievalEventKind.INJECTION,
+                query,
+                hit_counts=hit_counts,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                detail={"citations": citations},
+            )
+        except Exception:  # noqa: BLE001 埋点失败绝不阻断上下文构建
+            pass
 
     def _memory_block(self) -> str:
         if self._memory_repository is None:

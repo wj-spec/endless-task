@@ -8,12 +8,14 @@ type CollapsibleMessageProps = {
   content: string;
   forceExpand?: boolean;
   streaming: boolean;
+  onCitationClick?: (label: string) => void;
 };
 
 export function CollapsibleMessage({
   content,
   forceExpand = false,
   streaming,
+  onCitationClick,
 }: CollapsibleMessageProps) {
   const [expanded, setExpanded] = useState(false);
   const collapsible = !streaming && content.length > COLLAPSE_THRESHOLD;
@@ -33,7 +35,7 @@ export function CollapsibleMessage({
         streaming ? "collapsible-message is-streaming" : "collapsible-message"
       }
     >
-      <MessageContent content={shown} />
+      <MessageContent content={shown} onCitationClick={onCitationClick} />
       {collapsible ? (
         <button
           className="expand-toggle"

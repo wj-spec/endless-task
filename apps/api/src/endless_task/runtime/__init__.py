@@ -15,6 +15,7 @@ from .context import (
 )
 from .events import RecordingEventPublisher, RuntimeEvent, RuntimeEventBroker
 from .fake_provider import FakeProvider
+from .knowledge_query_rewriter import KnowledgeQueryRewriter
 from .openai_compatible_provider import OpenAICompatibleProvider, UnconfiguredProvider
 from .provider import (
     ModelProvider,
@@ -39,6 +40,7 @@ __all__ = [
     "ContextSnapshot",
     "ConversationSummaryRevision",
     "FakeProvider",
+    "KnowledgeQueryRewriter",
     "IncludedTurn",
     "ModelProvider",
     "OpenAICompatibleProvider",

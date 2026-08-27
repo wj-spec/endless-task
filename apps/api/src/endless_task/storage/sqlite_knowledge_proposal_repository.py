@@ -43,6 +43,8 @@ def knowledge_source_from_row(row) -> KnowledgeSource:
         deleted_at=row["deleted_at"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        file_size=row["file_size"],
+        file_sha256=row["file_sha256"],
     )
 
 

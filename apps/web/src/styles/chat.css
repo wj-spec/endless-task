@@ -627,3 +627,58 @@
   vertical-align: baseline;
   cursor: default;
 }
+
+button.citation-chip {
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+button.citation-chip:hover,
+button.citation-chip:focus-visible {
+  background: var(--accent);
+  color: var(--bg-0, #fff);
+  outline: none;
+}
+
+.citation-card {
+  margin-top: var(--space-2, 8px);
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-md, 10px);
+  background: var(--sheen-soft);
+  max-width: 640px;
+}
+
+.citation-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+}
+
+.citation-card-scope {
+  font-size: var(--fs-4, 12px);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.citation-card-close {
+  border: none;
+  background: transparent;
+  color: var(--ink-3, inherit);
+  font-size: var(--fs-2, 16px);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.citation-card-title {
+  margin-top: var(--space-1, 4px);
+  font-weight: 600;
+}
+
+.citation-card-snippet {
+  margin: var(--space-1, 4px) 0 var(--space-2, 8px);
+  color: var(--ink-2, inherit);
+  font-size: var(--fs-3, 13px);
+}

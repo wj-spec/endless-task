@@ -239,6 +239,14 @@ export function App() {
         }
         onSend={() => void chat.send()}
         onUploadFile={(file) => void chat.uploadFile(file)}
+        onOpenAssistantTab={(tab) => {
+          setAssistantTab(tab);
+          openAssistantPanel();
+        }}
+        onOpenConversation={(conversationId) =>
+          void chat.openConversation(conversationId)
+        }
+        onOpenWorkspace={openWorkspacePanel}
         proposalBusyId={proposals.busyProposalId}
         proposalErrors={proposals.resolveErrors}
         resolvedArtifacts={proposals.resolvedArtifacts}

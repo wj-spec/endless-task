@@ -16,10 +16,12 @@ from .sqlite_task_repository import SqliteTaskRepository
 from .sqlite_task_proposal_repository import SqliteTaskProposalRepository
 from .sqlite_notification_repository import SqliteNotificationRepository
 from .sqlite_reminder_repository import SqliteReminderRepository
+from .sqlite_retrieval_event_repository import SqliteRetrievalEventRepository
 from .sqlite_task_run_repository import SqliteTaskRunRepository
 
 __all__ = [
     "Database",
+    "SqliteRetrievalEventRepository",
     "SqliteKnowledgeRepository",
     "SqliteChatRepository",
     "SqliteContextRepository",

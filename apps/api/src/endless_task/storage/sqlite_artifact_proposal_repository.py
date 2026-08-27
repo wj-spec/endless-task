@@ -20,7 +20,6 @@ from .sqlite_artifact_repository import (
     artifact_record_from_row,
     insert_artifact_with_first_version,
 )
-from endless_task.artifacts.source_labels import MAX_SOURCE_LABELS
 
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
 
@@ -334,3 +333,7 @@ class SqliteArtifactProposalRepository:
             resolved_artifact_id=row["resolved_artifact_id"],
             resolved_at=row["resolved_at"],
         )
+
+
+# 延迟到文件底部导入，避免 storage ↔ artifacts 包级循环导入。
+from endless_task.artifacts.source_labels import MAX_SOURCE_LABELS  # noqa: E402

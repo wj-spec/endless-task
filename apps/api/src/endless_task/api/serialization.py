@@ -460,6 +460,8 @@ def knowledge_source_json(source) -> dict[str, object]:
         "expiredAt": source.expired_at,
         "createdAt": source.created_at,
         "updatedAt": source.updated_at,
+        "fileSize": source.file_size,
+        "fileSha256": source.file_sha256,
     }
 
 

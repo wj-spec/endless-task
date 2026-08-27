@@ -24,7 +24,12 @@ const splitBlocks = (source: string): Block[] => {
   return blocks;
 };
 
-const inline = (source: string): ReactNode[] => {
+type CitationClickHandler = (label: string) => void;
+
+const inline = (
+  source: string,
+  onCitationClick?: CitationClickHandler,
+): ReactNode[] => {
   const tokens = source.split(/(`[^`]+`|\*\*[^*]+\*\*|\[K\d+\])/g);
   return tokens.map((token, index) => {
     if (token.startsWith("`") && token.endsWith("`")) {
@@ -34,9 +39,24 @@ const inline = (source: string): ReactNode[] => {
       return <strong key={index}>{token.slice(2, -2)}</strong>;
     }
     if (/^\[K\d+\]$/.test(token)) {
+      const label = token.slice(1, -1);
+      if (!onCitationClick) {
+        return (
+          <sup className="citation-chip" key={index} title="来自相关知识">
+            {label}
+          </sup>
+        );
+      }
       return (
-        <sup className="citation-chip" key={index} title="来自相关知识">
-          {token.slice(1, -1)}
+        <sup key={index}>
+          <button
+            aria-label={`查看引用 ${label} 的来源`}
+            className="citation-chip citation-chip-button"
+            onClick={() => onCitationClick(label)}
+            type="button"
+          >
+            {label}
+          </button>
         </sup>
       );
     }
@@ -44,7 +64,13 @@ const inline = (source: string): ReactNode[] => {
   });
 };
 
-function TextBlock({ content }: { content: string }) {
+function TextBlock({
+  content,
+  onCitationClick,
+}: {
+  content: string;
+  onCitationClick?: CitationClickHandler;
+}) {
   const lines = content.split("\n");
   const nodes: ReactNode[] = [];
   let list: string[] = [];
@@ -56,7 +82,7 @@ function TextBlock({ content }: { content: string }) {
     nodes.push(
       <ul key={`list-${nodes.length}`}>
         {list.map((item, index) => (
-          <li key={`${index}-${item}`}>{inline(item)}</li>
+          <li key={`${index}-${item}`}>{inline(item, onCitationClick)}</li>
         ))}
       </ul>,
     );
@@ -68,7 +94,7 @@ function TextBlock({ content }: { content: string }) {
     nodes.push(
       <ol key={`ordered-${nodes.length}`}>
         {ordered.map((item, index) => (
-          <li key={`${index}-${item}`}>{inline(item)}</li>
+          <li key={`${index}-${item}`}>{inline(item, onCitationClick)}</li>
         ))}
       </ol>,
     );
@@ -80,7 +106,7 @@ function TextBlock({ content }: { content: string }) {
     nodes.push(
       <blockquote key={`quote-${nodes.length}`}>
         {quote.map((item, index) => (
-          <p key={`${index}-${item}`}>{inline(item)}</p>
+          <p key={`${index}-${item}`}>{inline(item, onCitationClick)}</p>
         ))}
       </blockquote>,
     );
@@ -122,16 +148,22 @@ function TextBlock({ content }: { content: string }) {
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
     if (heading) {
       const Heading = `h${heading[1].length + 2}` as "h3" | "h4" | "h5";
-      nodes.push(<Heading key={`heading-${index}`}>{inline(heading[2])}</Heading>);
+      nodes.push(<Heading key={`heading-${index}`}>{inline(heading[2], onCitationClick)}</Heading>);
       return;
     }
-    nodes.push(<p key={`line-${index}`}>{inline(line)}</p>);
+    nodes.push(<p key={`line-${index}`}>{inline(line, onCitationClick)}</p>);
   });
   flushAll();
   return nodes;
 }
 
-export function MessageContent({ content }: { content: string }) {
+export function MessageContent({
+  content,
+  onCitationClick,
+}: {
+  content: string;
+  onCitationClick?: CitationClickHandler;
+}) {
   return (
     <div className="message-copy">
       {splitBlocks(content).map((block, index) =>
@@ -143,7 +175,11 @@ export function MessageContent({ content }: { content: string }) {
             </pre>
           </div>
         ) : (
-          <TextBlock content={block.content} key={`text-${index}`} />
+          <TextBlock
+            content={block.content}
+            key={`text-${index}`}
+            onCitationClick={onCitationClick}
+          />
         ),
       )}
     </div>

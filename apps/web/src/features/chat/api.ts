@@ -12,6 +12,7 @@ import type { KnowledgeProposal,
   HealthSnapshot,
   MemoryProposal,
   KnowledgeSource,
+  KnowledgeCitation,
   MemoryRecord,
   PermissionSettings,
   RuntimeEvent,
@@ -316,6 +317,47 @@ export const chatApi = {
     ),
   deleteKnowledgeSource: (sourceId: string) =>
     request<void>(`/knowledge-sources/${sourceId}`, { method: "DELETE" }),
+  importKnowledgeFile: async (file: File, title?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (title?.trim()) form.append("title", title.trim());
+    const response = await fetch(url("/knowledge-sources/import"), {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: form,
+    });
+    if (!response.ok) {
+      let payload: ApiErrorEnvelope | undefined;
+      try {
+        payload = (await response.json()) as ApiErrorEnvelope;
+      } catch {
+        payload = undefined;
+      }
+      throw new ApiClientError(response, payload);
+    }
+    return (await response.json()) as {
+      source: KnowledgeSource;
+      truncated: boolean;
+      encoding: string;
+    };
+  },
+  getTurnCitations: async (turnId: string) => {
+    const response = await request<{ items: KnowledgeCitation[] }>(
+      `/turns/${turnId}/citations`,
+    );
+    return response.items;
+  },
+  recordCitationClick: (body: {
+    label: string;
+    scope: string;
+    refId: string;
+    turnId?: string;
+    conversationId?: string;
+  }) =>
+    request<{ id: string }>("/retrieval-events", {
+      method: "POST",
+      body: JSON.stringify({ kind: "citation_click", ...body }),
+    }),
   listKnowledgeProposals: async (conversationId: string, includeResolved = false) => {
     const response = await request<{ items: KnowledgeProposal[] }>(
       `/conversations/${conversationId}/knowledge-proposals?include_resolved=${includeResolved}`,

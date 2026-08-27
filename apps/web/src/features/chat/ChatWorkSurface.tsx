@@ -3,9 +3,12 @@ import type {
   ArtifactRecordSummary,
   ConversationSnapshot,
   HealthSnapshot,
+  KnowledgeCitation,
   LiveTurn,
   ResponseVariantSnapshot,
 } from "./apiTypes";
+import { chatApi } from "./api";
+import { CitationCard } from "./CitationCard";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { KnowledgeProposalCard } from "../proposals/KnowledgeProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
@@ -56,6 +59,9 @@ type ChatWorkSurfaceProps = {
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onCloseSide?: () => void;
+  onOpenAssistantTab?: (tab: "memory" | "knowledge") => void;
+  onOpenConversation?: (conversationId: string) => void;
+  onOpenWorkspace?: () => void;
   variant?: "main" | "side";
 };
 
@@ -109,6 +115,9 @@ export function ChatWorkSurface({
   onResolveMemoryProposal,
   onResolveTaskProposal,
   onCloseSide,
+  onOpenAssistantTab,
+  onOpenConversation,
+  onOpenWorkspace,
   variant = "main",
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
@@ -118,6 +127,61 @@ export function ChatWorkSurface({
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const search = useConversationSearch(conversation, liveTurns, streamRef);
+  const [citationsByTurn, setCitationsByTurn] = useState<
+    Record<string, KnowledgeCitation[]>
+  >({});
+  const [openCitation, setOpenCitation] = useState<{
+    turnId: string;
+    label: string;
+  } | null>(null);
+
+  const handleCitationClick = async (turnId: string, label: string) => {
+    if (
+      openCitation &&
+      openCitation.turnId === turnId &&
+      openCitation.label === label
+    ) {
+      setOpenCitation(null);
+      return;
+    }
+    setOpenCitation({ turnId, label });
+    let items = citationsByTurn[turnId];
+    if (!items) {
+      try {
+        items = await chatApi.getTurnCitations(turnId);
+      } catch {
+        items = [];
+      }
+      setCitationsByTurn((current) => ({ ...current, [turnId]: items ?? [] }));
+    }
+    const citation = items.find((item) => item.label === label);
+    if (citation) {
+      void chatApi
+        .recordCitationClick({
+          label: citation.label,
+          scope: citation.scope,
+          refId: citation.refId,
+          turnId,
+          conversationId: citation.conversationId,
+        })
+        .catch(() => undefined);
+    }
+  };
+
+  const jumpCitation = (citation: KnowledgeCitation) => {
+    if (citation.scope === "conversation") {
+      if (citation.conversationId && onOpenConversation) {
+        onOpenConversation(citation.conversationId);
+      }
+      return;
+    }
+    if (citation.scope === "artifact") {
+      onOpenWorkspace?.();
+      return;
+    }
+    if (citation.scope === "memory") onOpenAssistantTab?.("memory");
+    if (citation.scope === "source") onOpenAssistantTab?.("knowledge");
+  };
 
   const conversationId = conversation?.conversation.id;
   const firstOwnTurnIndex = conversationId
@@ -136,6 +200,7 @@ export function ChatWorkSurface({
   useEffect(() => {
     setRenaming(false);
     setTitleDraft(conversation?.conversation.title ?? "");
+    setOpenCitation(null);
   }, [conversationId, conversation?.conversation.title]);
 
   useEffect(() => {
@@ -363,7 +428,22 @@ export function ChatWorkSurface({
                         forceExpand={search.forceExpandTurnIds.has(
                           turnSnapshot.turn.id,
                         )}
+                        onCitationClick={(label) =>
+                          void handleCitationClick(turnSnapshot.turn.id, label)
+                        }
                         streaming={status === "created" || status === "running"}
+                      />
+                    ) : null}
+                    {openCitation?.turnId === turnSnapshot.turn.id ? (
+                      <CitationCard
+                        citation={
+                          (citationsByTurn[turnSnapshot.turn.id] ?? []).find(
+                            (item) => item.label === openCitation.label,
+                          ) ?? null
+                        }
+                        jumpDisabled={variant === "side"}
+                        onClose={() => setOpenCitation(null)}
+                        onJump={jumpCitation}
                       />
                     ) : null}
                     {activities.length ? (

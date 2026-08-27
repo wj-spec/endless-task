@@ -12,7 +12,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
-from fastapi import FastAPI, Header, Query, Request
+from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
@@ -29,6 +29,7 @@ from endless_task.domain.models import (
     KnowledgeProposalType,
     KnowledgeSourceStatus,
     PermissionMode,
+    RetrievalEventKind,
     TurnStatus,
 )
 from endless_task.domain.models import TaskRunTrigger
@@ -44,6 +45,7 @@ from endless_task.files.read_tool import ReadTextFileTool
 from endless_task.runtime import (
     AssistantRuntime,
     FakeProvider,
+    KnowledgeQueryRewriter,
     OpenAICompatibleProvider,
     P0ContextBuilder,
     RuntimeConfiguration,
@@ -66,6 +68,8 @@ from endless_task.artifacts.export_service import (
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import KnowledgeProposalService
+from endless_task.knowledge.ingestion import IngestionError, ingest_file_bytes
+from endless_task.proposals.budget import ProposalBudget
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.tasks import (
     TaskNotificationService,
@@ -91,8 +95,10 @@ from endless_task.storage import (
     SqliteTaskProposalRepository,
     SqliteNotificationRepository,
     SqliteReminderRepository,
+    SqliteRetrievalEventRepository,
     SqliteTaskRunRepository,
 )
+from endless_task.storage.sqlite_knowledge_repository import scope_tier
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
 from .serialization import (
@@ -222,6 +228,13 @@ class AppSettings:
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
+    knowledge_query_rewrite_enabled: bool = False
+    knowledge_scope_weights: dict = field(default_factory=dict)
+    knowledge_synonym_map: dict = field(default_factory=dict)
+    proposal_daily_budget: int = 6
+    proposal_cooldown_minutes: int = 30
+    proposal_quiet_start: str = "23:00"
+    proposal_quiet_end: str = "07:00"
     scheduler_enabled: bool = True
     scheduler_tick_seconds: float = 30.0
     task_run_review_enabled: bool = True
@@ -298,6 +311,27 @@ class AppSettings:
             knowledge_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_KNOWLEDGE_PROPOSALS", "1")
             ),
+            knowledge_query_rewrite_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_KNOWLEDGE_QUERY_REWRITE", "0")
+            ),
+            knowledge_scope_weights=_parse_json_mapping(
+                env.get("ENDLESS_TASK_KNOWLEDGE_SCOPE_WEIGHTS", "")
+            ),
+            knowledge_synonym_map=_parse_json_mapping(
+                env.get("ENDLESS_TASK_KNOWLEDGE_SYNONYMS", "")
+            ),
+            proposal_daily_budget=int(
+                env.get("ENDLESS_TASK_PROPOSAL_DAILY_BUDGET", "6")
+            ),
+            proposal_cooldown_minutes=int(
+                env.get("ENDLESS_TASK_PROPOSAL_COOLDOWN_MINUTES", "30")
+            ),
+            proposal_quiet_start=env.get(
+                "ENDLESS_TASK_PROPOSAL_QUIET_START", "23:00"
+            ).strip(),
+            proposal_quiet_end=env.get(
+                "ENDLESS_TASK_PROPOSAL_QUIET_END", "07:00"
+            ).strip(),
             scheduler_enabled=_parse_flag(env.get("ENDLESS_TASK_SCHEDULER", "1")),
             task_run_review_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_RUN_REVIEW", "1")
@@ -389,6 +423,8 @@ class AppContainer:
     knowledge_proposal_repository: SqliteKnowledgeProposalRepository
     knowledge_proposal_service: Optional[KnowledgeProposalService]
     knowledge_repository: SqliteKnowledgeRepository
+    retrieval_event_repository: SqliteRetrievalEventRepository
+    proposal_budget: Optional[ProposalBudget]
     task_notification_service: Optional[TaskNotificationService]
     task_worker: TaskWorker
     task_scheduler: TaskScheduler
@@ -552,6 +588,19 @@ def _parse_flag(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_json_mapping(value: str) -> dict:
+    text = (value or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Invalid JSON mapping config: {value!r}") from error
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected a JSON object, got: {value!r}")
+    return parsed
+
+
 def _build_container(
     settings: AppSettings,
     provider: Optional[ModelProvider],
@@ -577,7 +626,18 @@ def _build_container(
     notification_repository = SqliteNotificationRepository(database)
     reminder_repository = SqliteReminderRepository(database)
     knowledge_proposal_repository = SqliteKnowledgeProposalRepository(database)
-    knowledge_repository = SqliteKnowledgeRepository(database)
+    retrieval_event_repository = SqliteRetrievalEventRepository(database)
+    scope_weights = None
+    if settings.knowledge_scope_weights:
+        scope_weights = {
+            KnowledgeScope(key): float(weight)
+            for key, weight in settings.knowledge_scope_weights.items()
+        }
+    knowledge_repository = SqliteKnowledgeRepository(
+        database,
+        scope_weights=scope_weights,
+        synonym_map=settings.knowledge_synonym_map or None,
+    )
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -613,8 +673,14 @@ def _build_container(
             artifact_repository=artifact_repository,
             task_repository=task_repository,
             knowledge_repository=knowledge_repository,
+            retrieval_event_repository=retrieval_event_repository,
         ),
         provider=selected_provider,
+        knowledge_query_rewriter=(
+            KnowledgeQueryRewriter(selected_provider, model=settings.model)
+            if settings.knowledge_query_rewrite_enabled
+            else None
+        ),
         configuration=RuntimeConfiguration(
             model=settings.model,
             max_output_tokens=settings.max_output_tokens,
@@ -646,6 +712,16 @@ def _build_container(
             proposal_repository=task_proposal_repository,
             model=settings.model,
             task_repository=task_repository,
+        )
+
+    proposal_budget: Optional[ProposalBudget] = None
+    if settings.memory_proposals_enabled or settings.knowledge_proposals_enabled:
+        proposal_budget = ProposalBudget(
+            database,
+            daily_limit=settings.proposal_daily_budget,
+            cooldown_minutes=settings.proposal_cooldown_minutes,
+            quiet_start=settings.proposal_quiet_start,
+            quiet_end=settings.proposal_quiet_end,
         )
 
     memory_conflict_service: Optional[MemoryConflictService] = None
@@ -699,19 +775,25 @@ def _build_container(
                 return
             ephemeral = conversation.kind is ConversationKind.EPHEMERAL
             if memory_proposal_service is not None and not ephemeral:
-                await memory_proposal_service.generate_for_turn(
-                    conversation_id=snapshot.turn.conversation_id,
-                    turn_id=snapshot.turn.id,
-                    user_message=snapshot.user_message.content,
-                    assistant_message=active.assistant_message.content,
-                )
+                if proposal_budget is None or proposal_budget.allow(
+                    snapshot.turn.conversation_id
+                ):
+                    await memory_proposal_service.generate_for_turn(
+                        conversation_id=snapshot.turn.conversation_id,
+                        turn_id=snapshot.turn.id,
+                        user_message=snapshot.user_message.content,
+                        assistant_message=active.assistant_message.content,
+                    )
             if knowledge_proposal_service is not None and not ephemeral:
-                await knowledge_proposal_service.generate_for_turn(
-                    conversation_id=snapshot.turn.conversation_id,
-                    turn_id=snapshot.turn.id,
-                    user_message=snapshot.user_message.content,
-                    assistant_message=active.assistant_message.content,
-                )
+                if proposal_budget is None or proposal_budget.allow(
+                    snapshot.turn.conversation_id
+                ):
+                    await knowledge_proposal_service.generate_for_turn(
+                        conversation_id=snapshot.turn.conversation_id,
+                        turn_id=snapshot.turn.id,
+                        user_message=snapshot.user_message.content,
+                        assistant_message=active.assistant_message.content,
+                    )
             if artifact_proposal_service is not None:
                 await artifact_proposal_service.generate_for_turn(
                     conversation_id=snapshot.turn.conversation_id,
@@ -785,6 +867,8 @@ def _build_container(
         knowledge_proposal_repository=knowledge_proposal_repository,
         knowledge_proposal_service=knowledge_proposal_service,
         knowledge_repository=knowledge_repository,
+        retrieval_event_repository=retrieval_event_repository,
+        proposal_budget=proposal_budget,
         task_notification_service=task_notification_service,
         task_worker=task_worker,
         task_scheduler=task_scheduler,
@@ -841,6 +925,18 @@ class SearchBody(BaseModel):
         "conversation",
     ]
     limit: int = 8
+
+
+class RetrievalEventBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    label: Optional[str] = None
+    scope: Optional[str] = None
+    refId: Optional[str] = None
+    query: Optional[str] = None
+    turnId: Optional[str] = None
+    conversationId: Optional[str] = None
 
 
 def create_app(
@@ -1230,6 +1326,83 @@ def create_app(
         container.knowledge_repository.delete_source(source_id)
         return Response(status_code=204)
 
+    @app.post("/knowledge-sources/import", status_code=201)
+    async def import_knowledge_source(
+        file: UploadFile = File(...),
+        title: Optional[str] = Form(default=None),
+    ) -> dict[str, object]:
+        raw = await file.read()
+        file_name = (file.filename or "").strip() or "未命名文件"
+        try:
+            ingested = ingest_file_bytes(raw, file_name=file_name)
+        except IngestionError as error:
+            raise ApiRequestError(
+                error.code, error.safe_message, status_code=400
+            ) from error
+        source = container.knowledge_repository.create_source(
+            kind=KnowledgeSourceKind.FILE,
+            origin=KnowledgeSourceOrigin.USER,
+            title=(title or "").strip() or file_name,
+            content=ingested.text,
+            file_name=file_name,
+            file_size=ingested.size,
+            file_sha256=ingested.sha256,
+        )
+        return {
+            "source": knowledge_source_json(source),
+            "truncated": ingested.truncated,
+            "encoding": ingested.encoding,
+        }
+
+    @app.get("/turns/{turn_id}/citations")
+    async def get_turn_citations(turn_id: str) -> dict[str, object]:
+        event = container.retrieval_event_repository.latest_injection_for_turn(
+            turn_id
+        )
+        if event is None or not event.detail:
+            return {"items": []}
+        citations = event.detail.get("citations") or []
+        items: list[dict[str, object]] = []
+        for citation in citations:
+            if not isinstance(citation, dict):
+                continue
+            entry = dict(citation)
+            if citation.get("scope") == "conversation":
+                with container.database.connect() as connection:
+                    row = connection.execute(
+                        "SELECT conversation_id FROM turns WHERE id = ?",
+                        (str(citation.get("refId", "")),),
+                    ).fetchone()
+                if row is not None:
+                    entry["conversationId"] = row["conversation_id"]
+            items.append(entry)
+        return {"items": items}
+
+    @app.post("/retrieval-events", status_code=201)
+    async def create_retrieval_event(
+        body: RetrievalEventBody,
+    ) -> dict[str, object]:
+        if body.kind != "citation_click":
+            raise ApiRequestError(
+                "invalid_request", "仅支持记录角标点击事件。", status_code=400
+            )
+        event = container.retrieval_event_repository.record(
+            RetrievalEventKind.CITATION_CLICK,
+            body.query or "",
+            conversation_id=body.conversationId,
+            turn_id=body.turnId,
+            detail={
+                "label": body.label,
+                "scope": body.scope,
+                "refId": body.refId,
+            },
+        )
+        return {"id": event.id}
+
+    @app.get("/retrieval-stats")
+    async def get_retrieval_stats() -> dict[str, object]:
+        return {"stats": container.retrieval_event_repository.summarize()}
+
     @app.post("/search")
     async def search_knowledge(body: SearchBody) -> dict[str, object]:
         scopes: list[KnowledgeScope] = []
@@ -1240,8 +1413,17 @@ def create_app(
                 raise ValidationError(f"Unknown search scope: {value}") from error
         limit = max(1, min(body.limit, 20))
         grouped = container.knowledge_repository.search(body.query, scopes, limit)
+        # 分组顺序对齐注入优先级：curated（知识源/记忆）在前，层内按配置顺序。
+        ordered_scopes = sorted(
+            scopes,
+            key=lambda item: (
+                scope_tier(item),
+                scopes.index(item),
+            ),
+        )
         groups: list[dict[str, object]] = []
-        for scope in scopes:
+        hit_counts: dict[str, int] = {}
+        for scope in ordered_scopes:
             hits = grouped.get(scope, [])
             items: list[dict[str, object]] = []
             for hit in hits:
@@ -1282,6 +1464,15 @@ def create_app(
                 items.append(entry)
             if items:
                 groups.append({"scope": scope.value, "hits": items})
+            hit_counts[scope.value] = len(items)
+        try:
+            container.retrieval_event_repository.record(
+                RetrievalEventKind.SEARCH,
+                body.query,
+                hit_counts=hit_counts,
+            )
+        except Exception:  # noqa: BLE001 埋点失败不影响检索结果
+            logger.debug("Failed to record search event", exc_info=True)
         return {"groups": groups}
 
     @app.post("/memory-proposals/{proposal_id}/resolve")

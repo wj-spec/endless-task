@@ -19,7 +19,9 @@ from endless_task.runtime import (
     ProviderRequest,
     ProviderTextDelta,
 )
-from endless_task.storage import SqliteArtifactProposalRepository
+from endless_task.storage.sqlite_artifact_proposal_repository import (
+    SqliteArtifactProposalRepository,
+)
 
 from .source_labels import (
     MAX_SOURCE_LABELS,

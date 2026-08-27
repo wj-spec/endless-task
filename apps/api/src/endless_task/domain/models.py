@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
     from .task_schedule import TaskSchedule
@@ -444,6 +444,8 @@ class KnowledgeSource:
     deleted_at: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
+    file_size: Optional[int] = None
+    file_sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -454,6 +456,26 @@ class KnowledgeHit:
     snippet: str
     origin: Optional[str] = None
     updated_at: Optional[str] = None
+    score: float = 0.0
+
+
+class RetrievalEventKind(str, Enum):
+    INJECTION = "injection"
+    SEARCH = "search"
+    CITATION_CLICK = "citation_click"
+
+
+@dataclass(frozen=True)
+class RetrievalEvent:
+    id: str
+    kind: RetrievalEventKind
+    query: str
+    hit_counts: Dict[str, int]
+    zero_hit: bool
+    created_at: str
+    conversation_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    detail: Optional[Dict[str, object]] = None
 
 
 class KnowledgeProposalType(str, Enum):

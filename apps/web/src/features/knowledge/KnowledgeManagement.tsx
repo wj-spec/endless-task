@@ -4,8 +4,6 @@ import { chatApi } from "../chat/api";
 import type { KnowledgeSource } from "../chat/apiTypes";
 import { formatRelativeTime } from "../artifacts/time";
 
-const MAX_FILE_CHARS = 1_000_000;
-
 type StatusFilter = "active" | "expired";
 
 export function KnowledgeContent() {
@@ -50,18 +48,21 @@ export function KnowledgeContent() {
   };
 
   const pickFile = async (file: File) => {
-    if (file.size > MAX_FILE_CHARS) {
-      setActionError("文件太大，暂只支持 1MB 以内的文本文件。");
-      return;
-    }
+    setBusyId("new");
+    setActionError(null);
     try {
-      const text = await file.text();
-      setDraftContent(text);
-      setDraftFileName(file.name);
-      if (!draftTitle.trim()) setDraftTitle(file.name);
-      setActionError(null);
-    } catch {
-      setActionError("读取文件失败，请换一个纯文本文件。");
+      const result = await chatApi.importKnowledgeFile(file);
+      resetDraft();
+      await load(statusFilter);
+      if (result.truncated) {
+        setActionError("文件较大，已截取前 20 万字保存。");
+      }
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "文件导入失败，请重试。",
+      );
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -178,17 +179,13 @@ export function KnowledgeContent() {
           <textarea
             aria-label="知识内容"
             onChange={(event) => setDraftContent(event.target.value)}
-            placeholder={
-              draftFileName
-                ? `已读取文件「${draftFileName}」，可继续修改`
-                : "写下长期有用的信息；或上传一个文本文件"
-            }
+            placeholder="写下长期有用的信息；或点「上传文件」直接导入文本文件"
             rows={5}
             value={draftContent}
           />
           <div className="memory-actions">
             <input
-              accept=".txt,.md,.markdown,.json,.csv,.tsv,.py,.js,.ts,.html,.css,.yaml,.yml,.toml"
+              accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) void pickFile(file);
