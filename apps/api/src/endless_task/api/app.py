@@ -67,7 +67,11 @@ from endless_task.artifacts.export_service import (
 )
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
-from endless_task.knowledge import KnowledgeProposalService
+from endless_task.knowledge import (
+    EmbeddingIndexer,
+    KnowledgeProposalService,
+    build_embedder,
+)
 from endless_task.knowledge.ingestion import IngestionError, ingest_file_bytes
 from endless_task.proposals.budget import ProposalBudget
 from endless_task.memory import MemoryConflictService, MemoryProposalService
@@ -231,6 +235,15 @@ class AppSettings:
     knowledge_query_rewrite_enabled: bool = False
     knowledge_scope_weights: dict = field(default_factory=dict)
     knowledge_synonym_map: dict = field(default_factory=dict)
+    embedding_enabled: bool = False
+    embedding_backend: str = "local"
+    embedding_model: Optional[str] = None
+    embedding_local_repo: str = "Xenova/bge-small-zh-v1.5"
+    embedding_local_url_base: str = "https://huggingface.co"
+    embedding_max_chars: int = 1500
+    embedding_batch_size: int = 8
+    hybrid_literal_weight: float = 0.4
+    hybrid_semantic_weight: float = 0.6
     proposal_daily_budget: int = 6
     proposal_cooldown_minutes: int = 30
     proposal_quiet_start: str = "23:00"
@@ -263,6 +276,10 @@ class AppSettings:
             raise ValueError("Approval timeout must be positive")
         if self.scheduler_tick_seconds <= 0:
             raise ValueError("Scheduler tick must be positive")
+        if self.embedding_max_chars <= 0 or self.embedding_batch_size <= 0:
+            raise ValueError("Embedding limits must be positive")
+        if self.hybrid_literal_weight < 0 or self.hybrid_semantic_weight < 0:
+            raise ValueError("Hybrid weights cannot be negative")
         if self.task_max_attempts < 1:
             raise ValueError("Task max attempts must be positive")
         if self.task_retry_backoff_seconds <= 0:
@@ -320,6 +337,28 @@ class AppSettings:
             knowledge_synonym_map=_parse_json_mapping(
                 env.get("ENDLESS_TASK_KNOWLEDGE_SYNONYMS", "")
             ),
+            embedding_enabled=_parse_flag(env.get("ENDLESS_TASK_EMBEDDING", "0")),
+            embedding_backend=env.get(
+                "ENDLESS_TASK_EMBEDDING_BACKEND", "local"
+            ).strip().lower(),
+            embedding_model=env.get("ENDLESS_TASK_EMBEDDING_MODEL", "").strip()
+            or None,
+            embedding_local_repo=env.get(
+                "ENDLESS_TASK_EMBEDDING_LOCAL_REPO", "Xenova/bge-small-zh-v1.5"
+            ).strip(),
+            embedding_local_url_base=env.get(
+                "ENDLESS_TASK_EMBEDDING_LOCAL_URL_BASE", "https://huggingface.co"
+            ).strip(),
+            embedding_max_chars=int(
+                env.get("ENDLESS_TASK_EMBEDDING_MAX_CHARS", "1500")
+            ),
+            embedding_batch_size=int(env.get("ENDLESS_TASK_EMBEDDING_BATCH", "8")),
+            hybrid_literal_weight=_parse_hybrid_weights(
+                env.get("ENDLESS_TASK_KNOWLEDGE_HYBRID_WEIGHTS", "")
+            )[0],
+            hybrid_semantic_weight=_parse_hybrid_weights(
+                env.get("ENDLESS_TASK_KNOWLEDGE_HYBRID_WEIGHTS", "")
+            )[1],
             proposal_daily_budget=int(
                 env.get("ENDLESS_TASK_PROPOSAL_DAILY_BUDGET", "6")
             ),
@@ -424,6 +463,7 @@ class AppContainer:
     knowledge_proposal_service: Optional[KnowledgeProposalService]
     knowledge_repository: SqliteKnowledgeRepository
     retrieval_event_repository: SqliteRetrievalEventRepository
+    embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
     task_notification_service: Optional[TaskNotificationService]
     task_worker: TaskWorker
@@ -588,6 +628,21 @@ def _parse_flag(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_hybrid_weights(value: str) -> tuple[float, float]:
+    text = (value or "").strip()
+    if not text:
+        return (0.4, 0.6)
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) != 2:
+        raise ValueError(
+            "ENDLESS_TASK_KNOWLEDGE_HYBRID_WEIGHTS expects 'literal,semantic'"
+        )
+    literal, semantic = float(parts[0]), float(parts[1])
+    if literal < 0 or semantic < 0:
+        raise ValueError("Hybrid weights cannot be negative")
+    return literal, semantic
+
+
 def _parse_json_mapping(value: str) -> dict:
     text = (value or "").strip()
     if not text:
@@ -637,7 +692,37 @@ def _build_container(
         database,
         scope_weights=scope_weights,
         synonym_map=settings.knowledge_synonym_map or None,
+        hybrid_literal_weight=settings.hybrid_literal_weight,
+        hybrid_semantic_weight=settings.hybrid_semantic_weight,
     )
+    embedding_indexer: Optional[EmbeddingIndexer] = None
+    if settings.embedding_enabled:
+        embedder = build_embedder(
+            backend=settings.embedding_backend,
+            embedding_model=settings.embedding_model,
+            provider_name=settings.provider_name,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            cache_dir=settings.database_path.parent,
+            local_repo=settings.embedding_local_repo,
+            local_url_base=settings.embedding_local_url_base,
+        )
+        if embedder is not None:
+            embedding_indexer = EmbeddingIndexer(
+                database,
+                embedder,
+                knowledge_repository,
+                max_chars=settings.embedding_max_chars,
+                batch_size=settings.embedding_batch_size,
+            )
+            knowledge_repository.set_semantic_searcher(embedding_indexer)
+            knowledge_repository.set_embedding_hook(embedding_indexer)
+            memory_repository.set_embedding_hook(embedding_indexer)
+            artifact_repository.set_embedding_hook(embedding_indexer)
+        else:
+            logger.warning(
+                "Embeddings enabled but backend unavailable; literal search only."
+            )
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
         memory_repository=memory_repository,
@@ -754,6 +839,7 @@ def _build_container(
         or settings.artifact_proposals_enabled
         or settings.task_proposals_enabled
         or settings.knowledge_proposals_enabled
+        or embedding_indexer is not None
     ):
 
         async def on_turn_completed(snapshot) -> None:
@@ -774,6 +860,10 @@ def _build_container(
             except NotFoundError:
                 return
             ephemeral = conversation.kind is ConversationKind.EPHEMERAL
+            if embedding_indexer is not None and not ephemeral:
+                embedding_indexer.submit(
+                    KnowledgeScope.CONVERSATION.value, snapshot.turn.id
+                )
             if memory_proposal_service is not None and not ephemeral:
                 if proposal_budget is None or proposal_budget.allow(
                     snapshot.turn.conversation_id
@@ -868,6 +958,7 @@ def _build_container(
         knowledge_proposal_service=knowledge_proposal_service,
         knowledge_repository=knowledge_repository,
         retrieval_event_repository=retrieval_event_repository,
+        embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
         task_notification_service=task_notification_service,
         task_worker=task_worker,
@@ -952,6 +1043,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         container.database.initialize()
+        if container.embedding_indexer is not None:
+            container.embedding_indexer.start()
         await container.runtime.recover_interrupted()
         scheduler_task: Optional[asyncio.Task[None]] = None
         swept_runs = container.task_run_repository.sweep_interrupted_runs()
@@ -973,6 +1066,8 @@ def create_app(
         try:
             yield
         finally:
+            if container.embedding_indexer is not None:
+                container.embedding_indexer.stop()
             if scheduler_task is not None:
                 scheduler_task.cancel()
                 try:
@@ -1057,6 +1152,23 @@ def create_app(
                 container.provider,
                 UnconfiguredProvider,
             ),
+            "embedding": {
+                "enabled": container.settings.embedding_enabled,
+                "backend": (
+                    container.settings.embedding_backend
+                    if container.settings.embedding_enabled
+                    else None
+                ),
+                "model": (
+                    container.embedding_indexer.model_name
+                    if container.embedding_indexer is not None
+                    else None
+                ),
+                "ready": (
+                    container.embedding_indexer is not None
+                    and not container.embedding_indexer.unavailable
+                ),
+            },
         }
 
     @app.get("/settings/permissions")

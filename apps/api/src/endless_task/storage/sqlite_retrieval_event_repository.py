@@ -84,7 +84,7 @@ class SqliteRetrievalEventRepository:
             row = connection.execute(
                 "SELECT * FROM retrieval_events "
                 "WHERE turn_id = ? AND kind = 'injection' "
-                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 (turn_id,),
             ).fetchone()
         return self._from_row(row) if row is not None else None

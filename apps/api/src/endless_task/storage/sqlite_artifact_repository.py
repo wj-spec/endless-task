@@ -114,6 +114,25 @@ class SqliteArtifactRepository:
         self._max_content_chars = max_content_chars
         self._clock = clock
         self._id_factory = id_factory
+        self._embedding_hook = None
+
+    # ---------- R5.8 索引钩子 ----------
+
+    def set_embedding_hook(self, hook) -> None:
+        """注入索引钩子（submit/remove），写侧增量建向量。"""
+        self._embedding_hook = hook
+
+    def _notify_hook(self, action: str, ref_id: str) -> None:
+        hook = self._embedding_hook
+        if hook is None:
+            return
+        try:
+            if action == "submit":
+                hook.submit('artifact', ref_id)
+            else:
+                hook.remove('artifact', ref_id)
+        except Exception:  # noqa: BLE001 钩子失败不影响写操作
+            pass
 
     def create_artifact(
         self,
@@ -149,6 +168,7 @@ class SqliteArtifactRepository:
                 source_labels_json=labels_json,
                 note=note,
             )
+        self._notify_hook("submit", artifact_id)
         return self.get_artifact_snapshot(artifact_id)
 
     def append_version(
@@ -204,6 +224,7 @@ class SqliteArtifactRepository:
                 "WHERE id = ?",
                 (ordinal, now, artifact_id),
             )
+        self._notify_hook("submit", artifact_id)
         return self.get_artifact_snapshot(artifact_id)
 
     def get_artifact(self, artifact_id: str) -> ArtifactRecord:
@@ -281,6 +302,7 @@ class SqliteArtifactRepository:
                 "updated_at = ? WHERE id = ?",
                 (now, now, artifact_id),
             )
+        self._notify_hook("remove", artifact_id)
         return self.get_artifact(artifact_id)
 
     def rollback_to_version(
@@ -359,6 +381,7 @@ class SqliteArtifactRepository:
                 "WHERE id = ?",
                 (ordinal, now, artifact_id),
             )
+        self._notify_hook("submit", artifact_id)
         return self.get_artifact_snapshot(artifact_id)
 
     def get_artifact_snapshot(self, artifact_id: str) -> ArtifactSnapshot:

@@ -87,6 +87,25 @@ class SqliteMemoryRepository:
         self._max_content_chars = max_content_chars
         self._clock = clock
         self._id_factory = id_factory
+        self._embedding_hook = None
+
+    # ---------- R5.8 索引钩子 ----------
+
+    def set_embedding_hook(self, hook) -> None:
+        """注入索引钩子（submit/remove），写侧增量建向量。"""
+        self._embedding_hook = hook
+
+    def _notify_hook(self, action: str, ref_id: str) -> None:
+        hook = self._embedding_hook
+        if hook is None:
+            return
+        try:
+            if action == "submit":
+                hook.submit('memory', ref_id)
+            else:
+                hook.remove('memory', ref_id)
+        except Exception:  # noqa: BLE001 钩子失败不影响写操作
+            pass
 
     def create_memory(
         self,
@@ -112,6 +131,7 @@ class SqliteMemoryRepository:
                 source_turn_id=source_turn_id.strip(),
                 timestamp=now,
             )
+        self._notify_hook("submit", memory_id)
         return self.get_memory(memory_id)
 
     def get_memory(self, memory_id: str) -> MemoryRecord:
@@ -151,6 +171,7 @@ class SqliteMemoryRepository:
                 "UPDATE memories SET content = ?, updated_at = ? WHERE id = ?",
                 (normalized_content, self._clock(), memory_id),
             )
+        self._notify_hook("submit", memory_id)
         return self.get_memory(memory_id)
 
     def delete_memory(self, memory_id: str) -> MemoryRecord:
@@ -172,6 +193,7 @@ class SqliteMemoryRepository:
                 """,
                 (MemoryStatus.DELETED.value, now, now, memory_id),
             )
+        self._notify_hook("remove", memory_id)
         return self.get_memory(memory_id)
 
     def find_active_by_content(self, content: str) -> Optional[MemoryRecord]:
@@ -225,6 +247,7 @@ class SqliteMemoryRepository:
                     memory_id,
                 ),
             )
+        self._notify_hook("remove", memory_id)
         return self.get_memory(memory_id)
 
     def _validate_kind(self, kind: MemoryKind) -> MemoryKind:

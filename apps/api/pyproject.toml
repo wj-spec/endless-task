@@ -13,6 +13,8 @@ dependencies = [
     "uvicorn>=0.30,<1",
     "reportlab>=4,<5",
     "python-multipart>=0.0.9,<1",
+    "onnxruntime>=1.29,<2",
+    "tokenizers>=0.23,<1",
 ]
 
 [project.optional-dependencies]

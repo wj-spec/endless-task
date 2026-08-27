@@ -70,6 +70,8 @@ class SqliteKnowledgeRepository:
         id_factory: IdFactory = new_id,
         scope_weights: Optional[Mapping[KnowledgeScope, float]] = None,
         synonym_map: Optional[Mapping[str, Sequence[str]]] = None,
+        hybrid_literal_weight: float = 0.4,
+        hybrid_semantic_weight: float = 0.6,
     ) -> None:
         self._database = database
         self._clock = clock
@@ -82,6 +84,34 @@ class SqliteKnowledgeRepository:
                 weights[scope] = weight
         self._scope_weights = weights
         self._synonym_map = dict(synonym_map or {})
+        if hybrid_literal_weight < 0 or hybrid_semantic_weight < 0:
+            raise ValidationError("Hybrid weights cannot be negative.")
+        self._hybrid_literal_weight = float(hybrid_literal_weight)
+        self._hybrid_semantic_weight = float(hybrid_semantic_weight)
+        self._semantic_searcher = None
+        self._embedding_hook = None
+
+    # ---------- R5.8 语义注入点 ----------
+
+    def set_semantic_searcher(self, searcher) -> None:
+        """注入语义评分器（embed_query/score_refs）；None 时走纯字面路径。"""
+        self._semantic_searcher = searcher
+
+    def set_embedding_hook(self, hook) -> None:
+        """注入索引钩子（submit/remove），写侧增量建向量。"""
+        self._embedding_hook = hook
+
+    def _notify_hook(self, action: str, ref_id: str) -> None:
+        hook = self._embedding_hook
+        if hook is None:
+            return
+        try:
+            if action == "submit":
+                hook.submit(KnowledgeScope.SOURCE.value, ref_id)
+            else:
+                hook.remove(KnowledgeScope.SOURCE.value, ref_id)
+        except Exception:  # noqa: BLE001 钩子失败不影响写操作
+            pass
 
     # ---------- 创建与读取 ----------
 
@@ -134,6 +164,7 @@ class SqliteKnowledgeRepository:
                     file_sha256,
                 ),
             )
+        self._notify_hook("submit", source_id)
         return self.get_source(source_id)
 
     def get_source(self, source_id: str) -> KnowledgeSource:
@@ -195,6 +226,7 @@ class SqliteKnowledgeRepository:
                     source_id,
                 ),
             )
+        self._notify_hook("submit", source_id)
         return self.get_source(source_id)
 
     # ---------- 生命周期 ----------
@@ -210,6 +242,7 @@ class SqliteKnowledgeRepository:
                 "updated_at = ? WHERE id = ?",
                 (now, now, source_id),
             )
+        self._notify_hook("remove", source_id)
         return self.get_source(source_id)
 
     def restore_source(self, source_id: str) -> KnowledgeSource:
@@ -223,6 +256,7 @@ class SqliteKnowledgeRepository:
                 "updated_at = ? WHERE id = ?",
                 (now, source_id),
             )
+        self._notify_hook("submit", source_id)
         return self.get_source(source_id)
 
     def delete_source(self, source_id: str) -> KnowledgeSource:
@@ -236,6 +270,7 @@ class SqliteKnowledgeRepository:
                 "updated_at = ? WHERE id = ?",
                 (now, now, source_id),
             )
+        self._notify_hook("remove", source_id)
         return self.get_source(source_id)
 
     def expire_due(self, now: str) -> Sequence[KnowledgeSource]:
@@ -277,7 +312,7 @@ class SqliteKnowledgeRepository:
             "JOIN turns t ON t.id = m.turn_id "
             "JOIN conversations c ON c.id = m.conversation_id "
             "WHERE c.kind = 'normal' AND c.status = 'active' "
-            "AND t.status = 'completed' AND ({match})"
+            "AND t.status = 'completed' AND ({match}) ORDER BY m.rowid"
         ),
     }
 
@@ -298,16 +333,38 @@ class SqliteKnowledgeRepository:
             return {}
         cleaned = self._expand_synonyms(cleaned)
         fragments = self._fragments(cleaned)
+        query_vector = self._embed_query(cleaned)
         grouped: Dict[KnowledgeScope, List[KnowledgeHit]] = {}
         with self._database.connect() as connection:
             for scope in scopes:
                 template = self._SCOPE_QUERIES.get(scope.value)
                 if template is None:
                     continue
-                hits = self._search_scope(connection, scope, template, fragments, limit)
+                hits = self._search_scope(
+                    connection, scope, template, fragments, limit, query_vector
+                )
                 if hits:
                     grouped[scope] = hits
         return grouped
+
+    def _embed_query(self, query: str):
+        if self._semantic_searcher is None:
+            return None
+        try:
+            return self._semantic_searcher.embed_query(query)
+        except Exception:  # noqa: BLE001 嵌入失败 → 纯字面路径
+            return None
+
+    def visible_rows(self, scope) -> List:
+        """某作用域当前可见的全部检索行（ref_id/title/body），R5.8 语义索引范围。"""
+        scope_value = (
+            scope.value if isinstance(scope, KnowledgeScope) else str(scope)
+        )
+        template = self._SCOPE_QUERIES.get(scope_value)
+        if template is None:
+            return []
+        with self._database.connect() as connection:
+            return connection.execute(template.format(match="1=1")).fetchall()
 
     def _search_scope(
         self,
@@ -316,6 +373,7 @@ class SqliteKnowledgeRepository:
         template: str,
         fragments: Sequence[str],
         limit: int,
+        query_vector=None,
     ) -> List[KnowledgeHit]:
         clause = " OR ".join(["title LIKE ? OR body LIKE ?"] * len(fragments))
         params: List[str] = []
@@ -335,6 +393,15 @@ class SqliteKnowledgeRepository:
             current = best.get(row["ref_id"])
             if current is None or score > current[0]:
                 best[row["ref_id"]] = (score, row["ref_id"], title, body)
+        if query_vector is not None and self._semantic_searcher is not None:
+            semantic_scores, visible_map = self._semantic_scores(
+                connection, scope, template, query_vector
+            )
+            if semantic_scores:
+                return self._fuse_hits(
+                    scope, weight, fragments, limit, best, semantic_scores,
+                    visible_map,
+                )
         ordered = sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
         return [
             KnowledgeHit(
@@ -345,6 +412,76 @@ class SqliteKnowledgeRepository:
                 score=raw_score * weight,
             )
             for raw_score, ref_id, title, body in ordered
+        ]
+
+    def _semantic_scores(
+        self, connection, scope: KnowledgeScope, template: str, query_vector
+    ) -> tuple[Dict[str, float], Dict[str, tuple[str, str]]]:
+        """向量召回：仅对当前可见行评分（临时/归档/过期永不进入检索）。
+
+        返回（余弦分映射，可见行 title/body 映射）；评分失败返回空映射，
+        调用方退回纯字面路径。
+        """
+        visible = connection.execute(template.format(match="1=1")).fetchall()
+        ref_ids: List[str] = []
+        visible_map: Dict[str, tuple[str, str]] = {}
+        for row in visible:
+            ref_id = row["ref_id"]
+            if ref_id not in visible_map:
+                visible_map[ref_id] = (row["title"] or "", row["body"] or "")
+                ref_ids.append(ref_id)
+        if not ref_ids:
+            return {}, {}
+        try:
+            scores = dict(
+                self._semantic_searcher.score_refs(scope, query_vector, ref_ids)
+            )
+        except Exception:  # noqa: BLE001 评分失败 → 纯字面路径
+            return {}, visible_map
+        return scores, visible_map
+
+    def _fuse_hits(
+        self,
+        scope: KnowledgeScope,
+        weight: float,
+        fragments: Sequence[str],
+        limit: int,
+        best: Dict[str, tuple[int, str, str, str]],
+        semantic_scores: Dict[str, float],
+        visible_map: Dict[str, tuple[str, str]],
+    ) -> List[KnowledgeHit]:
+        """加权融合：字面分归一化后与余弦分线性组合（默认 0.4/0.6）。"""
+        max_literal = max((item[0] for item in best.values()), default=0)
+        scored: List[tuple[float, str, str, str]] = []
+        for ref_id in set(best) | set(semantic_scores):
+            literal_entry = best.get(ref_id)
+            literal_norm = 0.0
+            if literal_entry is not None and max_literal > 0:
+                literal_norm = literal_entry[0] / max_literal
+            semantic_score = max(0.0, semantic_scores.get(ref_id, 0.0))
+            fused = (
+                self._hybrid_literal_weight * literal_norm
+                + self._hybrid_semantic_weight * semantic_score
+            )
+            if fused <= 0:
+                continue
+            if literal_entry is not None:
+                _, _, title, body = literal_entry
+            else:
+                title, body = visible_map.get(ref_id, ("", ""))
+            scored.append(
+                (fused, ref_id, title, self._plain_snippet(body, fragments))
+            )
+        ordered = sorted(scored, key=lambda item: item[0], reverse=True)[:limit]
+        return [
+            KnowledgeHit(
+                scope=scope,
+                ref_id=ref_id,
+                title=title,
+                snippet=snippet,
+                score=fused * weight,
+            )
+            for fused, ref_id, title, snippet in ordered
         ]
 
     def _expand_synonyms(self, query: str) -> str:
