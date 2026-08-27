@@ -3,6 +3,7 @@ import { ApiClientError, chatApi } from "../chat/api";
 import type {
   ArtifactProposal,
   ArtifactRecordSummary,
+  KnowledgeProposal,
   MemoryProposal,
   TaskProposal,
 } from "../chat/apiTypes";
@@ -11,6 +12,7 @@ export type TurnProposals = {
   artifacts: ArtifactProposal[];
   memories: MemoryProposal[];
   tasks: TaskProposal[];
+  knowledge: KnowledgeProposal[];
 };
 
 type ConversationProposalState = TurnProposals;
@@ -34,14 +36,15 @@ export function useProposals(
 
   const fetchProposals = useCallback(async (conversationId: string) => {
     try {
-      const [artifacts, memories, tasks] = await Promise.all([
+      const [artifacts, memories, tasks, knowledge] = await Promise.all([
         chatApi.listArtifactProposals(conversationId, true),
         chatApi.listMemoryProposals(conversationId, true),
         chatApi.listTaskProposals(conversationId, true),
+        chatApi.listKnowledgeProposals(conversationId, true),
       ]);
       setByConversation((current) => ({
         ...current,
-        [conversationId]: { artifacts, memories, tasks },
+        [conversationId]: { artifacts, memories, tasks, knowledge },
       }));
     } catch {
       // 提案是增强信息，拉取失败时静默降级，不打断聊天主流程。
@@ -76,19 +79,21 @@ export function useProposals(
       const timer = globalThis.setTimeout(() => {
         void (async () => {
           try {
-            const [artifacts, memories, tasks] = await Promise.all([
+            const [artifacts, memories, tasks, knowledge] = await Promise.all([
               chatApi.listArtifactProposals(conversationId, true),
               chatApi.listMemoryProposals(conversationId, true),
               chatApi.listTaskProposals(conversationId, true),
+              chatApi.listKnowledgeProposals(conversationId, true),
             ]);
             setByConversation((current) => ({
               ...current,
-              [conversationId]: { artifacts, memories, tasks },
+              [conversationId]: { artifacts, memories, tasks, knowledge },
             }));
             const found =
               artifacts.some((item) => item.turnId === turnId) ||
               memories.some((item) => item.turnId === turnId) ||
-              tasks.some((item) => item.turnId === turnId);
+              tasks.some((item) => item.turnId === turnId) ||
+              knowledge.some((item) => item.turnId === turnId);
             if (found) {
               scheduled.forEach((pending) => globalThis.clearTimeout(pending));
             }
@@ -177,6 +182,26 @@ export function useProposals(
     [clearError, refreshVisibleProposals],
   );
 
+  const resolveKnowledgeProposal = useCallback(
+    async (proposalId: string, decision: "accept" | "reject") => {
+      setBusyProposalId(proposalId);
+      clearError(proposalId);
+      try {
+        await chatApi.resolveKnowledgeProposal(proposalId, decision);
+        await refreshVisibleProposals();
+      } catch (error) {
+        const message =
+          error instanceof ApiClientError && error.status >= 400 && error.status < 500
+            ? error.message
+            : "知识提案处理失败，请重试。";
+        setResolveErrors((current) => ({ ...current, [proposalId]: message }));
+      } finally {
+        setBusyProposalId(null);
+      }
+    },
+    [clearError, refreshVisibleProposals],
+  );
+
   const artifactProposalsFor = useCallback(
     (conversationId: string | null): ArtifactProposal[] => {
       if (!conversationId) return [];
@@ -188,11 +213,14 @@ export function useProposals(
   const forTurn = useCallback(
     (conversationId: string | null, turnId: string): TurnProposals => {
       const state = conversationId ? byConversation[conversationId] : undefined;
-      if (!state) return { artifacts: [], memories: [], tasks: [] };
+      if (!state) {
+        return { artifacts: [], memories: [], tasks: [], knowledge: [] };
+      }
       return {
         artifacts: state.artifacts.filter((item) => item.turnId === turnId),
         memories: state.memories.filter((item) => item.turnId === turnId),
         tasks: state.tasks.filter((item) => item.turnId === turnId),
+        knowledge: state.knowledge.filter((item) => item.turnId === turnId),
       };
     },
     [byConversation],
@@ -203,6 +231,7 @@ export function useProposals(
     busyProposalId,
     forTurn,
     resolveArtifactProposal,
+    resolveKnowledgeProposal,
     resolveMemoryProposal,
     resolveTaskProposal,
     resolvedArtifacts,

@@ -17,6 +17,7 @@ const KIND_LABEL: Record<TaskNotification["kind"], string> = {
 const PROPOSAL_KIND_LABEL: Record<PendingProposal["kind"], string> = {
   artifact: "文档",
   task: "安排",
+  knowledge: "知识",
   memory: "记忆",
 };
 

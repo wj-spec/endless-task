@@ -46,6 +46,7 @@ def read_file_call(call_id: str, file_id: str, **extra_arguments) -> ProviderToo
 @asynccontextmanager
 async def local_client(database_path: Path, provider, **setting_overrides):
     setting_overrides.setdefault("memory_proposals_enabled", False)
+    setting_overrides.setdefault("knowledge_proposals_enabled", False)
     app = create_app(
         settings=AppSettings(database_path=database_path, **setting_overrides),
         provider=provider,

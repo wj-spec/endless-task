@@ -236,6 +236,7 @@ class ArtifactVersioningApiTest(unittest.IsolatedAsyncioTestCase):
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / "api.db",
                 memory_proposals_enabled=False,
+                knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=False,
             ),
             provider=FakeProvider(chunks=("你好",)),

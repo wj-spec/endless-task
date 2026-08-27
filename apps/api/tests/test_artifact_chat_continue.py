@@ -280,6 +280,7 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
             settings=AppSettings(
                 database_path=self.database_path,
                 memory_proposals_enabled=False,
+                knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=True,
             ),
             provider=provider,

@@ -79,6 +79,7 @@ async def local_client(database_path: Path, provider, *, memory_proposals=False)
         settings=AppSettings(
             database_path=database_path,
             memory_proposals_enabled=memory_proposals,
+            knowledge_proposals_enabled=False,
             artifact_proposals_enabled=False,
         ),
         provider=provider,

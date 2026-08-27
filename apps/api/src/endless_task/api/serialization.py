@@ -430,6 +430,21 @@ def memory_proposal_json(proposal) -> dict[str, object]:
     }
 
 
+def knowledge_proposal_json(proposal) -> dict[str, object]:
+    return {
+        "id": proposal.id,
+        "conversationId": proposal.conversation_id,
+        "turnId": proposal.turn_id,
+        "type": proposal.proposal_type.value,
+        "payload": proposal.payload,
+        "status": proposal.status.value,
+        "createdAt": proposal.created_at,
+        "updatedAt": proposal.updated_at,
+        "resolvedSourceId": proposal.resolved_source_id,
+        "resolvedAt": proposal.resolved_at,
+    }
+
+
 def knowledge_source_json(source) -> dict[str, object]:
     return {
         "id": source.id,

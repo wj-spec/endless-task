@@ -76,6 +76,7 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / f"p5-{suffix}.db",
                 memory_proposals_enabled=False,
+                knowledge_proposals_enabled=False,
                 heartbeat_seconds=0.01,
             ),
             provider=provider

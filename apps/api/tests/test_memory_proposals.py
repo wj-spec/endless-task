@@ -48,7 +48,7 @@ class TextProvider:
 
 @asynccontextmanager
 async def local_client(database_path: Path, provider):
-    app = create_app(settings=AppSettings(database_path=database_path), provider=provider)
+    app = create_app(settings=AppSettings(database_path=database_path, knowledge_proposals_enabled=False), provider=provider)
     lifespan = app.router.lifespan_context(app)
     await lifespan.__aenter__()
     client = httpx.AsyncClient(

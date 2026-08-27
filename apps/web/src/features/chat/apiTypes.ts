@@ -347,7 +347,7 @@ export type TaskNotification = {
 
 export type PendingProposal = {
   id: string;
-  kind: "artifact" | "task" | "memory";
+  kind: "artifact" | "task" | "memory" | "knowledge";
   conversationId: string;
   title: string;
   createdAt: string;
@@ -386,6 +386,26 @@ export type ArtifactDetailSnapshot = {
 };
 
 export type MemoryStatus = "active" | "expired" | "deleted";
+
+export type KnowledgeProposalType = "add_source" | "expire_source";
+
+export type KnowledgeProposal = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  type: KnowledgeProposalType;
+  payload: {
+    title?: string;
+    content?: string;
+    reason?: string;
+    source_id?: string;
+  };
+  status: "pending" | "accepted" | "rejected" | "cancelled";
+  createdAt: string;
+  updatedAt: string;
+  resolvedSourceId: string | null;
+  resolvedAt: string | null;
+};
 
 export type KnowledgeSourceStatus = "active" | "expired" | "deleted";
 

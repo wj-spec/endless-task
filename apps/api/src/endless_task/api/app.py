@@ -26,6 +26,7 @@ from endless_task.domain.models import (
     KnowledgeScope,
     KnowledgeSourceKind,
     KnowledgeSourceOrigin,
+    KnowledgeProposalType,
     KnowledgeSourceStatus,
     PermissionMode,
     TurnStatus,
@@ -64,6 +65,7 @@ from endless_task.artifacts.export_service import (
 )
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.security import configure_safe_logging
+from endless_task.knowledge import KnowledgeProposalService
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.tasks import (
     TaskNotificationService,
@@ -79,6 +81,7 @@ from endless_task.storage import (
     SqliteChatRepository,
     SqliteContextRepository,
     SqliteMemoryProposalRepository,
+    SqliteKnowledgeProposalRepository,
     SqliteKnowledgeRepository,
     SqliteMemoryRepository,
     SqlitePreferencesRepository,
@@ -97,6 +100,7 @@ from .serialization import (
     artifact_proposal_json,
     artifact_version_json,
     memory_proposal_json,
+    knowledge_proposal_json,
     knowledge_source_json,
     memory_record_json,
     approval_request_json,
@@ -216,6 +220,7 @@ class AppSettings:
     memory_proposals_enabled: bool = True
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
+    knowledge_proposals_enabled: bool = True
     scheduler_enabled: bool = True
     scheduler_tick_seconds: float = 30.0
     task_run_review_enabled: bool = True
@@ -285,6 +290,9 @@ class AppSettings:
             ),
             task_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_TASK_PROPOSALS", "1")
+            ),
+            knowledge_proposals_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_KNOWLEDGE_PROPOSALS", "1")
             ),
             scheduler_enabled=_parse_flag(env.get("ENDLESS_TASK_SCHEDULER", "1")),
             task_run_review_enabled=_parse_flag(
@@ -374,6 +382,8 @@ class AppContainer:
     task_run_repository: SqliteTaskRunRepository
     notification_repository: SqliteNotificationRepository
     reminder_repository: SqliteReminderRepository
+    knowledge_proposal_repository: SqliteKnowledgeProposalRepository
+    knowledge_proposal_service: Optional[KnowledgeProposalService]
     knowledge_repository: SqliteKnowledgeRepository
     task_notification_service: Optional[TaskNotificationService]
     task_worker: TaskWorker
@@ -414,6 +424,12 @@ class UpdateMemoryBody(BaseModel):
 
 
 class ResolveMemoryProposalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
+
+
+class ResolveKnowledgeProposalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["accept", "reject"]
@@ -556,6 +572,7 @@ def _build_container(
     task_run_repository = SqliteTaskRunRepository(database)
     notification_repository = SqliteNotificationRepository(database)
     reminder_repository = SqliteReminderRepository(database)
+    knowledge_proposal_repository = SqliteKnowledgeProposalRepository(database)
     knowledge_repository = SqliteKnowledgeRepository(database)
     reference_resolver = SourceReferenceResolver(
         file_repository=file_repository,
@@ -642,10 +659,20 @@ def _build_container(
             model=settings.model,
         )
 
+    knowledge_proposal_service: Optional[KnowledgeProposalService] = None
+    if settings.knowledge_proposals_enabled:
+        knowledge_proposal_service = KnowledgeProposalService(
+            provider=selected_provider,
+            proposal_repository=knowledge_proposal_repository,
+            knowledge_repository=knowledge_repository,
+            model=settings.model,
+        )
+
     if (
         settings.memory_proposals_enabled
         or settings.artifact_proposals_enabled
         or settings.task_proposals_enabled
+        or settings.knowledge_proposals_enabled
     ):
 
         async def on_turn_completed(snapshot) -> None:
@@ -668,6 +695,13 @@ def _build_container(
             ephemeral = conversation.kind is ConversationKind.EPHEMERAL
             if memory_proposal_service is not None and not ephemeral:
                 await memory_proposal_service.generate_for_turn(
+                    conversation_id=snapshot.turn.conversation_id,
+                    turn_id=snapshot.turn.id,
+                    user_message=snapshot.user_message.content,
+                    assistant_message=active.assistant_message.content,
+                )
+            if knowledge_proposal_service is not None and not ephemeral:
+                await knowledge_proposal_service.generate_for_turn(
                     conversation_id=snapshot.turn.conversation_id,
                     turn_id=snapshot.turn.id,
                     user_message=snapshot.user_message.content,
@@ -743,6 +777,8 @@ def _build_container(
         task_run_repository=task_run_repository,
         notification_repository=notification_repository,
         reminder_repository=reminder_repository,
+        knowledge_proposal_repository=knowledge_proposal_repository,
+        knowledge_proposal_service=knowledge_proposal_service,
         knowledge_repository=knowledge_repository,
         task_notification_service=task_notification_service,
         task_worker=task_worker,
@@ -1252,6 +1288,33 @@ def create_app(
         )
         return {"items": [memory_proposal_json(item) for item in proposals]}
 
+    @app.get("/conversations/{conversation_id}/knowledge-proposals")
+    async def list_knowledge_proposals(
+        conversation_id: str, include_resolved: bool = False
+    ) -> dict[str, object]:
+        proposals = container.knowledge_proposal_repository.list_proposals(
+            conversation_id=conversation_id,
+            include_resolved=include_resolved,
+        )
+        return {"items": [knowledge_proposal_json(item) for item in proposals]}
+
+    @app.post("/knowledge-proposals/{proposal_id}/resolve")
+    async def resolve_knowledge_proposal(
+        proposal_id: str, body: ResolveKnowledgeProposalBody
+    ) -> dict[str, object]:
+        if body.decision == "reject":
+            proposal = container.knowledge_proposal_repository.reject_proposal(
+                proposal_id
+            )
+            return {"proposal": knowledge_proposal_json(proposal)}
+        proposal, source = container.knowledge_proposal_repository.accept_proposal(
+            proposal_id
+        )
+        return {
+            "proposal": knowledge_proposal_json(proposal),
+            "source": knowledge_source_json(source),
+        }
+
     @app.get("/tasks")
     async def list_tasks(include_cancelled: bool = False) -> dict[str, object]:
         tasks = container.task_repository.list_tasks(
@@ -1340,6 +1403,22 @@ def create_app(
                     "kind": "memory",
                     "conversationId": proposal.conversation_id,
                     "title": proposal.content[:60],
+                    "createdAt": proposal.created_at,
+                }
+            )
+        for proposal in container.knowledge_proposal_repository.list_pending(
+            limit=50
+        ):
+            if proposal.proposal_type is KnowledgeProposalType.ADD_SOURCE:
+                title = f"知识：{str(proposal.payload.get('title', ''))[:50]}"
+            else:
+                title = f"知识过期：{str(proposal.payload.get('title', ''))[:50]}"
+            items.append(
+                {
+                    "id": proposal.id,
+                    "kind": "knowledge",
+                    "conversationId": proposal.conversation_id,
+                    "title": title,
                     "createdAt": proposal.created_at,
                 }
             )

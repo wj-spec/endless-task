@@ -1,4 +1,4 @@
-import type {
+import type { KnowledgeProposal,
   CompactTurnSnapshot,
   PendingProposal,
   ApprovalRequest,
@@ -316,6 +316,17 @@ export const chatApi = {
     ),
   deleteKnowledgeSource: (sourceId: string) =>
     request<void>(`/knowledge-sources/${sourceId}`, { method: "DELETE" }),
+  listKnowledgeProposals: async (conversationId: string, includeResolved = false) => {
+    const response = await request<{ items: KnowledgeProposal[] }>(
+      `/conversations/${conversationId}/knowledge-proposals?include_resolved=${includeResolved}`,
+    );
+    return response.items;
+  },
+  resolveKnowledgeProposal: (proposalId: string, decision: "accept" | "reject") =>
+    request<{ proposal: KnowledgeProposal; source?: KnowledgeSource }>(
+      `/knowledge-proposals/${proposalId}/resolve`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    ),
   listMemories: async (includeDeleted = false) => {
     const response = await request<{ items: MemoryRecord[] }>(
       `/memories?include_deleted=${includeDeleted}`,

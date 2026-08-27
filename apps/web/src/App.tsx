@@ -250,6 +250,11 @@ export function App() {
             .resolveArtifactProposal(proposalId, decision)
             .then(hub.refresh)
         }
+        onResolveKnowledgeProposal={(proposalId, decision) =>
+          void proposals
+            .resolveKnowledgeProposal(proposalId, decision)
+            .then(hub.refresh)
+        }
         onResolveMemoryProposal={(proposalId, decision) =>
           void proposals
             .resolveMemoryProposal(proposalId, decision)
@@ -308,6 +313,11 @@ export function App() {
             onResolveArtifactProposal={(proposalId, decision) =>
               void proposals
                 .resolveArtifactProposal(proposalId, decision)
+                .then(hub.refresh)
+            }
+            onResolveKnowledgeProposal={(proposalId, decision) =>
+              void proposals
+                .resolveKnowledgeProposal(proposalId, decision)
                 .then(hub.refresh)
             }
             onResolveMemoryProposal={(proposalId, decision) =>

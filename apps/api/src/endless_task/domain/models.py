@@ -456,6 +456,32 @@ class KnowledgeHit:
     updated_at: Optional[str] = None
 
 
+class KnowledgeProposalType(str, Enum):
+    ADD_SOURCE = "add_source"
+    EXPIRE_SOURCE = "expire_source"
+
+
+class KnowledgeProposalStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class KnowledgeProposal:
+    id: str
+    proposal_type: KnowledgeProposalType
+    payload: dict
+    conversation_id: str
+    turn_id: str
+    status: KnowledgeProposalStatus
+    created_at: str
+    updated_at: str
+    resolved_source_id: Optional[str] = None
+    resolved_at: Optional[str] = None
+
+
 @dataclass(frozen=True)
 class ToolCallJournal:
     id: str

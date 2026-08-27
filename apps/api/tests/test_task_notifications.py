@@ -59,6 +59,7 @@ async def local_client(database_path: Path, provider, **overrides):
         settings=AppSettings(
             database_path=database_path,
             memory_proposals_enabled=False,
+            knowledge_proposals_enabled=False,
             artifact_proposals_enabled=False,
             task_proposals_enabled=False,
             **overrides,
