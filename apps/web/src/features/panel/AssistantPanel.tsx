@@ -73,7 +73,7 @@ export function AssistantPanel({
         ) : tab === "scheduled" ? (
           <ScheduledTasksContent onOpenConversation={onOpenConversation} />
         ) : tab === "memory" ? (
-          <MemoryContent />
+          <MemoryContent onOpenConversation={onOpenConversation} />
         ) : (
           <KnowledgeContent />
         )}

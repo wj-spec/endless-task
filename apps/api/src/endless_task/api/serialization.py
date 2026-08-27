@@ -463,13 +463,16 @@ def knowledge_source_json(source) -> dict[str, object]:
     }
 
 
-def memory_record_json(record) -> dict[str, object]:
+def memory_record_json(
+    record, source_title: Optional[str] = None
+) -> dict[str, object]:
     return {
         "id": record.id,
         "kind": record.kind.value,
         "content": record.content,
         "status": record.status.value,
         "sourceConversationId": record.source_conversation_id,
+        "sourceConversationTitle": source_title,
         "sourceTurnId": record.source_turn_id,
         "writeOrigin": record.write_origin,
         "createdAt": record.created_at,

@@ -21,6 +21,8 @@ src/endless_task/files/__init__.py
 src/endless_task/files/models.py
 src/endless_task/files/protocol.py
 src/endless_task/files/read_tool.py
+src/endless_task/knowledge/__init__.py
+src/endless_task/knowledge/proposal_service.py
 src/endless_task/memory/__init__.py
 src/endless_task/memory/conflict_service.py
 src/endless_task/memory/proposal_service.py
@@ -43,6 +45,7 @@ src/endless_task/storage/sqlite_artifact_repository.py
 src/endless_task/storage/sqlite_chat_repository.py
 src/endless_task/storage/sqlite_context_repository.py
 src/endless_task/storage/sqlite_file_repository.py
+src/endless_task/storage/sqlite_knowledge_proposal_repository.py
 src/endless_task/storage/sqlite_knowledge_repository.py
 src/endless_task/storage/sqlite_memory_proposal_repository.py
 src/endless_task/storage/sqlite_memory_repository.py
@@ -78,6 +81,7 @@ src/endless_task/storage/migrations/022_task_run_reliability.sql
 src/endless_task/storage/migrations/023_task_reminders.sql
 src/endless_task/storage/migrations/024_conversation_branches.sql
 src/endless_task/storage/migrations/025_knowledge.sql
+src/endless_task/storage/migrations/026_knowledge_proposals.sql
 src/endless_task/storage/migrations/__init__.py
 src/endless_task/tasks/__init__.py
 src/endless_task/tasks/notification_service.py
@@ -110,6 +114,7 @@ tests/test_conversation_branches.py
 tests/test_file_tool.py
 tests/test_global_permission.py
 tests/test_knowledge.py
+tests/test_knowledge_proposals.py
 tests/test_memory_injection.py
 tests/test_memory_lifecycle.py
 tests/test_memory_management.py

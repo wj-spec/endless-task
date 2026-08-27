@@ -280,7 +280,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
             self.database_path, provider, memory_proposals=True
         ) as client:
             parent = (await client.post("/conversations")).json()
-            await self._send_turn(client, parent["id"], "源会话的一轮")
+            await self._send_turn(client, parent["id"], "源会话：记住我喜欢本地优先。")
             branch = (
                 await client.post(f"/conversations/{parent['id']}/branches", json={})
             ).json()["conversation"]

@@ -473,6 +473,40 @@
   line-height: 1.6;
 }
 
+.profile-group {
+  margin-top: 14px;
+}
+
+.profile-group:first-of-type {
+  margin-top: 0;
+}
+
+.profile-group-title {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: var(--fs-2);
+  font-weight: 600;
+}
+
+.profile-expired-toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--faint);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+
+.memory-source {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: var(--fs-1);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
 .settings-section-title {
   margin: 0 0 4px;
   color: var(--ink-raise);

@@ -222,7 +222,7 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         repeated = await service.generate_for_turn(
             conversation_id="conv_1",
             turn_id="turn_2",
-            user_message="重复内容不应新增提案。",
+            user_message="记住：重复内容不应新增提案。",
             assistant_message="好的。",
         )
         self.assertEqual(len(repeated), 2)
@@ -233,13 +233,54 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
             {item.id for item in repeated},
         )
 
+    async def test_marker_gate_skips_model_call(self) -> None:
+        provider = TextProvider([json.dumps({"proposals": []}, ensure_ascii=False)])
+        service = self._service(provider)
+        created = await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            user_message="随便聊聊。",
+            assistant_message="好的。",
+        )
+        self.assertEqual(created, ())
+        self.assertEqual(len(provider.requests), 0)
+
+    async def test_marker_gate_disabled_still_extracts(self) -> None:
+        payload = {
+            "proposals": [
+                {"kind": "fact", "content": "用户在上海工作。", "reason": "明确表达"}
+            ]
+        }
+        provider = TextProvider([json.dumps(payload, ensure_ascii=False)])
+        service = MemoryProposalService(
+            provider=provider,
+            proposal_repository=self.proposals,
+            memory_repository=self.memories,
+            model="test-model",
+            marker_gate_enabled=False,
+        )
+        created = await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            user_message="随便聊聊。",
+            assistant_message="好的。",
+        )
+        self.assertEqual(len(created), 1)
+
+    def test_silence_prompt_rules(self) -> None:
+        from endless_task.memory.proposal_service import _EXTRACTION_SYSTEM_PROMPT
+
+        self.assertIn("领域规范", _EXTRACTION_SYSTEM_PROMPT)
+        self.assertIn("宁可漏记", _EXTRACTION_SYSTEM_PROMPT)
+        self.assertIn("知识通道", _EXTRACTION_SYSTEM_PROMPT)
+
     async def test_garbage_extraction_is_ignored(self) -> None:
         provider = TextProvider(["这根本不是 JSON"])
         service = self._service(provider)
         created = await service.generate_for_turn(
             conversation_id="conv_1",
             turn_id="turn_1",
-            user_message="随便聊聊。",
+            user_message="记住我喜欢猫。",
             assistant_message="好的。",
         )
         self.assertEqual(created, ())
@@ -270,7 +311,7 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         await service.generate_for_turn(
             conversation_id="conv_1",
             turn_id="turn_1",
-            user_message="随便聊聊。",
+            user_message="记住我喜欢猫。",
             assistant_message="好的。",
         )
         transcript = provider.requests[0].messages[1].content
@@ -295,7 +336,7 @@ class MemoryProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         await empty_service.generate_for_turn(
             conversation_id="conv_9",
             turn_id="turn_9",
-            user_message="随便聊聊。",
+            user_message="记住我喜欢猫。",
             assistant_message="好的。",
         )
         self.assertNotIn(
@@ -384,7 +425,7 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},
-                json={"content": "随便聊聊。"},
+                json={"content": "记住我喜欢猫。"},
             )
             self.assertEqual(response.status_code, 202)
             payload = await self._wait_for_terminal(

@@ -22,9 +22,12 @@ from endless_task.storage import (
 logger = logging.getLogger(__name__)
 
 _EXTRACTION_SYSTEM_PROMPT = (
-    "你是记忆提取助手。阅读一段用户与 Assistant 的对话，"
-    "仅当用户明确表达了值得长期保留的偏好（preference）或事实（fact）时，"
-    "才提出记忆提案。不要推断、猜测或提取文件内容。"
+    "你是记忆提取助手，提取阈值极严，宁可漏记不可错记。阅读一段用户与 Assistant 的对话，"
+    "仅当用户明确、主动陈述了关于其自身的长期偏好（preference）或事实（fact）时"
+    "（如「记住我喜欢猫」「我在上海工作」），才提出记忆提案。以下情况一律不提案："
+    "一次性任务信息、当前请求与临时状态；领域规范、工作流程等关于「事」的知识"
+    "（它们属于知识通道，不属于记忆通道）；Assistant 的推断、猜测或总结；用户未明确陈述的内容。"
+    "不要推断、猜测或提取文件内容。"
     "随附“待确认/已记住清单”：与已记住语义相同的不要再提案；"
     "与待确认语义相同的照常输出新提案，并把旧提案 id 填入该条目的 supersedes"
     "（系统会取消旧提案、保留新提案）。"
@@ -33,6 +36,31 @@ _EXTRACTION_SYSTEM_PROMPT = (
     '"supersedes":"旧提案 id 或省略"}]}；'
     "没有合适内容时输出 {\"proposals\":[]}。"
 )
+
+# 静默原则：用户消息不含明确记忆意图标记时，直接跳过模型调用。
+_MARKER_HINTS = (
+    "记住",
+    "我喜欢",
+    "我爱",
+    "我偏好",
+    "我的习惯",
+    "我一般",
+    "我通常",
+    "我以后",
+    "以后都",
+    "每次都",
+    "叫我",
+    "我叫",
+    "我姓",
+    "我是",
+    "我在",
+    "我养",
+)
+
+
+def has_memory_marker(message: str) -> bool:
+    return any(hint in message for hint in _MARKER_HINTS)
+
 
 PENDING_LIST_CAP = 10
 ACTIVE_LIST_CAP = 20
@@ -54,6 +82,7 @@ class MemoryProposalService:
         model: str,
         max_proposals_per_turn: int = 2,
         max_output_tokens: int = 600,
+        marker_gate_enabled: bool = True,
     ) -> None:
         if max_proposals_per_turn <= 0:
             raise ValueError("max_proposals_per_turn must be positive")
@@ -63,6 +92,7 @@ class MemoryProposalService:
         self._model = model
         self._max_proposals_per_turn = max_proposals_per_turn
         self._max_output_tokens = max_output_tokens
+        self._marker_gate_enabled = marker_gate_enabled
 
     async def generate_for_turn(
         self,
@@ -72,6 +102,8 @@ class MemoryProposalService:
         user_message: str,
         assistant_message: str,
     ) -> Tuple[MemoryProposal, ...]:
+        if self._marker_gate_enabled and not has_memory_marker(user_message):
+            return ()
         try:
             return await self._generate(
                 conversation_id=conversation_id,

@@ -96,6 +96,29 @@ class MemoryManagementTest(unittest.IsolatedAsyncioTestCase):
             }
             self.assertEqual(statuses[self.kept.id], "deleted")
 
+    async def test_memories_include_source_conversation_title(self) -> None:
+        async with local_client(self.database_path, TextProvider()) as client:
+            conversation = (await client.post("/conversations")).json()
+            renamed = await client.patch(
+                f"/conversations/{conversation['id']}",
+                json={"title": "画像来源会话"},
+            )
+            self.assertEqual(renamed.status_code, 200)
+            self.memories.create_memory(
+                kind=MemoryKind.FACT,
+                content="用户养了一只猫。",
+                source_conversation_id=conversation["id"],
+                source_turn_id="turn_x",
+            )
+            response = await client.get("/memories")
+            items = response.json()["items"]
+            titled = [i for i in items if i["content"] == "用户养了一只猫。"]
+            self.assertEqual(len(titled), 1)
+            self.assertEqual(titled[0]["sourceConversationTitle"], "画像来源会话")
+            missing = [i for i in items if i["content"] == "用户偏好简洁回答。"]
+            self.assertEqual(len(missing), 1)
+            self.assertIsNone(missing[0]["sourceConversationTitle"])
+
     async def test_management_error_semantics(self) -> None:
         async with local_client(self.database_path, TextProvider()) as client:
             response = await client.patch("/memories/mem_missing", json={"content": "x"})

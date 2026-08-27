@@ -218,6 +218,7 @@ class AppSettings:
     max_files_per_conversation: int = 10
     heartbeat_seconds: float = 15.0
     memory_proposals_enabled: bool = True
+    memory_marker_gate_enabled: bool = True
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -284,6 +285,9 @@ class AppSettings:
             database_path=database_path,
             memory_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_MEMORY_PROPOSALS", "1")
+            ),
+            memory_marker_gate_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_MEMORY_MARKER_GATE", "1")
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -657,6 +661,7 @@ def _build_container(
             proposal_repository=proposal_repository,
             memory_repository=memory_repository,
             model=settings.model,
+            marker_gate_enabled=settings.memory_marker_gate_enabled,
         )
 
     knowledge_proposal_service: Optional[KnowledgeProposalService] = None
@@ -1136,7 +1141,25 @@ def create_app(
         memories = container.memory_repository.list_memories(
             include_deleted=include_deleted
         )
-        return {"items": [memory_record_json(item) for item in memories]}
+        titles: dict[str, str] = {}
+        for item in memories:
+            conversation_id = item.source_conversation_id
+            if conversation_id and conversation_id not in titles:
+                try:
+                    titles[conversation_id] = container.chat_repository.get_conversation(
+                        conversation_id
+                    ).title
+                except NotFoundError:
+                    titles[conversation_id] = ""
+        return {
+            "items": [
+                memory_record_json(
+                    item,
+                    source_title=titles.get(item.source_conversation_id) or None,
+                )
+                for item in memories
+            ]
+        }
 
     @app.patch("/memories/{memory_id}")
     async def update_memory(

@@ -431,6 +431,7 @@ export type MemoryRecord = {
   content: string;
   status: MemoryStatus;
   sourceConversationId: string;
+  sourceConversationTitle: string | null;
   sourceTurnId: string;
   writeOrigin: string;
   createdAt: string;
