@@ -4,6 +4,7 @@ from .effect_log import EffectLog, EffectReceipt
 from .fs_tools import (
     DeleteWorkspaceFileTool,
     ListWorkspaceDirTool,
+    ReadSkillFileTool,
     ReadWorkspaceFileTool,
     WriteWorkspaceFileTool,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "EffectLog",
     "EffectReceipt",
     "ListWorkspaceDirTool",
+    "ReadSkillFileTool",
     "ReadWorkspaceFileTool",
     "RunShellTool",
     "WorkspaceBinding",

@@ -26,6 +26,7 @@ from endless_task.tooling import (
 
 from .effect_log import EffectLog, EffectReceipt, sha256_text
 from .path_safety import (
+    resolve_external_read_path,
     resolve_read_path_with_variants,
     resolve_workspace_path,
 )
@@ -61,6 +62,90 @@ def _decode_utf8(content: bytes) -> str:
             "文件不是 UTF-8 文本，拒绝读取/写入（工作区工具只处理文本文件）。",
             retryable=False,
         ) from error
+
+
+class ReadSkillFileTool:
+    definition = ToolDefinition(
+        name="read_skill_file",
+        description=(
+            "读取系统提示词中列出的技能正文。path 必须使用 available_skills 提供的"
+            "绝对路径；该工具只读且仅允许访问技能目录。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "start_line": {"type": "integer", "minimum": 1},
+                "line_count": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        effect=ToolEffect.READ_ONLY,
+        approval_mode=ToolApprovalMode.AUTO,
+        timeout_seconds=10.0,
+        max_output_characters=40_000,
+    )
+
+    def __init__(
+        self,
+        skill_root_provider: Callable[[str], tuple[Path, ...]],
+        *,
+        max_file_bytes: int = 1_000_000,
+    ) -> None:
+        self._skill_root_provider = skill_root_provider
+        self._max_file_bytes = max_file_bytes
+
+    def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
+        return ToolActivityCopy(
+            running="正在读取技能",
+            completed="已读取技能",
+            failed="读取技能失败",
+        )
+
+    async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
+        token.raise_if_cancelled()
+        roots = self._skill_root_provider(call.conversation_id)
+        resolved = resolve_external_read_path(
+            roots, str(call.arguments["path"])
+        )
+        if not resolved.canonical.exists():
+            raise ToolError("path_not_found", f"技能文件不存在。", retryable=False)
+        if not resolved.canonical.is_file():
+            raise ToolError("path_is_directory", "路径指向目录。", retryable=False)
+        raw = resolved.canonical.read_bytes()
+        if len(raw) > self._max_file_bytes:
+            raise ToolError(
+                "file_too_large",
+                f"技能文件超过读取上限（{self._max_file_bytes} 字节）。",
+                retryable=False,
+            )
+        text = _decode_utf8(raw)
+        lines = text.splitlines() or [""]
+        start_line = int(call.arguments.get("start_line", 1))
+        line_count = int(call.arguments.get("line_count", 120))
+        if start_line > len(lines):
+            raise ToolError(
+                "file_line_out_of_range",
+                f"文件只有 {len(lines)} 行，无法从第 {start_line} 行读取。",
+                retryable=False,
+            )
+        end_line = min(len(lines), start_line + line_count - 1)
+        selected = "\n".join(lines[start_line - 1 : end_line])
+        token.raise_if_cancelled()
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                f"[来源：技能 {resolved.canonical}:L{start_line}-L{end_line}]\n"
+                f"{selected}"
+            ),
+            structured_content={
+                "path": str(resolved.canonical),
+                "startLine": start_line,
+                "endLine": end_line,
+                "totalLines": len(lines),
+            },
+        )
 
 
 class ReadWorkspaceFileTool:

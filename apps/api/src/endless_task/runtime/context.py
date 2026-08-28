@@ -212,6 +212,7 @@ class P0ContextBuilder:
         retrieval_event_repository=None,
         token_estimator: Optional[TokenEstimator] = None,
         summarizer: Optional[ExtractiveConversationSummarizer] = None,
+        skill_prompt_builder=None,
     ) -> None:
         if max_context_tokens <= 0:
             raise ValueError("max_context_tokens must be positive")
@@ -247,6 +248,7 @@ class P0ContextBuilder:
         self._retrieval_event_repository = retrieval_event_repository
         self._token_estimator = token_estimator or ApproximateTokenEstimator()
         self._summarizer = summarizer or ExtractiveConversationSummarizer()
+        self._skill_prompt_builder = skill_prompt_builder
 
     def build(
         self,
@@ -421,6 +423,10 @@ class P0ContextBuilder:
         task_list_block = self._task_list_block()
         if task_list_block:
             content = f"{content}\n\n{task_list_block}"
+        if self._skill_prompt_builder is not None:
+            skill_block = self._skill_prompt_builder(workspace_id)
+            if skill_block:
+                content = f"{content}\n\n{skill_block}"
         return content
 
     _KNOWLEDGE_SCOPE_LABELS = {

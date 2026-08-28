@@ -5,6 +5,7 @@ reportlab<5,>=4
 python-multipart<1,>=0.0.9
 onnxruntime<2,>=1.29
 tokenizers<1,>=0.23
+mcp<2,>=1.24
 
 [dev]
 httpx<1,>=0.27

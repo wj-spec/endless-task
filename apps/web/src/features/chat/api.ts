@@ -20,6 +20,9 @@ import type { KnowledgeProposal,
   UploadedTextFile,
   BrowseItem,
   EffectLogEntry,
+  McpServer,
+  McpServerInput,
+  Skill,
   Workspace,
   WorkspaceSnapshot,
   TaskProposal,
@@ -140,6 +143,53 @@ export const chatApi = {
       `/filesystem/browse?${parameters.toString()}`,
     );
     return response;
+  },
+  listMcpServers: async () => {
+    const response = await request<{ items: McpServer[] }>("/mcp/servers");
+    return response.items;
+  },
+  createMcpServer: (server: McpServerInput) =>
+    request<{ server: McpServer }>("/mcp/servers", {
+      method: "POST",
+      body: JSON.stringify(server),
+    }).then((response) => response.server),
+  patchMcpServer: (serverId: string, patch: Partial<McpServerInput>) =>
+    request<{ server: McpServer }>(`/mcp/servers/${serverId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }).then((response) => response.server),
+  deleteMcpServer: (serverId: string) =>
+    request<void>(`/mcp/servers/${serverId}`, { method: "DELETE" }),
+  reloadMcpServer: (serverId: string) =>
+    request<{ server: McpServer }>(`/mcp/servers/${serverId}/reload`, {
+      method: "POST",
+    }).then((response) => response.server),
+  listSkills: async (workspaceId?: string | null) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspace", workspaceId);
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
+    const response = await request<{
+      userSkillsDirectory: string;
+      items: Skill[];
+    }>(`/skills${suffix}`);
+    return response;
+  },
+  patchSkill: (
+    scope: "user" | "workspace",
+    name: string,
+    disabled: boolean,
+    workspaceId?: string | null,
+  ) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspace", workspaceId);
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
+    return request<{ disabled: boolean }>(
+      `/skills/${scope}/${encodeURIComponent(name)}${suffix}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ disabled }),
+      },
+    );
   },
   shellLog: (workspaceId: string, limit = 100) =>
     request<{ items: EffectLogEntry[] }>(

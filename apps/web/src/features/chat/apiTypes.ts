@@ -21,6 +21,66 @@ export type BrowseItem = {
   isHidden: boolean;
 };
 
+export type SkillDiagnostic = {
+  code: string;
+  message: string;
+  path: string;
+};
+
+export type Skill = {
+  name: string;
+  description: string;
+  scope: "user" | "workspace";
+  filePath: string;
+  disabled: boolean;
+  disableModelInvocation: boolean;
+  diagnostics: SkillDiagnostic[];
+};
+
+export type McpToolStatus = {
+  publicName: string;
+  rawName: string;
+  description: string;
+  effect: "read_only" | "local_write" | "external_action";
+  requiresExplicitConfirmation: boolean;
+};
+
+export type McpServer = {
+  id: string;
+  name: string;
+  transport: "stdio" | "http";
+  command: string;
+  args: string[];
+  cwd: string;
+  url: string;
+  enabled: boolean;
+  toolCallTimeoutSeconds: number;
+  state:
+    | "connected"
+    | "reconnecting"
+    | "disconnected"
+    | "disabled"
+    | "error";
+  toolCount: number;
+  lastError: string | null;
+  tools: McpToolStatus[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type McpServerInput = {
+  name: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  toolCallTimeoutSeconds?: number;
+};
+
 export type EffectLogEntry = {
   time: string;
   conversationId: string;

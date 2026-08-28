@@ -70,7 +70,12 @@ class ContextBuilderTest(unittest.TestCase):
             finish_reason=FinishReason.STOP,
         )
 
-    def _builder(self, *, max_context_tokens: int = 220) -> P0ContextBuilder:
+    def _builder(
+        self,
+        *,
+        max_context_tokens: int = 220,
+        skill_prompt_builder=None,
+    ) -> P0ContextBuilder:
         return P0ContextBuilder(
             self.chat_repository,
             system_prompt="SYSTEM",
@@ -79,7 +84,31 @@ class ContextBuilderTest(unittest.TestCase):
             summary_token_limit=60,
             context_repository=self.context_repository,
             token_estimator=self.estimator,
+            skill_prompt_builder=skill_prompt_builder,
         )
+
+    def test_skill_prompt_is_appended_to_system_message(self) -> None:
+        conversation = self.chat_repository.create_conversation()
+        current = self.chat_repository.create_turn(
+            conversation_id=conversation.id,
+            client_request_id="request-skill",
+            content="当前问题",
+        )
+
+        context = self._builder(
+            skill_prompt_builder=lambda workspace_id: (
+                "<available_skills><skill><name>demo</name></skill></available_skills>"
+                if workspace_id is None
+                else ""
+            )
+        ).build(
+            current.turn.id,
+            response_variant_id=current.turn.active_response_variant_id,
+            reserved_output_tokens=20,
+        )
+
+        self.assertIn("<available_skills>", context.messages[0].content)
+        self.assertIn("demo", context.messages[0].content)
 
     def test_long_history_is_summarized_and_snapshot_is_persisted(self) -> None:
         conversation = self.chat_repository.create_conversation()

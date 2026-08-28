@@ -68,6 +68,7 @@ from endless_task.artifacts.export_service import (
 )
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.workspace_runtime import (
+    ReadSkillFileTool,
     DeleteWorkspaceFileTool,
     EffectLog,
     ListWorkspaceDirTool,
@@ -87,6 +88,7 @@ from endless_task.knowledge import (
     build_embedder,
 )
 from endless_task.knowledge.ingestion import IngestionError, ingest_file_bytes
+from endless_task.mcp_runtime import McpManager
 from endless_task.proposals.budget import ProposalBudget
 from endless_task.memory import MemoryConflictService, MemoryProposalService
 from endless_task.tasks import (
@@ -117,7 +119,15 @@ from endless_task.storage import (
     SqliteTaskRunRepository,
     SqliteWorkspaceRepository,
 )
+from endless_task.storage.sqlite_mcp_server_repository import (
+    McpServerDraft,
+    SqliteMcpServerRepository,
+)
+from endless_task.storage.sqlite_skill_override_repository import (
+    SqliteSkillOverrideRepository,
+)
 from endless_task.storage.sqlite_knowledge_repository import scope_tier
+from endless_task.skills import SkillService, build_available_skills_prompt
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
 from .serialization import (
@@ -531,6 +541,9 @@ class AppContainer:
     retrieval_event_repository: SqliteRetrievalEventRepository
     workspace_repository: SqliteWorkspaceRepository
     workspace_resolver: WorkspaceResolver
+    skill_service: SkillService
+    mcp_server_repository: SqliteMcpServerRepository
+    mcp_manager: McpManager
     effect_log: EffectLog
     artifact_file_store: ArtifactFileStore
     knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
@@ -610,6 +623,42 @@ class RollbackArtifactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     targetOrdinal: int
+
+
+class SkillPatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    disabled: bool
+
+
+class McpServerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    transport: Literal["stdio", "http"]
+    command: str = ""
+    args: list[str] = []
+    env: dict[str, str] = {}
+    cwd: str = ""
+    url: str = ""
+    headers: dict[str, str] = {}
+    enabled: bool = True
+    toolCallTimeoutSeconds: float = 60.0
+
+
+class McpServerPatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = None
+    transport: Optional[Literal["stdio", "http"]] = None
+    command: Optional[str] = None
+    args: Optional[list[str]] = None
+    env: Optional[dict[str, str]] = None
+    cwd: Optional[str] = None
+    url: Optional[str] = None
+    headers: Optional[dict[str, str]] = None
+    enabled: Optional[bool] = None
+    toolCallTimeoutSeconds: Optional[float] = None
 
 
 class RevealPathBody(BaseModel):
@@ -772,6 +821,8 @@ def _build_container(
     preferences_repository = SqlitePreferencesRepository(database)
     artifact_repository = SqliteArtifactRepository(database)
     workspace_repository = SqliteWorkspaceRepository(database)
+    skill_override_repository = SqliteSkillOverrideRepository(database)
+    mcp_server_repository = SqliteMcpServerRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
     task_proposal_repository = SqliteTaskProposalRepository(database)
@@ -830,7 +881,34 @@ def _build_container(
     selected_provider = provider or _provider_from_settings(settings)
     selected_tool_registry = tool_registry or ToolRegistry()
     workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
+    skill_service = SkillService(
+        user_dir=settings.database_path.parent / "skills",
+        database_path=settings.database_path,
+        override_repository=skill_override_repository,
+    )
+
+    def skill_roots_for_conversation(conversation_id: str) -> tuple[Path, ...]:
+        binding = workspace_resolver.resolve_binding(conversation_id)
+        return skill_service.skill_roots(binding.root if binding else None)
+
+    def skill_prompt_for_workspace(workspace_id: Optional[str]) -> str:
+        root = None
+        if workspace_id:
+            try:
+                workspace = workspace_repository.get_workspace(workspace_id)
+                root = Path(workspace.root_path).expanduser() if workspace.root_path else None
+            except Exception:
+                root = None
+        return build_available_skills_prompt(
+            skill_service.visible_skills(root, workspace_id=workspace_id or "")
+        )
+
     effect_log = EffectLog(settings.database_path.parent / "logs")
+    mcp_manager = McpManager(
+        repository=mcp_server_repository,
+        tool_registry=selected_tool_registry,
+        effect_log=effect_log,
+    )
     artifact_file_store = ArtifactFileStore(workspace_resolver)
     artifact_proposal_repository.set_artifact_store(artifact_file_store)
     artifact_repository.set_artifact_store(artifact_file_store)
@@ -850,6 +928,12 @@ def _build_container(
             )
         )
         selected_tool_registry.register(ListWorkspaceDirTool(workspace_resolver))
+        selected_tool_registry.register(
+            ReadSkillFileTool(
+                skill_roots_for_conversation,
+                max_file_bytes=settings.max_file_bytes,
+            )
+        )
         selected_tool_registry.register(
             DeleteWorkspaceFileTool(workspace_resolver, effect_log)
         )
@@ -887,6 +971,7 @@ def _build_container(
             task_repository=task_repository,
             knowledge_repository=knowledge_repository,
             retrieval_event_repository=retrieval_event_repository,
+            skill_prompt_builder=skill_prompt_for_workspace,
         ),
         provider=selected_provider,
         knowledge_query_rewriter=(
@@ -1122,6 +1207,9 @@ def _build_container(
         retrieval_event_repository=retrieval_event_repository,
         workspace_repository=workspace_repository,
         workspace_resolver=workspace_resolver,
+        skill_service=skill_service,
+        mcp_server_repository=mcp_server_repository,
+        mcp_manager=mcp_manager,
         effect_log=effect_log,
         artifact_file_store=artifact_file_store,
         knowledge_lifecycle_service=knowledge_lifecycle_service,
@@ -1230,6 +1318,7 @@ def create_app(
         if container.embedding_indexer is not None:
             container.embedding_indexer.start()
         await container.runtime.recover_interrupted()
+        await container.mcp_manager.start_all()
         scheduler_task: Optional[asyncio.Task[None]] = None
         swept_runs = container.task_run_repository.sweep_interrupted_runs()
         if swept_runs and container.task_notification_service is not None:
@@ -1270,6 +1359,7 @@ def create_app(
                     await decay_task
                 except asyncio.CancelledError:
                     pass
+            await container.mcp_manager.stop_all()
             await container.task_worker.drain()
             await container.controller.shutdown()
             close_provider = getattr(container.provider, "close", None)
@@ -1616,6 +1706,179 @@ def create_app(
             service.detect_duplicates(source)
         except Exception:  # noqa: BLE001 去重检测不影响写入本身
             logger.debug("Knowledge duplicate detection failed", exc_info=True)
+
+    def _mcp_json(config, status) -> dict[str, object]:
+        return {
+            "id": config.id,
+            "name": config.name,
+            "transport": config.transport,
+            "command": config.command,
+            "args": list(config.args),
+            "cwd": config.cwd,
+            "url": config.url,
+            "enabled": config.enabled,
+            "toolCallTimeoutSeconds": config.tool_call_timeout_seconds,
+            "state": status.state,
+            "toolCount": status.tool_count,
+            "lastError": status.last_error,
+            "tools": [
+                {
+                    "publicName": tool.public_name,
+                    "rawName": tool.raw_name,
+                    "description": tool.description,
+                    "effect": tool.effect,
+                    "requiresExplicitConfirmation": (
+                        tool.requires_explicit_confirmation
+                    ),
+                }
+                for tool in status.tools
+            ],
+            "createdAt": config.created_at,
+            "updatedAt": config.updated_at,
+        }
+
+    @app.get("/mcp/servers")
+    async def list_mcp_servers() -> dict[str, object]:
+        items = []
+        for config in container.mcp_server_repository.list_servers():
+            items.append(_mcp_json(config, container.mcp_manager.status(config.id)))
+        return {"items": items}
+
+    @app.post("/mcp/servers", status_code=201)
+    async def create_mcp_server(body: McpServerBody) -> dict[str, object]:
+        config = container.mcp_server_repository.create_server(
+            McpServerDraft(
+                name=body.name,
+                transport=body.transport,
+                command=body.command,
+                args=tuple(body.args),
+                env=body.env,
+                cwd=body.cwd,
+                url=body.url,
+                headers=body.headers,
+                enabled=body.enabled,
+                tool_call_timeout_seconds=body.toolCallTimeoutSeconds,
+            )
+        )
+        try:
+            await container.mcp_manager.reload(config.id)
+        except Exception:
+            pass
+        return {"server": _mcp_json(config, container.mcp_manager.status(config.id))}
+
+    @app.patch("/mcp/servers/{server_id}")
+    async def patch_mcp_server(
+        server_id: str, body: McpServerPatchBody
+    ) -> dict[str, object]:
+        current = container.mcp_server_repository.get_server(server_id)
+        name = body.name if body.name is not None else current.name
+        transport = body.transport if body.transport is not None else current.transport
+        command = body.command if body.command is not None else current.command
+        args = tuple(body.args) if body.args is not None else current.args
+        env = body.env if body.env is not None else current.env
+        cwd = body.cwd if body.cwd is not None else current.cwd
+        url = body.url if body.url is not None else current.url
+        headers = body.headers if body.headers is not None else current.headers
+        enabled = body.enabled if body.enabled is not None else current.enabled
+        timeout = (
+            body.toolCallTimeoutSeconds
+            if body.toolCallTimeoutSeconds is not None
+            else current.tool_call_timeout_seconds
+        )
+        config = container.mcp_server_repository.update_server(
+            server_id,
+            McpServerDraft(
+                name=name,
+                transport=transport,
+                command=command,
+                args=args,
+                env=env,
+                cwd=cwd,
+                url=url,
+                headers=headers,
+                enabled=enabled,
+                tool_call_timeout_seconds=timeout,
+            )
+        )
+        try:
+            await container.mcp_manager.reload(config.id)
+        except Exception:
+            pass
+        return {"server": _mcp_json(config, container.mcp_manager.status(config.id))}
+
+    @app.delete("/mcp/servers/{server_id}", status_code=204)
+    async def delete_mcp_server(server_id: str) -> None:
+        await container.mcp_manager.disconnect(server_id)
+        container.mcp_server_repository.delete_server(server_id)
+
+    @app.post("/mcp/servers/{server_id}/reload")
+    async def reload_mcp_server(server_id: str) -> dict[str, object]:
+        try:
+            status = await container.mcp_manager.reload(server_id)
+        except Exception:
+            status = container.mcp_manager.status(server_id)
+        config = container.mcp_server_repository.get_server(server_id)
+        return {"server": _mcp_json(config, status)}
+
+    @app.get("/skills")
+    async def list_skills(
+        workspace: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        root = None
+        if workspace:
+            try:
+                item = container.workspace_repository.get_workspace(workspace)
+                root = (
+                    Path(item.root_path).expanduser()
+                    if item.root_path
+                    else None
+                )
+            except Exception:
+                root = None
+        items = container.skill_service.list_skills(
+            root, workspace_id=workspace or ""
+        )
+        return {
+            "userSkillsDirectory": str(
+                container.settings.database_path.parent / "skills"
+            ),
+            "items": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "scope": skill.scope.value,
+                    "filePath": str(skill.file_path),
+                    "disabled": skill.disabled,
+                    "disableModelInvocation": skill.disable_model_invocation,
+                    "diagnostics": [
+                        {
+                            "code": item.code,
+                            "message": item.message,
+                            "path": str(item.path),
+                        }
+                        for item in skill.diagnostics
+                    ],
+                }
+                for skill in items
+            ],
+        }
+
+    @app.patch("/skills/{scope}/{name}")
+    async def patch_skill(
+        scope: Literal["user", "workspace"],
+        name: str,
+        body: SkillPatchBody,
+        workspace: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        from endless_task.skills import SkillScope
+
+        container.skill_service.set_disabled(
+            scope=SkillScope(scope),
+            name=name,
+            disabled=body.disabled,
+            workspace_id=workspace or "",
+        )
+        return {"disabled": body.disabled}
 
     @app.get("/workspaces")
     async def list_workspaces() -> dict[str, object]:

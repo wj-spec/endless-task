@@ -38,6 +38,41 @@ class ToolRegistry:
             )
         self._tools[name] = tool
 
+    def replace_tools(
+        self,
+        tools: Tuple[RegisteredTool, ...],
+        *,
+        namespace: str = "mcp__",
+    ) -> None:
+        """Atomically replace every tool in a dynamic namespace."""
+        replacements: dict[str, RegisteredTool] = {}
+        for tool in tools:
+            name = tool.definition.name
+            if not name.startswith(namespace):
+                raise ToolValidationError(
+                    "invalid_namespace",
+                    f"Tool does not belong to namespace {namespace}: {name}",
+                )
+            if name in replacements:
+                raise ToolValidationError(
+                    "duplicate_tool",
+                    f"Tool is already registered: {name}",
+                )
+            replacements[name] = tool
+        self._tools = {
+            name: tool
+            for name, tool in self._tools.items()
+            if not name.startswith(namespace)
+        }
+        self._tools.update(replacements)
+
+    def remove_tools(self, *, namespace: str = "mcp__") -> None:
+        self._tools = {
+            name: tool
+            for name, tool in self._tools.items()
+            if not name.startswith(namespace)
+        }
+
     def resolve(self, name: str) -> RegisteredTool:
         tool = self._tools.get(name)
         if tool is None:

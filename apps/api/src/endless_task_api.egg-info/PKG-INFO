@@ -10,5 +10,6 @@ Requires-Dist: reportlab<5,>=4
 Requires-Dist: python-multipart<1,>=0.0.9
 Requires-Dist: onnxruntime<2,>=1.29
 Requires-Dist: tokenizers<1,>=0.23
+Requires-Dist: mcp<2,>=1.24
 Provides-Extra: dev
 Requires-Dist: httpx<1,>=0.27; extra == "dev"

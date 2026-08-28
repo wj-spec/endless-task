@@ -3,8 +3,16 @@ import { KnowledgeContent } from "../knowledge/KnowledgeManagement";
 import { MemoryContent } from "../memory/MemoryManagement";
 import { NotificationsContent } from "../notifications/NotificationsDrawer";
 import { ScheduledTasksContent } from "../tasks/ScheduledTasks";
+import { SkillsContent } from "../skills/SkillsManagement";
+import { McpContent } from "../mcp/McpManagement";
 
-export type AssistantPanelTab = "notifications" | "scheduled" | "memory" | "knowledge";
+export type AssistantPanelTab =
+  | "notifications"
+  | "scheduled"
+  | "memory"
+  | "knowledge"
+  | "skills"
+  | "mcp";
 
 type AssistantPanelProps = {
   onClose: () => void;
@@ -63,6 +71,22 @@ export function AssistantPanel({
           >
             知识
           </button>
+          <button
+            aria-selected={tab === "skills"}
+            onClick={() => onTabChange("skills")}
+            role="tab"
+            type="button"
+          >
+            技能
+          </button>
+          <button
+            aria-selected={tab === "mcp"}
+            onClick={() => onTabChange("mcp")}
+            role="tab"
+            type="button"
+          >
+            MCP
+          </button>
         </div>
         <button className="assistant-panel-close" onClick={onClose} type="button">
           关闭
@@ -78,8 +102,12 @@ export function AssistantPanel({
           <ScheduledTasksContent onOpenConversation={onOpenConversation} />
         ) : tab === "memory" ? (
           <MemoryContent onOpenConversation={onOpenConversation} />
-        ) : (
+        ) : tab === "knowledge" ? (
           <KnowledgeContent workspaceId={workspaceId} workspaces={workspaces} />
+        ) : tab === "skills" ? (
+          <SkillsContent workspaceId={workspaceId} />
+        ) : (
+          <McpContent />
         )}
       </div>
     </aside>

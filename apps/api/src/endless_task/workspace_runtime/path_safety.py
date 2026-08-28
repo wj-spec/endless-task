@@ -32,6 +32,27 @@ class ResolvedPath:
     variant: str = "exact"  # exact | nfd | ampm | curly | combined
 
 
+def resolve_external_read_path(
+    roots: Tuple[Path, ...], raw_path: str
+) -> ResolvedPath:
+    """在多个只读根中解析绝对路径；仅用于技能正文等受控读取。"""
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ToolError("invalid_path", "路径不能为空。", retryable=False)
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        raise ToolError(
+            "path_escape", "只接受绝对路径。", retryable=False
+        )
+    canonical = candidate.resolve(strict=False)
+    for root in roots:
+        root = root.expanduser().resolve(strict=False)
+        if _is_within(root, canonical):
+            return ResolvedPath(canonical=canonical, original_raw=str(candidate))
+    raise ToolError(
+        "path_escape", "路径越出允许的只读目录，已拒绝。", retryable=False
+    )
+
+
 def _is_within(root: Path, target: Path) -> bool:
     try:
         target.relative_to(root)

@@ -1000,3 +1000,92 @@
   font-size: var(--fs-2, 13px);
   cursor: pointer;
 }
+
+/* R6.0 技能管理 */
+.skill-directory {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-path {
+  display: block;
+  overflow: hidden;
+  margin-top: 6px;
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* R6.1 MCP 管理 */
+.mcp-summary {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.mcp-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.mcp-state {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--fs-3);
+}
+
+.mcp-state.is-connected {
+  border-color: #2f9e6e;
+  color: #2f9e6e;
+}
+
+.mcp-state.is-error {
+  border-color: #d64545;
+  color: #d64545;
+}
+
+.mcp-state.is-reconnecting {
+  border-color: #c08a2e;
+  color: #c08a2e;
+}
+
+.mcp-command {
+  overflow-wrap: anywhere;
+  color: var(--muted-strong);
+  font-size: var(--fs-2);
+}
+
+.mcp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.mcp-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
+
+.mcp-tool strong {
+  overflow-wrap: anywhere;
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.mcp-tool span {
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
