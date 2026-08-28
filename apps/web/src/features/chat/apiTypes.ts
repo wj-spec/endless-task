@@ -114,8 +114,34 @@ export type Conversation = {
   parentConversationId: string | null;
   forkTurnId: string | null;
   kind: ConversationKind;
+  providerProfileId: string | null;
+  modelOverride: string | null;
   promotedAt: string | null;
   workspaceId: string | null;
+};
+
+export type ProviderProfile = {
+  id: string;
+  name: string;
+  kind: string;
+  baseUrl: string;
+  defaultModel: string;
+  timeoutSeconds: number;
+  enabled: boolean;
+  isBuiltin: boolean;
+  isDefault: boolean;
+  configured: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProviderProfileInput = {
+  name: string;
+  defaultModel: string;
+  baseUrl?: string;
+  apiKeyRef?: string;
+  timeoutSeconds?: number;
+  enabled?: boolean;
 };
 
 export type Message = {

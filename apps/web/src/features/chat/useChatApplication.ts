@@ -8,6 +8,7 @@ import type {
   ConversationStatus,
   HealthSnapshot,
   LiveTurn,
+  ProviderProfile,
   RuntimeEvent,
   TurnCommandResponse,
   Workspace,
@@ -66,6 +67,7 @@ export function useChatApplication() {
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const streams = useRef(new Map<string, AbortController>());
 
   const applyEvent = useCallback((event: RuntimeEvent) => {
@@ -315,6 +317,20 @@ export function useChatApplication() {
       .listWorkspaces()
       .then(setWorkspaces)
       .catch(() => setWorkspaces([]));
+    void chatApi.listProviders().then(setProviders).catch(() => setProviders([]));
+  }, []);
+
+  const refreshProviders = useCallback(async () => {
+    try {
+      setProviders(await chatApi.listProviders());
+    } catch {
+      setProviders([]);
+    }
+    try {
+      setHealth(await chatApi.health());
+    } catch {
+      setHealth(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -537,6 +553,32 @@ export function useChatApplication() {
     }
   };
 
+  const changeConversationModel = async (
+    providerProfileId: string | null,
+    modelOverride: string | null,
+    conversationId?: string,
+  ) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
+    setPendingAction("provider");
+    try {
+      const updated = await chatApi.patchConversation(targetId, {
+        providerProfileId,
+        modelOverride,
+      });
+      setSnapshots((current) => {
+        const snapshot = current[updated.id];
+        return snapshot
+          ? { ...current, [updated.id]: { ...snapshot, conversation: updated } }
+          : current;
+      });
+    } catch (modelError) {
+      setError(readableError(modelError));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
   const changeConversationStatus = async (
     status: ConversationStatus,
     conversationId?: string,
@@ -730,13 +772,16 @@ export function useChatApplication() {
     newConversation,
     openConversation,
     pendingAction,
+    providers,
     regenerate,
     removeFile,
     resolveApproval,
     renameConversation,
     retry,
+    refreshProviders,
     search,
     selectVariant,
+    changeConversationModel,
     send,
     setDraft,
     setError,

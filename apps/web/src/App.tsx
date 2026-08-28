@@ -223,6 +223,7 @@ export function App() {
         liveTurns={chat.liveTurns}
         loading={chat.loading}
         pendingAction={chat.pendingAction}
+        providers={chat.providers}
         onArchive={() => void chat.changeConversationStatus("archived")}
         onCancel={() => void chat.cancel()}
         onCreateBranch={(forkTurnId) => void chat.createBranch(forkTurnId)}
@@ -246,6 +247,9 @@ export function App() {
           void chat.selectVariant(turnId, variantId)
         }
         onSend={() => void chat.send()}
+        onModelChange={(providerProfileId, modelOverride) =>
+          void chat.changeConversationModel(providerProfileId, modelOverride)
+        }
         onUploadFile={(file) => void chat.uploadFile(file)}
         onOpenAssistantTab={(tab) => {
           setAssistantTab(tab);
@@ -292,6 +296,7 @@ export function App() {
             workspaces={chat.workspaces}
             loading={chat.sideLoading}
             pendingAction={chat.pendingAction}
+            providers={chat.providers}
             variant="side"
             onArchive={() => {}}
             onCancel={() => void chat.cancel(chat.sideConversationId ?? undefined)}
@@ -320,6 +325,13 @@ export function App() {
               )
             }
             onSend={() => void chat.sendSide()}
+            onModelChange={(providerProfileId, modelOverride) =>
+              void chat.changeConversationModel(
+                providerProfileId,
+                modelOverride,
+                chat.sideConversationId ?? undefined,
+              )
+            }
             onUploadFile={() => {}}
             proposalBusyId={proposals.busyProposalId}
             proposalErrors={proposals.resolveErrors}
@@ -432,6 +444,7 @@ export function App() {
           }}
           onTabChange={setAssistantTab}
           pendingProposals={hub.proposals}
+          onProvidersChanged={() => void chat.refreshProviders()}
           tab={assistantTab}
           unreadCount={hub.unread}
           workspaceId={chat.workspaceId}

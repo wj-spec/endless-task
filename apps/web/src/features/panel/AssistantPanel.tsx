@@ -5,6 +5,7 @@ import { NotificationsContent } from "../notifications/NotificationsDrawer";
 import { ScheduledTasksContent } from "../tasks/ScheduledTasks";
 import { SkillsContent } from "../skills/SkillsManagement";
 import { McpContent } from "../mcp/McpManagement";
+import { ProviderManagement } from "../providers/ProviderManagement";
 
 export type AssistantPanelTab =
   | "notifications"
@@ -12,13 +13,15 @@ export type AssistantPanelTab =
   | "memory"
   | "knowledge"
   | "skills"
-  | "mcp";
+  | "mcp"
+  | "providers";
 
 type AssistantPanelProps = {
   onClose: () => void;
   onOpenConversation: (conversationId: string) => void;
   onTabChange: (tab: AssistantPanelTab) => void;
   pendingProposals: PendingProposal[];
+  onProvidersChanged: () => void | Promise<void>;
   tab: AssistantPanelTab;
   unreadCount: number;
   workspaceId: string | null;
@@ -30,6 +33,7 @@ export function AssistantPanel({
   onOpenConversation,
   onTabChange,
   pendingProposals,
+  onProvidersChanged,
   tab,
   unreadCount,
   workspaceId,
@@ -87,6 +91,14 @@ export function AssistantPanel({
           >
             MCP
           </button>
+          <button
+            aria-selected={tab === "providers"}
+            onClick={() => onTabChange("providers")}
+            role="tab"
+            type="button"
+          >
+            模型
+          </button>
         </div>
         <button className="assistant-panel-close" onClick={onClose} type="button">
           关闭
@@ -106,8 +118,10 @@ export function AssistantPanel({
           <KnowledgeContent workspaceId={workspaceId} workspaces={workspaces} />
         ) : tab === "skills" ? (
           <SkillsContent workspaceId={workspaceId} />
-        ) : (
+        ) : tab === "mcp" ? (
           <McpContent />
+        ) : (
+          <ProviderManagement onChanged={onProvidersChanged} />
         )}
       </div>
     </aside>

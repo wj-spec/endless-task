@@ -10,6 +10,8 @@ import type { KnowledgeProposal,
   ConversationSnapshot,
   ConversationStatus,
   HealthSnapshot,
+  ProviderProfile,
+  ProviderProfileInput,
   MemoryProposal,
   KnowledgeSource,
   KnowledgeCitation,
@@ -97,6 +99,27 @@ async function responseError(response: Response): Promise<ApiClientError> {
 
 export const chatApi = {
   health: () => request<HealthSnapshot>("/health"),
+  listProviders: async () => {
+    const response = await request<{ items: ProviderProfile[] }>("/providers");
+    return response.items;
+  },
+  createProvider: (provider: ProviderProfileInput) =>
+    request<{ profile: ProviderProfile }>("/providers", {
+      method: "POST",
+      body: JSON.stringify(provider),
+    }).then((response) => response.profile),
+  patchProvider: (providerId: string, patch: Partial<ProviderProfileInput>) =>
+    request<{ profile: ProviderProfile }>(`/providers/${providerId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }).then((response) => response.profile),
+  deleteProvider: (providerId: string) =>
+    request<void>(`/providers/${providerId}`, { method: "DELETE" }),
+  setDefaultProvider: (providerId: string) =>
+    request<{ profile: ProviderProfile }>("/providers/default", {
+      method: "POST",
+      body: JSON.stringify({ profileId: providerId }),
+    }).then((response) => response.profile),
   listConversations: async (
     status: ConversationStatus,
     query?: string,
@@ -204,7 +227,12 @@ export const chatApi = {
     request<ConversationSnapshot>(`/conversations/${conversationId}`),
   patchConversation: (
     conversationId: string,
-    patch: { title?: string; status?: ConversationStatus },
+    patch: {
+      title?: string;
+      status?: ConversationStatus;
+      providerProfileId?: string | null;
+      modelOverride?: string | null;
+    },
   ) =>
     request<Conversation>(`/conversations/${conversationId}`, {
       method: "PATCH",

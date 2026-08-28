@@ -66,6 +66,7 @@ class AssistantRuntime:
         knowledge_reranker=None,
         knowledge_repository=None,
         workspace_resolver=None,
+        provider_resolver=None,
     ) -> None:
         self._chat_repository = chat_repository
         self._runtime_repository = runtime_repository
@@ -84,6 +85,7 @@ class AssistantRuntime:
         self._knowledge_reranker = knowledge_reranker
         self._knowledge_repository = knowledge_repository
         self._workspace_resolver = workspace_resolver
+        self._provider_resolver = provider_resolver
 
     async def execute(self, *, turn_id: str, variant_id: str) -> TurnSnapshot:
         token = await self._cancellation_manager.acquire(turn_id, variant_id)
@@ -102,11 +104,24 @@ class AssistantRuntime:
                     await self._publish(event)
                 return self._chat_repository.get_turn(turn_id)
 
+            conversation_id = self._chat_repository.get_turn(
+                turn_id
+            ).turn.conversation_id
+            if self._provider_resolver is None:
+                selected_provider = self._provider
+                selected_model = self._configuration.model
+            else:
+                selection = self._provider_resolver(
+                    self._chat_repository.get_conversation(conversation_id)
+                )
+                selected_provider = selection.provider
+                selected_model = selection.model
+
             started_event = self._runtime_repository.start_response(
                 turn_id=turn_id,
                 variant_id=variant_id,
-                provider=self._provider.name,
-                model=self._configuration.model,
+                provider=selected_provider.name,
+                model=selected_model,
             )
             started = True
             await self._publish(started_event)
@@ -141,13 +156,11 @@ class AssistantRuntime:
                 )
                 await self._publish(event)
 
-            tool_filter = self._tool_filter_for_conversation(
-                self._chat_repository.get_turn(turn_id).turn.conversation_id
-            )
+            tool_filter = self._tool_filter_for_conversation(conversation_id)
             agent_loop = AgentLoop(
-                provider=self._provider,
+                provider=selected_provider,
                 tool_registry=self._tool_registry,
-                model=self._configuration.model,
+                model=selected_model,
                 max_output_tokens=self._configuration.max_output_tokens,
                 temperature=self._configuration.temperature,
                 max_iterations=self._configuration.max_agent_iterations,

@@ -77,6 +77,8 @@ class Conversation:
     kind: ConversationKind = ConversationKind.NORMAL
     promoted_at: Optional[str] = None
     workspace_id: Optional[str] = None
+    provider_profile_id: Optional[str] = None
+    model_override: Optional[str] = None
 
 
 @dataclass(frozen=True)

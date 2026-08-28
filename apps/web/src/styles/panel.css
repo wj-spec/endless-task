@@ -780,6 +780,117 @@
   color: var(--accent);
 }
 
+.knowledge-badge.is-warning {
+  border-color: var(--warn-mid, #c08a2e);
+  color: var(--warn-mid, #c08a2e);
+}
+
+/* R6.3 模型配置管理 */
+.provider-summary {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.provider-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.provider-card.is-disabled {
+  opacity: 0.72;
+}
+
+.provider-card header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.provider-card header strong {
+  display: block;
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.provider-model {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+  overflow-wrap: anywhere;
+}
+
+.provider-badges {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.provider-card dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.provider-card dt {
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.provider-card dd {
+  margin: 2px 0 0;
+  color: var(--muted-strong);
+  font-size: var(--fs-2);
+  overflow-wrap: anywhere;
+}
+
+.provider-card footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.provider-card footer button,
+.provider-form-actions button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.provider-card footer button:disabled,
+.provider-form-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.provider-card .danger-button {
+  border-color: color-mix(in srgb, var(--danger, #d64545) 55%, transparent);
+  color: var(--danger, #d64545);
+}
+
+.provider-form-actions {
+  display: flex;
+  gap: 6px;
+}
+
 /* R5.11 知识归属选择与徽标 */
 .knowledge-scope-picker {
   display: flex;

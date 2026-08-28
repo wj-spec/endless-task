@@ -212,6 +212,7 @@
 
 .composer-note {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -223,6 +224,8 @@
 
 .composer-status {
   display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -234,12 +237,39 @@
 }
 
 .composer-status-text {
+  flex: 0 0 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.model-select {
+  flex: 1 1 180px;
+  max-width: 320px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font: inherit;
+  font-size: var(--fs-1);
+  text-overflow: ellipsis;
+}
+
+.model-input {
+  flex: 0 1 120px;
+  min-width: 72px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font: inherit;
+  font-size: var(--fs-1);
+}
+
 .composer-hint {
+  margin-left: auto;
   flex: 0 0 auto;
   color: var(--faint);
 }

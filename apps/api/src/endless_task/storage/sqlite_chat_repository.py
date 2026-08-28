@@ -67,8 +67,9 @@ class SqliteChatRepository:
                 """
                 INSERT INTO conversations(
                     id, title, status, next_turn_ordinal, title_is_manual,
-                    created_at, updated_at, archived_at, workspace_id
-                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?)
+                    created_at, updated_at, archived_at, workspace_id,
+                    provider_profile_id, model_override
+                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?, NULL, NULL)
                 """,
                 (conversation_id, now, now, workspace_id),
             )
@@ -103,8 +104,9 @@ class SqliteChatRepository:
                 """
                 INSERT INTO conversations(
                     id, title, status, next_turn_ordinal, title_is_manual,
-                    created_at, updated_at, archived_at, workspace_id
-                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?)
+                    created_at, updated_at, archived_at, workspace_id,
+                    provider_profile_id, model_override
+                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?, NULL, NULL)
                 """,
                 (conversation_id, now, now, workspace_id),
             )
@@ -193,6 +195,45 @@ class SqliteChatRepository:
             conversation = self._get_conversation(connection, conversation_id)
         return conversation
 
+    def set_conversation_model(
+        self,
+        conversation_id: str,
+        *,
+        provider_profile_id: Optional[str],
+        model_override: Optional[str],
+    ) -> Conversation:
+        normalized_model = " ".join((model_override or "").split()) or None
+        if normalized_model is not None and len(normalized_model) > 200:
+            raise ValidationError("Model override is too long.")
+        if provider_profile_id is not None:
+            exists = False
+            with self._database.connect() as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM provider_profiles WHERE id = ?",
+                    (provider_profile_id,),
+                ).fetchone()
+                exists = row is not None
+            if not exists:
+                raise NotFoundError(
+                    f"Provider profile not found: {provider_profile_id}"
+                )
+        with self._database.transaction() as connection:
+            self._get_conversation(connection, conversation_id)
+            connection.execute(
+                """
+                UPDATE conversations
+                SET provider_profile_id = ?, model_override = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    provider_profile_id,
+                    normalized_model,
+                    self._clock(),
+                    conversation_id,
+                ),
+            )
+            return self._get_conversation(connection, conversation_id)
+
     def delete_conversation(self, conversation_id: str) -> None:
         with self._database.transaction() as connection:
             self._get_conversation(connection, conversation_id)
@@ -252,8 +293,9 @@ class SqliteChatRepository:
                 INSERT INTO conversations(
                     id, title, status, next_turn_ordinal, title_is_manual,
                     created_at, updated_at, archived_at,
-                    parent_conversation_id, fork_turn_id, kind, workspace_id
-                ) VALUES (?, ?, 'active', 1, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    parent_conversation_id, fork_turn_id, kind, workspace_id,
+                    provider_profile_id, model_override
+                ) VALUES (?, ?, 'active', 1, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     branch_id,
@@ -265,6 +307,8 @@ class SqliteChatRepository:
                     fork_row["id"],
                     kind.value,
                     parent.workspace_id,
+                    parent.provider_profile_id,
+                    parent.model_override,
                 ),
             )
             return self._get_conversation(connection, branch_id)
@@ -913,6 +957,8 @@ class SqliteChatRepository:
             kind=ConversationKind(row["kind"]),
             promoted_at=row["promoted_at"],
             workspace_id=row["workspace_id"],
+            provider_profile_id=row["provider_profile_id"],
+            model_override=row["model_override"],
         )
 
     @staticmethod

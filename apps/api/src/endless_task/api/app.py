@@ -56,6 +56,7 @@ from endless_task.runtime import (
     UnconfiguredProvider,
 )
 from endless_task.runtime.provider import ModelProvider
+from endless_task.runtime.provider_manager import ProviderManager
 from endless_task.artifacts import (
     ArtifactProposalService,
     SourceReferenceResolver,
@@ -122,6 +123,10 @@ from endless_task.storage import (
 from endless_task.storage.sqlite_mcp_server_repository import (
     McpServerDraft,
     SqliteMcpServerRepository,
+)
+from endless_task.storage.sqlite_provider_profile_repository import (
+    ProviderProfileDraft,
+    SqliteProviderProfileRepository,
 )
 from endless_task.storage.sqlite_skill_override_repository import (
     SqliteSkillOverrideRepository,
@@ -542,6 +547,8 @@ class AppContainer:
     workspace_repository: SqliteWorkspaceRepository
     workspace_resolver: WorkspaceResolver
     skill_service: SkillService
+    provider_profile_repository: SqliteProviderProfileRepository
+    provider_manager: ProviderManager
     mcp_server_repository: SqliteMcpServerRepository
     mcp_manager: McpManager
     effect_log: EffectLog
@@ -567,6 +574,8 @@ class ConversationPatch(BaseModel):
 
     title: Optional[str] = None
     status: Optional[ConversationStatus] = None
+    providerProfileId: Optional[str] = None
+    modelOverride: Optional[str] = None
 
 
 class CreateBranchBody(BaseModel):
@@ -623,6 +632,34 @@ class RollbackArtifactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     targetOrdinal: int
+
+
+class ProviderProfileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    defaultModel: str
+    baseUrl: str = ""
+    apiKeyRef: str = ""
+    timeoutSeconds: float = 60.0
+    enabled: bool = True
+
+
+class ProviderProfilePatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = None
+    defaultModel: Optional[str] = None
+    baseUrl: Optional[str] = None
+    apiKeyRef: Optional[str] = None
+    timeoutSeconds: Optional[float] = None
+    enabled: Optional[bool] = None
+
+
+class ProviderDefaultBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profileId: str
 
 
 class SkillPatchBody(BaseModel):
@@ -822,6 +859,7 @@ def _build_container(
     artifact_repository = SqliteArtifactRepository(database)
     workspace_repository = SqliteWorkspaceRepository(database)
     skill_override_repository = SqliteSkillOverrideRepository(database)
+    provider_profile_repository = SqliteProviderProfileRepository(database)
     mcp_server_repository = SqliteMcpServerRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
@@ -879,6 +917,10 @@ def _build_container(
     memory_proposal_service: Optional[MemoryProposalService] = None
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
+    provider_manager = ProviderManager(
+        repository=provider_profile_repository,
+        fallback_provider=selected_provider,
+    )
     selected_tool_registry = tool_registry or ToolRegistry()
     workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
     skill_service = SkillService(
@@ -1000,6 +1042,7 @@ def _build_container(
         event_publisher=broker,
         permission_mode_provider=lambda: preferences_repository.get_permission_mode()[0],
         workspace_resolver=workspace_resolver,
+        provider_resolver=provider_manager.resolve,
     )
     artifact_proposal_service: Optional[ArtifactProposalService] = None
     if settings.artifact_proposals_enabled:
@@ -1208,6 +1251,8 @@ def _build_container(
         workspace_repository=workspace_repository,
         workspace_resolver=workspace_resolver,
         skill_service=skill_service,
+        provider_profile_repository=provider_profile_repository,
+        provider_manager=provider_manager,
         mcp_server_repository=mcp_server_repository,
         mcp_manager=mcp_manager,
         effect_log=effect_log,
@@ -1315,6 +1360,22 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         container.database.initialize()
+        env_key_ref = ""
+        if container.settings.provider_name == "deepseek" and os.environ.get(
+            "DEEPSEEK_API_KEY"
+        ):
+            env_key_ref = "${DEEPSEEK_API_KEY}"
+        elif container.settings.provider_name == "openai" and os.environ.get(
+            "OPENAI_API_KEY"
+        ):
+            env_key_ref = "${OPENAI_API_KEY}"
+        container.provider_profile_repository.ensure_builtin_profile(
+            name=container.settings.provider_name,
+            default_model=container.settings.model,
+            base_url=container.settings.base_url or "",
+            api_key_ref=env_key_ref,
+            timeout_seconds=container.settings.provider_timeout_seconds,
+        )
         if container.embedding_indexer is not None:
             container.embedding_indexer.start()
         await container.runtime.recover_interrupted()
@@ -1362,6 +1423,7 @@ def create_app(
             await container.mcp_manager.stop_all()
             await container.task_worker.drain()
             await container.controller.shutdown()
+            await container.provider_manager.close()
             close_provider = getattr(container.provider, "close", None)
             if close_provider is not None:
                 await close_provider()
@@ -1430,12 +1492,13 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, object]:
+        selection = container.provider_manager.default_selection()
         return {
             "status": "ok",
-            "provider": container.provider.name,
-            "model": container.settings.model,
+            "provider": selection.provider.name,
+            "model": selection.model,
             "providerConfigured": not isinstance(
-                container.provider,
+                selection.provider,
                 UnconfiguredProvider,
             ),
             "embedding": {
@@ -1591,8 +1654,16 @@ def create_app(
         conversation_id: str,
         body: ConversationPatch,
     ) -> dict[str, object]:
-        if body.title is None and body.status is None:
-            raise ApiRequestError("invalid_request", "至少需要提供 title 或 status。")
+        if (
+            body.title is None
+            and body.status is None
+            and body.providerProfileId is None
+            and body.modelOverride is None
+        ):
+            raise ApiRequestError(
+                "invalid_request",
+                "至少需要提供 title、status、providerProfileId 或 modelOverride。",
+            )
         conversation = container.chat_repository.get_conversation(conversation_id)
         if body.title is not None:
             conversation = container.chat_repository.rename_conversation(
@@ -1603,6 +1674,12 @@ def create_app(
             conversation = container.chat_repository.set_conversation_status(
                 conversation_id,
                 body.status,
+            )
+        if body.providerProfileId is not None or body.modelOverride is not None:
+            conversation = container.chat_repository.set_conversation_model(
+                conversation_id,
+                provider_profile_id=body.providerProfileId,
+                model_override=body.modelOverride,
             )
         return conversation_json(conversation)
 
@@ -1706,6 +1783,92 @@ def create_app(
             service.detect_duplicates(source)
         except Exception:  # noqa: BLE001 去重检测不影响写入本身
             logger.debug("Knowledge duplicate detection failed", exc_info=True)
+
+    def _provider_profile_json(profile) -> dict[str, object]:
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "kind": profile.kind,
+            "baseUrl": profile.base_url,
+            "defaultModel": profile.default_model,
+            "timeoutSeconds": profile.timeout_seconds,
+            "enabled": profile.enabled,
+            "isBuiltin": profile.is_builtin,
+            "isDefault": (
+                profile.id
+                == container.provider_profile_repository.get_default_profile_id()
+            ),
+            "configured": profile.is_builtin
+            or bool(profile.api_key_ref.strip() or profile.base_url.strip()),
+            "createdAt": profile.created_at,
+            "updatedAt": profile.updated_at,
+        }
+
+    @app.get("/providers")
+    async def list_providers() -> dict[str, object]:
+        return {
+            "items": [
+                _provider_profile_json(profile)
+                for profile in container.provider_profile_repository.list_profiles()
+            ]
+        }
+
+    @app.post("/providers", status_code=201)
+    async def create_provider_profile(
+        body: ProviderProfileBody,
+    ) -> dict[str, object]:
+        profile = container.provider_profile_repository.create_profile(
+            ProviderProfileDraft(
+                name=body.name,
+                default_model=body.defaultModel,
+                base_url=body.baseUrl,
+                api_key_ref=body.apiKeyRef,
+                timeout_seconds=body.timeoutSeconds,
+                enabled=body.enabled,
+            )
+        )
+        return {"profile": _provider_profile_json(profile)}
+
+    @app.patch("/providers/{profile_id}")
+    async def patch_provider_profile(
+        profile_id: str, body: ProviderProfilePatchBody
+    ) -> dict[str, object]:
+        current = container.provider_profile_repository.get_profile(profile_id)
+        profile = container.provider_profile_repository.update_profile(
+            ProviderProfileDraft(
+                name=body.name if body.name is not None else current.name,
+                default_model=(
+                    body.defaultModel
+                    if body.defaultModel is not None
+                    else current.default_model
+                ),
+                base_url=body.baseUrl if body.baseUrl is not None else current.base_url,
+                api_key_ref=(
+                    body.apiKeyRef
+                    if body.apiKeyRef is not None
+                    else current.api_key_ref
+                ),
+                timeout_seconds=(
+                    body.timeoutSeconds
+                    if body.timeoutSeconds is not None
+                    else current.timeout_seconds
+                ),
+                enabled=body.enabled if body.enabled is not None else current.enabled,
+            )
+        )
+        await container.provider_manager.invalidate(profile.id)
+        return {"profile": _provider_profile_json(profile)}
+
+    @app.delete("/providers/{profile_id}", status_code=204)
+    async def delete_provider_profile(profile_id: str) -> None:
+        await container.provider_manager.invalidate(profile_id)
+        container.provider_profile_repository.delete_profile(profile_id)
+
+    @app.post("/providers/default")
+    async def set_default_provider(body: ProviderDefaultBody) -> dict[str, object]:
+        container.provider_profile_repository.set_default_profile_id(body.profileId)
+        profile = container.provider_profile_repository.get_profile(body.profileId)
+        return {"profile": _provider_profile_json(profile)}
 
     def _mcp_json(config, status) -> dict[str, object]:
         return {

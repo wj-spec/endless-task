@@ -5,6 +5,7 @@ import type {
   HealthSnapshot,
   KnowledgeCitation,
   LiveTurn,
+  ProviderProfile,
   ResponseVariantSnapshot,
   Workspace,
 } from "./apiTypes";
@@ -30,6 +31,7 @@ type ChatWorkSurfaceProps = {
   liveTurns: Record<string, LiveTurn>;
   loading: boolean;
   pendingAction: string | null;
+  providers: ProviderProfile[];
   onArchive: () => void;
   onCancel: () => void;
   onCreateBranch: (forkTurnId?: string) => void;
@@ -50,6 +52,10 @@ type ChatWorkSurfaceProps = {
   onRetry: (turnId: string) => void;
   onSelectVariant: (turnId: string, variantId: string) => void;
   onSend: () => void;
+  onModelChange: (
+    providerProfileId: string | null,
+    modelOverride: string | null,
+  ) => void;
   onUploadFile: (file: File) => void;
   proposalBusyId: string | null;
   proposalErrors: Record<string, string>;
@@ -64,7 +70,7 @@ type ChatWorkSurfaceProps = {
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onCloseSide?: () => void;
-  onOpenAssistantTab?: (tab: "memory" | "knowledge") => void;
+  onOpenAssistantTab?: (tab: "memory" | "knowledge" | "providers") => void;
   workspaces?: Workspace[];
   onOpenConversation?: (conversationId: string) => void;
   onOpenWorkspace?: () => void;
@@ -95,6 +101,7 @@ export function ChatWorkSurface({
   liveTurns,
   loading,
   pendingAction,
+  providers,
   onArchive,
   onCancel,
   onCreateBranch,
@@ -111,6 +118,7 @@ export function ChatWorkSurface({
   onRetry,
   onSelectVariant,
   onSend,
+  onModelChange,
   onUploadFile,
   proposalBusyId,
   proposalErrors,
@@ -141,6 +149,11 @@ export function ChatWorkSurface({
     turnId: string;
     label: string;
   } | null>(null);
+  const [modelDraft, setModelDraft] = useState("");
+
+  useEffect(() => {
+    setModelDraft(conversation?.conversation.modelOverride ?? "");
+  }, [conversation?.conversation.id, conversation?.conversation.modelOverride]);
 
   const handleCitationClick = async (turnId: string, label: string) => {
     if (
@@ -227,8 +240,33 @@ export function ChatWorkSurface({
   };
 
   const archived = conversation?.conversation.status === "archived";
-  const providerUnavailable = health !== null && !health.providerConfigured;
+  const defaultProvider = providers.find((item) => item.isDefault) ?? providers[0];
+  const selectedProvider = providers.find(
+    (item) => item.id === conversation?.conversation.providerProfileId,
+  );
+  const effectiveProvider = selectedProvider ?? defaultProvider;
+  const providerUnavailable =
+    (health !== null && !health.providerConfigured) ||
+    effectiveProvider?.configured === false;
   const composerDisabled = !conversation || archived || providerUnavailable;
+  const selectableProviders = providers.filter(
+    (item) => item.enabled || item.id === selectedProvider?.id,
+  );
+
+  const changeProvider = (value: string) => {
+    if (value === "__manage__") {
+      onOpenAssistantTab?.("providers");
+      return;
+    }
+    onModelChange(value || null, modelDraft.trim() || null);
+  };
+
+  const commitModelDraft = () => {
+    if (!conversation) return;
+    const nextModel = modelDraft.trim();
+    if (nextModel === (conversation.conversation.modelOverride ?? "")) return;
+    onModelChange(conversation.conversation.providerProfileId, nextModel || null);
+  };
   const attachmentDisabled =
     !conversation || archived || isGenerating || pendingAction !== null;
 
@@ -771,12 +809,39 @@ export function ChatWorkSurface({
               }
             />
             <span className="composer-status-text">
-              {health
-                ? `${health.provider} · ${health.model} · ${
-                    health.providerConfigured ? "仅在本机运行" : "需要配置模型服务"
-                  }`
-                : "本地服务未连接"}
+              {health ? (health.providerConfigured ? "服务已连接" : "需要配置模型服务") : "本地服务未连接"}
             </span>
+            <select
+              aria-label="当前对话模型"
+              className="model-select"
+              disabled={!conversation || archived || pendingAction !== null}
+              onChange={(event) => changeProvider(event.target.value)}
+              value={conversation?.conversation.providerProfileId ?? ""}
+            >
+              <option value="">
+                {defaultProvider
+                  ? `默认 · ${defaultProvider.name} · ${defaultProvider.defaultModel}`
+                  : "默认模型"}
+              </option>
+              {selectableProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name} · {provider.defaultModel}
+                </option>
+              ))}
+              <option value="__manage__">管理模型…</option>
+            </select>
+            <input
+              aria-label="当前对话模型覆盖"
+              className="model-input"
+              disabled={!conversation || archived || pendingAction !== null}
+              onBlur={commitModelDraft}
+              onChange={(event) => setModelDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              placeholder="模型"
+              value={modelDraft}
+            />
           </span>
           <span className="composer-hint">
             Enter 发送 · Shift + Enter 换行 · 可附加 UTF-8 文本（≤ 1 MB）
