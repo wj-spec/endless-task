@@ -460,6 +460,26 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             conversation_id=conversation.id,
             active_lane_id=main.id,
         )
+        visible_branch = self.repository.create_lane(
+            conversation_id=conversation.id,
+            kind=LaneKind.PERSISTENT_BRANCH,
+            base_entry_id=base.id,
+        )
+        branch_leaf = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=visible_branch.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "仅分支可见的历史"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        with self.assertRaisesRegex(ConflictError, "current main lane"):
+            await gateway.create_temporary_conversation(
+                source_conversation_id=conversation.id,
+                source_lane_id=visible_branch.id,
+                source_leaf_entry_id=branch_leaf.id,
+            )
+
         temporary_conversation_id, temporary_lane = await gateway.create_temporary_conversation(
             source_conversation_id=conversation.id,
             source_lane_id=main.id,
@@ -516,18 +536,54 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((), tuple(source_events))
         self.assertEqual(("temporary_conversation.created",), tuple(temporary_events))
 
+    async def test_branch_rejects_incomplete_turn_boundary(self) -> None:
+        gateway = self._gateway(ScriptedProvider([]))
+        conversation = self.chat_repository.create_conversation()
+        main = self.repository.create_lane(conversation_id=conversation.id)
+        user_entry = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "尚未完成回答的问题"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        self.repository.set_conversation_pointer(
+            conversation_id=conversation.id,
+            active_lane_id=main.id,
+        )
+
+        with self.assertRaisesRegex(
+            InvalidStateError,
+            "final assistant response boundary",
+        ):
+            await gateway.create_lane_branch(
+                conversation_id=conversation.id,
+                source_lane_id=main.id,
+                base_entry_id=user_entry.id,
+            )
+
     async def test_promote_lane_switches_pointer_and_projects_event(self) -> None:
         provider = ScriptedProvider([])
         gateway = self._gateway(provider)
         conversation = self.chat_repository.create_conversation()
         main = self.repository.create_lane(conversation_id=conversation.id)
-        base = self.repository.append_entry(
+        question = self.repository.append_entry(
             conversation_id=conversation.id,
             lane_id=main.id,
             type=TranscriptEntryType.USER_MESSAGE,
             actor=Actor.USER,
             payload={"content": "主线历史"},
             context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        base = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.ASSISTANT_MESSAGE,
+            actor=Actor.ASSISTANT,
+            payload={"content": "主线回复"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+            parent_id=question.id,
         )
         self.repository.set_conversation_pointer(
             conversation_id=conversation.id,
@@ -596,13 +652,22 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
         gateway = self._gateway(provider)
         conversation = self.chat_repository.create_conversation()
         main = self.repository.create_lane(conversation_id=conversation.id)
-        base = self.repository.append_entry(
+        question = self.repository.append_entry(
             conversation_id=conversation.id,
             lane_id=main.id,
             type=TranscriptEntryType.USER_MESSAGE,
             actor=Actor.USER,
             payload={"content": "主线历史"},
             context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        base = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.ASSISTANT_MESSAGE,
+            actor=Actor.ASSISTANT,
+            payload={"content": "主线回复"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+            parent_id=question.id,
         )
         self.repository.set_conversation_pointer(
             conversation_id=conversation.id,
@@ -831,6 +896,27 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             is RunStatus.COMPLETED
         )
         self.assertEqual(2, provider.started)
+
+    async def test_active_run_is_not_exposed_as_interrupted(self) -> None:
+        provider = BlockingProvider()
+        gateway = self._gateway(provider)
+        conversation = self.chat_repository.create_conversation()
+
+        handle = await gateway.send(conversation.id, "仍在正常执行的问题")
+        await _wait_until(lambda: provider.started == 1)
+
+        snapshot = gateway.snapshot(conversation.id)
+        reports = gateway.recovery_reports(conversation.id)
+
+        self.assertEqual(handle.run_id, snapshot["runningRunId"])
+        self.assertEqual((), snapshot["interruptedRuns"])
+        self.assertEqual((), reports)
+
+        provider.release.set()
+        await _wait_until(
+            lambda: self.repository.get_run(handle.run_id).status
+            is RunStatus.COMPLETED
+        )
 
     async def test_interrupted_run_is_exposed_in_snapshot(self) -> None:
         provider = ScriptedProvider([])

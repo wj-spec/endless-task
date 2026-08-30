@@ -621,13 +621,22 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         conversation = container.chat_repository.create_conversation()
         repository = container.runtime_v2_repository
         main = repository.create_lane(conversation_id=conversation.id)
-        base = repository.append_entry(
+        question = repository.append_entry(
             conversation_id=conversation.id,
             lane_id=main.id,
             type=TranscriptEntryType.USER_MESSAGE,
             actor=Actor.USER,
             payload={"content": "主线历史"},
             context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        base = repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.ASSISTANT_MESSAGE,
+            actor=Actor.ASSISTANT,
+            payload={"content": "主线回复"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+            parent_id=question.id,
         )
         repository.set_conversation_pointer(
             conversation_id=conversation.id,
@@ -723,7 +732,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(200, main_snapshot.status_code)
         self.assertEqual(lane["id"], branch_snapshot.json()["activeLaneId"])
         self.assertEqual(
-            ("主线历史", "分支回复"),
+            ("主线历史", "主线回复", "分支回复"),
             tuple(
                 entry["data"]["content"]
                 for entry in branch_snapshot.json()["entries"]
@@ -732,7 +741,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertEqual(
-            ("主线历史",),
+            ("主线历史", "主线回复"),
             tuple(
                 entry["data"]["content"]
                 for entry in main_snapshot.json()["entries"]
@@ -788,12 +797,25 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
             conversation_id=conversation.id,
             active_lane_id=main.id,
         )
+        visible_branch = repository.create_lane(
+            conversation_id=conversation.id,
+            kind=LaneKind.PERSISTENT_BRANCH,
+            base_entry_id=base.id,
+        )
+        branch_leaf = repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=visible_branch.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "仅分支可见的历史"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
 
         created = await client.post(
             f"/api/v2/conversations/{conversation.id}/temporary-conversations",
             json={
-                "sourceLaneId": main.id,
-                "sourceLeafEntryId": base.id,
+                "sourceLaneId": visible_branch.id,
+                "sourceLeafEntryId": branch_leaf.id,
                 "title": "临时探索",
             },
         )
@@ -802,6 +824,25 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         temporary_lane = created.json()["lane"]
         self.assertEqual("ephemeral", temporary["kind"])
         self.assertEqual("temporary", temporary_lane["kind"])
+        temporary_snapshot = await client.get(
+            f"/api/v2/conversations/{temporary['id']}/snapshot",
+            params={"lane_id": temporary_lane["id"]},
+        )
+        self.assertEqual(200, temporary_snapshot.status_code)
+        self.assertEqual(
+            ("主线历史",),
+            tuple(
+                entry["data"]["content"]
+                for entry in temporary_snapshot.json()["entries"]
+                if entry["type"] in {"user_message", "assistant_message"}
+            ),
+        )
+        self.assertTrue(
+            all(
+                entry["inherited"]
+                for entry in temporary_snapshot.json()["entries"]
+            )
+        )
 
         created_events = [
             event

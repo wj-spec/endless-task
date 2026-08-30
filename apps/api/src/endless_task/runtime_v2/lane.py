@@ -5,7 +5,13 @@ from typing import TYPE_CHECKING
 
 from endless_task.domain.repositories import ConflictError, InvalidStateError
 
-from .domain import LaneKind, LanePromotionRecord, LaneRecord
+from .domain import (
+    LaneKind,
+    LanePromotionRecord,
+    LaneRecord,
+    TranscriptEntryStatus,
+    TranscriptEntryType,
+)
 
 if TYPE_CHECKING:
     from endless_task.storage import SqliteRuntimeV2Repository
@@ -53,6 +59,13 @@ class RuntimeV2LaneService:
         if base_entry_id not in context_entry_ids:
             raise InvalidStateError("Base entry is not on the source lane context path")
         base_entry = self._repository.get_entry(base_entry_id)
+        if (
+            base_entry.type is not TranscriptEntryType.ASSISTANT_MESSAGE
+            or base_entry.status is not TranscriptEntryStatus.FINAL
+        ):
+            raise InvalidStateError(
+                "Branch base must be a final assistant response boundary"
+            )
         base_excerpt = self._entry_excerpt(base_entry)
 
         lane = self._repository.create_lane(

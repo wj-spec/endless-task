@@ -89,13 +89,22 @@ class RuntimeV2MemoryTest(unittest.IsolatedAsyncioTestCase):
         workspace = self.workspace_repository.create_workspace("Memory Workspace")
         conversation = self.chat_repository.create_conversation(workspace.id)
         main = self.repository.create_lane(conversation_id=conversation.id)
-        base = self.repository.append_entry(
+        question = self.repository.append_entry(
             conversation_id=conversation.id,
             lane_id=main.id,
             type=TranscriptEntryType.USER_MESSAGE,
             actor=Actor.USER,
             payload={"content": "主线"},
             context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        base = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.ASSISTANT_MESSAGE,
+            actor=Actor.ASSISTANT,
+            payload={"content": "主线回复"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+            parent_id=question.id,
         )
         self.repository.set_conversation_pointer(
             conversation_id=conversation.id,
@@ -134,7 +143,7 @@ class RuntimeV2MemoryTest(unittest.IsolatedAsyncioTestCase):
         )
         temporary_conversation_id, temporary_lane = await gateway.create_temporary_conversation(
             source_conversation_id=conversation.id,
-            source_lane_id=branch.lane.id,
+            source_lane_id=main.id,
             source_leaf_entry_id=base.id,
             title="临时记忆探索",
         )

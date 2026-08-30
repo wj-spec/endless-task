@@ -651,7 +651,9 @@ class RuntimeV2RenameLaneBody(BaseModel):
 class RuntimeV2CreateTemporaryConversationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sourceLaneId: str
+    # Kept optional for request compatibility; the server always snapshots the
+    # current main lane and its complete leaf path.
+    sourceLaneId: Optional[str] = None
     sourceLeafEntryId: Optional[str] = None
     title: Optional[str] = None
 
@@ -3338,11 +3340,19 @@ def create_app(
             conversation_id,
             write=True,
         )
+        pointer = container.runtime_v2_repository.get_conversation_pointer(
+            source_conversation_id
+        )
+        if pointer is None:
+            raise ConflictError("Conversation has no v2 main lane")
+        main_lane = container.runtime_v2_repository.get_lane(pointer.active_lane_id)
+        if main_lane.leaf_entry_id is None:
+            raise ConflictError("Conversation main lane has no context to copy")
         temporary_conversation_id, lane = (
             await container.runtime_v2_gateway.create_temporary_conversation(
                 source_conversation_id=source_conversation_id,
-                source_lane_id=body.sourceLaneId,
-                source_leaf_entry_id=body.sourceLeafEntryId,
+                source_lane_id=main_lane.id,
+                source_leaf_entry_id=main_lane.leaf_entry_id,
                 title=body.title,
             )
         )

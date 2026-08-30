@@ -867,6 +867,19 @@ class RuntimeV2SessionGateway:
         title: Optional[str] = None,
     ) -> tuple[str, LaneRecord]:
         self.validate_session(source_conversation_id)
+        pointer = self._repository.get_conversation_pointer(source_conversation_id)
+        if pointer is None:
+            raise ConflictError("Conversation has no v2 main lane")
+        if source_lane_id != pointer.active_lane_id:
+            raise ConflictError(
+                "Temporary conversations must snapshot the current main lane"
+            )
+        main_lane = self._repository.get_lane(pointer.active_lane_id)
+        if source_leaf_entry_id not in (None, main_lane.leaf_entry_id):
+            raise ConflictError(
+                "Temporary conversations must snapshot the complete main lane path"
+            )
+        source_leaf_entry_id = main_lane.leaf_entry_id
         async with self._lock:
             self._require_no_active_runs(source_conversation_id)
             conversation_id, lane, _provenance = (
@@ -907,6 +920,9 @@ class RuntimeV2SessionGateway:
             run = self._repository.get_run(run_id)
             if self._find_active_run(run_id) is not None:
                 raise ConflictError("Interrupted run is still active in this process")
+            recovery = self._replay_service.classify_crash_recovery(run_id)
+            if retry and not recovery.can_auto_resume:
+                raise ConflictError("Interrupted run cannot be safely retried")
             self._repository.finalize_interrupted_run(
                 run_id,
                 deactivate_variant=retry,
@@ -1082,8 +1098,17 @@ class RuntimeV2SessionGateway:
         conversation_id: str,
     ) -> tuple[CrashRecoveryReport, ...]:
         self.validate_session(conversation_id)
-        return self._replay_service.audit_interrupted_runs(
-            conversation_id=conversation_id
+        active_run_ids = {
+            active.run_id
+            for active in self._active_runs.values()
+            if not active.task.done()
+        }
+        return tuple(
+            report
+            for report in self._replay_service.audit_interrupted_runs(
+                conversation_id=conversation_id
+            )
+            if report.record.id not in active_run_ids
         )
 
     def _recovery_reports_json(
@@ -1313,6 +1338,7 @@ def _entry_json(entry: TranscriptEntryRecord) -> dict[str, object]:
         "status": entry.status.value,
         "createdAt": entry.created_at,
         "sourceRunId": entry.source_run_id,
+        "inherited": isinstance(entry.display.get("sourceEntryId"), str),
         "data": data,
     }
 
