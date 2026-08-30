@@ -1192,11 +1192,12 @@ def _build_container(
         chat_repository=chat_repository,
         repository=runtime_v2_repository,
         provider=selected_provider,
-            tool_registry=selected_tool_registry,
-            model=settings.model,
-            max_output_tokens=settings.max_output_tokens,
-            max_model_turns=settings.max_agent_iterations,
-            temperature=None,
+        provider_resolver=provider_manager.resolve,
+        tool_registry=selected_tool_registry,
+        model=settings.model,
+        max_output_tokens=settings.max_output_tokens,
+        max_model_turns=settings.max_agent_iterations,
+        temperature=None,
         provider_slot_limit=settings.max_concurrent_model_calls,
         memory_repository=runtime_v2_memory_repository,
     )
@@ -3199,12 +3200,27 @@ def create_app(
         pointer = container.runtime_v2_repository.get_conversation_pointer(
             target_conversation_id
         )
-        active_lane_id = pointer.active_lane_id if pointer is not None else None
+        main_lane_id = pointer.active_lane_id if pointer is not None else None
+        running_runs = container.runtime_v2_repository.list_runs(
+            conversation_id=target_conversation_id,
+            statuses=(
+                RunStatus.CREATED,
+                RunStatus.QUEUED,
+                RunStatus.RUNNING,
+                RunStatus.WAITING_APPROVAL,
+                RunStatus.COMPACTING,
+                RunStatus.CANCELLING,
+            ),
+        )
+        running_run = running_runs[-1] if running_runs else None
         return {
             "conversationId": target_conversation_id,
-            "activeLaneId": active_lane_id,
+            "activeLaneId": main_lane_id,
+            "mainLaneId": main_lane_id,
+            "runningLaneId": running_run.lane_id if running_run is not None else None,
+            "runningRunId": running_run.id if running_run is not None else None,
             "items": tuple(
-                _runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
+                _runtime_v2_lane_json(lane, active_lane_id=main_lane_id)
                 for lane in lanes
             ),
         }
@@ -3538,6 +3554,7 @@ def create_app(
     async def create_runtime_v2_message(
         conversation_id: str,
         body: RuntimeV2MessageBody,
+        idempotency_key: str = Header(..., alias="Idempotency-Key"),
     ) -> dict[str, object]:
         target_conversation_id = _resolve_runtime_v2_conversation(
             container,
@@ -3554,6 +3571,7 @@ def create_app(
             target_conversation_id,
             body.content,
             lane_id=body.laneId,
+            client_request_id=idempotency_key,
         )
         return {
             "conversationId": handle.conversation_id,

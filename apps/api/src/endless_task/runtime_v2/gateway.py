@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Mapping, Optional, Sequence, TYPE_CHECKING
+from typing import Awaitable, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
 
+from endless_task.domain.models import Conversation
 from endless_task.domain.repositories import ConflictError, InvalidStateError
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
 from endless_task.runtime.provider import ModelProvider, ProviderMessage
@@ -20,7 +22,6 @@ from endless_task.tooling import (
 )
 
 from .domain import (
-    Actor,
     LaneKind,
     LaneEventRecord,
     LanePromotionRecord,
@@ -82,6 +83,11 @@ _SNAPSHOT_UNTRUSTED_MAX_CHARS = 4_000
 class AgentRuntimeCapabilities:
     driver_type: str
     capabilities: tuple[str, ...]
+
+
+class RuntimeProviderSelection(Protocol):
+    provider: ModelProvider
+    model: str
 
 
 @dataclass(frozen=True)
@@ -498,11 +504,13 @@ class AgentSessionConnection:
         content: str,
         *,
         lane_id: Optional[str] = None,
+        client_request_id: Optional[str] = None,
     ) -> RuntimeV2SendResult:
         return await self._gateway.send(
             self.conversation_id,
             content,
             lane_id=lane_id,
+            client_request_id=client_request_id,
         )
 
     async def steer(self, run_id: str, content: str) -> bool:
@@ -560,10 +568,14 @@ class RuntimeV2SessionGateway:
         provider_slot_limit: Optional[int] = None,
         memory_repository: Optional[SqliteRuntimeV2MemoryRepository] = None,
         context_prefix_messages: Sequence[ProviderMessage] = (),
+        provider_resolver: Optional[
+            Callable[[Conversation], RuntimeProviderSelection]
+        ] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
         self._provider = provider
+        self._provider_resolver = provider_resolver
         self._tool_registry = tool_registry
         self._model = model
         self._max_output_tokens = max_output_tokens
@@ -634,46 +646,32 @@ class RuntimeV2SessionGateway:
         content: str,
         *,
         lane_id: Optional[str] = None,
+        client_request_id: Optional[str] = None,
     ) -> RuntimeV2SendResult:
         content = content.strip()
         if not content:
             raise ConflictError("Message content cannot be empty")
+        request_id = (client_request_id or f"runtime-v2-{uuid.uuid4().hex}").strip()
+        if not request_id:
+            raise ConflictError("Idempotency key cannot be empty")
+        if len(request_id) > 200:
+            raise ConflictError("Idempotency key is too long")
         self.validate_session(conversation_id)
         async with self._lock:
-            self._require_no_active_runs(conversation_id)
-            pointer = self._repository.get_conversation_pointer(conversation_id)
-            if lane_id is not None:
-                if pointer is None:
-                    raise ConflictError("Conversation has no v2 lane pointer")
-                lane = self._repository.get_lane(lane_id)
-                if lane.conversation_id != conversation_id:
-                    raise InvalidStateError("Lane does not belong to conversation")
-                if lane.is_archived:
-                    raise ConflictError("Messages cannot be sent to an archived lane")
-                lane_id = lane.id
-            elif pointer is None:
-                lane = self._repository.create_lane(conversation_id=conversation_id)
-                lane_id = lane.id
-            else:
-                lane_id = pointer.active_lane_id
-            user_entry = self._repository.append_entry(
+            submission = self._repository.create_message_submission(
                 conversation_id=conversation_id,
                 lane_id=lane_id,
-                type=TranscriptEntryType.USER_MESSAGE,
-                actor=Actor.USER,
-                payload={"content": content},
-                context_policy={"include_in_llm": True, "transform": "full"},
+                content=content,
+                client_request_id=request_id,
             )
-            run = await self._start_run(
-                conversation_id=conversation_id,
-                lane_id=lane_id,
-                trigger_entry_id=user_entry.id,
-            )
+            run = submission.run
+            if submission.created:
+                run = await self._launch_run(run)
             return RuntimeV2SendResult(
                 conversation_id=conversation_id,
-                lane_id=lane_id,
+                lane_id=submission.lane.id,
                 run_id=run.id,
-                user_message_id=user_entry.id,
+                user_message_id=submission.user_entry.id,
             )
 
     async def create_lane_branch(
@@ -973,12 +971,6 @@ class RuntimeV2SessionGateway:
             if run.assistant_entry_id is None:
                 raise ConflictError("Run variant has no assistant entry")
             selected = self._repository.set_active_run_variant(run_id)
-            self._repository.set_conversation_pointer(
-                conversation_id=run.conversation_id,
-                active_lane_id=run.lane_id,
-                active_run_id=selected.id,
-                active_run_variant_id=selected.id,
-            )
             self._repository.append_runtime_event(
                 run_id=selected.id,
                 event_type="run_variant_selected",
@@ -1040,6 +1032,9 @@ class RuntimeV2SessionGateway:
                 "snapshotVersion": 1,
                 "conversationId": conversation_id,
                 "activeLaneId": None,
+                "mainLaneId": None,
+                "runningLaneId": None,
+                "runningRunId": None,
                 "activeRunId": None,
                 "activeRunVariantId": None,
                 "lastEventSeq": last_event_seq,
@@ -1062,6 +1057,9 @@ class RuntimeV2SessionGateway:
             "snapshotVersion": 1,
             "conversationId": conversation_id,
             "activeLaneId": runtime_snapshot.active_lane_id,
+            "mainLaneId": runtime_snapshot.main_lane_id,
+            "runningLaneId": runtime_snapshot.running_lane_id,
+            "runningRunId": runtime_snapshot.running_run_id,
             "activeRunId": runtime_snapshot.active_run_id,
             "activeRunVariantId": runtime_snapshot.active_run_variant_id,
             "lastEventSeq": last_event_seq,
@@ -1171,12 +1169,11 @@ class RuntimeV2SessionGateway:
             sibling_group_id=sibling_group_id,
             is_active_variant=True,
         )
-        self._repository.set_conversation_pointer(
-            conversation_id=conversation_id,
-            active_lane_id=lane_id,
-            active_run_id=run.id,
-            active_run_variant_id=run.id,
-        )
+        return await self._launch_run(run)
+
+    async def _launch_run(self, run: RunRecord) -> RunRecord:
+        conversation_id = run.conversation_id
+        lane_id = run.lane_id
         trigger_entry = self._repository.get_entry(run.trigger_entry_id)
         trigger_content = trigger_entry.payload.get("content", "")
         product_context_messages = (
@@ -1204,11 +1201,19 @@ class RuntimeV2SessionGateway:
             *product_context_messages,
             *memory_context_messages,
         )
+        selected_provider = self._provider
+        selected_model = self._model
+        if self._provider_resolver is not None:
+            selection = self._provider_resolver(
+                self._chat_repository.get_conversation(conversation_id)
+            )
+            selected_provider = selection.provider
+            selected_model = selection.model
         executor = AgentRunExecutor(
             repository=self._repository,
-            provider=self._provider,
+            provider=selected_provider,
             tool_registry=self._tool_registry,
-            model=self._model,
+            model=selected_model,
             max_output_tokens=self._max_output_tokens,
             max_model_turns=self._max_model_turns,
             temperature=self._temperature,

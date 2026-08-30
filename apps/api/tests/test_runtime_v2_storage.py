@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from endless_task.domain.repositories import ConflictError, InvalidStateError
 from endless_task.runtime_v2 import (
@@ -67,12 +69,219 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             "042_runtime_v2_lane_lifecycle_and_temporary_conversations.sql",
             self.database.applied_migrations(),
         )
+        self.assertIn(
+            "043_runtime_v2_message_idempotency.sql",
+            self.database.applied_migrations(),
+        )
+        self.assertIn(
+            "044_runtime_v2_main_lane_pointer.sql",
+            self.database.applied_migrations(),
+        )
+        self.assertIn(
+            "045_runtime_v2_promoted_main_lane_repair.sql",
+            self.database.applied_migrations(),
+        )
         self.database.initialize()
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(42, row["count"])
+        self.assertEqual(45, row["count"])
+
+    def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
+        conversation = self.chat_repository.create_conversation()
+        main = self.repository.create_lane(conversation_id=conversation.id)
+        base = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "主线"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        promoted = self.repository.create_lane(
+            conversation_id=conversation.id,
+            kind=LaneKind.PERSISTENT_BRANCH,
+            base_entry_id=base.id,
+        )
+        running_branch = self.repository.create_lane(
+            conversation_id=conversation.id,
+            kind=LaneKind.PERSISTENT_BRANCH,
+            base_entry_id=base.id,
+        )
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=running_branch.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "分支运行"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=running_branch.id,
+            trigger_entry_id=trigger.id,
+        )
+        self.repository.append_lane_event(
+            conversation_id=conversation.id,
+            lane_id=promoted.id,
+            event_type="branch.promoted",
+            data={"previousMainLaneId": main.id},
+        )
+        self.repository.set_conversation_pointer(
+            conversation_id=conversation.id,
+            active_lane_id=running_branch.id,
+            active_run_id=run.id,
+            active_run_variant_id=run.id,
+        )
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE v2_lanes
+                SET status = 'archived', archived_at = '2026-08-28T01:30:00.000Z'
+                WHERE id IN (?, ?)
+                """,
+                (main.id, promoted.id),
+            )
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE name = ?",
+                ("044_runtime_v2_main_lane_pointer.sql",),
+            )
+
+        self.database.initialize()
+
+        pointer = self.repository.get_conversation_pointer(conversation.id)
+        self.assertEqual(promoted.id, pointer.active_lane_id)
+        self.assertIsNone(pointer.active_run_id)
+        self.assertIsNone(pointer.active_run_variant_id)
+        promoted_lane = self.repository.get_lane(promoted.id)
+        previous_main_lane = self.repository.get_lane(main.id)
+        self.assertEqual(LaneKind.MAIN, promoted_lane.kind)
+        self.assertEqual(LaneStatus.ACTIVE, promoted_lane.status)
+        self.assertEqual(LaneKind.PERSISTENT_BRANCH, previous_main_lane.kind)
+        self.assertEqual(LaneStatus.ARCHIVED, previous_main_lane.status)
+        self.assertEqual(
+            LaneKind.PERSISTENT_BRANCH,
+            self.repository.get_lane(running_branch.id).kind,
+        )
+        self.assertEqual(
+            1,
+            sum(
+                lane.kind is LaneKind.MAIN
+                for lane in self.repository.list_lanes(conversation.id)
+            ),
+        )
+
+    def test_follow_up_migration_repairs_databases_with_old_044_applied(self) -> None:
+        conversation = self.chat_repository.create_conversation()
+        main = self.repository.create_lane(conversation_id=conversation.id)
+        base = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "旧主线"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        promoted = self.repository.create_lane(
+            conversation_id=conversation.id,
+            kind=LaneKind.PERSISTENT_BRANCH,
+            base_entry_id=base.id,
+        )
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=promoted.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "待提升分支"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=promoted.id,
+            trigger_entry_id=trigger.id,
+        )
+        self.repository.append_lane_event(
+            conversation_id=conversation.id,
+            lane_id=promoted.id,
+            event_type="branch.promoted",
+            data={"previousMainLaneId": main.id},
+        )
+        self.repository.set_conversation_pointer(
+            conversation_id=conversation.id,
+            active_lane_id=promoted.id,
+            active_run_id=run.id,
+            active_run_variant_id=run.id,
+        )
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE v2_lanes
+                SET status = 'archived', archived_at = '2026-08-28T01:30:00.000Z'
+                WHERE id IN (?, ?)
+                """,
+                (main.id, promoted.id),
+            )
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE name = ?",
+                ("045_runtime_v2_promoted_main_lane_repair.sql",),
+            )
+
+        self.assertIn(
+            "044_runtime_v2_main_lane_pointer.sql",
+            self.database.applied_migrations(),
+        )
+        self.database.initialize()
+
+        pointer = self.repository.get_conversation_pointer(conversation.id)
+        self.assertEqual(promoted.id, pointer.active_lane_id)
+        self.assertIsNone(pointer.active_run_id)
+        self.assertIsNone(pointer.active_run_variant_id)
+        promoted_lane = self.repository.get_lane(promoted.id)
+        previous_main_lane = self.repository.get_lane(main.id)
+        self.assertEqual(LaneKind.MAIN, promoted_lane.kind)
+        self.assertEqual(LaneStatus.ACTIVE, promoted_lane.status)
+        self.assertEqual(LaneKind.PERSISTENT_BRANCH, previous_main_lane.kind)
+        self.assertEqual(LaneStatus.ARCHIVED, previous_main_lane.status)
+        self.assertEqual(
+            1,
+            sum(
+                lane.kind is LaneKind.MAIN
+                for lane in self.repository.list_lanes(conversation.id)
+            ),
+        )
+        self.assertIn(
+            "045_runtime_v2_promoted_main_lane_repair.sql",
+            self.database.applied_migrations(),
+        )
+
+    def test_message_submission_is_atomic_for_concurrent_duplicates(self) -> None:
+        conversation = self.chat_repository.create_conversation()
+        barrier = Barrier(2)
+
+        def submit():
+            barrier.wait()
+            return self.repository.create_message_submission(
+                conversation_id=conversation.id,
+                lane_id=None,
+                content="并发消息",
+                client_request_id="concurrent-request",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            submissions = tuple(
+                future.result()
+                for future in (executor.submit(submit), executor.submit(submit))
+            )
+
+        self.assertEqual(1, sum(item.created for item in submissions))
+        self.assertEqual(1, len({item.lane.id for item in submissions}))
+        self.assertEqual(1, len({item.user_entry.id for item in submissions}))
+        self.assertEqual(1, len({item.run.id for item in submissions}))
+        self.assertEqual(
+            1,
+            len(self.repository.list_runs(conversation_id=conversation.id)),
+        )
 
     def test_product_event_round_trip_is_idempotent(self) -> None:
         conversation = self.chat_repository.create_conversation()
@@ -250,7 +459,7 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             entry.id for entry in self.repository.list_lane_context_entries(branch.id)
         ))
 
-    def test_promote_lane_switches_pointer_without_moving_entries(self) -> None:
+    def test_promote_lane_swaps_main_role_without_moving_entries(self) -> None:
         conversation = self.chat_repository.create_conversation()
         main = self.repository.create_lane(conversation_id=conversation.id)
         base = self.repository.append_entry(
@@ -291,10 +500,10 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
         )
 
         self.assertEqual(branch.id, result.promoted_lane.id)
-        self.assertEqual(LaneKind.PERSISTENT_BRANCH, result.promoted_lane.kind)
+        self.assertEqual(LaneKind.MAIN, result.promoted_lane.kind)
         self.assertEqual(LaneStatus.ACTIVE, result.promoted_lane.status)
         self.assertEqual(main.id, result.previous_main_lane.id)
-        self.assertEqual(LaneKind.MAIN, result.previous_main_lane.kind)
+        self.assertEqual(LaneKind.PERSISTENT_BRANCH, result.previous_main_lane.kind)
         self.assertEqual(branch.id, result.pointer.active_lane_id)
         self.assertEqual(
             (base.id, branch_entry.id),

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from endless_task.domain.models import ConversationKind
 from endless_task.runtime_v2 import RuntimeV2MigrationService
@@ -472,6 +473,46 @@ class RuntimeV2MigrationServiceTest(unittest.TestCase):
                 )
             }
         self.assertEqual(v1_counts_before, v1_counts_after)
+
+    def test_migration_rolls_back_partial_failure_and_can_retry(self) -> None:
+        conversation = self.chat_repository.create_conversation()
+        self.chat_repository.create_turn(
+            conversation_id=conversation.id,
+            client_request_id="request-partial-failure",
+            content="部分失败后重试",
+        )
+        service = RuntimeV2MigrationService(self.database)
+
+        with mock.patch.object(
+            service,
+            "_migrate_runtime_events",
+            side_effect=RuntimeError("injected migration failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected migration failure"):
+                service.migrate()
+
+        with self.database.connect() as connection:
+            self.assertEqual(
+                0,
+                connection.execute("SELECT COUNT(*) FROM v2_migration_state").fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                connection.execute("SELECT COUNT(*) FROM v2_lanes").fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                connection.execute("SELECT COUNT(*) FROM v2_transcript_entries").fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
+            )
+
+        report = service.migrate()
+        self.assertFalse(report.already_migrated)
+        self.assertEqual(1, report.conversation_count)
+        self.assertTrue(service.audit().passed)
 
     def test_migration_is_idempotent(self) -> None:
         conversation = self.chat_repository.create_conversation()

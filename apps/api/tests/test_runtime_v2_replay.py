@@ -194,14 +194,14 @@ class RuntimeV2ReplayServiceTest(unittest.TestCase):
             event_type="model_text_delta",
             payload={"delta": "partial"},
         )
+        self.repository.set_active_run_variant(run.id)
         self.repository.set_conversation_pointer(
             conversation_id=conversation_id,
             active_lane_id=lane.id,
-            active_run_id=run.id,
-            active_run_variant_id=run.id,
         )
 
         report = self.service.classify_crash_recovery(run.id)
+
         self.assertEqual(CrashRecoveryClassification.RECOVERABLE, report.classification)
         self.assertEqual(CrashRecoveryAction.RESUME, report.action)
         self.assertTrue(report.can_auto_resume)

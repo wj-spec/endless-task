@@ -108,7 +108,13 @@ class RuntimeV2LaneService:
 
     def rename_lane(self, lane_id: str, display_name: str | None) -> LaneRecord:
         lane = self._repository.get_lane(lane_id)
-        if lane.kind is LaneKind.MAIN:
+        pointer = self._repository.get_conversation_pointer(lane.conversation_id)
+        is_main = (
+            pointer.active_lane_id == lane.id
+            if pointer is not None
+            else lane.kind is LaneKind.MAIN
+        )
+        if is_main:
             raise InvalidStateError("Main lane display is derived from the conversation")
         if lane.kind is LaneKind.TEMPORARY:
             raise InvalidStateError("Temporary conversation lanes are renamed via conversation title")

@@ -110,6 +110,9 @@ class RunReplayResult:
 class ConversationRuntimeSnapshot:
     conversation_id: str
     active_lane_id: str
+    main_lane_id: str
+    running_lane_id: Optional[str]
+    running_run_id: Optional[str]
     entries: tuple[TranscriptEntryRecord, ...]
     active_run: Optional[RunReplayResult]
     active_run_id: Optional[str]
@@ -324,15 +327,27 @@ class RuntimeV2ReplayService:
             )
 
         entries = self._repository.list_lane_context_entries(selected_lane_id)
+        conversation_runs = self._repository.list_runs(conversation_id=conversation_id)
         lane_runs = [
             run
-            for run in self._repository.list_runs(conversation_id=conversation_id)
+            for run in conversation_runs
             if run.lane_id == selected_lane_id and run.is_active_variant
         ]
-        if pointer.active_run_id is not None and pointer.active_lane_id == selected_lane_id:
-            active_run_record = self._repository.get_run(pointer.active_run_id)
-        else:
-            active_run_record = lane_runs[-1] if lane_runs else None
+        active_run_record = lane_runs[-1] if lane_runs else None
+        running_runs = [
+            run
+            for run in conversation_runs
+            if run.status
+            in {
+                RunStatus.CREATED,
+                RunStatus.QUEUED,
+                RunStatus.RUNNING,
+                RunStatus.WAITING_APPROVAL,
+                RunStatus.COMPACTING,
+                RunStatus.CANCELLING,
+            }
+        ]
+        running_run = running_runs[-1] if running_runs else None
         active_run = (
             self.replay_run(active_run_record.id)
             if active_run_record is not None
@@ -348,6 +363,9 @@ class RuntimeV2ReplayService:
         return ConversationRuntimeSnapshot(
             conversation_id=conversation_id,
             active_lane_id=selected_lane_id,
+            main_lane_id=pointer.active_lane_id,
+            running_lane_id=running_run.lane_id if running_run is not None else None,
+            running_run_id=running_run.id if running_run is not None else None,
             entries=entries,
             active_run=active_run,
             active_run_id=active_run_record.id if active_run_record else None,

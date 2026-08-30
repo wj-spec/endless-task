@@ -7,16 +7,18 @@ from pathlib import Path
 from typing import AsyncIterator, Callable, Sequence
 
 from endless_task.domain.models import ConversationKind
-from endless_task.domain.repositories import ConflictError
+from endless_task.domain.repositories import ConflictError, InvalidStateError
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.runtime.provider import (
     ProviderCompleted,
+    ProviderError,
     ProviderMessage,
     ProviderRequest,
     ProviderStreamEvent,
     ProviderTextDelta,
     ProviderToolCall,
 )
+from endless_task.runtime.provider_manager import SelectedProvider
 from endless_task.runtime_v2 import (
     Actor,
     LaneKind,
@@ -28,6 +30,9 @@ from endless_task.runtime_v2 import (
     TranscriptEntryType,
 )
 from endless_task.storage import Database, SqliteChatRepository, SqliteRuntimeV2Repository
+from endless_task.storage.sqlite_provider_profile_repository import (
+    SqliteProviderProfileRepository,
+)
 from endless_task.tooling import (
     ToolApprovalMode,
     ToolCall,
@@ -41,7 +46,13 @@ from endless_task.tooling import (
 class ScriptedProvider:
     name = "scripted"
 
-    def __init__(self, responses: Sequence[Sequence[ProviderStreamEvent]]) -> None:
+    def __init__(
+        self,
+        responses: Sequence[Sequence[ProviderStreamEvent]],
+        *,
+        name: str = "scripted",
+    ) -> None:
+        self.name = name
         self.responses = list(responses)
         self.requests: list[ProviderRequest] = []
 
@@ -80,6 +91,27 @@ class BlockingProvider:
             finish_reason="stop",
             input_tokens=1,
             output_tokens=1,
+        )
+
+
+class FailingProvider:
+    name = "failing"
+
+    def __init__(self) -> None:
+        self.requests: list[ProviderRequest] = []
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        cancellation_token: CancellationToken,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.requests.append(request)
+        cancellation_token.raise_if_cancelled()
+        yield ProviderTextDelta("部分输出")
+        raise ProviderError(
+            "provider_unavailable",
+            "模拟服务暂时不可用。",
+            retryable=True,
         )
 
 
@@ -138,6 +170,7 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
         *,
         provider_slot_limit: int | None = None,
         context_prefix_messages: Sequence[ProviderMessage] = (),
+        provider_resolver=None,
     ) -> RuntimeV2SessionGateway:
         registry = ToolRegistry()
         registry.register(FakeTool())
@@ -150,6 +183,7 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             max_output_tokens=128,
             provider_slot_limit=provider_slot_limit,
             context_prefix_messages=context_prefix_messages,
+            provider_resolver=provider_resolver,
         )
 
     async def test_gateway_injects_prefix_and_invokes_completion_callback(
@@ -187,7 +221,149 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(handle.run_id, completed_runs[0])
         self.assertEqual("v2 产品上下文", provider.requests[0].messages[0].content)
+        self.assertEqual("scripted-model", provider.requests[0].model)
         await gateway.shutdown()
+
+    async def test_message_submission_is_idempotent_while_run_is_active(self) -> None:
+        provider = BlockingProvider()
+        gateway = self._gateway(provider)
+        conversation = self.chat_repository.create_conversation()
+
+        first, duplicate = await asyncio.gather(
+            gateway.send(
+                conversation.id,
+                "只提交一次",
+                client_request_id="request-once",
+            ),
+            gateway.send(
+                conversation.id,
+                "只提交一次",
+                client_request_id="request-once",
+            ),
+        )
+        await _wait_until(lambda: provider.started == 1)
+
+        self.assertEqual(first, duplicate)
+        self.assertEqual(1, len(self.repository.list_runs(conversation_id=conversation.id)))
+        self.assertEqual(
+            1,
+            len(
+                [
+                    entry
+                    for entry in self.repository.list_entries(first.lane_id)
+                    if entry.type is TranscriptEntryType.USER_MESSAGE
+                ]
+            ),
+        )
+        with self.assertRaises(ConflictError):
+            await gateway.send(
+                conversation.id,
+                "不同内容",
+                client_request_id="request-once",
+            )
+
+        provider.release.set()
+        await _wait_until(
+            lambda: self.repository.get_run(first.run_id).status
+            is RunStatus.COMPLETED
+        )
+
+    async def test_failed_message_replay_returns_original_handle(self) -> None:
+        provider = FailingProvider()
+        gateway = self._gateway(provider)
+        conversation = self.chat_repository.create_conversation()
+
+        first = await gateway.send(
+            conversation.id,
+            "失败后重放",
+            client_request_id="failed-request",
+        )
+        await _wait_until(
+            lambda: self.repository.get_run(first.run_id).status
+            is RunStatus.FAILED
+        )
+        replayed = await gateway.send(
+            conversation.id,
+            "失败后重放",
+            client_request_id="failed-request",
+        )
+
+        self.assertEqual(first, replayed)
+        self.assertEqual(1, len(provider.requests))
+        self.assertEqual(
+            1,
+            len(self.repository.list_runs(conversation_id=conversation.id)),
+        )
+        self.assertEqual(
+            1,
+            len(
+                [
+                    entry
+                    for entry in self.repository.list_entries(first.lane_id)
+                    if entry.type is TranscriptEntryType.USER_MESSAGE
+                ]
+            ),
+        )
+
+    async def test_conversation_provider_and_model_are_resolved_for_v2_run(self) -> None:
+        default_provider = ScriptedProvider([])
+        selected_provider = ScriptedProvider(
+            [
+                (
+                    ProviderTextDelta("使用会话配置"),
+                    ProviderCompleted(
+                        finish_reason="stop",
+                        input_tokens=2,
+                        output_tokens=2,
+                    ),
+                )
+            ],
+            name="conversation-provider",
+        )
+        profile_repository = SqliteProviderProfileRepository(self.database)
+        profile = profile_repository.ensure_builtin_profile(
+            name="environment",
+            default_model="default-model",
+            base_url="",
+            api_key_ref="",
+            timeout_seconds=60,
+        )
+        conversation = self.chat_repository.create_conversation()
+        self.chat_repository.set_conversation_model(
+            conversation.id,
+            provider_profile_id=profile.id,
+            model_override="conversation-model",
+        )
+        resolved_conversations = []
+
+        def resolve(current):
+            resolved_conversations.append(current)
+            return SelectedProvider(
+                provider=selected_provider,
+                model=current.model_override or profile.default_model,
+                profile=profile,
+            )
+
+        gateway = self._gateway(
+            default_provider,
+            provider_resolver=resolve,
+        )
+        handle = await gateway.send(
+            conversation.id,
+            "使用哪个模型",
+            client_request_id="provider-selection",
+        )
+        await _wait_until(
+            lambda: self.repository.get_run(handle.run_id).status
+            is RunStatus.COMPLETED
+        )
+
+        self.assertEqual(profile.id, resolved_conversations[0].provider_profile_id)
+        self.assertEqual("conversation-model", selected_provider.requests[0].model)
+        self.assertEqual([], default_provider.requests)
+        model_turn = self.repository.list_model_turns(handle.run_id)[0]
+        self.assertEqual("conversation-provider", model_turn.provider)
+        self.assertEqual("conversation-model", model_turn.model)
 
     async def test_snapshot_has_no_write_side_effect_and_run_is_replayable(self) -> None:
         provider = ScriptedProvider(
@@ -369,21 +545,102 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             target_lane_id=branch.lane.id,
         )
 
-        self.assertEqual(LaneKind.PERSISTENT_BRANCH, result.promoted_lane.kind)
-        self.assertEqual(LaneKind.MAIN, result.previous_main_lane.kind)
+        self.assertEqual(LaneKind.MAIN, result.promoted_lane.kind)
+        self.assertEqual(LaneKind.PERSISTENT_BRANCH, result.previous_main_lane.kind)
         self.assertEqual(
             branch.lane.id,
             self.repository.get_conversation_pointer(conversation.id).active_lane_id,
         )
+        self.assertEqual(
+            {main.id: LaneKind.PERSISTENT_BRANCH, branch.lane.id: LaneKind.MAIN},
+            {
+                lane.id: lane.kind
+                for lane in self.repository.list_lanes(conversation.id)
+            },
+        )
+        with self.assertRaises(InvalidStateError):
+            await gateway.rename_lane(branch.lane.id, "当前主线")
+        with self.assertRaises(InvalidStateError):
+            await gateway.archive_lane(branch.lane.id)
+
+        renamed_previous_main = await gateway.rename_lane(main.id, "原主线分支")
+        self.assertEqual("原主线分支", renamed_previous_main.display_name)
+        archived_previous_main = await gateway.archive_lane(main.id)
+        self.assertEqual((main.id,), tuple(lane.id for lane in archived_previous_main))
+        self.assertTrue(archived_previous_main[0].is_archived)
+        current_main = self.repository.get_lane(branch.lane.id)
+        self.assertEqual(LaneKind.MAIN, current_main.kind)
+        self.assertFalse(current_main.is_archived)
+        self.assertEqual(
+            branch.lane.id,
+            self.repository.get_conversation_pointer(conversation.id).active_lane_id,
+        )
+
         branch_events = [
             event.event_type
             for event in gateway.project_events(conversation.id)
             if event.event_type.startswith("branch.")
         ]
         self.assertEqual(
-            ("branch.created", "branch.promoted"),
+            (
+                "branch.created",
+                "branch.promoted",
+                "branch.renamed",
+                "branch.archived",
+            ),
             tuple(branch_events),
         )
+
+    async def test_branch_run_does_not_change_main_lane_pointer(self) -> None:
+        provider = BlockingProvider()
+        gateway = self._gateway(provider)
+        conversation = self.chat_repository.create_conversation()
+        main = self.repository.create_lane(conversation_id=conversation.id)
+        base = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=main.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "主线历史"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        self.repository.set_conversation_pointer(
+            conversation_id=conversation.id,
+            active_lane_id=main.id,
+        )
+        branch = await gateway.create_lane_branch(
+            conversation_id=conversation.id,
+            source_lane_id=main.id,
+            base_entry_id=base.id,
+        )
+
+        handle = await gateway.send(
+            conversation.id,
+            "分支继续",
+            lane_id=branch.lane.id,
+            client_request_id="branch-message",
+        )
+        try:
+            await _wait_until(lambda: provider.started == 1)
+
+            pointer = self.repository.get_conversation_pointer(conversation.id)
+            self.assertEqual(main.id, pointer.active_lane_id)
+            self.assertIsNone(pointer.active_run_id)
+            self.assertIsNone(pointer.active_run_variant_id)
+            branch_snapshot = gateway.snapshot(
+                conversation.id,
+                lane_id=branch.lane.id,
+            )
+            self.assertEqual(branch.lane.id, branch_snapshot["activeLaneId"])
+            self.assertEqual(main.id, branch_snapshot["mainLaneId"])
+            self.assertEqual(branch.lane.id, branch_snapshot["runningLaneId"])
+            self.assertEqual(handle.run_id, branch_snapshot["runningRunId"])
+        finally:
+            provider.release.set()
+            await _wait_until(
+                lambda: self.repository.get_run(handle.run_id).status
+                is RunStatus.COMPLETED
+            )
 
     async def test_regenerate_creates_sibling_and_reuses_trigger_context(self) -> None:
         provider = ScriptedProvider(
@@ -440,7 +697,8 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             self.repository.get_run(second_run.id).is_active_variant
         )
         pointer = self.repository.get_conversation_pointer(conversation.id)
-        self.assertEqual(first.run_id, pointer.active_run_variant_id)
+        self.assertIsNone(pointer.active_run_id)
+        self.assertIsNone(pointer.active_run_variant_id)
         self.assertEqual(
             first_run.assistant_entry_id,
             self.repository.get_lane(first.lane_id).leaf_entry_id,

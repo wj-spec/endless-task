@@ -245,6 +245,14 @@ class RunRecord:
 
 
 @dataclass(frozen=True)
+class RuntimeV2MessageSubmission:
+    lane: LaneRecord
+    user_entry: TranscriptEntryRecord
+    run: RunRecord
+    created: bool
+
+
+@dataclass(frozen=True)
 class ModelTurnRecord:
     id: str
     run_id: str

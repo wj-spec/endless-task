@@ -219,6 +219,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
 
         message = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
+            headers={"Idempotency-Key": "default-runtime-first-message"},
             json={"content": "第一条消息"},
         )
         self.assertEqual(202, message.status_code)
@@ -250,6 +251,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
 
         response = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
+            headers={"Idempotency-Key": "runtime-v1-rejected"},
             json={"content": "v2 path"},
         )
         self.assertEqual(409, response.status_code)
@@ -383,6 +385,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
 
         v2_write = await client.post(
             f"/api/v2/conversations/{conversation['id']}/messages",
+            headers={"Idempotency-Key": "rollback-v2-rejected"},
             json={"content": "v2 消息"},
         )
         self.assertEqual(409, v2_write.status_code)
@@ -411,6 +414,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
 
         response = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
+            headers={"Idempotency-Key": "snapshot-sse-message"},
             json={"content": "打个招呼"},
         )
         self.assertEqual(202, response.status_code)
@@ -505,6 +509,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
 
         response = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
+            headers={"Idempotency-Key": "long-run-message"},
             json={"content": "执行长任务"},
         )
         self.assertEqual(202, response.status_code)
@@ -896,6 +901,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         conversation = container.chat_repository.create_conversation()
         response = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
+            headers={"Idempotency-Key": "run-regenerate-message"},
             json={"content": "重新生成这个问题"},
         )
         self.assertEqual(202, response.status_code)
@@ -1076,6 +1082,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
 
         response = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
+            headers={"Idempotency-Key": "approval-message"},
             json={"content": "读取文件"},
         )
         self.assertEqual(202, response.status_code)
