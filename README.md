@@ -2,12 +2,13 @@
 
 Endless Task 是一个本地优先、面向单用户的个人 AI 助手 Runtime。产品首先是一款类似 ChatGPT 的聊天应用；文件读取、记忆、成果交付和长期任务都由 Assistant 在对话中按需使用，而不是让用户先理解 Task、Agent Run 或工作流。
 
-## 当前冻结版本
+## 当前开发基线
 
-- 冻结节点：`0.4.9 / P0-P4 completed`
-- 当前能力：Assistant Runtime、受限 Agent Loop、Memory Runtime、Artifact Runtime、Task Runtime、一次性提醒
-- 当前边界：P4.5 会话分支仅有设计文档，未进入实现；P5-P7 的知识源、Skill/MCP、桌面端和多模态不属于当前可演示范围
-- 默认运行：Agent Runtime 使用 v2（可用 `ENDLESS_TASK_RUNTIME=v1` 显式回退）；后端默认 `FakeProvider`，无需 API Key，配置 DeepSeek/OpenAI-compatible Provider 时密钥只存在于 API 进程环境中
+- 包版本：API/Web `0.5.0`。
+- 当前阶段：Runtime v2 v1.1 Feature Integration Candidate；自动化与隔离迁移恢复基线已通过，但仍不是 Release Candidate。
+- 当前能力：Workspace → Conversation → Lane、Runtime v2 执行/恢复/审批、Memory、Knowledge、Artifact、Task/Reminder、Skill/MCP 与会话级 Provider/Model。
+- 默认运行：Agent Runtime 使用 v2（可用 `ENDLESS_TASK_RUNTIME=v1` 进入只读兼容路径）；后端默认 `FakeProvider`，无需 API Key，配置 DeepSeek/OpenAI-compatible Provider 时密钥只存在于 API 进程环境中。
+- 发布事实与剩余门槛以 [`docs/v2/agent-runtime-v2-v1.1-release-readiness.md`](docs/v2/agent-runtime-v2-v1.1-release-readiness.md) 为准。
 
 ## 产品原则
 
@@ -25,6 +26,7 @@ Endless Task 是一个本地优先、面向单用户的个人 AI 助手 Runtime�
 | `P2` | Memory Runtime | 记忆提案、用户确认写入、跨会话注入、来源/冲突/过期处理、管理接口 |
 | `P3` | Artifact Runtime | Artifact 生成、版本管理、来源引用、聊天继续修改、Markdown/HTML/PDF 导出、按需工作区 |
 | `P4` | Task Runtime 与一次性提醒 | 自然语言任务提案、确认、Worker、Scheduler、暂停/恢复/取消、结果通知、幂等、失败恢复、错过调度补偿 |
+| `R5–R8` | Knowledge、Workspace Runtime、Skill/MCP、Runtime v2 v1.1 | Conversation/Lane、审批恢复、结果落点、隔离 E2E 与迁移恢复 |
 
 ## 架构概览
 
@@ -102,10 +104,13 @@ npm run dev
 
 ## 验证方式
 
-当前冻结验证结果：
+当前开发基线：
 
-- 后端：`uv run python -W error -m unittest discover -s tests -v`，258 个测试通过。
-- 前端：`npm run build` 通过，生成生产构建产物。
+- 后端：`uv run python -W error -m unittest discover -s tests -v`，616/616 通过。
+- 前端：`npm run build` 通过。
+- 浏览器：`npm run test:e2e`，桌面 13、移动端 1，共 14/14 通过。
+- 依赖审计：`npm audit --json`，0 vulnerabilities。
+- 迁移恢复：schema `042` → `045` 自动化 dry-run/apply/audit/restore、重复执行、部分失败回滚和损坏备份拒绝通过；`045` 另覆盖已应用旧版 `044` 的候选数据库修复。真实旧库与应用降级仍待正式验收。
 
 后端测试：
 
@@ -114,11 +119,12 @@ cd apps/api
 uv run python -W error -m unittest discover -s tests -v
 ```
 
-前端构建：
+前端构建与浏览器 E2E：
 
 ```bash
 cd apps/web
 npm run build
+npm run test:e2e
 ```
 
 重点测试资产：
@@ -142,6 +148,8 @@ npm run build
 - `.env`、本地数据库、日志和用户文件不应提交到仓库。
 - API Key 只从后端进程环境读取，不进入浏览器、SQLite、API 响应或应用日志。
 - 当前是单用户、本地优先项目，不声明多租户、集群化或海量并发能力。
-- P4.5 会话分支、P5 知识源、P6 Skill/MCP、P7 桌面端仍是后续演进，不作为当前已实现能力展示。
+- API 与开发 Web 只绑定 loopback，不得通过 `0.0.0.0`、端口转发或反向代理直接暴露到局域网或公网。
+- 当前没有正式 production Web 静态托管、桌面安装包或统一进程管理入口；本地开发启动方式不等于发布交付方案。
+- Runtime v2 v1.1 已进入功能集成候选阶段，但人工产品验收、真实旧库/应用降级演练、可复现 RC 与运维材料仍是发布门。
 
 更多细节见 [API 说明](apps/api/README.md)、[Web 说明](apps/web/README.md)、[v1 归档文档](docs/archive/v1/README.md) 和 [Agent Runtime v2 规划](docs/v2/README.md)。
