@@ -38,8 +38,12 @@ class Database:
 
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+        source_uri = f"{source.as_uri()}?mode=ro"
         try:
-            with self.connect() as source_connection:
+            with closing(
+                sqlite3.connect(source_uri, uri=True, timeout=5.0)
+            ) as source_connection:
+                source_connection.execute("PRAGMA busy_timeout = 5000")
                 with closing(sqlite3.connect(str(temporary))) as destination_connection:
                     source_connection.backup(destination_connection)
                     result = destination_connection.execute(
@@ -49,6 +53,37 @@ class Database:
                         raise sqlite3.DatabaseError("Backup integrity check failed")
             temporary.chmod(0o600)
             os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
+    def restore(self, source: Path) -> Path:
+        backup = Path(source).expanduser().resolve()
+        target = self.path.expanduser().resolve()
+        if backup == target:
+            raise ValueError("Restore source must differ from the live database")
+        if not backup.is_file():
+            raise FileNotFoundError(f"Restore source does not exist: {backup}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.restore.tmp"
+        source_uri = f"{backup.as_uri()}?mode=ro"
+        try:
+            with closing(sqlite3.connect(source_uri, uri=True)) as source_connection:
+                result = source_connection.execute("PRAGMA integrity_check").fetchone()
+                if result is None or result[0] != "ok":
+                    raise sqlite3.DatabaseError("Restore source integrity check failed")
+                with closing(sqlite3.connect(str(temporary))) as target_connection:
+                    source_connection.backup(target_connection)
+                    restored = target_connection.execute(
+                        "PRAGMA integrity_check"
+                    ).fetchone()
+                    if restored is None or restored[0] != "ok":
+                        raise sqlite3.DatabaseError("Restored database integrity check failed")
+            temporary.chmod(0o600)
+            os.replace(temporary, target)
+            Path(f"{target}-wal").unlink(missing_ok=True)
+            Path(f"{target}-shm").unlink(missing_ok=True)
         finally:
             temporary.unlink(missing_ok=True)
         return target

@@ -92,6 +92,55 @@ class SecurityAndReliabilityTest(unittest.TestCase):
                 database.backup(source_path)
             self.assertTrue(conversation.id)
 
+    def test_restore_atomically_replaces_live_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live_path = root / "live" / "endless-task.db"
+            source_backup = root / "backups" / "before-upgrade.db"
+            safety_backup = root / "backups" / "before-restore.db"
+            database = Database(live_path)
+            database.initialize()
+            repository = SqliteChatRepository(database)
+            original = repository.create_conversation()
+            database.backup(source_backup)
+            repository.create_conversation()
+            database.backup(safety_backup)
+
+            restored = database.restore(source_backup)
+
+            self.assertEqual(live_path.resolve(), restored)
+            self.assertEqual("ok", database.integrity_check())
+            self.assertEqual(
+                [original.id],
+                [item.id for item in SqliteChatRepository(database).list_conversations()],
+            )
+            with closing(sqlite3.connect(safety_backup)) as connection:
+                self.assertEqual(
+                    2,
+                    connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
+                )
+            if os.name != "nt":
+                self.assertEqual(0o600, stat.S_IMODE(live_path.stat().st_mode))
+
+    def test_restore_rejects_corrupt_source_without_replacing_live_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live_path = root / "endless-task.db"
+            corrupt_backup = root / "corrupt.db"
+            database = Database(live_path)
+            database.initialize()
+            conversation = SqliteChatRepository(database).create_conversation()
+            corrupt_backup.write_bytes(b"not a sqlite database")
+
+            with self.assertRaises(sqlite3.DatabaseError):
+                database.restore(corrupt_backup)
+
+            self.assertEqual("ok", database.integrity_check())
+            self.assertEqual(
+                [conversation.id],
+                [item.id for item in SqliteChatRepository(database).list_conversations()],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

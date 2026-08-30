@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 import tempfile
 from typing import Optional, Sequence
 
@@ -113,10 +114,26 @@ def _runtime_v2_migration_command(settings, arguments) -> int:
         return 2
 
     database = Database(settings.database_path)
-    database.initialize()
+    if not database.path.is_file():
+        mode = (
+            "audit"
+            if arguments.audit
+            else "dry-run"
+            if arguments.dry_run
+            else "apply"
+        )
+        print(f"mode={mode}")
+        print("source_unchanged=true")
+        print(f"error=database does not exist: {database.path}")
+        return 1
 
     if arguments.audit:
-        report = RuntimeV2MigrationService(database).audit()
+        with tempfile.TemporaryDirectory(prefix="endless-task-audit-") as directory:
+            temporary_path = Path(directory) / "audit.db"
+            database.backup(temporary_path)
+            temporary_database = Database(temporary_path)
+            temporary_database.initialize()
+            report = RuntimeV2MigrationService(temporary_database).audit()
         print("mode=audit")
         print("source_unchanged=true")
         _print_runtime_v2_audit_report(report)
@@ -136,10 +153,47 @@ def _runtime_v2_migration_command(settings, arguments) -> int:
 
     backup_path = _default_backup_path(settings.database_path)
     created_backup = database.backup(backup_path)
-    report = RuntimeV2MigrationService(database).migrate()
     print("mode=apply")
     print(f"backup={created_backup}")
+    try:
+        database.initialize()
+        report = RuntimeV2MigrationService(database).migrate()
+    except Exception as error:
+        print("migrated=false")
+        print(f"error={error}")
+        return 1
+    print("migrated=true")
     _print_runtime_v2_report(report)
+    return 0
+
+
+def _restore_command(settings, arguments) -> int:
+    if not arguments.confirm:
+        print("恢复会替换当前数据库；请停止应用并显式传入 --confirm。")
+        return 2
+
+    database = Database(settings.database_path)
+    source = arguments.source.expanduser().resolve()
+    safety_backup: Optional[Path] = None
+    try:
+        if database.path.exists():
+            safety_backup = database.backup(_default_backup_path(database.path))
+        restored = database.restore(source)
+    except (FileNotFoundError, FileExistsError, ValueError, sqlite3.DatabaseError) as error:
+        print("mode=restore")
+        if safety_backup is not None:
+            print(f"safety_backup={safety_backup}")
+        print("restored=false")
+        print(f"error={error}")
+        return 1
+
+    print("mode=restore")
+    print(f"source={source}")
+    if safety_backup is not None:
+        print(f"safety_backup={safety_backup}")
+    print(f"target={restored}")
+    print("integrity_check=ok")
+    print("restored=true")
     return 0
 
 
@@ -150,6 +204,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     commands.add_parser("data-path", help="显示当前 SQLite 数据库位置")
     backup = commands.add_parser("backup", help="创建经过完整性检查的 SQLite 备份")
     backup.add_argument("destination", nargs="?", type=Path)
+    restore = commands.add_parser("restore", help="从 SQLite 备份恢复当前数据库")
+    restore.add_argument("source", type=Path)
+    restore.add_argument(
+        "--confirm",
+        action="store_true",
+        help="确认应用已停止，并允许替换当前数据库",
+    )
     embeddings = commands.add_parser("embeddings", help="R5.8 向量索引管理")
     embeddings_actions = embeddings.add_subparsers(dest="embeddings_command")
     embeddings_actions.add_parser("status", help="查看嵌入配置与索引计数")
@@ -193,6 +254,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if command == "migrate-runtime-v2":
         return _runtime_v2_migration_command(settings, arguments)
+    if command == "restore":
+        return _restore_command(settings, arguments)
 
     database = Database(settings.database_path)
     database.initialize()
