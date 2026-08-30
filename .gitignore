@@ -12,3 +12,5 @@ __pycache__/
 
 apps/*/node_modules/
 apps/*/dist/
+apps/web/test-results/
+apps/web/playwright-report/
