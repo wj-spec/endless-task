@@ -355,6 +355,9 @@ class McpReconnectTest(unittest.IsolatedAsyncioTestCase):
             try:
                 await manager.start_all()
                 self.assertEqual("connected", manager.status(server.id).state)
+                tools_before_failure = tuple(
+                    item.name for item in registry.definitions()
+                )
 
                 with self.assertRaises(Exception):
                     await registry.resolve("mcp__demo__crash").execute(
@@ -363,16 +366,23 @@ class McpReconnectTest(unittest.IsolatedAsyncioTestCase):
 
                 deadline = asyncio.get_running_loop().time() + 2
                 saw_reconnecting = False
+                tools_stable_during_reconnect = False
                 while asyncio.get_running_loop().time() < deadline:
-                    if manager.status(server.id).state == "reconnecting":
+                    state = manager.status(server.id).state
+                    if state == "reconnecting":
                         saw_reconnecting = True
+                        tools_stable_during_reconnect = tools_stable_during_reconnect or (
+                            tuple(item.name for item in registry.definitions())
+                            == tools_before_failure
+                        )
                     if manager.status(server.id).state == "connected":
                         break
                     await asyncio.sleep(0.01)
                 self.assertTrue(saw_reconnecting)
+                self.assertTrue(tools_stable_during_reconnect)
                 self.assertEqual("connected", manager.status(server.id).state)
-                self.assertIn(
-                    "mcp__demo__echo",
+                self.assertEqual(
+                    tools_before_failure,
                     tuple(item.name for item in registry.definitions()),
                 )
                 result = await registry.resolve("mcp__demo__echo").execute(

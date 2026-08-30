@@ -90,6 +90,11 @@ class SqliteChatRepository:
                   AND NOT EXISTS (
                       SELECT 1 FROM turns t WHERE t.conversation_id = c.id
                   )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM v2_transcript_entries e
+                      WHERE e.conversation_id = c.id
+                  )
                 ORDER BY c.updated_at DESC, c.id DESC
                 LIMIT 1
                 """,

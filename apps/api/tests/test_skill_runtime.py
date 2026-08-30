@@ -67,7 +67,9 @@ class SkillLoaderTest(unittest.TestCase):
         write_skill(self.user, "valid")
 
         skills = discover_skills(self.user)
-        self.assertEqual([skill.name for skill in skills], ["valid"])
+        self.assertEqual([skill.name for skill in skills], ["broken", "valid"])
+        self.assertFalse(skills[0].valid)
+        self.assertNotIn("broken", build_available_skills_prompt(skills))
 
     def test_prompt_contains_progressive_disclosure_fields(self) -> None:
         path = write_skill(self.user, "weekly-report", "写周报")

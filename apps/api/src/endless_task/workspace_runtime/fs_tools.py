@@ -453,7 +453,7 @@ class DeleteWorkspaceFileTool:
     def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
         target = str(call.arguments.get("path") or "?")
         return ToolApprovalPrompt(
-            summary="允许删除工作区文件吗？（不可恢复）",
+            summary="允许执行 delete_workspace_file 吗？（不可恢复）",
             reason=(
                 f"将永久删除工作区文件：{target}\n"
                 "删除不可恢复，即使已开启提权模式也需要你逐次确认。"

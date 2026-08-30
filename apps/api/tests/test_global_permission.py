@@ -158,6 +158,7 @@ class PermissionSettingsApiTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / "api.db",
+                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
             ),
@@ -256,6 +257,7 @@ class PermissionCoverageRuntimeTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / f"api-{suffix}.db",
+                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
             ),

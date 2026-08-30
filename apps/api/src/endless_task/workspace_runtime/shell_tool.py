@@ -89,9 +89,9 @@ class RunShellTool:
         dangerous = is_dangerous(command)
         return ToolApprovalPrompt(
             summary=(
-                "允许执行命令吗？（危险命令）"
+                "允许执行 run_shell 吗？（危险命令）"
                 if dangerous
-                else "允许执行命令吗？"
+                else "允许执行 run_shell 吗？"
             ),
             reason=(
                 f"将在工作区根目录执行：{command}\n"

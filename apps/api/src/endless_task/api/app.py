@@ -55,8 +55,24 @@ from endless_task.runtime import (
     TurnController,
     UnconfiguredProvider,
 )
-from endless_task.runtime.provider import ModelProvider
+from endless_task.runtime.provider import ModelProvider, ProviderMessage
 from endless_task.runtime.provider_manager import ProviderManager
+from endless_task.runtime_v2 import (
+    LaneKind,
+    LaneRecord,
+    MemoryScope,
+    ProductRuntimeEventRecord,
+    RunRecord,
+    RunStatus,
+    RuntimeV2ConversationRuntimeStatus,
+    RuntimeV2GlobalRuntimeStatus,
+    RuntimeV2MemoryPromotion,
+    RuntimeV2MemoryRecord,
+    RuntimeV2RuntimeSelectionService,
+    RuntimeV2SessionGateway,
+    ToolApprovalDecision,
+    product_event_json,
+)
 from endless_task.artifacts import (
     ArtifactProposalService,
     SourceReferenceResolver,
@@ -112,6 +128,8 @@ from endless_task.storage import (
     SqlitePreferencesRepository,
     SqliteTextFileRepository,
     SqliteRuntimeRepository,
+    SqliteRuntimeV2Repository,
+    SqliteRuntimeV2MemoryRepository,
     SqliteTaskRepository,
     SqliteTaskProposalRepository,
     SqliteNotificationRepository,
@@ -132,7 +150,7 @@ from endless_task.storage.sqlite_skill_override_repository import (
     SqliteSkillOverrideRepository,
 )
 from endless_task.storage.sqlite_knowledge_repository import scope_tier
-from endless_task.skills import SkillService, build_available_skills_prompt
+from endless_task.skills import Skill, SkillService, build_available_skills_prompt
 from endless_task.tooling import ApprovalStatus, ToolRegistry
 
 from .serialization import (
@@ -238,6 +256,8 @@ def runtime_environment() -> dict[str, str]:
 class AppSettings:
     database_path: Path
     config_version: int = CONFIG_VERSION
+    runtime: str = "v2"
+    runtime_rollback: bool = False
     provider_name: str = "fake"
     model: str = "fake-model"
     base_url: Optional[str] = None
@@ -302,6 +322,8 @@ class AppSettings:
             raise ValueError(
                 f"Unsupported config version {self.config_version}; expected {CONFIG_VERSION}"
             )
+        if self.runtime not in {"v1", "v2"}:
+            raise ValueError("ENDLESS_TASK_RUNTIME must be v1 or v2")
         if self.provider_timeout_seconds <= 0 or self.heartbeat_seconds <= 0:
             raise ValueError("Timeout values must be positive")
         if self.context_window_tokens <= self.max_output_tokens:
@@ -361,6 +383,10 @@ class AppSettings:
         )
         return cls(
             database_path=database_path,
+            runtime=env.get("ENDLESS_TASK_RUNTIME", "v2").strip().lower(),
+            runtime_rollback=_parse_flag(
+                env.get("ENDLESS_TASK_RUNTIME_ROLLBACK", "0")
+            ),
             memory_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_MEMORY_PROPOSALS", "1")
             ),
@@ -567,6 +593,10 @@ class AppContainer:
     runtime: AssistantRuntime
     tool_registry: ToolRegistry
     controller: TurnController
+    runtime_v2_repository: SqliteRuntimeV2Repository
+    runtime_v2_memory_repository: SqliteRuntimeV2MemoryRepository
+    runtime_v2_gateway: RuntimeV2SessionGateway
+    runtime_v2_selection_service: RuntimeV2RuntimeSelectionService
 
 
 class ConversationPatch(BaseModel):
@@ -588,6 +618,86 @@ class CreateTurnBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str
+
+
+class RuntimeV2MessageBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    laneId: Optional[str] = None
+
+
+class RuntimeV2ConversationRuntimeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runtime: Literal["v1", "v2"]
+
+
+class RuntimeV2CreateLaneBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["persistent_branch"] = "persistent_branch"
+    sourceLaneId: Optional[str] = None
+    baseEntryId: Optional[str] = None
+    displayName: Optional[str] = None
+
+
+class RuntimeV2RenameLaneBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    displayName: Optional[str] = None
+
+
+class RuntimeV2CreateTemporaryConversationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sourceLaneId: str
+    sourceLeafEntryId: Optional[str] = None
+    title: Optional[str] = None
+
+
+class RuntimeV2MemoryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["preference", "fact"]
+    content: str
+    laneId: Optional[str] = None
+    sourceEntryId: Optional[str] = None
+
+
+class RuntimeV2RunMemoryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["preference", "fact"]
+    content: str
+    sourceEntryId: Optional[str] = None
+
+
+class RuntimeV2MemoryPromotionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    targetScope: Literal[
+        "user_global", "workspace", "conversation_tree", "branch"
+    ]
+    targetLaneId: Optional[str] = None
+
+
+class RuntimeV2MemoryPromotionResolveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept", "reject"]
+
+
+class RuntimeV2SteerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+
+
+class RuntimeV2RecoveryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["mark_failed", "retry"]
 
 
 class UpdateMemoryBody(BaseModel):
@@ -632,6 +742,9 @@ class RollbackArtifactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     targetOrdinal: int
+    sourceConversationId: str
+    sourceTurnId: str
+    note: Optional[str] = None
 
 
 class ProviderProfileBody(BaseModel):
@@ -783,6 +896,157 @@ def _event_sse(event: RuntimeEvent) -> str:
     return f"id: {event.event_id}\nevent: {event.type}\ndata: {payload}\n\n"
 
 
+def _runtime_v2_product_sse(event: ProductRuntimeEventRecord) -> str:
+    payload = json.dumps(
+        product_event_json(event),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"id: {event.event_seq}\nevent: {event.event_type}\ndata: {payload}\n\n"
+
+
+def _runtime_v2_lane_json(
+    lane: LaneRecord,
+    *,
+    active_lane_id: Optional[str] = None,
+) -> dict[str, object]:
+    source_lane_id = lane.source_lane_id
+    title = lane.display_name or lane.summary
+    return {
+        "id": lane.id,
+        "conversationId": lane.conversation_id,
+        "kind": lane.kind.value,
+        "status": lane.status.value,
+        "archived": lane.is_archived,
+        "archivedAt": lane.archived_at,
+        "displayName": lane.display_name,
+        "summary": lane.summary,
+        "title": title,
+        "baseEntryExcerpt": lane.summary,
+        "baseEntryId": lane.base_entry_id,
+        "leafEntryId": lane.leaf_entry_id,
+        "createdFromEntryId": lane.created_from_entry_id,
+        "createdAt": lane.created_at,
+        "sourceLaneId": source_lane_id,
+        "isMain": lane.id == active_lane_id or (
+            active_lane_id is None and lane.kind is LaneKind.MAIN
+        ),
+    }
+
+
+def _runtime_v2_run_variant_json(run: RunRecord) -> dict[str, object]:
+    return {
+        "runId": run.id,
+        "conversationId": run.conversation_id,
+        "laneId": run.lane_id,
+        "triggerEntryId": run.trigger_entry_id,
+        "siblingGroupId": run.sibling_group_id,
+        "assistantEntryId": run.assistant_entry_id,
+        "status": run.status.value,
+        "isActiveVariant": run.is_active_variant,
+        "createdAt": run.created_at,
+        "finishedAt": run.finished_at,
+    }
+
+
+def _runtime_v2_memory_json(memory: RuntimeV2MemoryRecord) -> dict[str, object]:
+    return {
+        "id": memory.id,
+        "scope": memory.scope.value,
+        "kind": memory.kind,
+        "content": memory.content,
+        "status": memory.status,
+        "conversationId": memory.conversation_id,
+        "workspaceId": memory.workspace_id,
+        "laneId": memory.lane_id,
+        "runId": memory.run_id,
+        "sourceMemoryId": memory.source_memory_id,
+        "sourceEntryId": memory.source_entry_id,
+        "createdAt": memory.created_at,
+        "updatedAt": memory.updated_at,
+    }
+
+
+def _runtime_v2_memory_promotion_json(
+    promotion: RuntimeV2MemoryPromotion,
+) -> dict[str, object]:
+    return {
+        "id": promotion.id,
+        "memoryId": promotion.source_memory_id,
+        "targetScope": promotion.target_scope.value,
+        "targetWorkspaceId": promotion.target_workspace_id,
+        "targetLaneId": promotion.target_lane_id,
+        "status": promotion.status.value,
+        "resolvedMemoryId": promotion.resolved_memory_id,
+        "conflictMemoryId": promotion.conflict_memory_id,
+        "createdAt": promotion.created_at,
+        "updatedAt": promotion.updated_at,
+        "resolvedAt": promotion.resolved_at,
+    }
+
+
+def _runtime_v2_global_runtime_json(
+    status: RuntimeV2GlobalRuntimeStatus,
+) -> dict[str, object]:
+    return {
+        "defaultRuntime": status.default_runtime,
+        "rollbackForced": status.rollback_forced,
+        "migrationState": status.migration_state,
+        "conversationCount": status.conversation_count,
+        "mappedConversationCount": status.mapped_conversation_count,
+        "conversationTreeCount": status.conversation_tree_count,
+        "pendingMigrationCount": status.pending_migration_count,
+        "rollbackReconciliationCount": status.rollback_reconciliation_count,
+    }
+
+
+def _runtime_v2_conversation_runtime_json(
+    status: RuntimeV2ConversationRuntimeStatus,
+) -> dict[str, object]:
+    return {
+        "conversationId": status.conversation_id,
+        "treeConversationId": status.tree_conversation_id,
+        "defaultRuntime": status.default_runtime,
+        "rollbackForced": status.rollback_forced,
+        "overrideRuntime": status.override_runtime,
+        "effectiveRuntime": status.effective_runtime,
+        "canUseV2": status.can_use_v2,
+        "requiresMigration": status.requires_migration,
+        "v1ReadOnly": status.v1_read_only,
+        "rollbackReconciliationRequired": status.rollback_reconciliation_required,
+        "reason": status.reason,
+    }
+
+
+def _resolve_runtime_v2_conversation(
+    container: AppContainer,
+    conversation_id: str,
+    *,
+    write: bool,
+) -> str:
+    status = container.runtime_v2_selection_service.describe(conversation_id)
+    if write and status.effective_runtime != "v2":
+        raise ApiRequestError(
+            "runtime_v2_not_selected",
+            "该会话当前未选择 Runtime v2，请先切换会话 runtime。",
+            status_code=409,
+        )
+    return status.tree_conversation_id
+
+
+def _assert_v1_write_allowed(
+    container: AppContainer,
+    conversation_id: str,
+) -> None:
+    status = container.runtime_v2_selection_service.describe(conversation_id)
+    if status.v1_read_only and not status.rollback_forced:
+        raise ApiRequestError(
+            "v1_read_only",
+            "该会话的 v1 数据已迁移归档，请使用 Runtime v2；如需回写 v1，请启用全局回滚。",
+            status_code=409,
+        )
+
+
 def _parse_last_event_id(turn_id: str, value: Optional[str]) -> int:
     if value is None or value == "":
         return 0
@@ -917,11 +1181,31 @@ def _build_container(
     memory_proposal_service: Optional[MemoryProposalService] = None
     broker = RuntimeEventBroker()
     selected_provider = provider or _provider_from_settings(settings)
+    runtime_v2_repository = SqliteRuntimeV2Repository(database)
+    runtime_v2_memory_repository = SqliteRuntimeV2MemoryRepository(database)
     provider_manager = ProviderManager(
         repository=provider_profile_repository,
         fallback_provider=selected_provider,
     )
     selected_tool_registry = tool_registry or ToolRegistry()
+    runtime_v2_gateway = RuntimeV2SessionGateway(
+        chat_repository=chat_repository,
+        repository=runtime_v2_repository,
+        provider=selected_provider,
+            tool_registry=selected_tool_registry,
+            model=settings.model,
+            max_output_tokens=settings.max_output_tokens,
+            max_model_turns=settings.max_agent_iterations,
+            temperature=None,
+        provider_slot_limit=settings.max_concurrent_model_calls,
+        memory_repository=runtime_v2_memory_repository,
+    )
+    runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
+        database=database,
+        repository=runtime_v2_repository,
+        default_runtime=settings.runtime,
+        rollback_forced=settings.runtime_rollback,
+    )
     workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
@@ -996,25 +1280,26 @@ def _build_container(
     if settings.task_proposals_enabled:
         system_prompt = system_prompt + TASK_AWARENESS_CLAUSE
         system_prompt_version = TASK_AWARENESS_PROMPT_VERSION
+    context_builder = P0ContextBuilder(
+        chat_repository,
+        system_prompt=system_prompt,
+        system_prompt_version=system_prompt_version,
+        max_context_tokens=settings.context_window_tokens,
+        summary_token_limit=settings.summary_token_limit,
+        context_repository=context_repository,
+        file_repository=file_repository,
+        memory_repository=memory_repository,
+        artifact_proposal_repository=artifact_proposal_repository,
+        artifact_repository=artifact_repository,
+        task_repository=task_repository,
+        knowledge_repository=knowledge_repository,
+        retrieval_event_repository=retrieval_event_repository,
+        skill_prompt_builder=skill_prompt_for_workspace,
+    )
     runtime = AssistantRuntime(
         chat_repository=chat_repository,
         runtime_repository=runtime_repository,
-        context_builder=P0ContextBuilder(
-            chat_repository,
-            system_prompt=system_prompt,
-            system_prompt_version=system_prompt_version,
-            max_context_tokens=settings.context_window_tokens,
-            summary_token_limit=settings.summary_token_limit,
-            context_repository=context_repository,
-            file_repository=file_repository,
-            memory_repository=memory_repository,
-            artifact_proposal_repository=artifact_proposal_repository,
-            artifact_repository=artifact_repository,
-            task_repository=task_repository,
-            knowledge_repository=knowledge_repository,
-            retrieval_event_repository=retrieval_event_repository,
-            skill_prompt_builder=skill_prompt_for_workspace,
-        ),
+        context_builder=context_builder,
         provider=selected_provider,
         knowledge_query_rewriter=(
             KnowledgeQueryRewriter(selected_provider, model=settings.model)
@@ -1043,6 +1328,30 @@ def _build_container(
         permission_mode_provider=lambda: preferences_repository.get_permission_mode()[0],
         workspace_resolver=workspace_resolver,
         provider_resolver=provider_manager.resolve,
+    )
+
+    async def build_runtime_v2_context_prefix(
+        conversation_id: str,
+        lane_id: str,
+        run_id: str,
+        user_content: str,
+    ) -> tuple[ProviderMessage]:
+        del lane_id
+        conversation = chat_repository.get_conversation(conversation_id)
+        return (
+            ProviderMessage(
+                role="system",
+                content=context_builder.build_system_context(
+                    conversation_id,
+                    user_content,
+                    turn_id=run_id,
+                    workspace_id=conversation.workspace_id,
+                ),
+            ),
+        )
+
+    runtime_v2_gateway.set_context_prefix_builder(
+        build_runtime_v2_context_prefix
     )
     artifact_proposal_service: Optional[ArtifactProposalService] = None
     if settings.artifact_proposals_enabled:
@@ -1131,6 +1440,66 @@ def _build_container(
         or settings.knowledge_proposals_enabled
         or embedding_indexer is not None
     ):
+
+        async def on_v2_run_completed(run_id: str) -> None:
+            run = runtime_v2_repository.get_run(run_id)
+            if (
+                run.status is not RunStatus.COMPLETED
+                or run.assistant_entry_id is None
+            ):
+                return
+            user_entry = runtime_v2_repository.get_entry(run.trigger_entry_id)
+            assistant_entry = runtime_v2_repository.get_entry(
+                run.assistant_entry_id
+            )
+            user_message = user_entry.payload.get("content", "")
+            assistant_message = assistant_entry.payload.get("content", "")
+            if not isinstance(user_message, str) or not isinstance(
+                assistant_message, str
+            ):
+                return
+            if not assistant_message.strip():
+                return
+            conversation = chat_repository.get_conversation(run.conversation_id)
+            ephemeral = (
+                conversation.kind is ConversationKind.EPHEMERAL
+            )
+            if memory_proposal_service is not None and not ephemeral:
+                if proposal_budget is None or proposal_budget.allow(
+                    run.conversation_id
+                ):
+                    await memory_proposal_service.generate_for_turn(
+                        conversation_id=run.conversation_id,
+                        turn_id=run.id,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+            if knowledge_proposal_service is not None and not ephemeral:
+                if proposal_budget is None or proposal_budget.allow(
+                    run.conversation_id
+                ):
+                    await knowledge_proposal_service.generate_for_turn(
+                        conversation_id=run.conversation_id,
+                        turn_id=run.id,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+            if artifact_proposal_service is not None:
+                await artifact_proposal_service.generate_for_turn(
+                    conversation_id=run.conversation_id,
+                    turn_id=run.id,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            if task_proposal_service is not None:
+                await task_proposal_service.generate_for_turn(
+                    conversation_id=run.conversation_id,
+                    turn_id=run.id,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+
+        runtime_v2_gateway.set_run_completion_callback(on_v2_run_completed)
 
         async def on_turn_completed(snapshot) -> None:
             active = next(
@@ -1272,6 +1641,10 @@ def _build_container(
         runtime=runtime,
         tool_registry=selected_tool_registry,
         controller=controller,
+        runtime_v2_repository=runtime_v2_repository,
+        runtime_v2_memory_repository=runtime_v2_memory_repository,
+        runtime_v2_gateway=runtime_v2_gateway,
+        runtime_v2_selection_service=runtime_v2_selection_service,
     )
 
 
@@ -1423,6 +1796,7 @@ def create_app(
             await container.mcp_manager.stop_all()
             await container.task_worker.drain()
             await container.controller.shutdown()
+            await container.runtime_v2_gateway.shutdown()
             await container.provider_manager.close()
             close_provider = getattr(container.provider, "close", None)
             if close_provider is not None:
@@ -1517,6 +1891,114 @@ def create_app(
                     container.embedding_indexer is not None
                     and not container.embedding_indexer.unavailable
                 ),
+            },
+        }
+
+    @app.get("/capabilities")
+    async def capabilities() -> dict[str, object]:
+        skills_by_path: dict[str, Skill] = {}
+        for skill in container.skill_service.list_skills():
+            skills_by_path[str(skill.file_path)] = skill
+        for workspace in container.workspace_repository.list_workspaces():
+            if workspace.root_path:
+                for skill in container.skill_service.list_skills(
+                    Path(workspace.root_path),
+                    workspace_id=workspace.id,
+                ):
+                    skills_by_path[str(skill.file_path)] = skill
+        skills = list(skills_by_path.values())
+        skill_diagnostics = [
+            {
+                "path": str(diagnostic.path),
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+            }
+            for skill in skills
+            for diagnostic in skill.diagnostics
+        ]
+        skills_state = "degraded" if skill_diagnostics else "ok"
+
+        mcp_statuses = container.mcp_manager.list_statuses()
+        mcp_issues: list[str] = []
+        for status in mcp_statuses:
+            if status.state == "reconnecting":
+                mcp_issues.append("mcp:reconnecting")
+            elif status.enabled and status.state != "connected":
+                mcp_issues.append("mcp:error")
+        mcp_state = "degraded" if mcp_issues else "ok"
+
+        provider_selection = container.provider_manager.default_selection()
+        provider_configured = not isinstance(
+            provider_selection.provider,
+            UnconfiguredProvider,
+        )
+        provider_state = "ok" if provider_configured else "unavailable"
+        provider_issues = [] if provider_configured else ["provider:unconfigured"]
+
+        embedding_ready = (
+            container.embedding_indexer is not None
+            and not container.embedding_indexer.unavailable
+        )
+        embedding_issues = (
+            [] if not container.settings.embedding_enabled or embedding_ready
+            else ["embedding:unavailable"]
+        )
+        embedding_state = "ok" if not embedding_issues else "degraded"
+
+        states = (skills_state, mcp_state, provider_state, embedding_state)
+        if "unavailable" in states:
+            summary_state = "unavailable"
+        elif "degraded" in states:
+            summary_state = "degraded"
+        else:
+            summary_state = "ok"
+        issues = [
+            *(["skill:diagnostics"] if skill_diagnostics else []),
+            *mcp_issues,
+            *provider_issues,
+            *embedding_issues,
+        ]
+        return {
+            "summary": {"state": summary_state, "issues": issues},
+            "runtime": _runtime_v2_global_runtime_json(
+                container.runtime_v2_selection_service.global_status()
+            ),
+            "skills": {
+                "state": skills_state,
+                "total": len(skills),
+                "enabled": sum(not skill.disabled for skill in skills),
+                "diagnostics": skill_diagnostics,
+            },
+            "mcp": {
+                "state": mcp_state,
+                "servers": [
+                    {
+                        "id": status.server_id,
+                        "name": status.name,
+                        "state": status.state,
+                        "toolCount": status.tool_count,
+                        "lastError": status.last_error,
+                    }
+                    for status in mcp_statuses
+                ],
+            },
+            "provider": {
+                "state": provider_state,
+                "defaultProfileId": provider_selection.profile.id,
+                "profileName": provider_selection.profile.name,
+                "model": provider_selection.model,
+                "configured": provider_configured,
+                "fallback": False,
+            },
+            "embedding": {
+                "state": embedding_state,
+                "enabled": container.settings.embedding_enabled,
+                "backend": (
+                    container.settings.embedding_backend
+                    if container.settings.embedding_enabled
+                    else None
+                ),
+                "ready": embedding_ready,
             },
         }
 
@@ -1707,6 +2189,7 @@ def create_app(
         conversation_id: str,
         body: CreateBranchBody,
     ) -> dict[str, object]:
+        _assert_v1_write_allowed(container, conversation_id)
         branch = container.chat_repository.create_branch(
             parent_conversation_id=conversation_id,
             fork_turn_id=body.forkTurnId,
@@ -1721,6 +2204,7 @@ def create_app(
 
     @app.post("/conversations/{conversation_id}/promote")
     async def promote_conversation(conversation_id: str) -> dict[str, object]:
+        _assert_v1_write_allowed(container, conversation_id)
         conversation = container.chat_repository.promote_conversation(
             conversation_id
         )
@@ -1835,6 +2319,7 @@ def create_app(
     ) -> dict[str, object]:
         current = container.provider_profile_repository.get_profile(profile_id)
         profile = container.provider_profile_repository.update_profile(
+            profile_id,
             ProviderProfileDraft(
                 name=body.name if body.name is not None else current.name,
                 default_model=(
@@ -2697,6 +3182,576 @@ def create_app(
             "pendingProposals": proposal_items,
         }
 
+    @app.get("/api/v2/conversations/{conversation_id}/lanes")
+    async def list_runtime_v2_lanes(
+        conversation_id: str,
+        includeArchived: bool = False,
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        lanes = container.runtime_v2_gateway.list_lanes(
+            target_conversation_id,
+            include_archived=includeArchived,
+        )
+        pointer = container.runtime_v2_repository.get_conversation_pointer(
+            target_conversation_id
+        )
+        active_lane_id = pointer.active_lane_id if pointer is not None else None
+        return {
+            "conversationId": target_conversation_id,
+            "activeLaneId": active_lane_id,
+            "items": tuple(
+                _runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
+                for lane in lanes
+            ),
+        }
+
+    @app.post("/api/v2/conversations/{conversation_id}/lanes", status_code=201)
+    async def create_runtime_v2_lane(
+        conversation_id: str,
+        body: RuntimeV2CreateLaneBody,
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=True,
+        )
+        pointer = container.runtime_v2_repository.get_conversation_pointer(
+            target_conversation_id
+        )
+        if pointer is None:
+            raise ConflictError("Conversation has no v2 lane pointer")
+        source_lane_id = body.sourceLaneId or pointer.active_lane_id
+        base_entry_id = body.baseEntryId
+        if base_entry_id is None:
+            source_lane = container.runtime_v2_repository.get_lane(source_lane_id)
+            base_entry_id = source_lane.leaf_entry_id
+            if base_entry_id is None:
+                raise ConflictError("Source lane has no base entry")
+        result = await container.runtime_v2_gateway.create_lane_branch(
+            conversation_id=target_conversation_id,
+            source_lane_id=source_lane_id,
+            base_entry_id=base_entry_id,
+            kind=LaneKind.PERSISTENT_BRANCH,
+            display_name=body.displayName,
+        )
+        return {
+            "lane": _runtime_v2_lane_json(result.lane),
+            "sourceLane": _runtime_v2_lane_json(result.source_lane),
+            "baseEntryId": result.base_entry_id,
+            "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
+        }
+
+    @app.post("/api/v2/lanes/{lane_id}/promote")
+    async def promote_runtime_v2_lane(lane_id: str) -> dict[str, object]:
+        lane = container.runtime_v2_repository.get_lane(lane_id)
+        result = await container.runtime_v2_gateway.promote_lane(
+            conversation_id=lane.conversation_id,
+            target_lane_id=lane_id,
+        )
+        return {
+            "lane": _runtime_v2_lane_json(result.promoted_lane),
+            "previousMainLane": _runtime_v2_lane_json(result.previous_main_lane),
+            "activeLaneId": result.pointer.active_lane_id,
+        }
+
+    @app.patch("/api/v2/lanes/{lane_id}")
+    async def rename_runtime_v2_lane(
+        lane_id: str,
+        body: RuntimeV2RenameLaneBody,
+    ) -> dict[str, object]:
+        lane = await container.runtime_v2_gateway.rename_lane(
+            lane_id,
+            body.displayName,
+        )
+        pointer = container.runtime_v2_repository.get_conversation_pointer(
+            lane.conversation_id
+        )
+        return {
+            "lane": _runtime_v2_lane_json(
+                lane,
+                active_lane_id=pointer.active_lane_id if pointer is not None else None,
+            )
+        }
+
+    @app.post("/api/v2/lanes/{lane_id}/archive")
+    async def archive_runtime_v2_lane(lane_id: str) -> dict[str, object]:
+        lanes = await container.runtime_v2_gateway.archive_lane(lane_id)
+        active_lane_id = None
+        if lanes:
+            pointer = container.runtime_v2_repository.get_conversation_pointer(
+                lanes[0].conversation_id
+            )
+            active_lane_id = pointer.active_lane_id if pointer is not None else None
+        return {
+            "items": tuple(
+                _runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
+                for lane in lanes
+            )
+        }
+
+    @app.post("/api/v2/lanes/{lane_id}/restore")
+    async def restore_runtime_v2_lane(lane_id: str) -> dict[str, object]:
+        lanes = await container.runtime_v2_gateway.restore_lane(lane_id)
+        active_lane_id = None
+        if lanes:
+            pointer = container.runtime_v2_repository.get_conversation_pointer(
+                lanes[0].conversation_id
+            )
+            active_lane_id = pointer.active_lane_id if pointer is not None else None
+        return {
+            "items": tuple(
+                _runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
+                for lane in lanes
+            )
+        }
+
+    @app.post(
+        "/api/v2/conversations/{conversation_id}/temporary-conversations",
+        status_code=201,
+    )
+    async def create_runtime_v2_temporary_conversation(
+        conversation_id: str,
+        body: RuntimeV2CreateTemporaryConversationBody,
+    ) -> dict[str, object]:
+        source_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=True,
+        )
+        temporary_conversation_id, lane = (
+            await container.runtime_v2_gateway.create_temporary_conversation(
+                source_conversation_id=source_conversation_id,
+                source_lane_id=body.sourceLaneId,
+                source_leaf_entry_id=body.sourceLeafEntryId,
+                title=body.title,
+            )
+        )
+        conversation = container.chat_repository.get_conversation(
+            temporary_conversation_id
+        )
+        return {
+            "conversation": conversation_json(conversation),
+            "lane": _runtime_v2_lane_json(lane, active_lane_id=lane.id),
+        }
+
+    @app.post("/api/v2/temporary-conversations/{conversation_id}/promote")
+    async def promote_runtime_v2_temporary_conversation(
+        conversation_id: str,
+    ) -> dict[str, object]:
+        await container.runtime_v2_gateway.promote_temporary_conversation(
+            conversation_id
+        )
+        return {
+            "conversation": conversation_json(
+                container.chat_repository.get_conversation(conversation_id)
+            )
+        }
+
+    @app.delete(
+        "/api/v2/temporary-conversations/{conversation_id}",
+        status_code=204,
+    )
+    async def delete_runtime_v2_temporary_conversation(
+        conversation_id: str,
+    ) -> Response:
+        await container.runtime_v2_gateway.delete_temporary_conversation(
+            conversation_id
+        )
+        return Response(status_code=204)
+
+    @app.get("/api/v2/runs/{run_id}/variants")
+    async def list_runtime_v2_run_variants(run_id: str) -> dict[str, object]:
+        variants = container.runtime_v2_gateway.list_run_variants(run_id)
+        return {
+            "runId": run_id,
+            "siblingGroupId": variants[0].sibling_group_id if variants else None,
+            "items": tuple(_runtime_v2_run_variant_json(variant) for variant in variants),
+        }
+
+    @app.post("/api/v2/runs/{run_id}/regenerate", status_code=202)
+    async def regenerate_runtime_v2_run(run_id: str) -> dict[str, object]:
+        result = await container.runtime_v2_gateway.regenerate_run(run_id)
+        return {
+            "oldRunId": result.old_run_id,
+            "newRunId": result.new_run_id,
+            "laneId": result.lane_id,
+            "triggerEntryId": result.trigger_entry_id,
+            "siblingGroupId": result.sibling_group_id,
+            "eventsUrl": (
+                f"/api/v2/conversations/"
+                f"{container.runtime_v2_repository.get_run(run_id).conversation_id}/events"
+            ),
+        }
+
+    @app.post("/api/v2/runs/{run_id}/select")
+    async def select_runtime_v2_run_variant(run_id: str) -> dict[str, object]:
+        selected = await container.runtime_v2_gateway.select_run_variant(run_id)
+        return {
+            "runId": selected.id,
+            "assistantEntryId": selected.assistant_entry_id,
+            "isActiveVariant": selected.is_active_variant,
+        }
+
+    @app.get("/api/v2/runtime")
+    async def get_runtime_v2_runtime_status() -> dict[str, object]:
+        return _runtime_v2_global_runtime_json(
+            container.runtime_v2_selection_service.global_status()
+        )
+
+    @app.get("/api/v2/conversations/{conversation_id}/runtime")
+    async def get_runtime_v2_conversation_runtime(
+        conversation_id: str,
+    ) -> dict[str, object]:
+        status = container.runtime_v2_selection_service.describe(conversation_id)
+        return _runtime_v2_conversation_runtime_json(status)
+
+    @app.post("/api/v2/conversations/{conversation_id}/runtime")
+    async def set_runtime_v2_conversation_runtime(
+        conversation_id: str,
+        body: RuntimeV2ConversationRuntimeBody,
+    ) -> dict[str, object]:
+        status = container.runtime_v2_selection_service.set_override(
+            conversation_id,
+            runtime=body.runtime,
+        )
+        return _runtime_v2_conversation_runtime_json(status)
+
+    @app.get("/api/v2/conversations/{conversation_id}/memories")
+    async def list_runtime_v2_memories(
+        conversation_id: str,
+        lane_id: str = Query(...),
+        run_id: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        memories = container.runtime_v2_gateway.list_memories(
+            conversation_id=target_conversation_id,
+            lane_id=lane_id,
+            run_id=run_id,
+        )
+        return {
+            "conversationId": target_conversation_id,
+            "laneId": lane_id,
+            "items": tuple(_runtime_v2_memory_json(memory) for memory in memories),
+        }
+
+    @app.post("/api/v2/conversations/{conversation_id}/memories", status_code=201)
+    async def create_runtime_v2_memory(
+        conversation_id: str,
+        body: RuntimeV2MemoryBody,
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=True,
+        )
+        pointer = container.runtime_v2_repository.get_conversation_pointer(
+            target_conversation_id
+        )
+        if pointer is None:
+            raise ConflictError("Conversation has no v2 lane pointer")
+        lane_id = body.laneId or pointer.active_lane_id
+        memory = container.runtime_v2_gateway.create_lane_memory(
+            conversation_id=target_conversation_id,
+            lane_id=lane_id,
+            kind=body.kind,
+            content=body.content,
+            source_entry_id=body.sourceEntryId,
+        )
+        return {"memory": _runtime_v2_memory_json(memory)}
+
+    @app.post("/api/v2/runs/{run_id}/memories", status_code=201)
+    async def create_runtime_v2_run_memory(
+        run_id: str,
+        body: RuntimeV2RunMemoryBody,
+    ) -> dict[str, object]:
+        run = container.runtime_v2_repository.get_run(run_id)
+        memory = container.runtime_v2_gateway.create_run_memory(
+            conversation_id=run.conversation_id,
+            run_id=run_id,
+            kind=body.kind,
+            content=body.content,
+            source_entry_id=body.sourceEntryId,
+        )
+        return {"memory": _runtime_v2_memory_json(memory)}
+
+    @app.post("/api/v2/memories/{memory_id}/promotions", status_code=201)
+    async def create_runtime_v2_memory_promotion(
+        memory_id: str,
+        body: RuntimeV2MemoryPromotionBody,
+    ) -> dict[str, object]:
+        promotion = container.runtime_v2_gateway.create_memory_promotion(
+            memory_id=memory_id,
+            target_scope=MemoryScope(body.targetScope),
+            target_lane_id=body.targetLaneId,
+        )
+        return {"promotion": _runtime_v2_memory_promotion_json(promotion)}
+
+    @app.get("/api/v2/conversations/{conversation_id}/memory-promotions")
+    async def list_runtime_v2_memory_promotions(
+        conversation_id: str,
+        include_resolved: bool = Query(False),
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        promotions = container.runtime_v2_gateway.list_memory_promotions(
+            conversation_id=target_conversation_id,
+            include_resolved=include_resolved,
+        )
+        return {
+            "conversationId": target_conversation_id,
+            "items": tuple(
+                _runtime_v2_memory_promotion_json(promotion)
+                for promotion in promotions
+            ),
+        }
+
+    @app.post("/api/v2/memory-promotions/{promotion_id}/resolve")
+    async def resolve_runtime_v2_memory_promotion(
+        promotion_id: str,
+        body: RuntimeV2MemoryPromotionResolveBody,
+    ) -> dict[str, object]:
+        promotion, memory = container.runtime_v2_gateway.resolve_memory_promotion(
+            promotion_id,
+            accept=body.decision == "accept",
+        )
+        return {
+            "promotion": _runtime_v2_memory_promotion_json(promotion),
+            "memory": (
+                _runtime_v2_memory_json(memory)
+                if memory is not None
+                else None
+            ),
+        }
+
+    @app.post("/api/v2/conversations/{conversation_id}/messages", status_code=202)
+    async def create_runtime_v2_message(
+        conversation_id: str,
+        body: RuntimeV2MessageBody,
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=True,
+        )
+        if len(body.content) > container.settings.max_message_characters:
+            raise ApiRequestError(
+                "message_too_large",
+                "消息内容超过本地配置允许的长度。",
+                status_code=413,
+            )
+        handle = await container.runtime_v2_gateway.send(
+            target_conversation_id,
+            body.content,
+            lane_id=body.laneId,
+        )
+        return {
+            "conversationId": handle.conversation_id,
+            "laneId": handle.lane_id,
+            "runId": handle.run_id,
+            "userMessageId": handle.user_message_id,
+            "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
+        }
+
+    @app.get("/api/v2/conversations/{conversation_id}/snapshot")
+    async def get_runtime_v2_snapshot(
+        conversation_id: str,
+        lane_id: Optional[str] = Query(default=None),
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        return container.runtime_v2_gateway.snapshot(
+            target_conversation_id,
+            lane_id=lane_id,
+        )
+
+    @app.get("/api/v2/conversations/{conversation_id}/recovery")
+    async def get_runtime_v2_recovery(
+        conversation_id: str,
+    ) -> dict[str, object]:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        reports = container.runtime_v2_gateway.recovery_reports(
+            target_conversation_id
+        )
+        return {
+            "conversationId": target_conversation_id,
+            "interruptedRuns": tuple(
+                {
+                    "runId": report.record.id,
+                    "status": report.record.status.value,
+                    "classification": report.classification.value,
+                    "action": report.action.value,
+                    "findings": tuple(
+                        {
+                            "reason": finding.reason.value,
+                            "message": finding.message,
+                            "modelTurnId": finding.model_turn_id,
+                            "toolExecutionId": finding.tool_execution_id,
+                        }
+                        for finding in report.findings
+                    ),
+                }
+                for report in reports
+            ),
+        }
+
+    @app.post("/api/v2/runs/{run_id}/recovery")
+    async def resolve_runtime_v2_recovery(
+        run_id: str,
+        body: RuntimeV2RecoveryBody,
+    ) -> dict[str, object]:
+        result = await container.runtime_v2_gateway.resolve_recovery(
+            run_id,
+            retry=body.action == "retry",
+        )
+        return {
+            "runId": result.run_id,
+            "action": result.action,
+            "laneId": result.lane_id,
+            "newRunId": result.new_run_id,
+        }
+
+    @app.get("/api/v2/conversations/{conversation_id}/events")
+    async def get_runtime_v2_events(
+        conversation_id: str,
+        after_seq: int = Query(0, ge=0),
+        lane_id: Optional[str] = Query(default=None),
+    ) -> StreamingResponse:
+        target_conversation_id = _resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        initial_events = container.runtime_v2_gateway.project_events(
+            target_conversation_id
+        )
+        latest_event_seq = initial_events[-1].event_seq if initial_events else 0
+        if after_seq > latest_event_seq:
+            raise ApiRequestError(
+                "invalid_after_seq",
+                "after_seq 超过当前会话事件游标。",
+            )
+
+        async def stream() -> AsyncIterator[str]:
+            snapshot = container.runtime_v2_gateway.snapshot(
+                target_conversation_id,
+                lane_id=lane_id,
+            )
+            snapshot_event_seq = int(snapshot["lastEventSeq"])
+            snapshot_payload = json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            yield (
+                f"id: snapshot-{conversation_id}-{snapshot_event_seq}\n"
+                "event: conversation.snapshot_ready\n"
+                f"data: {snapshot_payload}\n\n"
+            )
+            cursor = snapshot_event_seq
+            last_heartbeat = asyncio.get_running_loop().time()
+            poll_interval = min(0.05, container.settings.heartbeat_seconds)
+            while True:
+                events = container.runtime_v2_gateway.project_events(
+                    target_conversation_id
+                )
+                if lane_id is not None:
+                    events = tuple(
+                        event for event in events if event.lane_id == lane_id
+                    )
+                emitted = False
+                for event in events:
+                    if event.event_seq <= cursor:
+                        continue
+                    cursor = event.event_seq
+                    emitted = True
+                    yield _runtime_v2_product_sse(event)
+                if not container.runtime_v2_gateway.has_active_run(
+                    target_conversation_id
+                ):
+                    final_events = container.runtime_v2_gateway.project_events(
+                        target_conversation_id
+                    )
+                    if lane_id is not None:
+                        final_events = tuple(
+                            event
+                            for event in final_events
+                            if event.lane_id == lane_id
+                        )
+                    for event in final_events:
+                        if event.event_seq <= cursor:
+                            continue
+                        cursor = event.event_seq
+                        yield _runtime_v2_product_sse(event)
+                    return
+                now = asyncio.get_running_loop().time()
+                if (
+                    not emitted
+                    and now - last_heartbeat >= container.settings.heartbeat_seconds
+                ):
+                    last_heartbeat = now
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(poll_interval)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/v2/runs/{run_id}/steer")
+    async def steer_runtime_v2_run(
+        run_id: str,
+        body: RuntimeV2SteerBody,
+    ) -> dict[str, object]:
+        accepted = await container.runtime_v2_gateway.steer(
+            run_id,
+            body.content,
+        )
+        return {"runId": run_id, "accepted": accepted}
+
+    @app.post("/api/v2/runs/{run_id}/cancel")
+    async def cancel_runtime_v2_run(run_id: str) -> dict[str, object]:
+        accepted = await container.runtime_v2_gateway.cancel(run_id)
+        return {"runId": run_id, "accepted": accepted}
+
+    @app.post("/api/v2/approvals/{approval_id}")
+    async def resolve_runtime_v2_approval(
+        approval_id: str,
+        body: ResolveApprovalBody,
+    ) -> dict[str, object]:
+        decision = (
+            ToolApprovalDecision.APPROVE
+            if body.decision == "approve"
+            else ToolApprovalDecision.DENY
+        )
+        resolved = await container.runtime_v2_gateway.resolve_approval(
+            approval_id,
+            decision,
+        )
+        return {"approvalId": approval_id, "resolved": resolved}
+
     @app.post("/artifact-proposals/{proposal_id}/resolve")
     async def resolve_artifact_proposal(
         proposal_id: str, body: ResolveArtifactProposalBody
@@ -2720,6 +3775,16 @@ def create_app(
         body: CreateTurnBody,
         idempotency_key: str = Header(..., alias="Idempotency-Key"),
     ) -> dict[str, object]:
+        runtime_status = container.runtime_v2_selection_service.describe(
+            conversation_id
+        )
+        if runtime_status.effective_runtime == "v2":
+            raise ApiRequestError(
+                "runtime_v2_selected",
+                "该会话已选择 Runtime v2，请使用 v2 message API。",
+                status_code=409,
+            )
+        _assert_v1_write_allowed(container, conversation_id)
         if len(body.content) > container.settings.max_message_characters:
             raise ApiRequestError(
                 "message_too_large",
@@ -2802,8 +3867,9 @@ def create_app(
 
     @app.post("/turns/{turn_id}/cancel")
     async def cancel_turn(turn_id: str) -> dict[str, object]:
-        await container.controller.cancel(turn_id=turn_id)
         snapshot = container.chat_repository.get_turn(turn_id)
+        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
+        await container.controller.cancel(turn_id=turn_id)
         events = tuple(container.runtime_repository.list_events(turn_id))
         return compact_turn_snapshot_json(
             snapshot,
@@ -2816,6 +3882,9 @@ def create_app(
         approval_id: str,
         body: ResolveApprovalBody,
     ) -> dict[str, object]:
+        turn_id = container.runtime_repository.get_approval_turn_id(approval_id)
+        snapshot = container.chat_repository.get_turn(turn_id)
+        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
         status = (
             ApprovalStatus.APPROVED
             if body.decision == "approve"
@@ -2833,6 +3902,8 @@ def create_app(
         *,
         operation: str,
     ) -> dict[str, object]:
+        snapshot = container.chat_repository.get_turn(turn_id)
+        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
         if operation == "retry":
             handle = await container.controller.retry(
                 turn_id=turn_id,
@@ -2869,6 +3940,8 @@ def create_app(
 
     @app.post("/turns/{turn_id}/response-variants/{variant_id}/select")
     async def select_variant(turn_id: str, variant_id: str) -> dict[str, object]:
+        snapshot = container.chat_repository.get_turn(turn_id)
+        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
         snapshot = container.chat_repository.select_response_variant(
             turn_id=turn_id,
             variant_id=variant_id,

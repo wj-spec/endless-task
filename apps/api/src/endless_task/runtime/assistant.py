@@ -110,12 +110,16 @@ class AssistantRuntime:
             if self._provider_resolver is None:
                 selected_provider = self._provider
                 selected_model = self._configuration.model
+                provider_fallback_note = None
             else:
                 selection = self._provider_resolver(
                     self._chat_repository.get_conversation(conversation_id)
                 )
                 selected_provider = selection.provider
                 selected_model = selection.model
+                provider_fallback_note = self._provider_fallback_note(
+                    getattr(selection, "fallback_reason", None)
+                )
 
             started_event = self._runtime_repository.start_response(
                 turn_id=turn_id,
@@ -132,6 +136,7 @@ class AssistantRuntime:
                 reserved_output_tokens=self._configuration.max_output_tokens,
                 knowledge_query=await self._rewrite_knowledge_query(turn_id),
                 knowledge_ranking=await self._rerank_knowledge(turn_id),
+                provider_fallback_note=provider_fallback_note,
             )
             token.raise_if_cancelled()
 
@@ -399,6 +404,18 @@ class AssistantRuntime:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(acquire_task, cancel_task, return_exceptions=True)
+
+    @staticmethod
+    def _provider_fallback_note(reason: Optional[str]) -> Optional[str]:
+        if reason is None:
+            return None
+        reasons = {
+            "missing": "当前会话选择的模型配置已不存在",
+            "disabled": "当前会话选择的模型配置已停用",
+            "unconfigured": "当前会话选择的模型配置暂不可用",
+        }
+        cause = reasons.get(reason, "当前会话选择的模型配置不可用")
+        return f"{cause}，已回落到全局默认模型。用户可在“模型”页检查配置。"
 
     @staticmethod
     def _correlation_id() -> str:

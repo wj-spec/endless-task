@@ -79,6 +79,7 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=Path(directory) / "api.db",
+                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -156,6 +157,69 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     health_after_delete = await client.get("/health")
                     self.assertEqual(
                         "fake-model", health_after_delete.json()["model"]
+                    )
+            finally:
+                await lifespan.__aexit__(None, None, None)
+
+    async def test_disabled_conversation_profile_falls_back_with_context_note(
+        self,
+    ) -> None:
+        provider = FakeProvider(chunks=("ok",))
+        with tempfile.TemporaryDirectory() as directory:
+            app = create_app(
+                settings=AppSettings(
+                    database_path=Path(directory) / "api.db",
+                    runtime="v1",
+                    memory_proposals_enabled=False,
+                    knowledge_proposals_enabled=False,
+                ),
+                provider=provider,
+            )
+            lifespan = app.router.lifespan_context(app)
+            await lifespan.__aenter__()
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver",
+                ) as client:
+                    created = await client.post(
+                        "/providers",
+                        json={
+                            "name": "Local",
+                            "defaultModel": "qwen3:8b",
+                            "baseUrl": "http://127.0.0.1:11434/v1",
+                        },
+                    )
+                    profile = created.json()["profile"]
+                    conversation = (await client.post("/conversations")).json()
+                    patched = await client.patch(
+                        f"/conversations/{conversation['id']}",
+                        json={"providerProfileId": profile["id"]},
+                    )
+                    self.assertEqual(200, patched.status_code)
+                    disabled = await client.patch(
+                        f"/providers/{profile['id']}",
+                        json={"enabled": False},
+                    )
+                    self.assertEqual(200, disabled.status_code)
+
+                    turn = await client.post(
+                        f"/conversations/{conversation['id']}/turns",
+                        headers={"Idempotency-Key": "provider-fallback"},
+                        json={"content": "你好"},
+                    )
+                    turn_id = turn.json()["turnId"]
+                    for _ in range(200):
+                        detail = (await client.get(f"/turns/{turn_id}")).json()
+                        if detail["turnStatus"] in {"completed", "failed"}:
+                            break
+                        await asyncio.sleep(0.01)
+
+                    self.assertEqual("completed", detail["turnStatus"])
+                    self.assertEqual("fake-model", provider.requests[-1].model)
+                    self.assertIn(
+                        "已停用，已回落到全局默认模型",
+                        provider.requests[-1].messages[0].content,
                     )
             finally:
                 await lifespan.__aexit__(None, None, None)

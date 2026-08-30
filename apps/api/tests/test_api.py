@@ -137,6 +137,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / f"api-{suffix}.db",
+                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 heartbeat_seconds=heartbeat_seconds,

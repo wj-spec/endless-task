@@ -79,9 +79,10 @@ class TextProvider:
 @asynccontextmanager
 async def local_client(database_path: Path, provider, *, artifact_proposals_enabled=True):
     app = create_app(
-        settings=AppSettings(
-            database_path=database_path,
-            memory_proposals_enabled=False,
+            settings=AppSettings(
+                database_path=database_path,
+                runtime="v1",
+                memory_proposals_enabled=False,
             knowledge_proposals_enabled=False,
             artifact_proposals_enabled=artifact_proposals_enabled,
         ),

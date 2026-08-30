@@ -433,6 +433,16 @@ class SqliteRuntimeRepository:
             )
             return approval, event
 
+    def get_approval_turn_id(self, approval_id: str) -> str:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT turn_id FROM approval_requests WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("Approval request not found")
+        return str(row["turn_id"])
+
     def get_pending_approval(self, turn_id: str) -> Optional[ApprovalRequest]:
         with self._database.connect() as connection:
             row = connection.execute(

@@ -105,10 +105,8 @@ def discover_skills(user_dir: Path, workspace_dir: Optional[Path] = None) -> Tup
     """发现用户级与工作区级技能；工作区同名技能覆盖用户级。"""
     skills: dict[str, Skill] = {}
     for skill in _discover_in_root(user_dir, SkillScope.USER):
-        if skill.valid:
-            skills[skill.name] = skill
+        skills[skill.name] = skill
     if workspace_dir is not None:
         for skill in _discover_in_root(workspace_dir, SkillScope.WORKSPACE):
-            if skill.valid:
-                skills[skill.name] = skill
+            skills[skill.name] = skill
     return tuple(sorted(skills.values(), key=lambda s: s.name))

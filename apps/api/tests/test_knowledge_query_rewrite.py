@@ -75,9 +75,10 @@ class RewriterUnitTest(unittest.IsolatedAsyncioTestCase):
 @asynccontextmanager
 async def rewrite_client(database_path: Path, provider):
     app = create_app(
-        settings=AppSettings(
-            database_path=database_path,
-            memory_proposals_enabled=False,
+            settings=AppSettings(
+                database_path=database_path,
+                runtime="v1",
+                memory_proposals_enabled=False,
             artifact_proposals_enabled=False,
             task_proposals_enabled=False,
             knowledge_proposals_enabled=False,

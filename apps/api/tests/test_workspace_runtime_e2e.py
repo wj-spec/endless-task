@@ -66,6 +66,7 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name)
                 / f"e2e-{self._client_count}.db",
+                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=False,

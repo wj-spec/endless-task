@@ -258,6 +258,7 @@ class P0ContextBuilder:
         reserved_output_tokens: int = 2_048,
         knowledge_query: Optional[str] = None,
         knowledge_ranking: Optional[Sequence[str]] = None,
+        provider_fallback_note: Optional[str] = None,
     ) -> BuiltContext:
         if reserved_output_tokens < 0:
             raise ValueError("reserved_output_tokens cannot be negative")
@@ -277,16 +278,19 @@ class P0ContextBuilder:
         conversation = self._repository.get_conversation_snapshot(
             current.turn.conversation_id
         )
+        system_content = self._system_content(
+            current.turn.conversation_id,
+            current.user_message.content,
+            knowledge_query=knowledge_query,
+            turn_id=turn_id,
+            ranking=knowledge_ranking,
+            workspace_id=conversation.conversation.workspace_id,
+        )
+        if provider_fallback_note:
+            system_content = f"{system_content}\n\n{provider_fallback_note}"
         system_message = ProviderMessage(
             role="system",
-            content=self._system_content(
-                current.turn.conversation_id,
-                current.user_message.content,
-                knowledge_query=knowledge_query,
-                turn_id=turn_id,
-                ranking=knowledge_ranking,
-                workspace_id=conversation.conversation.workspace_id,
-            ),
+            content=system_content,
         )
         current_message = ProviderMessage(role="user", content=current.user_message.content)
         required_messages = (system_message, current_message)
@@ -428,6 +432,21 @@ class P0ContextBuilder:
             if skill_block:
                 content = f"{content}\n\n{skill_block}"
         return content
+
+    def build_system_context(
+        self,
+        conversation_id: str,
+        user_content: str,
+        *,
+        turn_id: str,
+        workspace_id: Optional[str] = None,
+    ) -> str:
+        return self._system_content(
+            conversation_id,
+            user_content,
+            turn_id=turn_id,
+            workspace_id=workspace_id,
+        )
 
     _KNOWLEDGE_SCOPE_LABELS = {
         "source": "知识源",

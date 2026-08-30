@@ -155,6 +155,7 @@ class BudgetWiringTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=self.database_path,
+                runtime="v1",
                 artifact_proposals_enabled=False,
                 task_proposals_enabled=False,
                 proposal_daily_budget=0,  # 预算归零：记忆/知识提取全部静默跳过

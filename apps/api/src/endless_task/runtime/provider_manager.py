@@ -23,6 +23,7 @@ class SelectedProvider:
     provider: ModelProvider
     model: str
     profile: ProviderProfile
+    fallback_reason: Optional[str] = None
 
 
 class ProviderManager:
@@ -38,20 +39,33 @@ class ProviderManager:
 
     def resolve(self, conversation) -> SelectedProvider:
         profile_id = conversation.provider_profile_id
+        fallback_reason: Optional[str] = None
+        profile: Optional[ProviderProfile] = None
         if profile_id:
             try:
                 profile = self._repository.get_profile(profile_id)
             except Exception:
-                profile = self._default_profile()
-        else:
+                fallback_reason = "missing"
+        if profile is not None and not profile.enabled:
+            fallback_reason = "disabled"
             profile = self._default_profile()
-        if not profile.enabled:
+        if profile is None:
             profile = self._default_profile()
+        elif fallback_reason is None and isinstance(
+            self._provider_for_profile(profile), UnconfiguredProvider
+        ):
+            default_profile = self._default_profile()
+            if default_profile.id != profile.id and not isinstance(
+                self._provider_for_profile(default_profile), UnconfiguredProvider
+            ):
+                fallback_reason = "unconfigured"
+                profile = default_profile
         model = conversation.model_override or profile.default_model
         return SelectedProvider(
             provider=self._provider_for_profile(profile),
             model=model,
             profile=profile,
+            fallback_reason=fallback_reason,
         )
 
     def default_selection(self) -> SelectedProvider:

@@ -91,6 +91,9 @@ class RuntimeRepository(Protocol):
     ) -> tuple[ApprovalRequest, Optional[RuntimeEvent]]:
         ...
 
+    def get_approval_turn_id(self, approval_id: str) -> str:
+        ...
+
     def get_pending_approval(self, turn_id: str) -> Optional[ApprovalRequest]:
         ...
 
@@ -140,4 +143,3 @@ class RuntimeRepository(Protocol):
 
     def list_tool_calls(self, turn_id: str) -> tuple:
         ...
-

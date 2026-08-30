@@ -114,6 +114,7 @@ class RerankIntegrationTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / "rerank.db",
+                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=False,
@@ -181,6 +182,7 @@ class RerankIntegrationTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / "norank.db",
+                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=False,
