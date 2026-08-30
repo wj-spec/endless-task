@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
-import type { PermissionMode, TaskNotification } from "./features/chat/apiTypes";
+import type { TaskNotification } from "./features/chat/apiTypes";
 import { AssistantPanel } from "./features/panel/AssistantPanel";
 import type { AssistantPanelTab } from "./features/panel/AssistantPanel";
-import { CornerHub } from "./features/hub/CornerHub";
 import { useAssistantHub } from "./features/hub/useAssistantHub";
 import { SettingsOverlay } from "./features/settings/SettingsOverlay";
+import { WorkspaceSettingsModal } from "./features/workspace/WorkspaceSettingsModal";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
 import { SessionRail } from "./features/chat/SessionRail";
@@ -87,27 +87,26 @@ export function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const crowdPanelOpen =
-    !!chat.sideConversationId || (workspaceVisible && !workspaceCollapsed);
-  const railCollapsed = crowdPanelOpen || railPreferredCollapsed;
+  const railCollapsed = railPreferredCollapsed;
 
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantTab, setAssistantTab] = useState<AssistantPanelTab>("notifications");
   const [toasts, setToasts] = useState<TaskNotification[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
-
-  useEffect(() => {
-    chatApi
-      .getPermissionSettings()
-      .then((settings) => setPermissionMode(settings.mode))
-      .catch(() => setPermissionMode(null));
-  }, []);
+  const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
+  const activeWorkspace = useMemo(
+    () =>
+      chat.workspaces.find(
+        (item) => item.id === chat.activeSnapshot?.conversation.workspaceId,
+      ) ?? null,
+    [chat.activeSnapshot?.conversation.workspaceId, chat.workspaces],
+  );
 
   useEffect(() => {
     setWorkspaceCollapsed(false);
     setWorkspaceDrawerOpen(false);
+    setWorkspaceSettingsOpen(false);
   }, [chat.activeConversationId]);
 
   const pushToast = useCallback((item: TaskNotification) => {
@@ -137,13 +136,17 @@ export function App() {
   );
 
   const openAssistantPanel = () => {
+    void chat.refreshCapabilities();
     setAssistantOpen(true);
     setWorkspaceCollapsed(true);
     setWorkspaceDrawerOpen(false);
   };
 
-  const openWorkspacePanel = () => {
-    chat.closeSideConversation();
+  const openWorkspacePanel = async () => {
+    if (chat.sideConversationId) {
+      const closed = await chat.closeSideConversation();
+      if (!closed) return;
+    }
     setAssistantOpen(false);
     setWorkspaceCollapsed(false);
     setWorkspaceDrawerOpen(true);
@@ -169,33 +172,39 @@ export function App() {
     >
       <SessionRail
         activeConversationId={chat.activeConversationId}
+        collapsed={railCollapsed}
         conversations={chat.conversations}
         open={railOpen}
+        pendingTotal={hub.total}
         search={chat.search}
-        sideConversationId={chat.sideConversationId}
         statusFilter={chat.statusFilter}
         workspaceId={chat.workspaceId}
         workspaces={chat.workspaces}
         onCreateWorkspace={(name) => chat.createWorkspace(name)}
         onSelectWorkspace={chat.selectWorkspace}
-        onRefreshWorkspaces={() => {
-          void chat.refreshWorkspaces();
-        }}
         onClose={() => {
-          setRailOpen(false);
-          setRailPreferredCollapsed(true);
+          if (window.innerWidth <= 760) {
+            setRailOpen(false);
+            return;
+          }
+          setRailPreferredCollapsed((current) => !current);
         }}
         onNewConversation={() => {
           void chat.newConversation();
           setRailOpen(false);
         }}
         onSearchChange={chat.setSearch}
-        onSelectBranch={(branchId, parentId) => {
-          void chat.openBranchInSide(branchId, parentId);
-          setRailOpen(false);
-        }}
         onSelectConversation={(conversationId) => {
           void chat.openConversation(conversationId);
+          setRailOpen(false);
+        }}
+        onOpenAssistant={(tab) => {
+          setAssistantTab(tab);
+          openAssistantPanel();
+          setRailOpen(false);
+        }}
+        onOpenSettings={() => {
+          setSettingsOpen(true);
           setRailOpen(false);
         }}
         onStatusFilterChange={chat.setStatusFilter}
@@ -205,10 +214,6 @@ export function App() {
         onDeleteConversation={(conversationId) =>
           void chat.deleteConversation(conversationId)
         }
-        onPromoteConversation={(conversationId) => {
-          void chat.promoteConversation(conversationId);
-          setRailOpen(false);
-        }}
         onRenameConversation={(conversationId, title) =>
           void chat.renameConversation(title, conversationId)
         }
@@ -224,9 +229,44 @@ export function App() {
         loading={chat.loading}
         pendingAction={chat.pendingAction}
         providers={chat.providers}
+        branchLanes={
+          chat.activeConversationId
+            ? (chat.laneTrees[chat.activeConversationId] ?? [])
+            : []
+        }
+        currentLaneId={
+          chat.activeConversationId
+            ? (chat.viewLaneIds[chat.activeConversationId] ??
+              chat.mainLaneIds[chat.activeConversationId] ??
+              null)
+            : null
+        }
         onArchive={() => void chat.changeConversationStatus("archived")}
+        onArchiveLane={(laneId, includeArchived) => {
+          if (!chat.activeConversationId) return;
+          void chat.setLaneArchived(
+            chat.activeConversationId,
+            laneId,
+            true,
+            includeArchived,
+          );
+        }}
         onCancel={() => void chat.cancel()}
-        onCreateBranch={(forkTurnId) => void chat.createBranch(forkTurnId)}
+        onCreateBranch={(forkTurnId) => {
+          if (!chat.activeConversationId) return;
+          const sourceLaneId =
+            chat.viewLaneIds[chat.activeConversationId] ??
+            chat.mainLaneIds[chat.activeConversationId];
+          if (!sourceLaneId) return;
+          void chat.forkLane(
+            chat.activeConversationId,
+            sourceLaneId,
+            forkTurnId,
+          );
+        }}
+        onCreateTemporaryConversation={(forkTurnId) =>
+          void chat.createTemporaryConversation(forkTurnId)
+        }
         onDelete={() => void chat.deleteConversation()}
         onDismissError={() => chat.setError(null)}
         onDraftChange={chat.setDraft}
@@ -259,6 +299,43 @@ export function App() {
           void chat.openConversation(conversationId)
         }
         onOpenWorkspace={openWorkspacePanel}
+        onOpenWorkspaceSettings={
+          activeWorkspace ? () => setWorkspaceSettingsOpen(true) : undefined
+        }
+        onOpenLaneInSide={(laneId) => {
+          if (!chat.activeConversationId) return;
+          void chat.openLaneInSide(chat.activeConversationId, laneId);
+        }}
+        onPromoteLane={(laneId) => {
+          if (!chat.activeConversationId) return;
+          void chat.promoteLane(chat.activeConversationId, laneId);
+        }}
+        onRenameLane={(laneId, displayName) => {
+          if (!chat.activeConversationId) return;
+          void chat.renameLane(
+            chat.activeConversationId,
+            laneId,
+            displayName,
+          );
+        }}
+        onRestoreLane={(laneId) => {
+          if (!chat.activeConversationId) return;
+          void chat.setLaneArchived(
+            chat.activeConversationId,
+            laneId,
+            false,
+            true,
+          );
+        }}
+        onShowArchivedLanes={(visible) =>
+          chat.activeConversationId
+            ? chat.setArchivedLanesVisible(chat.activeConversationId, visible)
+            : Promise.resolve()
+        }
+        onSwitchLane={(laneId) => {
+          if (!chat.activeConversationId) return;
+          void chat.switchLane(chat.activeConversationId, laneId);
+        }}
         proposalBusyId={proposals.busyProposalId}
         proposalErrors={proposals.resolveErrors}
         resolvedArtifacts={proposals.resolvedArtifacts}
@@ -285,7 +362,12 @@ export function App() {
         }
       />
       {chat.sideConversationId ? (
-        <section aria-label="临时会话" className="side-chat-panel">
+        <section
+          aria-label={
+            chat.sideMode === "branch_lane" ? "分支对照" : "临时对话"
+          }
+          className="side-chat-panel"
+        >
           <ChatWorkSurface
             conversation={chat.sideSnapshot}
             draft={chat.sideDraft}
@@ -297,11 +379,11 @@ export function App() {
             loading={chat.sideLoading}
             pendingAction={chat.pendingAction}
             providers={chat.providers}
+            sideMode={chat.sideMode}
             variant="side"
             onArchive={() => {}}
             onCancel={() => void chat.cancel(chat.sideConversationId ?? undefined)}
             onCloseSide={chat.closeSideConversation}
-            onCreateBranch={() => {}}
             onDelete={() => {}}
             onDismissError={() => chat.setError(null)}
             onDraftChange={chat.setSideDraft}
@@ -309,14 +391,18 @@ export function App() {
             onPromote={() =>
               void chat.promoteConversation(chat.sideConversationId ?? undefined)
             }
-            onRegenerate={(turnId) => void chat.regenerate(turnId)}
+            onRegenerate={(turnId) =>
+              void chat.regenerate(turnId, chat.sideConversationId ?? undefined)
+            }
             onResolveApproval={(turnId, approvalId, decision) =>
               void chat.resolveApproval(turnId, approvalId, decision)
             }
             onRemoveFile={() => {}}
             onRename={() => {}}
             onRestore={() => {}}
-            onRetry={(turnId) => void chat.retry(turnId)}
+            onRetry={(turnId) =>
+              void chat.retry(turnId, chat.sideConversationId ?? undefined)
+            }
             onSelectVariant={(turnId, variantId) =>
               void chat.selectVariant(
                 turnId,
@@ -420,24 +506,11 @@ export function App() {
           type="button"
         />
       ) : null}
-      {chat.sideConversationId ? (
-        <button
-          aria-label="收起临时会话"
-          className="side-scrim"
-          onClick={chat.closeSideConversation}
-          type="button"
-        />
-      ) : null}
-      <CornerHub
-        onOpenAssistant={openAssistantPanel}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenWorkspace={openWorkspacePanel}
-        pendingTotal={hub.total}
-        permissionMode={permissionMode}
-        workspaceAvailable={workspaceVisible}
-      />
       {assistantOpen ? (
         <AssistantPanel
+          capabilities={chat.capabilities}
+          conversationId={chat.activeConversationId}
+          onCapabilitiesChanged={() => void chat.refreshCapabilities()}
           onClose={() => setAssistantOpen(false)}
           onOpenConversation={(conversationId) => {
             void chat.openConversation(conversationId);
@@ -467,7 +540,16 @@ export function App() {
       {settingsOpen ? (
         <SettingsOverlay
           onClose={() => setSettingsOpen(false)}
-          onModeChanged={setPermissionMode}
+          onModeChanged={() => undefined}
+        />
+      ) : null}
+      {workspaceSettingsOpen && activeWorkspace ? (
+        <WorkspaceSettingsModal
+          onClose={() => setWorkspaceSettingsOpen(false)}
+          onWorkspaceUpdated={() => {
+            void chat.refreshWorkspaces();
+          }}
+          workspace={activeWorkspace}
         />
       ) : null}
     </div>

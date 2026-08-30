@@ -65,6 +65,53 @@ textarea:focus-visible {
   background: var(--warn-mid);
 }
 
+.status-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--fs-1);
+  font-weight: 620;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.status-badge-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-badge.is-active,
+.status-badge.is-success {
+  border-color: var(--accent-faint);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-badge.is-warning {
+  border-color: var(--warn-mid);
+  background: var(--warn-soft);
+  color: var(--warn-deep);
+}
+
+.status-badge.is-danger {
+  border-color: var(--danger-mid);
+  background: var(--danger-soft);
+  color: var(--danger-deep);
+}
+
+.status-badge.is-pulsing .status-badge-dot {
+  animation: breathe 1.2s ease-in-out infinite;
+}
+
 @keyframes breathe {
   0%,
   100% {

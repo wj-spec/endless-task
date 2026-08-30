@@ -28,10 +28,15 @@
 }
 
 .conversation-heading {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 12px;
 }
 
 .conversation-heading h1 {
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   margin: 0;
   color: var(--ink);
@@ -68,7 +73,21 @@
 }
 
 .conversation-actions {
-  gap: 16px;
+  gap: 6px;
+}
+
+.conversation-actions .conversation-icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: var(--radius-s);
+  font-size: 19px;
+  line-height: 1;
+}
+
+.conversation-actions .conversation-icon-button:hover:not(:disabled) {
+  background: var(--sheen-strong);
+  color: var(--ink-raise);
 }
 
 .conversation-actions button,
@@ -369,30 +388,18 @@
   grid-template-columns: 268px minmax(0, 1fr) minmax(340px, 26vw);
 }
 
-/* 左侧栏折叠：桌面宽度拥挤或侧边面板/工作区挤占时收起 */
+/* 左侧栏折叠：桌面保留紧凑操作栏，主内容不失去导航入口 */
 @media (min-width: 761px) {
   .app-shell.rail-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app-shell.rail-collapsed .session-rail {
-    display: none;
+    grid-template-columns: 56px minmax(0, 1fr);
   }
 
   .app-shell.rail-collapsed.side-open {
-    grid-template-columns: minmax(0, 1fr) minmax(340px, 26vw);
+    grid-template-columns: 56px minmax(0, 1fr) minmax(340px, 26vw);
   }
 
   .app-shell.rail-collapsed.workspace-open {
-    grid-template-columns: minmax(0, 1fr) 360px;
-  }
-
-  .app-shell.rail-collapsed .mobile-menu {
-    display: grid;
-  }
-
-  .app-shell:not(.rail-collapsed) .rail-close {
-    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) 360px;
   }
 }
 
@@ -406,27 +413,14 @@
   animation: drawer-in 200ms ease-out;
 }
 
-.side-scrim {
-  display: none;
-}
-
 @media (max-width: 760px) {
   .side-chat-panel {
     position: fixed;
-    inset: 0 0 0 auto;
-    z-index: var(--z-rail-scrim);
-    width: min(440px, 94vw);
-    box-shadow: -18px 0 42px rgb(8 10 18 / 22%);
-  }
-
-  .side-scrim {
-    position: fixed;
-    z-index: calc(var(--z-rail-scrim) - 1);
-    display: block;
     inset: 0;
+    z-index: var(--z-panel);
     width: 100%;
-    height: 100%;
-    border: 0;
-    background: var(--scrim);
+    height: 100dvh;
+    border-left: 0;
+    box-shadow: none;
   }
 }

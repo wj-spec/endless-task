@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { KnowledgeProposal, Workspace } from "../chat/apiTypes";
+import { ProposalCard } from "./ProposalCard";
 
 type KnowledgeProposalCardProps = {
   proposal: KnowledgeProposal;
@@ -32,21 +33,13 @@ export function KnowledgeProposalCard({
   const workspaceName =
     workspaces.find((item) => item.id === workspaceTargetId)?.name ?? "工作区";
 
-  if (proposal.status !== "pending") {
-    let notice = "提案已处理";
-    if (proposal.status === "accepted") {
-      notice = isAdd ? "已加入知识" : isMerge ? "已过期重复的一条" : "已设为过期";
-    } else if (proposal.status === "rejected") {
-      notice = isMerge ? "已忽略，两条都保留" : "已忽略，不会改动知识";
-    } else if (proposal.status === "cancelled") {
-      notice = "提案已取消";
-    }
-    return (
-      <div className="proposal-card is-resolved">
-        <span className="proposal-kind">知识</span>
-        <span>{notice}</span>
-      </div>
-    );
+  let resolvedNotice = "提案已处理";
+  if (proposal.status === "accepted") {
+    resolvedNotice = isAdd ? "已加入知识" : isMerge ? "已过期重复的一条" : "已设为过期";
+  } else if (proposal.status === "rejected") {
+    resolvedNotice = isMerge ? "已忽略，两条都保留" : "已忽略，不会改动知识";
+  } else if (proposal.status === "cancelled") {
+    resolvedNotice = "提案已取消";
   }
 
   let heading = "Assistant 建议把这条信息加入知识";
@@ -65,16 +58,31 @@ export function KnowledgeProposalCard({
         ? "让它过期"
         : "设为过期";
   const rejectLabel = isMerge ? "都保留" : "不用";
-
-  const acceptWorkspaceId =
-    scopeChoice === "global" ? null : workspaceTargetId;
+  const acceptWorkspaceId = scopeChoice === "global" ? null : workspaceTargetId;
 
   return (
-    <div className="proposal-card">
-      <div className="proposal-head">
-        <span className="proposal-kind">知识</span>
-        <strong>{heading}</strong>
-      </div>
+    <ProposalCard
+      kind="知识"
+      title={heading}
+      status={proposal.status}
+      busy={busy}
+      resolvedNotice={resolvedNotice}
+      error={error}
+      actions={
+        <>
+          <button
+            disabled={busy}
+            onClick={() => onResolve("accept", isAdd ? acceptWorkspaceId : undefined)}
+            type="button"
+          >
+            {acceptLabel}
+          </button>
+          <button disabled={busy} onClick={() => onResolve("reject")} type="button">
+            {rejectLabel}
+          </button>
+        </>
+      }
+    >
       {isAdd ? (
         <p className="proposal-preview">
           {proposal.payload.title ? `《${proposal.payload.title}》` : ""}
@@ -113,25 +121,6 @@ export function KnowledgeProposalCard({
       {proposal.payload.reason ? (
         <p className="proposal-reason">{proposal.payload.reason}</p>
       ) : null}
-      {error ? (
-        <div className="proposal-error" role="alert">
-          {error}
-        </div>
-      ) : null}
-      <div className="proposal-actions">
-        <button
-          disabled={busy}
-          onClick={() =>
-            onResolve("accept", isAdd ? acceptWorkspaceId : undefined)
-          }
-          type="button"
-        >
-          {acceptLabel}
-        </button>
-        <button disabled={busy} onClick={() => onResolve("reject")} type="button">
-          {rejectLabel}
-        </button>
-      </div>
-    </div>
+    </ProposalCard>
   );
 }

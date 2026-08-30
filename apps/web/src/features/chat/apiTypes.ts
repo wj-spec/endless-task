@@ -317,6 +317,83 @@ export type HealthSnapshot = {
   providerConfigured: boolean;
 };
 
+export type CapabilityState = "ok" | "degraded" | "unavailable";
+
+export type CapabilitySummary = {
+  state: CapabilityState;
+  issues: string[];
+};
+
+export type CapabilitySkillStatus = {
+  state: CapabilityState;
+  total: number;
+  enabled: number;
+  diagnostics: SkillDiagnostic[];
+};
+
+export type CapabilityMcpServerStatus = {
+  id: string;
+  name: string;
+  state: string;
+  toolCount: number;
+  lastError: string | null;
+};
+
+export type CapabilityMcpStatus = {
+  state: CapabilityState;
+  servers: CapabilityMcpServerStatus[];
+};
+
+export type CapabilityProviderStatus = {
+  state: CapabilityState;
+  defaultProfileId: string;
+  profileName: string;
+  model: string;
+  configured: boolean;
+  fallback: boolean;
+};
+
+export type CapabilityEmbeddingStatus = {
+  state: CapabilityState;
+  enabled: boolean;
+  backend: string | null;
+  ready: boolean;
+};
+
+export type CapabilitySnapshot = {
+  summary: CapabilitySummary;
+  runtime?: RuntimeV2GlobalRuntimeStatus;
+  skills: CapabilitySkillStatus;
+  mcp: CapabilityMcpStatus;
+  provider: CapabilityProviderStatus;
+  embedding: CapabilityEmbeddingStatus;
+};
+
+export type RuntimeV2GlobalRuntimeStatus = {
+  defaultRuntime: "v1" | "v2";
+  rollbackForced: boolean;
+  migrationState: "migrated" | "not_migrated";
+  conversationCount: number;
+  mappedConversationCount: number;
+  conversationTreeCount: number;
+  pendingMigrationCount: number;
+  rollbackReconciliationCount: number;
+};
+
+export type RuntimeV2ConversationRuntimeStatus = {
+  conversationId: string;
+  treeConversationId: string;
+  defaultRuntime: "v1" | "v2";
+  rollbackForced: boolean;
+  overrideRuntime: "v1" | "v2" | null;
+  effectiveRuntime: "v1" | "v2";
+  canUseV2: boolean;
+  requiresMigration: boolean;
+  v1ReadOnly: boolean;
+  rollbackReconciliationRequired: boolean;
+  reason: string;
+};
+
 export type LiveTurn = {
   turnId: string;
   responseVariantId: string;
@@ -326,6 +403,304 @@ export type LiveTurn = {
   error?: RuntimeErrorDetail;
   pendingApproval?: ApprovalRequest;
   activities: ActivitySnapshot[];
+};
+
+export type RuntimeV2Entry = {
+  id: string;
+  type: string;
+  actor: string;
+  status: string;
+  createdAt: string;
+  sourceRunId: string | null;
+  data: {
+    content?: string;
+    toolName?: string;
+    arguments?: unknown;
+    errorCode?: string | null;
+    trustLevel?: string;
+    reference?: unknown;
+  };
+};
+
+export type RuntimeV2ToolState = {
+  id: string;
+  runId: string;
+  modelTurnId: string;
+  callId: string;
+  toolName: string;
+  status: string;
+  resultEntryId: string | null;
+};
+
+export type RuntimeV2Approval = {
+  id: string;
+  runId: string;
+  modelTurnId: string;
+  toolExecutionId: string;
+  toolName: string;
+  summary: string;
+  reason: string;
+};
+
+export type RuntimeV2RecoveryReport = {
+  runId: string;
+  status: string;
+  classification: string;
+  action: string;
+  findings: Array<{
+    reason: string;
+    message: string;
+    modelTurnId: string | null;
+    toolExecutionId: string | null;
+  }>;
+};
+
+export type RuntimeV2RunState = {
+  runId: string;
+  status: string;
+  partialContent: string;
+  errorCode: string | null;
+  safeMessage: string | null;
+  modelTurns: Array<{
+    id: string;
+    index: number;
+    status: string;
+    partialContent: string;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    toolExecutions: RuntimeV2ToolState[];
+  }>;
+};
+
+export type RuntimeV2Snapshot = {
+  snapshotVersion: number;
+  conversationId: string;
+  activeLaneId: string | null;
+  activeRunId: string | null;
+  activeRunVariantId: string | null;
+  lastEventSeq: number;
+  entries: RuntimeV2Entry[];
+  runState: RuntimeV2RunState | null;
+  pendingApprovals: RuntimeV2Approval[];
+  toolStates: RuntimeV2ToolState[];
+  contextUsage: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+  interruptedRuns: RuntimeV2RecoveryReport[];
+  capabilities: string[];
+};
+
+export type RuntimeV2LaneKind =
+  | "main"
+  | "persistent_branch"
+  | "temporary"
+  | "archived";
+
+export type RuntimeV2LaneStatus = "active" | "archived";
+
+export type RuntimeV2Lane = {
+  id: string;
+  conversationId: string;
+  kind: RuntimeV2LaneKind;
+  status: RuntimeV2LaneStatus;
+  archived: boolean;
+  archivedAt: string | null;
+  displayName: string | null;
+  summary: string | null;
+  title: string | null;
+  baseEntryExcerpt: string | null;
+  baseEntryId: string | null;
+  leafEntryId: string | null;
+  createdFromEntryId: string | null;
+  createdAt: string;
+  sourceLaneId: string | null;
+  isMain: boolean;
+};
+
+export type RuntimeV2LaneListResponse = {
+  conversationId: string;
+  activeLaneId: string | null;
+  items: RuntimeV2Lane[];
+};
+
+export type RuntimeV2LaneCreateInput = {
+  sourceLaneId: string;
+  baseEntryId?: string;
+  displayName?: string;
+};
+
+export type RuntimeV2LaneCreateResponse = {
+  lane: RuntimeV2Lane;
+  sourceLane: RuntimeV2Lane;
+  baseEntryId: string;
+  eventsUrl: string;
+};
+
+export type RuntimeV2LaneUpdateResponse = {
+  lane: RuntimeV2Lane;
+};
+
+export type RuntimeV2LaneTreeUpdateResponse = {
+  items: RuntimeV2Lane[];
+};
+
+export type RuntimeV2LanePromoteResponse = {
+  lane: RuntimeV2Lane;
+  previousMainLane: RuntimeV2Lane;
+  activeLaneId: string;
+};
+
+export type RuntimeV2TemporaryConversationCreateInput = {
+  sourceLaneId: string;
+  sourceLeafEntryId?: string;
+  title?: string;
+};
+
+export type RuntimeV2TemporaryConversationCreateResponse = {
+  conversation: Conversation;
+  lane: RuntimeV2Lane;
+};
+
+export type RuntimeV2TemporaryConversationPromoteResponse = {
+  conversation: Conversation;
+};
+
+export type RuntimeV2RunVariant = {
+  runId: string;
+  conversationId: string;
+  laneId: string;
+  triggerEntryId: string;
+  siblingGroupId: string;
+  assistantEntryId: string | null;
+  status: string;
+  isActiveVariant: boolean;
+  createdAt: string;
+  finishedAt: string | null;
+};
+
+export type RuntimeV2RunVariantListResponse = {
+  runId: string;
+  siblingGroupId: string | null;
+  items: RuntimeV2RunVariant[];
+};
+
+export type RuntimeV2RegenerateResponse = {
+  oldRunId: string;
+  newRunId: string;
+  laneId: string;
+  triggerEntryId: string;
+  siblingGroupId: string;
+  eventsUrl: string;
+};
+
+export type RuntimeV2RunSelectResponse = {
+  runId: string;
+  assistantEntryId: string | null;
+  isActiveVariant: boolean;
+};
+
+export type RuntimeV2Memory = {
+  id: string;
+  scope:
+    | "user_global"
+    | "workspace"
+    | "conversation_tree"
+    | "branch"
+    | "temporary"
+    | "run_scratch";
+  kind: "preference" | "fact";
+  content: string;
+  status: string;
+  conversationId: string;
+  workspaceId: string | null;
+  laneId: string | null;
+  runId: string | null;
+  sourceMemoryId: string | null;
+  sourceEntryId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimeV2MemoryListResponse = {
+  conversationId: string;
+  laneId: string;
+  items: RuntimeV2Memory[];
+};
+
+export type RuntimeV2MemoryCreateResponse = {
+  memory: RuntimeV2Memory;
+};
+
+export type RuntimeV2MemoryPromotionTarget =
+  | "user_global"
+  | "workspace"
+  | "conversation_tree"
+  | "branch";
+
+export type RuntimeV2MemoryPromotion = {
+  id: string;
+  memoryId: string;
+  targetScope: RuntimeV2MemoryPromotionTarget;
+  targetWorkspaceId: string | null;
+  targetLaneId: string | null;
+  status: "pending" | "accepted" | "rejected" | "cancelled";
+  resolvedMemoryId: string | null;
+  conflictMemoryId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+};
+
+export type RuntimeV2MemoryPromotionListResponse = {
+  conversationId: string;
+  items: RuntimeV2MemoryPromotion[];
+};
+
+export type RuntimeV2MemoryPromotionCreateResponse = {
+  promotion: RuntimeV2MemoryPromotion;
+};
+
+export type RuntimeV2MemoryPromotionResolveResponse = {
+  promotion: RuntimeV2MemoryPromotion;
+  memory: RuntimeV2Memory | null;
+};
+
+export type RuntimeV2ProductEvent = {
+  eventId: string;
+  eventSeq: number;
+  type: string;
+  conversationId: string;
+  laneId: string | null;
+  runId: string | null;
+  createdAt: string;
+  data: {
+    runId?: string;
+    modelTurnId?: string;
+    toolExecutionId?: string;
+    approvalId?: string;
+    delta?: string;
+    status?: string;
+    decision?: string;
+    errorCode?: string | null;
+    safeMessage?: string | null;
+    [key: string]: unknown;
+  };
+};
+
+export type RuntimeV2MessageResponse = {
+  conversationId: string;
+  laneId: string;
+  runId: string;
+  userMessageId: string;
+  eventsUrl: string;
+};
+
+export type RuntimeV2RecoveryResponse = {
+  runId: string;
+  action: "mark_failed" | "retry";
+  laneId: string;
+  newRunId: string | null;
 };
 
 export type ArtifactProposalStatus = "pending" | "accepted" | "rejected" | "cancelled";

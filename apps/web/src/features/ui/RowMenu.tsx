@@ -15,6 +15,7 @@ type RowMenuProps = {
   triggerAriaLabel?: string;
   placement?: "down" | "up";
   className?: string;
+  disabled?: boolean;
 };
 
 export function RowMenu({
@@ -24,6 +25,7 @@ export function RowMenu({
   triggerAriaLabel = "更多操作",
   placement = "down",
   className,
+  disabled = false,
 }: RowMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -35,8 +37,15 @@ export function RowMenu({
         setOpen(false);
       }
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
   }, [open]);
 
   const rootClass = ["row-menu", placement === "up" ? "pop-up" : "", className ?? ""]
@@ -46,8 +55,11 @@ export function RowMenu({
   return (
     <div className={rootClass} ref={ref}>
       <button
+        aria-expanded={open}
+        aria-haspopup="menu"
         aria-label={triggerAriaLabel}
         className={triggerClassName}
+        disabled={disabled}
         onClick={() => setOpen((current) => !current)}
         type="button"
       >

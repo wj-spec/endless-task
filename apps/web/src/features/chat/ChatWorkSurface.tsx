@@ -7,6 +7,8 @@ import type {
   LiveTurn,
   ProviderProfile,
   ResponseVariantSnapshot,
+  RuntimeV2Lane,
+  TurnStatus,
   Workspace,
 } from "./apiTypes";
 import { chatApi } from "./api";
@@ -21,6 +23,9 @@ import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { RowMenu } from "../ui/RowMenu";
+import { SidebarToggleIcon } from "../ui/SidebarToggleIcon";
+import { StatusBadge } from "../ui/StatusBadge";
+import { BranchNavigator } from "./BranchNavigator";
 
 type ChatWorkSurfaceProps = {
   conversation: ConversationSnapshot | null;
@@ -34,7 +39,8 @@ type ChatWorkSurfaceProps = {
   providers: ProviderProfile[];
   onArchive: () => void;
   onCancel: () => void;
-  onCreateBranch: (forkTurnId?: string) => void;
+  onCreateBranch?: (forkTurnId?: string) => void;
+  onCreateTemporaryConversation?: (forkTurnId?: string) => void;
   onDelete: () => void;
   onDismissError: () => void;
   onDraftChange: (value: string) => void;
@@ -74,16 +80,47 @@ type ChatWorkSurfaceProps = {
   workspaces?: Workspace[];
   onOpenConversation?: (conversationId: string) => void;
   onOpenWorkspace?: () => void;
+  onOpenWorkspaceSettings?: () => void;
+  branchLanes?: RuntimeV2Lane[];
+  currentLaneId?: string | null;
+  onArchiveLane?: (laneId: string, includeArchived: boolean) => void;
+  onOpenLaneInSide?: (laneId: string) => void;
+  onPromoteLane?: (laneId: string) => void;
+  onRenameLane?: (laneId: string, displayName: string | null) => void;
+  onRestoreLane?: (laneId: string) => void;
+  onShowArchivedLanes?: (visible: boolean) => void | Promise<void>;
+  onSwitchLane?: (laneId: string) => void;
+  sideMode?: "temporary_conversation" | "branch_lane" | null;
   variant?: "main" | "side";
 };
 
-const statusText = {
-  created: "准备回答",
-  running: "正在回答",
-  completed: "",
-  failed: "回答失败",
-  cancelled: "已停止",
-} as const;
+type TurnStatusPresentation = {
+  label: string;
+  tone: "neutral" | "active" | "warning" | "danger";
+  pulse: boolean;
+};
+
+const turnStatusPresentation = (
+  status: TurnStatus,
+  waitingApproval: boolean,
+): TurnStatusPresentation | null => {
+  if (waitingApproval) {
+    return { label: "等待确认", tone: "warning", pulse: false };
+  }
+  if (status === "created") {
+    return { label: "准备回答", tone: "active", pulse: true };
+  }
+  if (status === "running") {
+    return { label: "正在回答", tone: "active", pulse: true };
+  }
+  if (status === "failed") {
+    return { label: "回答失败", tone: "danger", pulse: false };
+  }
+  if (status === "cancelled") {
+    return { label: "已停止", tone: "neutral", pulse: false };
+  }
+  return null;
+};
 
 function findActiveVariant(
   variants: ResponseVariantSnapshot[],
@@ -105,6 +142,7 @@ export function ChatWorkSurface({
   onArchive,
   onCancel,
   onCreateBranch,
+  onCreateTemporaryConversation,
   onDelete,
   onDismissError,
   onDraftChange,
@@ -132,7 +170,18 @@ export function ChatWorkSurface({
   onOpenAssistantTab,
   onOpenConversation,
   onOpenWorkspace,
+  onOpenWorkspaceSettings,
   workspaces,
+  branchLanes = [],
+  currentLaneId = null,
+  onArchiveLane,
+  onOpenLaneInSide,
+  onPromoteLane,
+  onRenameLane,
+  onRestoreLane,
+  onShowArchivedLanes,
+  onSwitchLane,
+  sideMode = null,
   variant = "main",
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
@@ -280,11 +329,21 @@ export function ChatWorkSurface({
         {variant === "side" ? (
           <header className="surface-header side-surface-header">
             <div className="conversation-heading">
-              <h1>{conversation?.conversation.title ?? "临时会话"}</h1>
+              <h1>
+                {conversation?.conversation.title ??
+                  (sideMode === "branch_lane" ? "分支对照" : "临时对话")}
+              </h1>
+              {sideMode === "temporary_conversation" ? (
+                <span className="temporary-close-hint">关闭即删除</span>
+              ) : null}
             </div>
             <div className="surface-header-side">
               <button
-                aria-label="收起临时会话"
+                aria-label={
+                  sideMode === "branch_lane"
+                    ? "收起分支对照"
+                    : "关闭并删除临时对话"
+                }
                 className="icon-button side-close"
                 onClick={onCloseSide}
                 type="button"
@@ -295,9 +354,14 @@ export function ChatWorkSurface({
           </header>
         ) : (
         <header className="surface-header">
-          <button className="icon-button mobile-menu" onClick={onMenu} type="button">
-            <span aria-hidden="true">☰</span>
-            <span className="sr-only">打开会话列表</span>
+          <button
+            aria-label="展开侧栏"
+            className="icon-button mobile-menu"
+            onClick={onMenu}
+            title="展开侧栏"
+            type="button"
+          >
+            <SidebarToggleIcon expanded={false} />
           </button>
           <div className="conversation-heading">
             {renaming ? (
@@ -317,35 +381,74 @@ export function ChatWorkSurface({
               <h1>{conversation?.conversation.title ?? "Endless"}</h1>
             )}
             {archived ? <span className="archived-chip">已归档</span> : null}
+            {variant === "main" &&
+            conversationId &&
+            branchLanes.length > 0 &&
+            onCreateBranch &&
+            onArchiveLane &&
+            onOpenLaneInSide &&
+            onPromoteLane &&
+            onRenameLane &&
+            onRestoreLane &&
+            onShowArchivedLanes &&
+            onSwitchLane ? (
+              <BranchNavigator
+                conversationId={conversationId}
+                currentLaneId={currentLaneId}
+                disabled={isGenerating || pendingAction !== null}
+                lanes={branchLanes}
+                onArchive={onArchiveLane}
+                onCreateBranch={() => onCreateBranch()}
+                onOpenSide={onOpenLaneInSide}
+                onPromote={onPromoteLane}
+                onRename={onRenameLane}
+                onRestore={onRestoreLane}
+                onShowArchived={onShowArchivedLanes}
+                onSwitch={onSwitchLane}
+              />
+            ) : null}
           </div>
           <div className="surface-header-side">
             {conversation ? (
               <div className="conversation-actions">
                 <button
                   aria-label="搜索当前会话"
-                  className="search-toggle"
+                  className="icon-button conversation-icon-button"
                   onClick={search.openSearch}
+                  title="搜索当前会话"
                   type="button"
                 >
                   <span aria-hidden="true">⌕</span>
                 </button>
                 <button
                   aria-label="开临时会话"
-                  className="branch-toggle"
+                  className="icon-button conversation-icon-button"
                   disabled={
                     isGenerating ||
                     pendingAction !== null ||
+                    !onCreateTemporaryConversation ||
                     (conversation?.turns.length ?? 0) === 0
                   }
-                  onClick={() => onCreateBranch()}
+                  onClick={() => onCreateTemporaryConversation?.()}
                   title="基于当前对话开一个临时会话：深究或多方案并行，不污染原会话"
                   type="button"
                 >
                   <span aria-hidden="true">⑂</span>
                 </button>
                 <RowMenu
+                  trigger={<span aria-hidden="true">⋯</span>}
+                  triggerAriaLabel="更多会话操作"
+                  triggerClassName="icon-button conversation-icon-button"
                   items={[
                     { label: "重命名", onSelect: () => setRenaming(true) },
+                    ...(onOpenWorkspaceSettings
+                      ? [
+                          {
+                            label: "配置当前工作区",
+                            onSelect: onOpenWorkspaceSettings,
+                          },
+                        ]
+                      : []),
                     {
                       label: archived ? "恢复" : "归档",
                       disabled: isGenerating,
@@ -424,8 +527,12 @@ export function ChatWorkSurface({
               ? live.content
               : persistedVariant.assistantMessage.content;
             const status = useLive ? live.status : turnSnapshot.turn.status;
-            const turnError = useLive ? live.error : undefined;
             const pendingApproval = useLive ? live.pendingApproval : undefined;
+            const statusPresentation = turnStatusPresentation(
+              status,
+              Boolean(pendingApproval),
+            );
+            const turnError = useLive ? live.error : undefined;
             const activities = useLive
               ? live.activities
               : (turnSnapshot.activities ?? []);
@@ -444,18 +551,42 @@ export function ChatWorkSurface({
                 </div>
               ) : null}
               <section className="turn">
-                {variant === "side" ? null : (
-                <button
-                  aria-label="从此处分叉"
-                  className="turn-fork"
-                  disabled={isGenerating || pendingAction !== null}
-                  onClick={() => onCreateBranch(turnSnapshot.turn.id)}
-                  title="从这里分叉：保留此前上下文，开一个临时会话尝试别的方案"
-                  type="button"
-                >
-                  <span aria-hidden="true">⑂</span>
-                  从此处分叉
-                </button>
+                {variant === "side" ||
+                (!onCreateBranch && !onCreateTemporaryConversation) ? null : (
+                  <RowMenu
+                    className="turn-branch-menu"
+                    disabled={isGenerating || pendingAction !== null}
+                    items={[
+                      ...(onCreateBranch
+                        ? [
+                            {
+                              label: "从这里创建持久分支",
+                              onSelect: () =>
+                                onCreateBranch(turnSnapshot.turn.id),
+                            },
+                          ]
+                        : []),
+                      ...(onCreateTemporaryConversation
+                        ? [
+                            {
+                              label: "从这里打开临时对话",
+                              onSelect: () =>
+                                onCreateTemporaryConversation(
+                                  turnSnapshot.turn.id,
+                                ),
+                            },
+                          ]
+                        : []),
+                    ]}
+                    trigger={
+                      <>
+                        <span aria-hidden="true">⑂</span>
+                        从这里开始
+                      </>
+                    }
+                    triggerAriaLabel="从这条消息创建分支或临时对话"
+                    triggerClassName="turn-fork"
+                  />
                 )}
                 <article className="message-row user-row">
                   <div className="speaker-mark user-mark">你</div>
@@ -504,10 +635,26 @@ export function ChatWorkSurface({
                         ))}
                       </div>
                     ) : null}
-                    {status === "created" || status === "running" ? (
-                      <div className="thinking-line">
-                        <span className="thinking-dot" />
-                        {pendingApproval ? "等待你的确认" : statusText[status]}
+                    {statusPresentation ? (
+                      <div
+                        className="turn-status"
+                        role={status === "failed" ? "alert" : "status"}
+                      >
+                        <StatusBadge
+                          label={statusPresentation.label}
+                          pulse={statusPresentation.pulse}
+                          tone={statusPresentation.tone}
+                        />
+                        {status === "failed" ? (
+                          <span className="turn-status-detail">
+                            {turnError?.message ?? "回答没有完成，请重试。"}
+                          </span>
+                        ) : null}
+                        {status === "cancelled" ? (
+                          <span className="turn-status-detail">
+                            已生成的内容会保留。
+                          </span>
+                        ) : null}
                       </div>
                     ) : null}
                     {pendingApproval ? (
@@ -543,14 +690,6 @@ export function ChatWorkSurface({
                           </button>
                         </div>
                       </div>
-                    ) : null}
-                    {status === "failed" ? (
-                      <div className="turn-notice is-error">
-                        {turnError?.message ?? "回答没有完成，请重试。"}
-                      </div>
-                    ) : null}
-                    {status === "cancelled" ? (
-                      <div className="turn-notice">回答已停止，已生成的内容会保留。</div>
                     ) : null}
                     {persistedVariant.variant.finishReason === "length" ? (
                       <div className="turn-notice">回答达到长度上限，内容可能不完整。</div>
@@ -875,7 +1014,11 @@ function EmptyConversation({ onSuggestion }: { onSuggestion: (value: string) => 
         <button onClick={() => onSuggestion("我有一个新想法，想和你一起推敲")} type="button">
           和我一起推敲一个想法
         </button>
+        <button onClick={() => onSuggestion("帮我把这段内容整理成一篇可复用的文档")} type="button">
+          把内容整理成一篇可复用文档
+        </button>
       </div>
+      <p className="empty-hint">在任意回答底部选择「从此处分叉」，可以保留当前上下文开始一次新的尝试。</p>
     </section>
   );
 }

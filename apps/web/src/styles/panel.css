@@ -609,10 +609,56 @@
   border-bottom: 1px solid var(--line);
 }
 
+.capability-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.capability-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.capability-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.capability-pill.is-ok .capability-dot {
+  background: #2f9e6e;
+}
+
+.capability-pill.is-degraded .capability-dot {
+  background: #c08a2e;
+}
+
+.capability-pill.is-unavailable .capability-dot {
+  background: var(--danger, #d64545);
+}
+
 .assistant-panel-tabs {
   display: flex;
+  min-width: 0;
   flex: 1;
   gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.assistant-panel-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .assistant-panel-tabs button {
@@ -636,16 +682,24 @@
 }
 
 .assistant-panel-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
   border: 0;
+  border-radius: var(--radius-s);
   background: transparent;
-  padding: 3px 0;
+  padding: 0;
   color: var(--muted);
-  font-size: var(--fs-2);
+  font-size: 19px;
+  line-height: 1;
   cursor: pointer;
 }
 
 .assistant-panel-close:hover {
-  color: var(--accent);
+  background: var(--sheen-strong);
+  color: var(--ink-raise);
 }
 
 .assistant-panel-body {
@@ -1199,4 +1253,402 @@
 .mcp-tool span {
   color: var(--faint);
   font-size: var(--fs-3);
+}
+
+/* Agent Runtime v2 实验 */
+.runtime-v2-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.runtime-v2-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+
+.runtime-v2-header h3 {
+  margin: 0;
+  color: var(--ink-raise);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-header p {
+  margin: 3px 0 0;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-runtime {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+
+.runtime-v2-runtime strong {
+  color: var(--ink-raise);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-runtime p {
+  margin: 2px 0 0;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-runtime button {
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.runtime-v2-runtime button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.runtime-v2-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtime-v2-metrics span,
+.runtime-v2-events span {
+  padding: 2px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.runtime-v2-variants {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.runtime-v2-memory {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+
+.runtime-v2-memory-list,
+.runtime-v2-memory-promotions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.runtime-v2-memory-list > div,
+.runtime-v2-memory-promotions > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+.runtime-v2-memory-list span,
+.runtime-v2-memory-promotions span {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-memory-list p,
+.runtime-v2-memory-promotions p {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-memory-list button,
+.runtime-v2-memory-promotions button {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.runtime-v2-memory-list button:disabled,
+.runtime-v2-memory-promotions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.runtime-v2-memory-form {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.2fr);
+  gap: 7px;
+}
+
+.runtime-v2-memory-form textarea {
+  grid-column: 1 / -1;
+  min-height: 54px;
+  resize: vertical;
+}
+
+.runtime-v2-memory-form button {
+  grid-column: 1 / -1;
+  justify-self: end;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.runtime-v2-memory-form button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.runtime-v2-memory-promotions {
+  margin-top: 3px;
+}
+
+.runtime-v2-memory-promotions strong {
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.runtime-v2-conflict {
+  padding: 2px 5px;
+  border: 1px solid var(--warn-mid);
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+  color: var(--warn-deep);
+}
+
+.runtime-v2-lane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-v2-lane-toolbar strong {
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.runtime-v2-lane button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtime-v2-lane button span {
+  flex: none;
+  color: var(--faint);
+}
+
+.runtime-v2-lane button strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-v2-lane.is-selected button {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.runtime-v2-card,
+.runtime-v2-recovery,
+.runtime-v2-approval {
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+
+.runtime-v2-card strong,
+.runtime-v2-recovery strong,
+.runtime-v2-approval strong {
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.runtime-v2-card p,
+.runtime-v2-recovery p,
+.runtime-v2-approval p {
+  margin: 5px 0 0;
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+  white-space: pre-wrap;
+}
+
+.runtime-v2-recovery ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-turns {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.runtime-v2-turns div,
+.runtime-v2-entries div,
+.runtime-v2-events div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-v2-turns span {
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-entries,
+.runtime-v2-events {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+}
+
+.runtime-v2-entries {
+  flex: 1;
+}
+
+.runtime-v2-events {
+  max-height: 180px;
+  padding-bottom: 2px;
+}
+
+.runtime-v2-entries div {
+  align-items: flex-start;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
+
+.runtime-v2-entries span {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-entries p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-events div {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.runtime-v2-events strong {
+  color: var(--muted-strong);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-empty {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.runtime-v2-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.runtime-v2-composer textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+}
+
+.runtime-v2-actions,
+.runtime-v2-composer > div {
+  display: flex;
+  gap: 6px;
+}
+
+.runtime-v2-actions button,
+.runtime-v2-composer button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.runtime-v2-actions button:disabled,
+.runtime-v2-composer button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }

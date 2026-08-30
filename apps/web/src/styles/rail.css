@@ -47,9 +47,28 @@
   font-size: var(--fs-5);
 }
 
-.rail-close,
+.rail-toggle {
+  display: grid;
+}
+
 .mobile-menu {
   display: none;
+}
+
+.sidebar-toggle-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.rail-toggle,
+.mobile-menu {
+  border-radius: var(--radius-s);
+}
+
+.rail-toggle:hover,
+.mobile-menu:hover {
+  background: var(--sheen-strong);
+  color: var(--ink-raise);
 }
 
 .new-chat-button {
@@ -73,7 +92,7 @@
   color: var(--accent);
 }
 
-.new-chat-button span {
+.new-chat-icon {
   color: var(--accent);
   font-size: var(--fs-5);
   font-weight: 400;
@@ -146,7 +165,44 @@
   flex-direction: column;
   gap: 2px;
   overflow-y: auto;
-  padding: 3px 0 64px;
+  padding: 3px 0 12px;
+}
+
+.rail-footer {
+  display: grid;
+  flex: none;
+  gap: 2px;
+  padding: 12px 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.rail-footer button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-2);
+  text-align: left;
+}
+
+.rail-footer button:hover {
+  background: var(--sheen-strong);
+  color: var(--ink-raise);
+}
+
+.rail-footer strong {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-1);
+  text-align: center;
 }
 
 .session-item {
@@ -249,24 +305,73 @@
   display: none;
 }
 
+@media (min-width: 761px) {
+  .session-rail.is-collapsed {
+    align-items: center;
+    padding: 16px 9px;
+  }
+
+  .session-rail.is-collapsed .rail-header {
+    width: 100%;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .session-rail.is-collapsed .wordmark,
+  .session-rail.is-collapsed .workspace-switcher,
+  .session-rail.is-collapsed .conversation-search,
+  .session-rail.is-collapsed .rail-filter,
+  .session-rail.is-collapsed .session-list,
+  .session-rail.is-collapsed .rail-footer {
+    display: none;
+  }
+
+  .session-rail.is-collapsed .new-chat-button {
+    width: 36px;
+    height: 36px;
+    justify-content: center;
+    margin: 14px 0 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-s);
+  }
+
+  .session-rail.is-collapsed .new-chat-button:hover {
+    background: var(--sheen-strong);
+  }
+
+  .session-rail.is-collapsed .new-chat-label {
+    display: none;
+  }
+}
+
 @media (max-width: 760px) {
   .session-rail {
     position: fixed;
     inset: 0 auto 0 0;
     width: min(310px, 86vw);
+    height: 100dvh;
+    visibility: hidden;
+    pointer-events: none;
     transform: translateX(-102%);
-    transition: transform 180ms ease;
+    box-shadow: 18px 0 42px rgb(8 10 18 / 18%);
+    transition:
+      transform 180ms ease,
+      visibility 0s linear 180ms;
   }
 }
 
 @media (max-width: 760px) {
   .session-rail.is-open {
+    visibility: visible;
+    pointer-events: auto;
     transform: translateX(0);
+    transition-delay: 0s;
   }
 }
 
 @media (max-width: 760px) {
-  .rail-close,
+  .rail-toggle,
   .mobile-menu {
     display: grid;
   }
@@ -291,100 +396,10 @@
   }
 }
 
-/* 会话分支：临时会话徽标与子列表 */
-.branch-badge {
-  flex: none;
-  padding: 2px 7px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--fs-1);
-  white-space: nowrap;
-  cursor: pointer;
-  opacity: 0;
-}
-
-.session-item:hover .branch-badge,
-.session-item.is-active .branch-badge,
-.branch-badge.is-open {
-  opacity: 1;
-}
-
-.branch-badge.is-open {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.branch-children {
-  display: flex;
-  flex-direction: column;
-  padding: 2px 0 6px 18px;
-}
-
-.branch-child {
-  display: flex;
-  gap: 2px;
-  align-items: center;
-  min-width: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0;
-  color: var(--muted);
-  font-size: var(--fs-2);
-}
-
-.branch-child-main {
-  display: flex;
-  flex: 1;
-  gap: 6px;
-  align-items: center;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  padding: 6px 8px;
-  text-align: left;
-  color: inherit;
-  font-size: inherit;
-  cursor: pointer;
-}
-
-.branch-child:hover {
-  background: var(--sheen-strong);
-  color: var(--ink-raise);
-}
-
-.branch-child.is-active {
-  border-left-color: var(--accent);
-  background: var(--sheen-soft);
-  color: var(--ink-raise);
-}
-
-.branch-child-title {
-  overflow: hidden;
-  flex: 1;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.branch-child-time {
-  flex: none;
-  color: var(--faint);
-  font-size: var(--fs-3);
-}
-
-.branch-row-menu {
-  flex: none;
-}
-
-.branch-child .session-menu-button {
-  opacity: 0;
-}
-
-.branch-child:hover .session-menu-button,
-.branch-child.is-active .session-menu-button,
-.branch-child:focus-within .session-menu-button {
-  opacity: 1;
+@media (hover: none), (pointer: coarse) {
+  .session-menu-button {
+    opacity: 1;
+  }
 }
 
 /* R5.11 工作区切换器 */
@@ -403,14 +418,7 @@
   font-size: var(--fs-2, 13px);
 }
 
-/* R5.12 工作区设置按钮 */
-.workspace-settings-button {
-  margin-top: 6px;
-  align-self: flex-end;
-}
-
 .workspace-switcher {
   display: flex;
-  flex-direction: column;
   align-items: stretch;
 }

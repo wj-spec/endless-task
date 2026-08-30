@@ -4,10 +4,11 @@ import { chatApi } from "../chat/api";
 import type { Skill } from "../chat/apiTypes";
 
 type SkillsContentProps = {
+  onChanged?: () => void | Promise<void>;
   workspaceId: string | null;
 };
 
-export function SkillsContent({ workspaceId }: SkillsContentProps) {
+export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [userDirectory, setUserDirectory] = useState("");
   const [loading, setLoading] = useState(true);
@@ -44,6 +45,7 @@ export function SkillsContent({ workspaceId }: SkillsContentProps) {
         workspaceId,
       );
       await load();
+      await onChanged?.();
     } catch {
       setActionError("更新技能状态失败，请重试。");
     } finally {

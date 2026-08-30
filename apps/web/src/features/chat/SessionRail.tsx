@@ -1,22 +1,28 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
-import type { Conversation, ConversationStatus, Workspace } from "./apiTypes";
+import { useState } from "react";
+import type {
+  Conversation,
+  ConversationStatus,
+  Workspace,
+} from "./apiTypes";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { RowMenu } from "../ui/RowMenu";
-import { WorkspaceSettingsModal } from "../workspace/WorkspaceSettingsModal";
+import { SidebarToggleIcon } from "../ui/SidebarToggleIcon";
 
 type SessionRailProps = {
   activeConversationId: string | null;
+  collapsed: boolean;
   conversations: Conversation[];
   open: boolean;
   search: string;
-  sideConversationId: string | null;
   statusFilter: ConversationStatus;
   workspaceId: string | null;
   workspaces: Workspace[];
+  pendingTotal: number;
   onCreateWorkspace: (name: string) => Promise<unknown>;
   onSelectWorkspace: (workspaceId: string | null) => void;
-  onRefreshWorkspaces: () => void;
+  onOpenAssistant: (tab: "notifications" | "memory") => void;
+  onOpenSettings: () => void;
   onChangeConversationStatus: (
     conversationId: string,
     status: ConversationStatus,
@@ -24,10 +30,8 @@ type SessionRailProps = {
   onClose: () => void;
   onDeleteConversation: (conversationId: string) => void;
   onNewConversation: () => void;
-  onPromoteConversation: (conversationId: string) => void;
   onRenameConversation: (conversationId: string, title: string) => void;
   onSearchChange: (value: string) => void;
-  onSelectBranch: (branchId: string, parentId: string) => void;
   onSelectConversation: (conversationId: string) => void;
   onStatusFilterChange: (status: ConversationStatus) => void;
 };
@@ -49,35 +53,30 @@ const formatRelativeTime = (value: string) => {
 
 export function SessionRail({
   activeConversationId,
+  collapsed,
   conversations,
   open,
   search,
-  sideConversationId,
   statusFilter,
   workspaceId,
   workspaces,
+  pendingTotal,
   onCreateWorkspace,
   onSelectWorkspace,
-  onRefreshWorkspaces,
+  onOpenAssistant,
+  onOpenSettings,
   onChangeConversationStatus,
   onClose,
   onDeleteConversation,
   onNewConversation,
-  onPromoteConversation,
   onRenameConversation,
   onSearchChange,
-  onSelectBranch,
   onSelectConversation,
   onStatusFilterChange,
 }: SessionRailProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const workspace = useMemo(
-    () => workspaces.find((item) => item.id === workspaceId) ?? null,
-    [workspaces, workspaceId],
-  );
 
   const handleWorkspaceChange = async (value: string) => {
     if (value === "__create__") {
@@ -96,31 +95,9 @@ export function SessionRail({
     onSelectWorkspace(value === "general" ? null : value);
   };
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
-  const [expandedParentId, setExpandedParentId] = useState<string | null>(null);
-
-  const childMap = useMemo(() => {
-    const map = new Map<string, Conversation[]>();
-    for (const item of conversations) {
-      if (item.kind !== "ephemeral" || !item.parentConversationId) continue;
-      const list = map.get(item.parentConversationId) ?? [];
-      list.push(item);
-      map.set(item.parentConversationId, list);
-    }
-    return map;
-  }, [conversations]);
   const primaryConversations = conversations.filter(
     (item) => item.kind !== "ephemeral",
   );
-
-  useEffect(() => {
-    if (!sideConversationId) return;
-    for (const [parentId, children] of childMap.entries()) {
-      if (children.some((item) => item.id === sideConversationId)) {
-        setExpandedParentId(parentId);
-        return;
-      }
-    }
-  }, [sideConversationId, childMap]);
 
   const startRename = (conversation: Conversation) => {
     setRenamingId(conversation.id);
@@ -133,17 +110,29 @@ export function SessionRail({
     if (title) onRenameConversation(renamingId, title);
     setRenamingId(null);
   };
+  const railExpanded = open || !collapsed;
+  const railToggleLabel = railExpanded ? "收起侧栏" : "展开侧栏";
 
   return (
-    <aside className={open ? "session-rail is-open" : "session-rail"}>
+    <aside
+      aria-label="会话导航"
+      className={`session-rail${open ? " is-open" : ""}${
+        collapsed ? " is-collapsed" : ""
+      }`}
+    >
       <header className="rail-header">
         <div className="wordmark" aria-label="Endless Task">
           <span className="wordmark-symbol">∞</span>
           <span>Endless</span>
         </div>
-        <button className="icon-button rail-close" onClick={onClose} type="button">
-          <span aria-hidden="true">×</span>
-          <span className="sr-only">关闭会话列表</span>
+        <button
+          aria-label={railToggleLabel}
+          className="icon-button rail-toggle"
+          onClick={onClose}
+          title={railToggleLabel}
+          type="button"
+        >
+          <SidebarToggleIcon expanded={railExpanded} />
         </button>
       </header>
 
@@ -165,30 +154,17 @@ export function SessionRail({
           ))}
           <option value="__create__">＋ 新建工作区…</option>
         </select>
-        <button
-          aria-label="工作区设置"
-          className="icon-button workspace-settings-button"
-          disabled={!workspaceId}
-          onClick={() => setSettingsOpen(true)}
-          title="工作区设置（绑定目录 / 命令历史）"
-          type="button"
-        >
-          ⚙
-        </button>
       </div>
-      {settingsOpen && workspace && (
-        <WorkspaceSettingsModal
-          onClose={() => setSettingsOpen(false)}
-          onWorkspaceUpdated={() => {
-            onRefreshWorkspaces();
-          }}
-          workspace={workspace}
-        />
-      )}
 
-      <button className="new-chat-button" onClick={onNewConversation} type="button">
-        <span aria-hidden="true">＋</span>
-        新对话
+      <button
+        aria-label="新对话"
+        className="new-chat-button"
+        onClick={onNewConversation}
+        title={collapsed ? "新对话" : undefined}
+        type="button"
+      >
+        <span aria-hidden="true" className="new-chat-icon">＋</span>
+        <span className="new-chat-label">新对话</span>
       </button>
 
       <label className="conversation-search">
@@ -224,7 +200,7 @@ export function SessionRail({
       </div>
 
       <nav className="session-list" aria-label="会话列表">
-        {conversations.length === 0 ? (
+        {primaryConversations.length === 0 ? (
           <EmptyState
             className="rail-empty"
             desc={search ? "换个关键词试试。" : "点「新对话」开始，助手会记住你们聊过什么。"}
@@ -234,12 +210,10 @@ export function SessionRail({
         {primaryConversations.map((conversation) => {
           const isActive = conversation.id === activeConversationId;
           const archived = conversation.status === "archived";
-          const children = childMap.get(conversation.id) ?? [];
-          const expanded = expandedParentId === conversation.id;
           return (
-            <Fragment key={conversation.id}>
             <div
               className={isActive ? "session-item is-active" : "session-item"}
+              key={conversation.id}
             >
               {renamingId === conversation.id ? (
                 <div className="session-rename">
@@ -267,18 +241,6 @@ export function SessionRail({
                   </time>
                 </button>
               )}
-              {children.length > 0 ? (
-                <button
-                  aria-expanded={expanded}
-                  className={expanded ? "branch-badge is-open" : "branch-badge"}
-                  onClick={() =>
-                    setExpandedParentId(expanded ? null : conversation.id)
-                  }
-                  type="button"
-                >
-                  {children.length} 临时
-                </button>
-              ) : null}
               <RowMenu
                 className="session-row-menu"
                 items={[
@@ -301,57 +263,21 @@ export function SessionRail({
                 triggerClassName="session-menu-button"
               />
             </div>
-            {expanded && children.length > 0 ? (
-              <div className="branch-children">
-                {children.map((child) => {
-                  const childActive =
-                    child.id === activeConversationId ||
-                    child.id === sideConversationId;
-                  return (
-                    <div
-                      className={
-                        childActive ? "branch-child is-active" : "branch-child"
-                      }
-                      key={child.id}
-                    >
-                      <button
-                        className="branch-child-main"
-                        onClick={() => onSelectBranch(child.id, conversation.id)}
-                        type="button"
-                      >
-                        <span aria-hidden="true">↳</span>
-                        <span className="branch-child-title">{child.title}</span>
-                        <time
-                          className="branch-child-time"
-                          dateTime={child.updatedAt}
-                        >
-                          {formatRelativeTime(child.updatedAt)}
-                        </time>
-                      </button>
-                      <RowMenu
-                        className="branch-row-menu"
-                        items={[
-                          {
-                            label: "升级为正式对话",
-                            onSelect: () => onPromoteConversation(child.id),
-                          },
-                          {
-                            danger: true,
-                            label: "删除",
-                            onSelect: () => setDeleteTarget(child),
-                          },
-                        ]}
-                        triggerAriaLabel={`管理分支：${child.title}`}
-                        triggerClassName="session-menu-button"
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-            </Fragment>
           );
         })}
+      </nav>
+
+      <nav aria-label="应用入口" className="rail-footer">
+        <button onClick={() => onOpenAssistant("notifications")} type="button">
+          <span>任务与通知</span>
+          {pendingTotal > 0 ? <strong>{pendingTotal}</strong> : null}
+        </button>
+        <button onClick={() => onOpenAssistant("memory")} type="button">
+          知识与记忆
+        </button>
+        <button onClick={onOpenSettings} type="button">
+          设置
+        </button>
       </nav>
 
       {deleteTarget ? (

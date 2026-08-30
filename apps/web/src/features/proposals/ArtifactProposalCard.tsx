@@ -1,4 +1,5 @@
 import type { ArtifactProposal, ArtifactRecordSummary } from "../chat/apiTypes";
+import { ProposalCard } from "./ProposalCard";
 
 const PREVIEW_CHARS = 200;
 
@@ -21,22 +22,14 @@ export function ArtifactProposalCard({
 }: ArtifactProposalCardProps) {
   const isUpdate = proposal.targetArtifactId !== null;
 
-  if (proposal.status !== "pending") {
-    let notice = "提案已处理";
-    if (proposal.status === "accepted") {
-      const ordinal = resolvedArtifact?.currentVersionOrdinal;
-      notice = `已保存为《${proposal.title}》${ordinal ? ` v${ordinal}` : ""}`;
-    } else if (proposal.status === "rejected") {
-      notice = "已放弃该提案";
-    } else if (proposal.status === "cancelled") {
-      notice = "提案已取消";
-    }
-    return (
-      <div className="proposal-card is-resolved">
-        <span className="proposal-kind">{kindLabel[proposal.kind]}</span>
-        <span>{notice}</span>
-      </div>
-    );
+  let resolvedNotice = "提案已处理";
+  if (proposal.status === "accepted") {
+    const ordinal = resolvedArtifact?.currentVersionOrdinal;
+    resolvedNotice = `已保存为《${proposal.title}》${ordinal ? ` v${ordinal}` : ""}`;
+  } else if (proposal.status === "rejected") {
+    resolvedNotice = "已放弃该提案";
+  } else if (proposal.status === "cancelled") {
+    resolvedNotice = "提案已取消";
   }
 
   const preview =
@@ -50,11 +43,24 @@ export function ArtifactProposalCard({
     : proposal.title;
 
   return (
-    <div className="proposal-card">
-      <div className="proposal-head">
-        <span className="proposal-kind">{kindLabel[proposal.kind]}</span>
-        <strong>{heading}</strong>
-      </div>
+    <ProposalCard
+      kind={kindLabel[proposal.kind]}
+      title={heading}
+      status={proposal.status}
+      busy={busy}
+      resolvedNotice={resolvedNotice}
+      error={error}
+      actions={
+        <>
+          <button disabled={busy} onClick={() => onResolve("accept")} type="button">
+            {isUpdate ? "更新文档" : "保留为 Artifact"}
+          </button>
+          <button disabled={busy} onClick={() => onResolve("reject")} type="button">
+            放弃
+          </button>
+        </>
+      }
+    >
       <p className="proposal-reason">{proposal.reason}</p>
       <p className="proposal-preview">{preview}</p>
       {proposal.content.length > PREVIEW_CHARS ? (
@@ -63,27 +69,6 @@ export function ArtifactProposalCard({
           <div className="proposal-full-body">{proposal.content}</div>
         </details>
       ) : null}
-      {error ? (
-        <div className="proposal-error" role="alert">
-          {error}
-        </div>
-      ) : null}
-      <div className="proposal-actions">
-        <button
-          disabled={busy}
-          onClick={() => onResolve("accept")}
-          type="button"
-        >
-          {isUpdate ? "更新文档" : "保留为 Artifact"}
-        </button>
-        <button
-          disabled={busy}
-          onClick={() => onResolve("reject")}
-          type="button"
-        >
-          放弃
-        </button>
-      </div>
-    </div>
+    </ProposalCard>
   );
 }

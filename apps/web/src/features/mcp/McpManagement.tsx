@@ -3,7 +3,9 @@ import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { McpServer } from "../chat/apiTypes";
 
-type McpContentProps = object;
+type McpContentProps = {
+  onChanged?: () => void | Promise<void>;
+};
 
 type McpForm = {
   name: string;
@@ -41,7 +43,7 @@ function parseMapping(value: string): Record<string, string> {
   return parsed as Record<string, string>;
 }
 
-export function McpContent(_: McpContentProps) {
+export function McpContent({ onChanged }: McpContentProps) {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -91,6 +93,7 @@ export function McpContent(_: McpContentProps) {
       setForm(emptyForm);
       setAdding(false);
       await load();
+      await onChanged?.();
     } catch (error) {
       setActionError(
         error instanceof Error ? error.message : "添加 MCP 服务器失败，请重试。",
@@ -104,6 +107,7 @@ export function McpContent(_: McpContentProps) {
     try {
       await chatApi.patchMcpServer(server.id, { enabled: !server.enabled });
       await load();
+      await onChanged?.();
     } catch {
       setActionError("更新 MCP 服务器失败，请重试。");
     } finally {
@@ -117,6 +121,7 @@ export function McpContent(_: McpContentProps) {
     try {
       await chatApi.reloadMcpServer(server.id);
       await load();
+      await onChanged?.();
     } catch {
       setActionError("重连 MCP 服务器失败，请重试。");
     } finally {
@@ -131,6 +136,7 @@ export function McpContent(_: McpContentProps) {
     try {
       await chatApi.deleteMcpServer(server.id);
       await load();
+      await onChanged?.();
     } catch {
       setActionError("删除 MCP 服务器失败，请重试。");
     } finally {

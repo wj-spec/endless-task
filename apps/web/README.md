@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5173`。开发服务器会把 `/health`、`/conversations` 和 `/turns` 等请求代理到 `http://127.0.0.1:8000`。
+打开 `http://127.0.0.1:5173`。开发服务器会把 `/api`、`/health`、`/conversations`、`/capabilities`、`/workspaces`、`/providers` 等前端 API 请求代理到 `http://127.0.0.1:8000`。
 
 后端默认使用 `FakeProvider`。连接 DeepSeek 等 OpenAI-compatible 服务时，只在 API 进程中配置密钥，密钥不得进入前端环境变量。
 

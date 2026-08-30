@@ -95,8 +95,14 @@ export function WorkspaceSettingsModal({
       <div className="overlay-panel workspace-settings-panel">
         <header className="overlay-header">
           <h2>工作区设置</h2>
-          <button className="icon-button" onClick={onClose} type="button">
-            ✕
+          <button
+            aria-label="关闭工作区设置"
+            className="icon-button"
+            onClick={onClose}
+            title="关闭"
+            type="button"
+          >
+            <span aria-hidden="true">✕</span>
           </button>
         </header>
         <div className="overlay-body">

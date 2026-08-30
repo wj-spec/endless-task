@@ -1,5 +1,6 @@
 import type { KnowledgeProposal,
   CompactTurnSnapshot,
+  CapabilitySnapshot,
   PendingProposal,
   ApprovalRequest,
   ArtifactDetailSnapshot,
@@ -18,6 +19,30 @@ import type { KnowledgeProposal,
   MemoryRecord,
   PermissionSettings,
   RuntimeEvent,
+  RuntimeV2MessageResponse,
+  RuntimeV2ConversationRuntimeStatus,
+  RuntimeV2GlobalRuntimeStatus,
+  RuntimeV2MemoryCreateResponse,
+  RuntimeV2MemoryListResponse,
+  RuntimeV2MemoryPromotionCreateResponse,
+  RuntimeV2MemoryPromotionListResponse,
+  RuntimeV2MemoryPromotionResolveResponse,
+  RuntimeV2MemoryPromotionTarget,
+  RuntimeV2RegenerateResponse,
+  RuntimeV2LaneCreateInput,
+  RuntimeV2LaneCreateResponse,
+  RuntimeV2LaneListResponse,
+  RuntimeV2LanePromoteResponse,
+  RuntimeV2LaneTreeUpdateResponse,
+  RuntimeV2LaneUpdateResponse,
+  RuntimeV2TemporaryConversationCreateInput,
+  RuntimeV2TemporaryConversationCreateResponse,
+  RuntimeV2TemporaryConversationPromoteResponse,
+  RuntimeV2ProductEvent,
+  RuntimeV2RecoveryResponse,
+  RuntimeV2RunSelectResponse,
+  RuntimeV2RunVariantListResponse,
+  RuntimeV2Snapshot,
   TurnCommandResponse,
   UploadedTextFile,
   BrowseItem,
@@ -99,6 +124,7 @@ async function responseError(response: Response): Promise<ApiClientError> {
 
 export const chatApi = {
   health: () => request<HealthSnapshot>("/health"),
+  capabilities: () => request<CapabilitySnapshot>("/capabilities"),
   listProviders: async () => {
     const response = await request<{ items: ProviderProfile[] }>("/providers");
     return response.items;
@@ -300,6 +326,185 @@ export const chatApi = {
     request<ApprovalRequest>(`/approvals/${approvalId}`, {
       method: "POST",
       body: JSON.stringify({ decision }),
+    }),
+  getRuntimeV2Snapshot: (conversationId: string, laneId?: string | null) => {
+    const params = new URLSearchParams();
+    if (laneId) params.set("lane_id", laneId);
+    const query = params.toString();
+    return request<RuntimeV2Snapshot>(
+      `/api/v2/conversations/${conversationId}/snapshot${query ? `?${query}` : ""}`,
+    );
+  },
+  getRuntimeV2GlobalRuntimeStatus: () =>
+    request<RuntimeV2GlobalRuntimeStatus>("/api/v2/runtime"),
+  getRuntimeV2ConversationRuntimeStatus: (conversationId: string) =>
+    request<RuntimeV2ConversationRuntimeStatus>(
+      `/api/v2/conversations/${conversationId}/runtime`,
+    ),
+  setRuntimeV2ConversationRuntime: (
+    conversationId: string,
+    runtime: "v1" | "v2",
+  ) =>
+    request<RuntimeV2ConversationRuntimeStatus>(
+      `/api/v2/conversations/${conversationId}/runtime`,
+      { method: "POST", body: JSON.stringify({ runtime }) },
+    ),
+  createRuntimeV2Message: (
+    conversationId: string,
+    content: string,
+    laneId?: string | null,
+  ) =>
+    request<RuntimeV2MessageResponse>(
+      `/api/v2/conversations/${conversationId}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content, laneId: laneId ?? null }),
+      },
+    ),
+  listRuntimeV2Lanes: (conversationId: string, includeArchived = false) => {
+    const params = new URLSearchParams();
+    if (includeArchived) params.set("includeArchived", "true");
+    const query = params.toString();
+    return request<RuntimeV2LaneListResponse>(
+      `/api/v2/conversations/${conversationId}/lanes${query ? `?${query}` : ""}`,
+    );
+  },
+  createRuntimeV2Lane: (
+    conversationId: string,
+    input: RuntimeV2LaneCreateInput,
+  ) =>
+    request<RuntimeV2LaneCreateResponse>(
+      `/api/v2/conversations/${conversationId}/lanes`,
+      {
+        method: "POST",
+        body: JSON.stringify({ kind: "persistent_branch", ...input }),
+      },
+    ),
+  renameRuntimeV2Lane: (laneId: string, displayName: string | null) =>
+    request<RuntimeV2LaneUpdateResponse>(`/api/v2/lanes/${laneId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ displayName }),
+    }),
+  promoteRuntimeV2Lane: (laneId: string) =>
+    request<RuntimeV2LanePromoteResponse>(`/api/v2/lanes/${laneId}/promote`, {
+      method: "POST",
+    }),
+  archiveRuntimeV2Lane: (laneId: string) =>
+    request<RuntimeV2LaneTreeUpdateResponse>(`/api/v2/lanes/${laneId}/archive`, {
+      method: "POST",
+    }),
+  restoreRuntimeV2Lane: (laneId: string) =>
+    request<RuntimeV2LaneTreeUpdateResponse>(`/api/v2/lanes/${laneId}/restore`, {
+      method: "POST",
+    }),
+  createRuntimeV2TemporaryConversation: (
+    sourceConversationId: string,
+    input: RuntimeV2TemporaryConversationCreateInput,
+  ) =>
+    request<RuntimeV2TemporaryConversationCreateResponse>(
+      `/api/v2/conversations/${sourceConversationId}/temporary-conversations`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
+  promoteRuntimeV2TemporaryConversation: (conversationId: string) =>
+    request<RuntimeV2TemporaryConversationPromoteResponse>(
+      `/api/v2/temporary-conversations/${conversationId}/promote`,
+      { method: "POST" },
+    ),
+  deleteRuntimeV2TemporaryConversation: (conversationId: string) =>
+    request<void>(`/api/v2/temporary-conversations/${conversationId}`, {
+      method: "DELETE",
+    }),
+  listRuntimeV2RunVariants: (runId: string) =>
+    request<RuntimeV2RunVariantListResponse>(`/api/v2/runs/${runId}/variants`),
+  regenerateRuntimeV2Run: (runId: string) =>
+    request<RuntimeV2RegenerateResponse>(`/api/v2/runs/${runId}/regenerate`, {
+      method: "POST",
+    }),
+  selectRuntimeV2RunVariant: (runId: string) =>
+    request<RuntimeV2RunSelectResponse>(`/api/v2/runs/${runId}/select`, {
+      method: "POST",
+    }),
+  listRuntimeV2Memories: (
+    conversationId: string,
+    laneId: string,
+    runId?: string | null,
+  ) => {
+    const params = new URLSearchParams({ lane_id: laneId });
+    if (runId) params.set("run_id", runId);
+    return request<RuntimeV2MemoryListResponse>(
+      `/api/v2/conversations/${conversationId}/memories?${params.toString()}`,
+    );
+  },
+  createRuntimeV2Memory: (
+    conversationId: string,
+    laneId: string,
+    kind: "preference" | "fact",
+    content: string,
+  ) =>
+    request<RuntimeV2MemoryCreateResponse>(
+      `/api/v2/conversations/${conversationId}/memories`,
+      {
+        method: "POST",
+        body: JSON.stringify({ kind, content, laneId }),
+      },
+    ),
+  createRuntimeV2MemoryPromotion: (
+    memoryId: string,
+    targetScope: RuntimeV2MemoryPromotionTarget,
+    targetLaneId?: string | null,
+  ) =>
+    request<RuntimeV2MemoryPromotionCreateResponse>(
+      `/api/v2/memories/${memoryId}/promotions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ targetScope, targetLaneId: targetLaneId ?? null }),
+      },
+    ),
+  listRuntimeV2MemoryPromotions: (
+    conversationId: string,
+    includeResolved = false,
+  ) =>
+    request<RuntimeV2MemoryPromotionListResponse>(
+      `/api/v2/conversations/${conversationId}/memory-promotions?include_resolved=${includeResolved}`,
+    ),
+  resolveRuntimeV2MemoryPromotion: (
+    promotionId: string,
+    decision: "accept" | "reject",
+  ) =>
+    request<RuntimeV2MemoryPromotionResolveResponse>(
+      `/api/v2/memory-promotions/${promotionId}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      },
+    ),
+  steerRuntimeV2Run: (runId: string, content: string) =>
+    request<{ runId: string; accepted: boolean }>(`/api/v2/runs/${runId}/steer`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
+  cancelRuntimeV2Run: (runId: string) =>
+    request<{ runId: string; accepted: boolean }>(`/api/v2/runs/${runId}/cancel`, {
+      method: "POST",
+    }),
+  resolveRuntimeV2Approval: (approvalId: string, decision: "approve" | "deny") =>
+    request<{ approvalId: string; resolved: boolean }>(
+      `/api/v2/approvals/${approvalId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      },
+    ),
+  resolveRuntimeV2Recovery: (
+    runId: string,
+    action: "mark_failed" | "retry",
+  ) =>
+    request<RuntimeV2RecoveryResponse>(`/api/v2/runs/${runId}/recovery`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
     }),
   listArtifactProposals: async (conversationId: string, includeResolved = false) => {
     const response = await request<{ items: ArtifactProposal[] }>(
@@ -626,6 +831,69 @@ export async function streamTurnEvents(options: {
         .map((line) => line.slice(5).trimStart())
         .join("\n");
       if (data) options.onEvent(JSON.parse(data) as RuntimeEvent);
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) return;
+  }
+}
+
+export async function streamRuntimeV2Events(options: {
+  conversationId: string;
+  laneId?: string | null;
+  afterSequence: number;
+  signal: AbortSignal;
+  onSnapshot: (snapshot: RuntimeV2Snapshot) => void;
+  onProductEvent: (event: RuntimeV2ProductEvent) => void;
+}): Promise<void> {
+  const streamParams = new URLSearchParams({
+    after_seq: String(options.afterSequence),
+  });
+  if (options.laneId) streamParams.set("lane_id", options.laneId);
+  const response = await fetch(
+    url(
+      `/api/v2/conversations/${options.conversationId}/events?${streamParams.toString()}`,
+    ),
+    {
+      headers: { Accept: "text/event-stream" },
+      signal: options.signal,
+    },
+  );
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+  if (!response.body) {
+    throw new Error("浏览器无法读取流式响应。");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const eventName = frame
+        .split("\n")
+        .find((line) => line.startsWith("event:"))
+        ?.slice(6)
+        .trim();
+      const data = frame
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (eventName && data) {
+        const payload = JSON.parse(data);
+        if (eventName === "conversation.snapshot_ready") {
+          options.onSnapshot(payload as RuntimeV2Snapshot);
+        } else {
+          options.onProductEvent(payload as RuntimeV2ProductEvent);
+        }
+      }
       boundary = buffer.indexOf("\n\n");
     }
     if (done) return;
