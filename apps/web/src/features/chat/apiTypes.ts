@@ -164,6 +164,7 @@ export type Turn = {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  inherited?: boolean;
 };
 
 export type ResponseVariant = {
@@ -412,6 +413,7 @@ export type RuntimeV2Entry = {
   status: string;
   createdAt: string;
   sourceRunId: string | null;
+  inherited?: boolean;
   data: {
     content?: string;
     toolName?: string;
@@ -558,7 +560,7 @@ export type RuntimeV2LanePromoteResponse = {
 };
 
 export type RuntimeV2TemporaryConversationCreateInput = {
-  sourceLaneId: string;
+  sourceLaneId?: string;
   sourceLeafEntryId?: string;
   title?: string;
 };

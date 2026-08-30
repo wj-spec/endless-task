@@ -8,7 +8,6 @@ type BranchNavigatorProps = {
   currentLaneId: string | null;
   disabled: boolean;
   onArchive: (laneId: string, includeArchived: boolean) => void;
-  onCreateBranch: () => void;
   onOpenSide: (laneId: string) => void;
   onPromote: (laneId: string) => void;
   onRename: (laneId: string, displayName: string | null) => void;
@@ -68,7 +67,6 @@ export function BranchNavigator({
   currentLaneId,
   disabled,
   onArchive,
-  onCreateBranch,
   onOpenSide,
   onPromote,
   onRename,
@@ -160,16 +158,7 @@ export function BranchNavigator({
         <div className="branch-navigator-popover">
           <div className="branch-navigator-toolbar">
             <strong>会话路径</strong>
-            <button
-              disabled={disabled || isLaneArchived(currentLane)}
-              onClick={() => {
-                onCreateBranch();
-                closePopover();
-              }}
-              type="button"
-            >
-              ＋ 新建分支
-            </button>
+            <span>从已完成回答创建分支</span>
           </div>
 
           <div className="branch-navigator-tree">

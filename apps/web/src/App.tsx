@@ -276,8 +276,8 @@ export function App() {
             forkTurnId,
           );
         }}
-        onCreateTemporaryConversation={(forkTurnId) =>
-          void chat.createTemporaryConversation(forkTurnId)
+        onCreateTemporaryConversation={() =>
+          void chat.createTemporaryConversation()
         }
         onDelete={() => void chat.deleteConversation()}
         onDismissError={chat.dismissPrimaryError}

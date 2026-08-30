@@ -24,6 +24,44 @@
   background: var(--line);
 }
 
+.lineage-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.lineage-summary div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.lineage-summary strong {
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+  font-weight: 600;
+}
+
+.lineage-summary span {
+  font-size: var(--fs-1);
+  line-height: 1.45;
+}
+
+.lineage-summary button {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-2);
+}
+
 .message-column {
   width: min(760px, 100%);
   margin: 0 auto;
@@ -654,32 +692,32 @@
   animation: cursor-blink 1s steps(2, start) infinite;
 }
 
-/* 会话分支：turn 级「从此处分叉」入口 */
-.turn-fork {
-  position: absolute;
-  top: 2px;
-  right: 0;
-  display: flex;
-  gap: 4px;
+/* 已完成回答右下方的低干扰分支入口 */
+.branch-from-answer {
+  display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border: 0;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--faint);
-  font-size: var(--fs-1);
-  cursor: pointer;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--faint) !important;
   opacity: 0;
+  transition: color 120ms ease, opacity 120ms ease;
 }
 
-.turn:hover .turn-fork:not(:disabled),
-.turn:focus-within .turn-fork:not(:disabled) {
+.turn:hover .branch-from-answer:not(:disabled),
+.turn:focus-within .branch-from-answer:not(:disabled),
+.branch-from-answer:focus-visible {
   opacity: 1;
 }
 
-.turn-fork:hover:not(:disabled) {
-  background: var(--accent-soft);
-  color: var(--accent);
+.branch-from-answer:hover:not(:disabled) {
+  color: var(--accent) !important;
+}
+
+@media (max-width: 760px), (hover: none) {
+  .branch-from-answer {
+    min-height: 32px;
+    opacity: 1;
+  }
 }
 
 /* P4.5 修订：侧边临时会话紧凑样式 */
@@ -700,6 +738,24 @@
 
 .chat-surface.is-side .turn {
   padding: 22px 0 20px;
+}
+
+.chat-surface.is-side .composer-input-row {
+  grid-template-columns: minmax(0, 1fr) 38px;
+}
+
+.chat-surface.is-side .composer-region {
+  padding-right: 18px;
+  padding-left: 18px;
+}
+
+.chat-surface.is-side .composer-status {
+  gap: 8px;
+}
+
+.chat-surface.is-side .composer-status-text,
+.chat-surface.is-side .status-light {
+  display: none;
 }
 
 .chat-surface.is-side .composer-hint {
@@ -804,16 +860,6 @@ button.citation-chip:focus-visible {
 .proposal-scope button:hover {
   border-color: var(--accent, #7c5cff);
   color: var(--accent, #7c5cff);
-}
-
-.turn-branch-menu {
-  position: absolute;
-  top: 2px;
-  right: 0;
-}
-
-.turn-branch-menu .turn-fork {
-  position: static;
 }
 
 .branch-navigator {

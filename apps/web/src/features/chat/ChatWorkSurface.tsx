@@ -8,6 +8,7 @@ import type {
   ProviderProfile,
   ResponseVariantSnapshot,
   RuntimeV2Lane,
+  RuntimeV2RecoveryReport,
   RuntimeV2Snapshot,
   TurnStatus,
   Workspace,
@@ -44,8 +45,8 @@ type ChatWorkSurfaceProps = {
   onArchive: () => void;
   onCancel: () => void;
   onCancelRunningRun?: (runId: string) => void;
-  onCreateBranch?: (forkTurnId?: string) => void;
-  onCreateTemporaryConversation?: (forkTurnId?: string) => void;
+  onCreateBranch?: (forkTurnId: string) => void;
+  onCreateTemporaryConversation?: () => void;
   onDelete: () => void;
   onDismissError: () => void;
   onDraftChange: (value: string) => void;
@@ -134,6 +135,48 @@ const turnStatusPresentation = (
   return null;
 };
 
+const recoveryPresentation = (report: RuntimeV2RecoveryReport) => {
+  const reasons = new Set(report.findings.map((finding) => finding.reason));
+  if (
+    reasons.has("waiting_approval") ||
+    reasons.has("tool_side_effect_uncertain") ||
+    reasons.has("tool_result_missing")
+  ) {
+    return {
+      title: "上次操作需要确认",
+      message: "应用中断时可能正在执行工具。请先检查相关结果，再结束这次运行。",
+      canRetry: false,
+    };
+  }
+  if (reasons.has("cancellation_pending")) {
+    return {
+      title: "上次停止操作未完成",
+      message: "应用在停止运行时中断，请结束这次运行后再继续。",
+      canRetry: false,
+    };
+  }
+  if (report.classification === "non_recoverable") {
+    return {
+      title: "上次运行无法恢复",
+      message: "运行记录不完整，请结束这次运行后重新发送消息。",
+      canRetry: false,
+    };
+  }
+  if (reasons.has("interrupted_model_turn")) {
+    return {
+      title: "上一条回复未完成",
+      message: "应用在生成回复时中断，可以重新生成这条回复。",
+      canRetry: report.action === "resume",
+    };
+  }
+  return {
+    title: "上次运行未完成",
+    message: "应用在运行完成前中断，可以重新尝试或结束这次运行。",
+    canRetry:
+      report.classification === "recoverable" && report.action === "resume",
+  };
+};
+
 function findActiveVariant(
   variants: ResponseVariantSnapshot[],
   activeId: string | null,
@@ -217,6 +260,7 @@ export function ChatWorkSurface({
     label: string;
   } | null>(null);
   const [modelDraft, setModelDraft] = useState("");
+  const [inheritedHistoryOpen, setInheritedHistoryOpen] = useState(false);
 
   useEffect(() => {
     setModelDraft(conversation?.conversation.modelOverride ?? "");
@@ -303,14 +347,16 @@ export function ChatWorkSurface({
   }, [requestSideClose, variant]);
   const firstOwnTurnIndex = conversationId
     ? (conversation?.turns ?? []).findIndex(
-        (item) => item.turn.conversationId === conversationId,
+        (item) =>
+          item.turn.inherited !== true &&
+          item.turn.conversationId === conversationId,
       )
     : -1;
-  const hasInheritedTurns =
-    firstOwnTurnIndex !== 0 &&
-    (conversation?.turns.some(
-      (item) => item.turn.conversationId !== conversationId,
-    ) ?? false);
+  const inheritedTurnCount = (conversation?.turns ?? []).filter(
+    (item) =>
+      item.turn.inherited === true || item.turn.conversationId !== conversationId,
+  ).length;
+  const hasInheritedTurns = inheritedTurnCount > 0;
   const latestTurnId = conversation?.turns.at(-1)?.turn.id;
   const latestLiveContent = latestTurnId ? liveTurns[latestTurnId]?.content : undefined;
 
@@ -318,6 +364,7 @@ export function ChatWorkSurface({
     setRenaming(false);
     setTitleDraft(conversation?.conversation.title ?? "");
     setOpenCitation(null);
+    setInheritedHistoryOpen(false);
   }, [conversationId, conversation?.conversation.title]);
 
   useEffect(() => {
@@ -460,7 +507,6 @@ export function ChatWorkSurface({
                 disabled={isGenerating || pendingAction !== null}
                 lanes={branchLanes}
                 onArchive={onArchiveLane}
-                onCreateBranch={() => onCreateBranch()}
                 onOpenSide={onOpenLaneInSide}
                 onPromote={onPromoteLane}
                 onRename={onRenameLane}
@@ -645,37 +691,39 @@ export function ChatWorkSurface({
         ) : null}
 
         {onResolveRuntimeRecovery
-          ? runtimeSnapshot?.interruptedRuns.map((report) => (
-              <section
-                className="runtime-recovery-card"
-                key={report.runId}
-                role="alert"
-              >
-                <strong>上次运行被中断</strong>
-                <p>
-                  {report.findings[0]?.message ??
-                    "应用已恢复，但这次运行没有正常结束。"}
-                </p>
-                <div className="runtime-recovery-actions">
-                  <button
-                    disabled={pendingAction !== null}
-                    onClick={() => onResolveRuntimeRecovery(report.runId, "retry")}
-                    type="button"
-                  >
-                    安全重试
-                  </button>
-                  <button
-                    disabled={pendingAction !== null}
-                    onClick={() =>
-                      onResolveRuntimeRecovery(report.runId, "mark_failed")
-                    }
-                    type="button"
-                  >
-                    结束本次运行
-                  </button>
-                </div>
-              </section>
-            ))
+          ? runtimeSnapshot?.interruptedRuns.map((report) => {
+              const presentation = recoveryPresentation(report);
+              return (
+                <section
+                  className="runtime-recovery-card"
+                  key={report.runId}
+                  role="alert"
+                >
+                  <strong>{presentation.title}</strong>
+                  <p>{presentation.message}</p>
+                  <div className="runtime-recovery-actions">
+                    {presentation.canRetry ? (
+                      <button
+                        disabled={pendingAction !== null}
+                        onClick={() => onResolveRuntimeRecovery(report.runId, "retry")}
+                        type="button"
+                      >
+                        重新生成
+                      </button>
+                    ) : null}
+                    <button
+                      disabled={pendingAction !== null}
+                      onClick={() =>
+                        onResolveRuntimeRecovery(report.runId, "mark_failed")
+                      }
+                      type="button"
+                    >
+                      结束本次运行
+                    </button>
+                  </div>
+                </section>
+              );
+            })
           : null}
 
         {loading && !conversation ? <LoadingState /> : null}
@@ -684,7 +732,26 @@ export function ChatWorkSurface({
         ) : null}
 
         <div className="message-column">
+          {hasInheritedTurns ? (
+            <section className="lineage-summary" role="note">
+              <div>
+                <strong>继承自《{conversation?.parentTitle ?? "主会话"}》</strong>
+                <span>{inheritedTurnCount} 轮上下文已随临时会话复制并隔离保存</span>
+              </div>
+              <button
+                aria-expanded={inheritedHistoryOpen}
+                onClick={() => setInheritedHistoryOpen((open) => !open)}
+                type="button"
+              >
+                {inheritedHistoryOpen ? "收起继承内容" : "查看继承内容"}
+              </button>
+            </section>
+          ) : null}
           {conversation?.turns.map((turnSnapshot, turnIndex) => {
+            const inheritedTurn =
+              turnSnapshot.turn.inherited === true ||
+              turnSnapshot.turn.conversationId !== conversationId;
+            if (inheritedTurn && !inheritedHistoryOpen) return null;
             const persistedVariant = findActiveVariant(
               turnSnapshot.responseVariants,
               turnSnapshot.turn.activeResponseVariantId,
@@ -711,7 +778,9 @@ export function ChatWorkSurface({
             );
 
             const dividerHere =
-              hasInheritedTurns && turnIndex === firstOwnTurnIndex;
+              hasInheritedTurns &&
+              inheritedHistoryOpen &&
+              turnIndex === firstOwnTurnIndex;
             return (
               <Fragment key={turnSnapshot.turn.id}>
               {dividerHere ? (
@@ -720,43 +789,6 @@ export function ChatWorkSurface({
                 </div>
               ) : null}
               <section className="turn">
-                {variant === "side" ||
-                (!onCreateBranch && !onCreateTemporaryConversation) ? null : (
-                  <RowMenu
-                    className="turn-branch-menu"
-                    disabled={isGenerating || pendingAction !== null}
-                    items={[
-                      ...(onCreateBranch
-                        ? [
-                            {
-                              label: "从这里创建持久分支",
-                              onSelect: () =>
-                                onCreateBranch(turnSnapshot.turn.id),
-                            },
-                          ]
-                        : []),
-                      ...(onCreateTemporaryConversation
-                        ? [
-                            {
-                              label: "从这里打开临时对话",
-                              onSelect: () =>
-                                onCreateTemporaryConversation(
-                                  turnSnapshot.turn.id,
-                                ),
-                            },
-                          ]
-                        : []),
-                    ]}
-                    trigger={
-                      <>
-                        <span aria-hidden="true">⑂</span>
-                        从这里开始
-                      </>
-                    }
-                    triggerAriaLabel="从这条消息创建分支或临时对话"
-                    triggerClassName="turn-fork"
-                  />
-                )}
                 <article className="message-row user-row">
                   <div className="speaker-mark user-mark">你</div>
                   <div className="user-copy">{turnSnapshot.userMessage.content}</div>
@@ -866,12 +898,12 @@ export function ChatWorkSurface({
                       <div className="turn-notice">回答达到长度上限，内容可能不完整。</div>
                     ) : null}
 
-                    {isLatest &&
-                    turnSnapshot.turn.conversationId ===
+                    {turnSnapshot.turn.conversationId ===
                       conversation?.conversation.id &&
-                    !["created", "running"].includes(status) ? (
+                    ((isLatest && !["created", "running"].includes(status)) ||
+                      (status === "completed" && Boolean(onCreateBranch))) ? (
                       <div className="response-actions">
-                        {status === "failed" || status === "cancelled" ? (
+                        {isLatest && (status === "failed" || status === "cancelled") ? (
                           <button
                             disabled={pendingAction !== null}
                             onClick={() => onRetry(turnSnapshot.turn.id)}
@@ -880,7 +912,7 @@ export function ChatWorkSurface({
                             重试
                           </button>
                         ) : null}
-                        {status === "completed" ? (
+                        {isLatest && status === "completed" ? (
                           <button
                             disabled={pendingAction !== null}
                             onClick={() => onRegenerate(turnSnapshot.turn.id)}
@@ -889,7 +921,7 @@ export function ChatWorkSurface({
                             重新生成
                           </button>
                         ) : null}
-                        {turnSnapshot.responseVariants.length > 1 ? (
+                        {isLatest && turnSnapshot.responseVariants.length > 1 ? (
                           <div className="variant-switcher" aria-label="回答版本">
                             <button
                               aria-label="上一个回答"
@@ -924,6 +956,19 @@ export function ChatWorkSurface({
                               ›
                             </button>
                           </div>
+                        ) : null}
+                        {status === "completed" && onCreateBranch ? (
+                          <button
+                            aria-label="从此回答创建分支"
+                            className="branch-from-answer"
+                            disabled={isGenerating || pendingAction !== null}
+                            onClick={() => onCreateBranch(turnSnapshot.turn.id)}
+                            title="保留到这条完整回答，在右侧开始分支"
+                            type="button"
+                          >
+                            <span aria-hidden="true">⑂</span>
+                            创建分支
+                          </button>
                         ) : null}
                       </div>
                     ) : null}
@@ -1018,7 +1063,9 @@ export function ChatWorkSurface({
               </Fragment>
             );
           })}
-          {hasInheritedTurns && firstOwnTurnIndex === -1 ? (
+          {hasInheritedTurns &&
+          inheritedHistoryOpen &&
+          firstOwnTurnIndex === -1 ? (
             <div className="lineage-divider" role="note">
               以上全部继承自《{conversation?.parentTitle ?? "主会话"}》，从这里开始是新内容
             </div>

@@ -136,6 +136,7 @@ const runtimeSnapshotToConversationSnapshot = (
         createdAt: currentDraft.user.createdAt,
         startedAt: currentDraft.user.createdAt,
         finishedAt: firstAssistant?.createdAt ?? null,
+        inherited: currentDraft.user.inherited === true,
       },
       userMessage: entryMessage(currentDraft.user, "user", turnId),
       activeResponseVariantId: firstAssistant?.sourceRunId ?? turnId,
@@ -1298,7 +1299,7 @@ export function useChatApplication() {
     }
   };
 
-  const createTemporaryConversation = async (forkTurnId?: string) => {
+  const createTemporaryConversation = async () => {
     if (!activeConversationId) return;
     if (sideLane?.mode === "temporary_conversation") {
       const closed = await closeSideConversation();
@@ -1310,27 +1311,9 @@ export function useChatApplication() {
     setError(null);
     try {
       if (runtimeStatuses[activeConversationId]?.effectiveRuntime === "v2") {
-        const laneList = await chatApi.listRuntimeV2Lanes(activeConversationId);
-        const sourceLaneId =
-          viewLaneIds[activeConversationId] ??
-          mainLaneIds[activeConversationId] ??
-          laneList.activeLaneId;
-        if (!sourceLaneId) throw new Error("当前会话还没有可分叉的 Runtime v2 Lane。");
-        const turnSnapshot = forkTurnId
-          ? snapshots[activeConversationId]?.turns.find(
-              (item) => item.turn.id === forkTurnId,
-            )
-          : undefined;
-        const sourceLeafEntryId = turnSnapshot?.userMessage.id;
-        if (forkTurnId && !sourceLeafEntryId) {
-          throw new Error("无法定位临时对话的历史截止消息。");
-        }
         const created = await chatApi.createRuntimeV2TemporaryConversation(
           activeConversationId,
-          {
-            sourceLaneId,
-            ...(sourceLeafEntryId ? { sourceLeafEntryId } : {}),
-          },
+          {},
         );
         const temporaryConversationId = created.conversation.id;
         const [legacy, runtime, runtimeStatus] = await Promise.all([
@@ -1369,10 +1352,7 @@ export function useChatApplication() {
         applyRuntimeSnapshot(legacy, runtime, "side");
         return;
       }
-      const { conversation } = await chatApi.createBranch(
-        activeConversationId,
-        forkTurnId,
-      );
+      const { conversation } = await chatApi.createBranch(activeConversationId);
       setConversations((current) => [
         conversation,
         ...current.filter((item) => item.id !== conversation.id),
@@ -1455,47 +1435,31 @@ export function useChatApplication() {
       setPendingAction("fork-lane");
       setError(null);
       try {
-        const turnSnapshot = forkTurnId
-          ? snapshots[conversationId]?.turns.find(
-              (item) => item.turn.id === forkTurnId,
-            )
-          : undefined;
-        const baseEntryId = turnSnapshot?.userMessage.id;
-        if (forkTurnId && !baseEntryId) {
-          throw new Error("无法定位分叉点的用户消息。");
+        if (!forkTurnId) {
+          throw new Error("请从一条已完成的回答创建分支。");
+        }
+        const turnSnapshot = snapshots[conversationId]?.turns.find(
+          (item) => item.turn.id === forkTurnId,
+        );
+        const baseEntryId = turnSnapshot?.responseVariants.find(
+          (item) => item.variant.id === turnSnapshot.turn.activeResponseVariantId,
+        )?.assistantMessage.id;
+        if (!baseEntryId || turnSnapshot?.turn.status !== "completed") {
+          throw new Error("只能从完整回答结束处创建分支。");
         }
         const created = await chatApi.createRuntimeV2Lane(conversationId, {
           sourceLaneId,
-          ...(baseEntryId ? { baseEntryId } : {}),
+          baseEntryId,
         });
-        const legacy = await chatApi.getConversation(conversationId);
-        const runtime = await runtimeController.loadSnapshot({
-          conversationId,
-          laneId: created.lane.id,
-        });
-        setViewLaneIds((current) => ({
-          ...current,
-          [conversationId]: created.lane.id,
-        }));
-        applyRuntimeSnapshot(legacy, runtime);
-        followRuntimeConversation(
-          conversationId,
-          runtime.lastEventSeq,
-          created.lane.id,
-        );
         await refreshLaneTree(conversationId);
+        await openLaneInSide(conversationId, created.lane.id);
       } catch (forkError) {
         setError(readableError(forkError));
       } finally {
         setPendingAction(null);
       }
     },
-    [
-      applyRuntimeSnapshot,
-      followRuntimeConversation,
-      refreshLaneTree,
-      snapshots,
-    ],
+    [openLaneInSide, refreshLaneTree, snapshots],
   );
 
   const promoteLane = useCallback(
