@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
-export const apiUrl = "http://127.0.0.1:8000";
+export const apiUrl = `http://127.0.0.1:${process.env.ENDLESS_TASK_E2E_API_PORT ?? "18000"}`;
 
 type Conversation = {
   id: string;
@@ -28,7 +28,12 @@ type ProposalKind = "artifact" | "knowledge" | "memory" | "task";
 
 type RuntimeSnapshot = {
   runState: { status: string; partialContent: string } | null;
-  entries: Array<{ id: string; role: string; data: { content?: string } }>;
+  entries: Array<{
+    id: string;
+    type: string;
+    actor: string;
+    data: { content?: string };
+  }>;
 };
 
 const json = async <T>(response: Awaited<ReturnType<APIRequestContext["get"]>>) => {

@@ -42,6 +42,8 @@ test("活动运行在刷新和 SSE 断线后只重连原运行", async ({
 
   await expect(page.getByText("E2E 确定性回复")).toBeVisible();
   await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "正在回答" })).toBeVisible();
+  await expect(page.getByRole("main").locator(".runtime-recovery-card")).toHaveCount(0);
   await expect
     .poll(async () => {
       const response = await request.get(`${apiUrl}/__e2e/provider`);

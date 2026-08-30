@@ -6,8 +6,41 @@ import {
   listLanes,
   openConversation,
   runtimeSnapshot,
+  sendMessage,
   waitForRunStatus,
 } from "../support/api";
+
+test("从完整回答创建 Branch 后默认在右侧打开", async ({ page, request }) => {
+  const title = `E2E Branch Create ${Date.now()}`;
+  const { conversation } = await createCompletedConversation(request, title);
+  const initialLanes = await listLanes(request, conversation.id);
+  const originalMainId = initialLanes.mainLaneId!;
+  const snapshot = await runtimeSnapshot(request, conversation.id, originalMainId);
+  const assistantBoundary = [...snapshot.entries]
+    .reverse()
+    .find((entry) => entry.type === "assistant_message")?.id;
+  expect(assistantBoundary).toBeTruthy();
+
+  await openConversation(page, title);
+  const main = page.getByRole("main");
+  await main.locator(".turn").last().hover();
+  const createResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/api/v2/conversations/${conversation.id}/lanes`),
+  );
+  await main.getByRole("button", { name: "从此回答创建分支" }).click();
+  const created = await createResponsePromise;
+  expect(created.ok()).toBeTruthy();
+  expect((await created.json()).baseEntryId).toBe(assistantBoundary);
+
+  await expect(page.getByRole("region", { name: "分支对照" })).toBeVisible();
+  await expect(main.getByRole("heading", { name: title })).toBeVisible();
+  expect((await listLanes(request, conversation.id)).mainLaneId).toBe(originalMainId);
+  await expect(
+    main.getByRole("button", { name: "从这条消息创建分支或临时对话" }),
+  ).toHaveCount(0);
+});
 
 test("Branch 可右侧继续和聚焦，只有显式操作才改变主线", async ({
   page,
@@ -177,6 +210,70 @@ test("刷新后仍跟踪其他 Lane 的活动 Run", async ({ page, request }) =>
   expect((await resume.json()).resumedCount).toBe(1);
   await expect(main.getByText(/后台运行分支.*正在运行/)).toBeHidden();
   await expect(main.getByRole("textbox", { name: "给 Endless 发送消息" })).toBeEnabled();
+});
+
+test("Temporary 始终复制主线完整路径并折叠继承内容", async ({ page, request }) => {
+  const title = `E2E Temporary Mainline ${Date.now()}`;
+  const { conversation } = await createCompletedConversation(
+    request,
+    title,
+    "只属于主线的基线消息",
+  );
+  const lanes = await listLanes(request, conversation.id);
+  const branch = await createBranch(
+    request,
+    conversation.id,
+    lanes.mainLaneId!,
+    "当前查看分支",
+  );
+  const branchRun = await sendMessage(
+    request,
+    conversation.id,
+    "不应复制到临时会话的分支消息",
+    branch.id,
+  );
+  await waitForRunStatus(request, conversation.id, "completed", branchRun.laneId);
+  await openConversation(page, title);
+
+  await page.getByRole("button", { name: /^主线/ }).click();
+  await page
+    .locator(".branch-navigator-select")
+    .filter({ hasText: "当前查看分支" })
+    .click();
+  await expect(page.getByRole("main").getByText("不应复制到临时会话的分支消息")).toBeVisible();
+
+  const createResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/api/v2/conversations/${conversation.id}/temporary-conversations`),
+  );
+  await page.getByRole("button", { name: "开临时会话" }).click();
+  const payload = (await (await createResponsePromise).json()) as {
+    conversation: { id: string };
+    lane: { id: string };
+  };
+  const temporarySnapshot = await runtimeSnapshot(
+    request,
+    payload.conversation.id,
+    payload.lane.id,
+  );
+  expect(
+    temporarySnapshot.entries.some(
+      (entry) => entry.data.content === "只属于主线的基线消息",
+    ),
+  ).toBe(true);
+  expect(
+    temporarySnapshot.entries.some(
+      (entry) => entry.data.content === "不应复制到临时会话的分支消息",
+    ),
+  ).toBe(false);
+
+  const side = page.getByRole("region", { name: "临时对话" });
+  await expect(side.getByRole("button", { name: "查看继承内容" })).toBeVisible();
+  await expect(side.getByText("只属于主线的基线消息")).toHaveCount(0);
+  await side.getByRole("button", { name: "查看继承内容" }).click();
+  await expect(side.getByText("只属于主线的基线消息")).toBeVisible();
+  await expect(side.getByText("不应复制到临时会话的分支消息")).toHaveCount(0);
 });
 
 test("Temporary Conversation 可与来源 Conversation 并行且状态互不污染", async ({

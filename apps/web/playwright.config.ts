@@ -1,7 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const apiUrl = "http://127.0.0.1:8000";
-const webUrl = "http://127.0.0.1:4173";
+const apiPort = process.env.ENDLESS_TASK_E2E_API_PORT ?? "18000";
+const webPort = process.env.ENDLESS_TASK_E2E_WEB_PORT ?? "4173";
+const apiUrl = `http://127.0.0.1:${apiPort}`;
+const webUrl = `http://127.0.0.1:${webPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -21,14 +23,14 @@ export default defineConfig({
   webServer: [
     {
       command:
-        'ENDLESS_TASK_E2E=1 ENDLESS_TASK_E2E_DB="${TMPDIR:-/tmp}/endless-task-playwright.db" uv run uvicorn tests.fixtures.e2e_server:app --host 127.0.0.1 --port 8000',
+        `ENDLESS_TASK_E2E=1 ENDLESS_TASK_E2E_DB="\${TMPDIR:-/tmp}/endless-task-playwright-${apiPort}.db" uv run uvicorn tests.fixtures.e2e_server:app --host 127.0.0.1 --port ${apiPort}`,
       cwd: "../api",
       url: `${apiUrl}/health`,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: "npm run dev -- --host 127.0.0.1 --port 4173 --strictPort",
+      command: `ENDLESS_TASK_API_URL=${apiUrl} npm run dev -- --host 127.0.0.1 --port ${webPort} --strictPort`,
       cwd: ".",
       url: webUrl,
       reuseExistingServer: false,
