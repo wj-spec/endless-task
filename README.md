@@ -7,7 +7,7 @@ Endless Task 是一个本地优先、面向单用户的个人 AI 助手 Runtime�
 - 冻结节点：`0.4.9 / P0-P4 completed`
 - 当前能力：Assistant Runtime、受限 Agent Loop、Memory Runtime、Artifact Runtime、Task Runtime、一次性提醒
 - 当前边界：P4.5 会话分支仅有设计文档，未进入实现；P5-P7 的知识源、Skill/MCP、桌面端和多模态不属于当前可演示范围
-- 默认运行：后端使用 `FakeProvider`，无需 API Key；配置 DeepSeek/OpenAI-compatible Provider 时，密钥只存在于 API 进程环境中
+- 默认运行：Agent Runtime 使用 v2（可用 `ENDLESS_TASK_RUNTIME=v1` 显式回退）；后端默认 `FakeProvider`，无需 API Key，配置 DeepSeek/OpenAI-compatible Provider 时密钥只存在于 API 进程环境中
 
 ## 产品原则
 
@@ -76,7 +76,7 @@ npm install
 npm run dev
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。开发服务器会把 `/health`、`/conversations` 和 `/turns` 请求代理到 `http://127.0.0.1:8000`。
+浏览器打开 `http://127.0.0.1:5173`。开发服务器会把 `/api`、`/health`、`/conversations`、`/capabilities`、`/workspaces`、`/providers` 等前端 API 请求代理到 `http://127.0.0.1:8000`。
 
 ## 语义检索配置（R5.8）
 
@@ -144,4 +144,4 @@ npm run build
 - 当前是单用户、本地优先项目，不声明多租户、集群化或海量并发能力。
 - P4.5 会话分支、P5 知识源、P6 Skill/MCP、P7 桌面端仍是后续演进，不作为当前已实现能力展示。
 
-更多细节见 [API 说明](apps/api/README.md)、[Web 说明](apps/web/README.md) 和 [开发路线图](docs/product/development-roadmap.md)。
+更多细节见 [API 说明](apps/api/README.md)、[Web 说明](apps/web/README.md)、[v1 归档文档](docs/archive/v1/README.md) 和 [Agent Runtime v2 规划](docs/v2/README.md)。
