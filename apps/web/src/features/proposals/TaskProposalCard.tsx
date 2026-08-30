@@ -5,6 +5,7 @@ type TaskProposalCardProps = {
   proposal: TaskProposal;
   busy: boolean;
   error: string | null;
+  onOpen?: () => void;
   onResolve: (decision: "accept" | "reject") => void;
 };
 
@@ -12,6 +13,7 @@ export function TaskProposalCard({
   proposal,
   busy,
   error,
+  onOpen,
   onResolve,
 }: TaskProposalCardProps) {
   const isReminder = proposal.schedule.kind === "once";
@@ -19,7 +21,9 @@ export function TaskProposalCard({
 
   let resolvedNotice = "提案已处理";
   if (proposal.status === "accepted")
-    resolvedNotice = isReminder ? "提醒已记下，到时会自动执行" : "已安排，助手会按时做";
+    resolvedNotice = isReminder
+      ? "已保存到已安排；到时会自动执行"
+      : "已保存到已安排；助手会按时执行";
   else if (proposal.status === "rejected") resolvedNotice = "已忽略，不会安排";
   else if (proposal.status === "cancelled") resolvedNotice = "提案已取消";
 
@@ -30,6 +34,13 @@ export function TaskProposalCard({
       status={proposal.status}
       busy={busy}
       resolvedNotice={resolvedNotice}
+      resolvedActions={
+        proposal.status === "accepted" && onOpen ? (
+          <button onClick={onOpen} type="button">
+            打开已安排
+          </button>
+        ) : undefined
+      }
       error={error}
       actions={
         <>

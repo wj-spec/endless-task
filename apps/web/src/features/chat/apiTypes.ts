@@ -476,6 +476,9 @@ export type RuntimeV2Snapshot = {
   snapshotVersion: number;
   conversationId: string;
   activeLaneId: string | null;
+  mainLaneId: string | null;
+  runningLaneId: string | null;
+  runningRunId: string | null;
   activeRunId: string | null;
   activeRunVariantId: string | null;
   lastEventSeq: number;
@@ -521,6 +524,9 @@ export type RuntimeV2Lane = {
 export type RuntimeV2LaneListResponse = {
   conversationId: string;
   activeLaneId: string | null;
+  mainLaneId: string | null;
+  runningLaneId: string | null;
+  runningRunId: string | null;
   items: RuntimeV2Lane[];
 };
 

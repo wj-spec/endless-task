@@ -8,6 +8,7 @@ type KnowledgeProposalCardProps = {
   error: string | null;
   conversationWorkspaceId?: string | null;
   workspaces?: Workspace[];
+  onOpen?: () => void;
   onResolve: (decision: "accept" | "reject", workspaceId?: string | null) => void;
 };
 
@@ -17,6 +18,7 @@ export function KnowledgeProposalCard({
   error,
   conversationWorkspaceId = null,
   workspaces = [],
+  onOpen,
   onResolve,
 }: KnowledgeProposalCardProps) {
   const isAdd = proposal.type === "add_source";
@@ -32,10 +34,20 @@ export function KnowledgeProposalCard({
     proposal.payload.workspace_id ?? conversationWorkspaceId;
   const workspaceName =
     workspaces.find((item) => item.id === workspaceTargetId)?.name ?? "工作区";
+  const resolvedLocation =
+    isAdd && scopeChoice === "workspace"
+      ? `工作区《${workspaceName}》的知识`
+      : proposal.payload.workspace_id
+        ? `工作区《${workspaceName}》的知识`
+        : "全局知识";
 
   let resolvedNotice = "提案已处理";
   if (proposal.status === "accepted") {
-    resolvedNotice = isAdd ? "已加入知识" : isMerge ? "已过期重复的一条" : "已设为过期";
+    resolvedNotice = isAdd
+      ? `已加入${resolvedLocation}`
+      : isMerge
+        ? `已在${resolvedLocation}中过期重复的一条`
+        : `已在${resolvedLocation}中设为过期`;
   } else if (proposal.status === "rejected") {
     resolvedNotice = isMerge ? "已忽略，两条都保留" : "已忽略，不会改动知识";
   } else if (proposal.status === "cancelled") {
@@ -67,6 +79,13 @@ export function KnowledgeProposalCard({
       status={proposal.status}
       busy={busy}
       resolvedNotice={resolvedNotice}
+      resolvedActions={
+        proposal.status === "accepted" && onOpen ? (
+          <button onClick={onOpen} type="button">
+            打开知识
+          </button>
+        ) : undefined
+      }
       error={error}
       actions={
         <>

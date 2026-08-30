@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ApiClientError, chatApi } from "../chat/api";
 import type { PermissionMode } from "../chat/apiTypes";
+import { useModalDialog } from "../ui/useModalDialog";
 import { useTheme, type ThemePreference } from "./useTheme";
 
 type SettingsOverlayProps = {
@@ -92,6 +93,12 @@ export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const titleId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useModalDialog({
+    initialFocusRef: closeButtonRef,
+    onClose,
+  });
 
   useEffect(() => {
     chatApi
@@ -139,11 +146,23 @@ export function SettingsOverlay({ onClose, onModeChanged }: SettingsOverlayProps
   );
 
   return (
-    <div aria-label="设置" className="overlay" role="dialog">
-      <div className="overlay-panel">
+    <div
+      className="overlay"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="overlay-panel"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
         <header className="overlay-header">
-          <h2>设置</h2>
-          <button onClick={onClose} type="button">
+          <h2 id={titleId}>设置</h2>
+          <button onClick={onClose} ref={closeButtonRef} type="button">
             关闭
           </button>
         </header>

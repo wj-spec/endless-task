@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkspaceSnapshot } from "../chat/apiTypes";
 import { ArtifactDetail } from "./ArtifactDetail";
 import { formatRelativeTime } from "./time";
@@ -25,6 +25,27 @@ export function WorkspacePanel({
   workspaceRootPath,
 }: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef(onCollapse);
+  closeRef.current = onCollapse;
+
+  useEffect(() => {
+    if (!drawerOpen || !window.matchMedia("(max-width: 760px)").matches) return;
+    const returnFocusTarget =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      event.preventDefault();
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (returnFocusTarget?.isConnected) returnFocusTarget.focus();
+    };
+  }, [drawerOpen]);
 
   useEffect(() => {
     setSelectedArtifactId(null);
@@ -51,7 +72,12 @@ export function WorkspacePanel({
         {pendingCount > 0 ? (
           <span className="workspace-badge">{pendingCount} 项待确认</span>
         ) : null}
-        <button className="workspace-collapse" onClick={onCollapse} type="button">
+        <button
+          className="workspace-collapse"
+          onClick={onCollapse}
+          ref={closeButtonRef}
+          type="button"
+        >
           收起
         </button>
       </header>

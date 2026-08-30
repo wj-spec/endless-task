@@ -9,6 +9,7 @@ type ProposalCardProps = {
   status: ProposalStatus;
   busy: boolean;
   resolvedNotice: string;
+  resolvedActions?: ReactNode;
   error?: string | null;
   children?: ReactNode;
   actions?: ReactNode;
@@ -30,6 +31,7 @@ export function ProposalCard({
   status,
   busy,
   resolvedNotice,
+  resolvedActions,
   error,
   children,
   actions,
@@ -43,6 +45,9 @@ export function ProposalCard({
           <StatusBadge label={badge.label} tone={badge.tone} />
         </div>
         <p className="proposal-resolution">{resolvedNotice}</p>
+        {resolvedActions ? (
+          <footer className="proposal-actions">{resolvedActions}</footer>
+        ) : null}
       </article>
     );
   }

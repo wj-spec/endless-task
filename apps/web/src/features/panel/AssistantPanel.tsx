@@ -1,9 +1,20 @@
+import {
+  useEffect,
+  useId,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import type {
   CapabilitySnapshot,
   CapabilityState,
   PendingProposal,
+  RuntimeV2ConversationRuntimeStatus,
+  RuntimeV2Lane,
+  RuntimeV2ProductEvent,
+  RuntimeV2Snapshot,
   Workspace,
 } from "../chat/apiTypes";
+import type { RuntimeConnectionPhase } from "../chat/runtimeController";
 import { KnowledgeContent } from "../knowledge/KnowledgeManagement";
 import { MemoryContent } from "../memory/MemoryManagement";
 import { NotificationsContent } from "../notifications/NotificationsDrawer";
@@ -61,6 +72,14 @@ type AssistantPanelProps = {
   onTabChange: (tab: AssistantPanelTab) => void;
   pendingProposals: PendingProposal[];
   onProvidersChanged: () => void | Promise<void>;
+  runtimeConnection: {
+    phase: RuntimeConnectionPhase;
+    error: string | null;
+  } | null;
+  runtimeEvents: RuntimeV2ProductEvent[];
+  runtimeLanes: RuntimeV2Lane[];
+  runtimeSnapshot: RuntimeV2Snapshot | null;
+  runtimeStatus: RuntimeV2ConversationRuntimeStatus | null;
   tab: AssistantPanelTab;
   unreadCount: number;
   workspaceId: string | null;
@@ -76,13 +95,65 @@ export function AssistantPanel({
   onTabChange,
   pendingProposals,
   onProvidersChanged,
+  runtimeConnection,
+  runtimeEvents,
+  runtimeLanes,
+  runtimeSnapshot,
+  runtimeStatus,
   tab,
   unreadCount,
   workspaceId,
   workspaces,
 }: AssistantPanelProps) {
+  const panelId = useId();
+  const selectedTabRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const returnFocusTarget =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    selectedTabRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      event.preventDefault();
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (returnFocusTarget?.isConnected) returnFocusTarget.focus();
+    };
+  }, []);
+
   const panelScope = TAB_SCOPES[tab];
   const visibleTabs = PANEL_TABS.filter((item) => item.scope === panelScope);
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    const tabs = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    );
+    if (!tabs.length) return;
+    const currentIndex = tabs.findIndex((item) => item === document.activeElement);
+    let nextIndex = currentIndex < 0 ? 0 : currentIndex;
+    if (event.key === "ArrowLeft") {
+      nextIndex = (nextIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "ArrowRight") {
+      nextIndex = (nextIndex + 1) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    }
+    event.preventDefault();
+    tabs[nextIndex]?.focus();
+    const nextTab = visibleTabs[nextIndex];
+    if (nextTab) onTabChange(nextTab.id);
+  };
   const capabilityItems: Array<{
     label: string;
     state: CapabilityState | "loading";
@@ -94,19 +165,28 @@ export function AssistantPanel({
   ];
 
   return (
-    <aside aria-label={`${SCOPE_LABELS[panelScope]}面板`} className="assistant-panel">
+    <aside
+      aria-label={`${SCOPE_LABELS[panelScope]}面板`}
+      className="assistant-panel"
+      ref={panelRef}
+    >
       <header className="assistant-panel-header">
         <div
           aria-label={`${SCOPE_LABELS[panelScope]}功能`}
           className="assistant-panel-tabs"
+          onKeyDown={handleTabKeyDown}
           role="tablist"
         >
           {visibleTabs.map((item) => (
             <button
+              aria-controls={`${panelId}-content`}
               aria-selected={tab === item.id}
+              id={`${panelId}-${item.id}`}
               key={item.id}
               onClick={() => onTabChange(item.id)}
+              ref={tab === item.id ? selectedTabRef : undefined}
               role="tab"
+              tabIndex={tab === item.id ? 0 : -1}
               type="button"
             >
               {item.label}
@@ -140,7 +220,13 @@ export function AssistantPanel({
           ))}
         </div>
       ) : null}
-      <div className="assistant-panel-body">
+      <div
+        aria-labelledby={`${panelId}-${tab}`}
+        className="assistant-panel-body"
+        id={`${panelId}-content`}
+        role="tabpanel"
+        tabIndex={0}
+      >
         {tab === "notifications" ? (
           <NotificationsContent
             onOpenConversation={onOpenConversation}
@@ -160,7 +246,14 @@ export function AssistantPanel({
         ) : tab === "mcp" ? (
           <McpContent onChanged={onCapabilitiesChanged} />
         ) : tab === "runtime-v2" ? (
-          <RuntimeV2Panel conversationId={conversationId} />
+          <RuntimeV2Panel
+            connection={runtimeConnection}
+            conversationId={conversationId}
+            events={runtimeEvents}
+            lanes={runtimeLanes}
+            runtimeStatus={runtimeStatus}
+            snapshot={runtimeSnapshot}
+          />
         ) : (
           <ProviderManagement onChanged={onProvidersChanged} />
         )}

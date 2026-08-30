@@ -353,11 +353,15 @@ export const chatApi = {
     conversationId: string,
     content: string,
     laneId?: string | null,
+    idempotencyKey =
+      globalThis.crypto?.randomUUID?.() ??
+      `runtime-v2-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   ) =>
     request<RuntimeV2MessageResponse>(
       `/api/v2/conversations/${conversationId}/messages`,
       {
         method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({ content, laneId: laneId ?? null }),
       },
     ),

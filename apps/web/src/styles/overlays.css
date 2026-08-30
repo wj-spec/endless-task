@@ -58,7 +58,27 @@
   font-size: var(--fs-3);
 }
 
-/* Phase 1：应用内确认对话框 */
+@media (max-width: 760px) {
+  .overlay:not(.confirm-scrim),
+  .workspace-settings-scrim {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .overlay:not(.confirm-scrim) .overlay-panel,
+  .workspace-settings-panel {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+  }
+
+  .confirm-panel {
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+  }
+}
+
 .confirm-scrim {
   align-items: center;
   padding: 16px;

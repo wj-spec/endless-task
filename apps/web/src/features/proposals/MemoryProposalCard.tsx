@@ -5,6 +5,7 @@ type MemoryProposalCardProps = {
   proposal: MemoryProposal;
   busy: boolean;
   error: string | null;
+  onOpen?: () => void;
   onResolve: (decision: "accept" | "reject") => void;
 };
 
@@ -12,10 +13,11 @@ export function MemoryProposalCard({
   proposal,
   busy,
   error,
+  onOpen,
   onResolve,
 }: MemoryProposalCardProps) {
   let resolvedNotice = "提案已处理";
-  if (proposal.status === "accepted") resolvedNotice = "已记住这条信息";
+  if (proposal.status === "accepted") resolvedNotice = "已保存到记忆";
   else if (proposal.status === "rejected") resolvedNotice = "已忽略，不会记住";
   else if (proposal.status === "cancelled") resolvedNotice = "提案已取消";
 
@@ -26,6 +28,13 @@ export function MemoryProposalCard({
       status={proposal.status}
       busy={busy}
       resolvedNotice={resolvedNotice}
+      resolvedActions={
+        proposal.status === "accepted" && onOpen ? (
+          <button onClick={onOpen} type="button">
+            打开记忆
+          </button>
+        ) : undefined
+      }
       error={error}
       actions={
         <>

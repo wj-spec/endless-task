@@ -329,6 +329,56 @@
   flex: 0 0 auto;
 }
 
+.runtime-recovery-card {
+  width: min(760px, 100%);
+  margin: 18px auto 0;
+  padding: 14px 16px;
+  border: 1px solid var(--warn-border, var(--line));
+  border-radius: var(--radius-m);
+  background: var(--warn-soft);
+  color: var(--warn-deep);
+}
+
+.runtime-recovery-card.is-connecting {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--muted-strong);
+}
+
+.runtime-recovery-card strong {
+  display: block;
+  color: inherit;
+  font-size: var(--fs-3);
+}
+
+.runtime-recovery-card p {
+  margin: 6px 0 0;
+  color: inherit;
+  font-size: var(--fs-3);
+  line-height: 1.55;
+}
+
+.runtime-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.runtime-recovery-actions button {
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.runtime-recovery-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .empty-conversation {
   width: min(620px, 100%);
   margin: 0 auto;

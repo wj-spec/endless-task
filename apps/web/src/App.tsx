@@ -137,6 +137,9 @@ export function App() {
 
   const openAssistantPanel = () => {
     void chat.refreshCapabilities();
+    setSettingsOpen(false);
+    setWorkspaceSettingsOpen(false);
+    setRailOpen(false);
     setAssistantOpen(true);
     setWorkspaceCollapsed(true);
     setWorkspaceDrawerOpen(false);
@@ -147,6 +150,9 @@ export function App() {
       const closed = await chat.closeSideConversation();
       if (!closed) return;
     }
+    setSettingsOpen(false);
+    setWorkspaceSettingsOpen(false);
+    setRailOpen(false);
     setAssistantOpen(false);
     setWorkspaceCollapsed(false);
     setWorkspaceDrawerOpen(true);
@@ -204,6 +210,9 @@ export function App() {
           setRailOpen(false);
         }}
         onOpenSettings={() => {
+          setAssistantOpen(false);
+          setWorkspaceDrawerOpen(false);
+          setWorkspaceSettingsOpen(false);
           setSettingsOpen(true);
           setRailOpen(false);
         }}
@@ -229,6 +238,8 @@ export function App() {
         loading={chat.loading}
         pendingAction={chat.pendingAction}
         providers={chat.providers}
+        runtimeConnectionPhase={chat.activeRuntimeConnection?.phase}
+        runtimeSnapshot={chat.activeRuntimeSnapshot}
         branchLanes={
           chat.activeConversationId
             ? (chat.laneTrees[chat.activeConversationId] ?? [])
@@ -252,6 +263,7 @@ export function App() {
           );
         }}
         onCancel={() => void chat.cancel()}
+        onCancelRunningRun={(runId) => void chat.cancelRuntimeRun(runId)}
         onCreateBranch={(forkTurnId) => {
           if (!chat.activeConversationId) return;
           const sourceLaneId =
@@ -268,7 +280,7 @@ export function App() {
           void chat.createTemporaryConversation(forkTurnId)
         }
         onDelete={() => void chat.deleteConversation()}
-        onDismissError={() => chat.setError(null)}
+        onDismissError={chat.dismissPrimaryError}
         onDraftChange={chat.setDraft}
         onMenu={() => {
           if (window.innerWidth <= 760) setRailOpen(true);
@@ -278,6 +290,9 @@ export function App() {
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
         onResolveApproval={(turnId, approvalId, decision) =>
           void chat.resolveApproval(turnId, approvalId, decision)
+        }
+        onResolveRuntimeRecovery={(runId, action) =>
+          void chat.resolveRuntimeRecovery(runId, action)
         }
         onRemoveFile={(fileId) => void chat.removeFile(fileId)}
         onRename={(title) => void chat.renameConversation(title)}
@@ -298,9 +313,20 @@ export function App() {
         onOpenConversation={(conversationId) =>
           void chat.openConversation(conversationId)
         }
+        onOpenRunningLane={(laneId) => {
+          if (!chat.activeConversationId) return;
+          void chat.switchLane(chat.activeConversationId, laneId);
+        }}
         onOpenWorkspace={openWorkspacePanel}
         onOpenWorkspaceSettings={
-          activeWorkspace ? () => setWorkspaceSettingsOpen(true) : undefined
+          activeWorkspace
+            ? () => {
+                setSettingsOpen(false);
+                setAssistantOpen(false);
+                setWorkspaceDrawerOpen(false);
+                setWorkspaceSettingsOpen(true);
+              }
+            : undefined
         }
         onOpenLaneInSide={(laneId) => {
           if (!chat.activeConversationId) return;
@@ -371,43 +397,99 @@ export function App() {
           <ChatWorkSurface
             conversation={chat.sideSnapshot}
             draft={chat.sideDraft}
-            error={chat.error}
+            error={chat.sideError}
             health={chat.health}
             isGenerating={chat.sideIsGenerating}
             liveTurns={chat.liveTurns}
             workspaces={chat.workspaces}
             loading={chat.sideLoading}
-            pendingAction={chat.pendingAction}
+            pendingAction={chat.sidePendingAction}
             providers={chat.providers}
+            branchLanes={
+              chat.sideConversationId
+                ? (chat.laneTrees[chat.sideConversationId] ?? [])
+                : []
+            }
+            currentLaneId={chat.sideRuntimeSnapshot?.activeLaneId ?? null}
+            runtimeConnectionPhase={chat.sideRuntimeConnection?.phase}
+            runtimeSnapshot={chat.sideRuntimeSnapshot}
             sideMode={chat.sideMode}
             variant="side"
             onArchive={() => {}}
-            onCancel={() => void chat.cancel(chat.sideConversationId ?? undefined)}
+            onCancel={() =>
+              void chat.cancel(chat.sideConversationId ?? undefined, "side")
+            }
+            onCancelRunningRun={(runId) =>
+              void chat.cancelRuntimeRun(runId, "side")
+            }
             onCloseSide={chat.closeSideConversation}
             onDelete={() => {}}
-            onDismissError={() => chat.setError(null)}
+            onDismissError={chat.dismissSideError}
             onDraftChange={chat.setSideDraft}
             onMenu={() => {}}
             onPromote={() =>
-              void chat.promoteConversation(chat.sideConversationId ?? undefined)
+              void chat.promoteConversation(
+                chat.sideConversationId ?? undefined,
+                "side",
+              )
             }
             onRegenerate={(turnId) =>
-              void chat.regenerate(turnId, chat.sideConversationId ?? undefined)
+              void chat.regenerate(
+                turnId,
+                chat.sideConversationId ?? undefined,
+                "side",
+              )
             }
             onResolveApproval={(turnId, approvalId, decision) =>
-              void chat.resolveApproval(turnId, approvalId, decision)
+              void chat.resolveApproval(turnId, approvalId, decision, "side")
             }
+            onResolveRuntimeRecovery={(runId, action) =>
+              void chat.resolveRuntimeRecovery(runId, action, "side")
+            }
+            onOpenAssistantTab={(tab) => {
+              setAssistantTab(tab);
+              openAssistantPanel();
+            }}
+            onOpenWorkspace={() => {
+              if (chat.sideMode !== "temporary_conversation") {
+                void openWorkspacePanel();
+                return;
+              }
+              void chat.focusTemporaryConversation().then((focused) => {
+                if (!focused) return;
+                setSettingsOpen(false);
+                setWorkspaceSettingsOpen(false);
+                setRailOpen(false);
+                setAssistantOpen(false);
+                setWorkspaceCollapsed(false);
+                setWorkspaceDrawerOpen(true);
+              });
+            }}
+            onOpenRunningLane={(laneId) => {
+              if (
+                !chat.activeConversationId ||
+                chat.activeConversationId !== chat.sideConversationId
+              ) {
+                return;
+              }
+              void chat.switchLane(chat.activeConversationId, laneId);
+            }}
             onRemoveFile={() => {}}
             onRename={() => {}}
             onRestore={() => {}}
             onRetry={(turnId) =>
-              void chat.retry(turnId, chat.sideConversationId ?? undefined)
+              void chat.retry(
+                turnId,
+                chat.sideConversationId ?? undefined,
+                "side",
+              )
             }
             onSelectVariant={(turnId, variantId) =>
               void chat.selectVariant(
                 turnId,
                 variantId,
                 chat.sideConversationId ?? undefined,
+                "side",
               )
             }
             onSend={() => void chat.sendSide()}
@@ -416,6 +498,7 @@ export function App() {
                 providerProfileId,
                 modelOverride,
                 chat.sideConversationId ?? undefined,
+                "side",
               )
             }
             onUploadFile={() => {}}
@@ -518,13 +601,27 @@ export function App() {
           onTabChange={setAssistantTab}
           pendingProposals={hub.proposals}
           onProvidersChanged={() => void chat.refreshProviders()}
+          runtimeConnection={chat.activeRuntimeConnection}
+          runtimeEvents={chat.activeRuntimeEvents}
+          runtimeLanes={
+            chat.activeConversationId
+              ? (chat.laneTrees[chat.activeConversationId] ?? [])
+              : []
+          }
+          runtimeSnapshot={chat.activeRuntimeSnapshot}
+          runtimeStatus={chat.activeRuntimeStatus}
           tab={assistantTab}
           unreadCount={hub.unread}
           workspaceId={chat.workspaceId}
           workspaces={chat.workspaces}
         />
       ) : null}
-      <div className="toast-stack">
+      <div
+        aria-live="polite"
+        aria-relevant="additions"
+        className="toast-stack"
+        role="status"
+      >
         {toasts.map((item) => (
           <button
             className="toast"

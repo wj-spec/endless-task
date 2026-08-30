@@ -8,6 +8,7 @@ type ArtifactProposalCardProps = {
   busy: boolean;
   error: string | null;
   resolvedArtifact: ArtifactRecordSummary | null;
+  onOpen?: () => void;
   onResolve: (decision: "accept" | "reject") => void;
 };
 
@@ -18,6 +19,7 @@ export function ArtifactProposalCard({
   busy,
   error,
   resolvedArtifact,
+  onOpen,
   onResolve,
 }: ArtifactProposalCardProps) {
   const isUpdate = proposal.targetArtifactId !== null;
@@ -25,7 +27,7 @@ export function ArtifactProposalCard({
   let resolvedNotice = "提案已处理";
   if (proposal.status === "accepted") {
     const ordinal = resolvedArtifact?.currentVersionOrdinal;
-    resolvedNotice = `已保存为《${proposal.title}》${ordinal ? ` v${ordinal}` : ""}`;
+    resolvedNotice = `已保存到工作区 Artifact《${proposal.title}》${ordinal ? ` v${ordinal}` : ""}`;
   } else if (proposal.status === "rejected") {
     resolvedNotice = "已放弃该提案";
   } else if (proposal.status === "cancelled") {
@@ -49,6 +51,13 @@ export function ArtifactProposalCard({
       status={proposal.status}
       busy={busy}
       resolvedNotice={resolvedNotice}
+      resolvedActions={
+        proposal.status === "accepted" && onOpen ? (
+          <button onClick={onOpen} type="button">
+            打开 Artifact
+          </button>
+        ) : undefined
+      }
       error={error}
       actions={
         <>

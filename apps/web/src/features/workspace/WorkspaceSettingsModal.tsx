@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { BrowseItem, EffectLogEntry, Workspace } from "../chat/apiTypes";
 import { chatApi } from "../chat/api";
+import { useModalDialog } from "../ui/useModalDialog";
 
 type WorkspaceSettingsModalProps = {
   workspace: Workspace | null;
@@ -23,6 +24,12 @@ export function WorkspaceSettingsModal({
   const [bindingError, setBindingError] = useState<string | null>(null);
   const [logEntries, setLogEntries] = useState<EffectLogEntry[]>([]);
   const [showHidden, setShowHidden] = useState(false);
+  const titleId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useModalDialog({
+    initialFocusRef: closeButtonRef,
+    onClose,
+  });
 
   const loadDirectory = useCallback(async (path?: string) => {
     setLoading(true);
@@ -91,14 +98,27 @@ export function WorkspaceSettingsModal({
   };
 
   return (
-    <div aria-label="工作区设置" className="overlay confirm-scrim" role="dialog">
-      <div className="overlay-panel workspace-settings-panel">
+    <div
+      className="overlay confirm-scrim workspace-settings-scrim"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="overlay-panel workspace-settings-panel"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
         <header className="overlay-header">
-          <h2>工作区设置</h2>
+          <h2 id={titleId}>工作区设置</h2>
           <button
             aria-label="关闭工作区设置"
             className="icon-button"
             onClick={onClose}
+            ref={closeButtonRef}
             title="关闭"
             type="button"
           >

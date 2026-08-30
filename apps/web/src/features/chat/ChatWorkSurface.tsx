@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   ArtifactRecordSummary,
   ConversationSnapshot,
@@ -8,10 +8,12 @@ import type {
   ProviderProfile,
   ResponseVariantSnapshot,
   RuntimeV2Lane,
+  RuntimeV2Snapshot,
   TurnStatus,
   Workspace,
 } from "./apiTypes";
 import { chatApi } from "./api";
+import type { RuntimeConnectionPhase } from "./runtimeController";
 import { CitationCard } from "./CitationCard";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { KnowledgeProposalCard } from "../proposals/KnowledgeProposalCard";
@@ -37,8 +39,11 @@ type ChatWorkSurfaceProps = {
   loading: boolean;
   pendingAction: string | null;
   providers: ProviderProfile[];
+  runtimeConnectionPhase?: RuntimeConnectionPhase;
+  runtimeSnapshot?: RuntimeV2Snapshot | null;
   onArchive: () => void;
   onCancel: () => void;
+  onCancelRunningRun?: (runId: string) => void;
   onCreateBranch?: (forkTurnId?: string) => void;
   onCreateTemporaryConversation?: (forkTurnId?: string) => void;
   onDelete: () => void;
@@ -51,6 +56,10 @@ type ChatWorkSurfaceProps = {
     turnId: string,
     approvalId: string,
     decision: "approve" | "deny",
+  ) => void;
+  onResolveRuntimeRecovery?: (
+    runId: string,
+    action: "retry" | "mark_failed",
   ) => void;
   onRemoveFile: (fileId: string) => void;
   onRename: (title: string) => void;
@@ -76,9 +85,12 @@ type ChatWorkSurfaceProps = {
   onResolveMemoryProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onResolveTaskProposal: (proposalId: string, decision: "accept" | "reject") => void;
   onCloseSide?: () => void;
-  onOpenAssistantTab?: (tab: "memory" | "knowledge" | "providers") => void;
+  onOpenAssistantTab?: (
+    tab: "memory" | "knowledge" | "providers" | "scheduled",
+  ) => void;
   workspaces?: Workspace[];
   onOpenConversation?: (conversationId: string) => void;
+  onOpenRunningLane?: (laneId: string) => void;
   onOpenWorkspace?: () => void;
   onOpenWorkspaceSettings?: () => void;
   branchLanes?: RuntimeV2Lane[];
@@ -139,8 +151,11 @@ export function ChatWorkSurface({
   loading,
   pendingAction,
   providers,
+  runtimeConnectionPhase = "idle",
+  runtimeSnapshot = null,
   onArchive,
   onCancel,
+  onCancelRunningRun,
   onCreateBranch,
   onCreateTemporaryConversation,
   onDelete,
@@ -150,6 +165,7 @@ export function ChatWorkSurface({
   onPromote,
   onRegenerate,
   onResolveApproval,
+  onResolveRuntimeRecovery,
   onRemoveFile,
   onRename,
   onRestore,
@@ -169,6 +185,7 @@ export function ChatWorkSurface({
   onCloseSide,
   onOpenAssistantTab,
   onOpenConversation,
+  onOpenRunningLane,
   onOpenWorkspace,
   onOpenWorkspaceSettings,
   workspaces,
@@ -190,6 +207,7 @@ export function ChatWorkSurface({
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
   const search = useConversationSearch(conversation, liveTurns, streamRef);
   const [citationsByTurn, setCitationsByTurn] = useState<
     Record<string, KnowledgeCitation[]>
@@ -253,6 +271,36 @@ export function ChatWorkSurface({
   };
 
   const conversationId = conversation?.conversation.id;
+  const currentLane = branchLanes.find((lane) => lane.id === currentLaneId) ?? null;
+  const mainLane = branchLanes.find((lane) => lane.isMain) ?? null;
+  const viewingBranch = variant === "main" && currentLane !== null && !currentLane.isMain;
+  const currentLaneLabel =
+    currentLane?.displayName ?? currentLane?.title ?? currentLane?.summary ?? "未命名分支";
+  const currentLaneHasActiveRun = Boolean(
+    runtimeSnapshot?.runningRunId &&
+      runtimeSnapshot.runningLaneId &&
+      runtimeSnapshot.runningLaneId === currentLaneId,
+  );
+  const requestSideClose = useCallback(() => {
+    if (!onCloseSide) return;
+    if (sideMode === "temporary_conversation" || currentLaneHasActiveRun) {
+      setConfirmingClose(true);
+      return;
+    }
+    onCloseSide();
+  }, [currentLaneHasActiveRun, onCloseSide, sideMode]);
+
+  useEffect(() => {
+    if (variant !== "side") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      event.preventDefault();
+      requestSideClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [requestSideClose, variant]);
   const firstOwnTurnIndex = conversationId
     ? (conversation?.turns ?? []).findIndex(
         (item) => item.turn.conversationId === conversationId,
@@ -297,7 +345,18 @@ export function ChatWorkSurface({
   const providerUnavailable =
     (health !== null && !health.providerConfigured) ||
     effectiveProvider?.configured === false;
-  const composerDisabled = !conversation || archived || providerUnavailable;
+  const runningLane = runtimeSnapshot?.runningLaneId
+    ? branchLanes.find((lane) => lane.id === runtimeSnapshot.runningLaneId) ?? null
+    : null;
+  const otherLaneRunning = Boolean(
+    runtimeSnapshot?.runningLaneId &&
+      currentLaneId &&
+      runtimeSnapshot.runningLaneId !== currentLaneId,
+  );
+  const runningLaneLabel =
+    runningLane?.displayName ?? runningLane?.title ?? runningLane?.summary ?? "另一分支";
+  const composerDisabled =
+    !conversation || archived || providerUnavailable || otherLaneRunning;
   const selectableProviders = providers.filter(
     (item) => item.enabled || item.id === selectedProvider?.id,
   );
@@ -330,11 +389,14 @@ export function ChatWorkSurface({
           <header className="surface-header side-surface-header">
             <div className="conversation-heading">
               <h1>
-                {conversation?.conversation.title ??
-                  (sideMode === "branch_lane" ? "分支对照" : "临时对话")}
+                {sideMode === "branch_lane"
+                  ? currentLaneLabel
+                  : (conversation?.conversation.title ?? "临时对话")}
               </h1>
               {sideMode === "temporary_conversation" ? (
                 <span className="temporary-close-hint">关闭即删除</span>
+              ) : sideMode === "branch_lane" ? (
+                <span className="temporary-close-hint">关闭仅收起，不删除分支</span>
               ) : null}
             </div>
             <div className="surface-header-side">
@@ -345,7 +407,7 @@ export function ChatWorkSurface({
                     : "关闭并删除临时对话"
                 }
                 className="icon-button side-close"
-                onClick={onCloseSide}
+                onClick={requestSideClose}
                 type="button"
               >
                 <span aria-hidden="true">×</span>
@@ -487,6 +549,67 @@ export function ChatWorkSurface({
           </div>
         ) : null}
 
+        {viewingBranch ? (
+          <div className="branch-banner" role="note">
+            <span className="branch-banner-text">
+              正在查看分支「{currentLaneLabel}」；查看不会改变主线。
+            </span>
+            <div className="branch-banner-actions">
+              {mainLane && onSwitchLane ? (
+                <button
+                  disabled={pendingAction !== null}
+                  onClick={() => onSwitchLane(mainLane.id)}
+                  type="button"
+                >
+                  返回主线
+                </button>
+              ) : null}
+              {currentLane && onPromoteLane ? (
+                <button
+                  disabled={pendingAction !== null}
+                  onClick={() => onPromoteLane(currentLane.id)}
+                  type="button"
+                >
+                  设为主线
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {otherLaneRunning ? (
+          <div
+            aria-atomic="true"
+            aria-live="polite"
+            className="branch-banner runtime-conflict-banner"
+            role="status"
+          >
+            <span className="branch-banner-text">
+              「{runningLaneLabel}」正在运行；同一会话暂不支持多分支并行。
+            </span>
+            <div className="branch-banner-actions">
+              {runtimeSnapshot?.runningLaneId && onOpenRunningLane ? (
+                <button
+                  disabled={pendingAction !== null}
+                  onClick={() => onOpenRunningLane(runtimeSnapshot.runningLaneId!)}
+                  type="button"
+                >
+                  查看运行位置
+                </button>
+              ) : null}
+              {runtimeSnapshot?.runningRunId && onCancelRunningRun ? (
+                <button
+                  disabled={pendingAction !== null}
+                  onClick={() => onCancelRunningRun(runtimeSnapshot.runningRunId!)}
+                  type="button"
+                >
+                  停止后继续
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {search.open ? (
           <SearchBar
             current={search.current}
@@ -508,6 +631,52 @@ export function ChatWorkSurface({
             <button onClick={onDismissError} type="button">关闭</button>
           </div>
         ) : null}
+
+        {runtimeConnectionPhase === "reconnecting" ? (
+          <section
+            aria-atomic="true"
+            aria-live="polite"
+            className="runtime-recovery-card is-connecting"
+            role="status"
+          >
+            <strong>正在恢复连接</strong>
+            <p>现有运行仍被保留，连接恢复前不会重复提交消息。</p>
+          </section>
+        ) : null}
+
+        {onResolveRuntimeRecovery
+          ? runtimeSnapshot?.interruptedRuns.map((report) => (
+              <section
+                className="runtime-recovery-card"
+                key={report.runId}
+                role="alert"
+              >
+                <strong>上次运行被中断</strong>
+                <p>
+                  {report.findings[0]?.message ??
+                    "应用已恢复，但这次运行没有正常结束。"}
+                </p>
+                <div className="runtime-recovery-actions">
+                  <button
+                    disabled={pendingAction !== null}
+                    onClick={() => onResolveRuntimeRecovery(report.runId, "retry")}
+                    type="button"
+                  >
+                    安全重试
+                  </button>
+                  <button
+                    disabled={pendingAction !== null}
+                    onClick={() =>
+                      onResolveRuntimeRecovery(report.runId, "mark_failed")
+                    }
+                    type="button"
+                  >
+                    结束本次运行
+                  </button>
+                </div>
+              </section>
+            ))
+          : null}
 
         {loading && !conversation ? <LoadingState /> : null}
         {!loading && conversation?.turns.length === 0 ? (
@@ -637,6 +806,8 @@ export function ChatWorkSurface({
                     ) : null}
                     {statusPresentation ? (
                       <div
+                        aria-atomic="true"
+                        aria-live={status === "failed" ? "assertive" : "polite"}
                         className="turn-status"
                         role={status === "failed" ? "alert" : "status"}
                       >
@@ -776,6 +947,7 @@ export function ChatWorkSurface({
                           busy={proposalBusyId === proposal.id}
                           error={proposalErrors[proposal.id] ?? null}
                           key={proposal.id}
+                          onOpen={onOpenWorkspace}
                           onResolve={(decision) =>
                             onResolveArtifactProposal(proposal.id, decision)
                           }
@@ -791,6 +963,11 @@ export function ChatWorkSurface({
                           }
                           error={proposalErrors[proposal.id] ?? null}
                           key={proposal.id}
+                          onOpen={
+                            onOpenAssistantTab
+                              ? () => onOpenAssistantTab("knowledge")
+                              : undefined
+                          }
                           onResolve={(decision, workspaceId) =>
                             onResolveKnowledgeProposal(
                               proposal.id,
@@ -807,6 +984,11 @@ export function ChatWorkSurface({
                           busy={proposalBusyId === proposal.id}
                           error={proposalErrors[proposal.id] ?? null}
                           key={proposal.id}
+                          onOpen={
+                            onOpenAssistantTab
+                              ? () => onOpenAssistantTab("memory")
+                              : undefined
+                          }
                           onResolve={(decision) =>
                             onResolveMemoryProposal(proposal.id, decision)
                           }
@@ -818,6 +1000,11 @@ export function ChatWorkSurface({
                           busy={proposalBusyId === proposal.id}
                           error={proposalErrors[proposal.id] ?? null}
                           key={proposal.id}
+                          onOpen={
+                            onOpenAssistantTab
+                              ? () => onOpenAssistantTab("scheduled")
+                              : undefined
+                          }
                           onResolve={(decision) =>
                             onResolveTaskProposal(proposal.id, decision)
                           }
@@ -899,11 +1086,15 @@ export function ChatWorkSurface({
               placeholder={
                 archived
                   ? "恢复对话后继续"
-                  : providerUnavailable
-                    ? "请先配置模型服务"
-                    : variant === "side"
-                      ? "在临时会话中发送消息"
-                      : "给 Endless 发送消息"
+                  : otherLaneRunning
+                    ? `${runningLaneLabel}正在运行，请先查看或停止`
+                    : providerUnavailable
+                      ? "请先配置模型服务"
+                      : variant === "side"
+                        ? sideMode === "branch_lane"
+                          ? "在此分支中继续对话"
+                          : "在临时会话中发送消息"
+                        : "给 Endless 发送消息"
               }
               rows={1}
               value={draft}
@@ -947,7 +1138,12 @@ export function ChatWorkSurface({
                   : "status-light is-warning"
               }
             />
-            <span className="composer-status-text">
+            <span
+              aria-atomic="true"
+              aria-live="polite"
+              className="composer-status-text"
+              role="status"
+            >
               {health ? (health.providerConfigured ? "服务已连接" : "需要配置模型服务") : "本地服务未连接"}
             </span>
             <select
@@ -987,6 +1183,24 @@ export function ChatWorkSurface({
           </span>
         </p>
       </footer>
+
+      {confirmingClose ? (
+        <ConfirmDialog
+          body={
+            sideMode === "temporary_conversation"
+              ? currentLaneHasActiveRun
+                ? "将先停止当前运行，再删除整个临时对话。此操作无法撤销。"
+                : "将删除整个临时对话。此操作无法撤销。"
+              : "将停止当前运行并收起右侧工作面；分支和已有内容会保留。"
+          }
+          confirmLabel={
+            sideMode === "temporary_conversation" ? "删除临时对话" : "停止并收起"
+          }
+          onClose={() => setConfirmingClose(false)}
+          onConfirm={() => onCloseSide?.()}
+          title={sideMode === "temporary_conversation" ? "关闭临时对话" : "收起运行中的分支"}
+        />
+      ) : null}
 
       {confirmingDelete ? (
         <ConfirmDialog

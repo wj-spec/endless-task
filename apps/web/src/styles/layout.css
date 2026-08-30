@@ -363,6 +363,13 @@
   font-size: var(--fs-2);
 }
 
+.branch-banner-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .branch-banner button {
   flex: none;
   padding: 4px 12px;
@@ -422,5 +429,15 @@
     height: 100dvh;
     border-left: 0;
     box-shadow: none;
+    overscroll-behavior: contain;
+  }
+
+  .side-chat-panel .side-surface-header {
+    height: calc(64px + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .side-chat-panel .composer-region {
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
   }
 }

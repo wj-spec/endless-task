@@ -1,3 +1,6 @@
+import { useId, useRef } from "react";
+import { useModalDialog } from "./useModalDialog";
+
 type ConfirmDialogProps = {
   title: string;
   body: string;
@@ -13,11 +16,29 @@ export function ConfirmDialog({
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
+  const titleId = useId();
+  const bodyId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useModalDialog({ initialFocusRef: cancelRef, onClose });
+
   return (
-    <div aria-label={title} className="overlay confirm-scrim" role="dialog">
-      <div className="confirm-panel">
-        <h3>{title}</h3>
-        <p>{body}</p>
+    <div
+      className="overlay confirm-scrim"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        aria-describedby={bodyId}
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="confirm-panel"
+        ref={panelRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <h3 id={titleId}>{title}</h3>
+        <p id={bodyId}>{body}</p>
         <div className="proposal-actions">
           <button
             className="danger-action"
@@ -29,7 +50,7 @@ export function ConfirmDialog({
           >
             {confirmLabel}
           </button>
-          <button onClick={onClose} type="button">
+          <button onClick={onClose} ref={cancelRef} type="button">
             取消
           </button>
         </div>

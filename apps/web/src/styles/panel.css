@@ -2,10 +2,11 @@
 @media (max-width: 760px) {
   .workspace-panel {
     position: fixed;
-    inset: 0 0 0 auto;
+    inset: 0;
     z-index: var(--z-workspace);
-    width: min(360px, 92vw);
-    border-left: 1px solid var(--line);
+    width: 100%;
+    height: 100dvh;
+    border-left: 0;
     transform: translateX(102%);
     transition: transform 180ms ease;
   }
@@ -599,6 +600,15 @@
   border-left: 1px solid var(--line);
   background: var(--paper);
   box-shadow: var(--shadow-lift);
+}
+
+@media (max-width: 760px) {
+  .assistant-panel {
+    width: 100%;
+    height: 100dvh;
+    border-left: 0;
+    box-shadow: none;
+  }
 }
 
 .assistant-panel-header {
