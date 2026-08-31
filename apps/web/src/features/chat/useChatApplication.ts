@@ -31,11 +31,36 @@ import {
 } from "./runtimeController";
 
 const WORKSPACE_STORAGE_KEY = "endless-task.workspace";
+const ACTIVE_CONVERSATION_STORAGE_KEY = "endless-task.active-conversation";
 
 const readStoredWorkspace = (): string | null => {
   try {
     const value = globalThis.localStorage?.getItem(WORKSPACE_STORAGE_KEY);
     return value && value !== "general" ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+// 刷新恢复上次会话：持久化最近一次激活的会话 id 及其工作区 id。
+const readStoredActiveConversation = (): {
+  conversationId: string;
+  workspaceId: string | null;
+} | null => {
+  try {
+    const raw = globalThis.localStorage?.getItem(
+      ACTIVE_CONVERSATION_STORAGE_KEY,
+    );
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      conversationId?: string;
+      workspaceId?: string | null;
+    };
+    if (!parsed.conversationId) return null;
+    return {
+      conversationId: parsed.conversationId,
+      workspaceId: parsed.workspaceId ?? null,
+    };
   } catch {
     return null;
   }
@@ -317,6 +342,8 @@ export function useChatApplication() {
   const [viewLaneIds, setViewLaneIds] = useState<Record<string, string>>({});
   const [laneTrees, setLaneTrees] = useState<Record<string, RuntimeV2Lane[]>>({});
   const streams = useRef(new Map<string, AbortController>());
+  const hasOpenedConversationRef = useRef(false);
+  const conversationListVersion = useRef(0);
   const runtimeController = useConversationRuntimeController();
   const runtimeSnapshotBindings = useRef(
     new Map<string, Set<SnapshotTarget>>(),
@@ -788,6 +815,7 @@ export function useChatApplication() {
 
   const openConversation = useCallback(
     async (conversationId: string) => {
+      hasOpenedConversationRef.current = true;
       setActiveConversationId(conversationId);
       await loadConversation(conversationId);
     },
@@ -1002,25 +1030,36 @@ export function useChatApplication() {
 
   const loadConversationList = useCallback(
     async (status: ConversationStatus, preferredId?: string) => {
+      // 请求版本守卫：列表加载可能因 workspaceId/状态切换被并发触发，
+      // 旧响应不得覆盖新状态（尤其刷新恢复时）。
+      const requestVersion = conversationListVersion.current + 1;
+      conversationListVersion.current = requestVersion;
+      const isCurrent = () => conversationListVersion.current === requestVersion;
       setLoading(true);
       setError(null);
       try {
         let items = await chatApi.listConversations(status, undefined, workspaceId);
+        if (!isCurrent()) return;
         if (status === "active" && items.length === 0 && workspaceCanCreate) {
           const created = await chatApi.createConversation(workspaceId!);
+          if (!isCurrent()) return;
           items = [created];
         }
         setConversations(items);
         const target =
           items.find((item) => item.id === preferredId)?.id ?? items[0]?.id ?? null;
-        if (target) await openConversation(target);
-        else {
-          setActiveConversationId(null);
-          setLoading(false);
+        if (isCurrent()) {
+          if (target) await openConversation(target);
+          else {
+            setActiveConversationId(null);
+            setLoading(false);
+          }
         }
       } catch (loadError) {
-        setError(readableError(loadError));
-        setLoading(false);
+        if (isCurrent()) {
+          setError(readableError(loadError));
+          setLoading(false);
+        }
       }
     },
     [openConversation, workspaceId, workspaceCanCreate],
@@ -1036,10 +1075,17 @@ export function useChatApplication() {
       .listWorkspaces()
       .then((items) => {
         setWorkspaces(items);
-        // 必选绑定设定：无已存工作区上下文时，默认落到第一个已绑定目录的工作区，
-        // 使既有会话可见、可恢复，且新建会话入口可用。
+        // 刷新恢复上次会话：优先切到上次激活会话所在工作区；
+        // 否则无已存上下文时默认落到第一个已绑定目录的工作区。
+        const restoredConversation = readStoredActiveConversation();
         setWorkspaceId((current) => {
           if (current) return current;
+          if (restoredConversation?.workspaceId) {
+            const exists = items.some(
+              (item) => item.id === restoredConversation.workspaceId,
+            );
+            if (exists) return restoredConversation.workspaceId;
+          }
           const firstBound = items.find((item) => item.rootPath) ?? null;
           return firstBound?.id ?? null;
         });
@@ -1071,7 +1117,36 @@ export function useChatApplication() {
   }, [refreshCapabilities]);
 
   useEffect(() => {
-    void loadConversationList(statusFilter, activeConversationId ?? undefined);
+    // 刷新恢复上次会话：激活会话变化即持久化 id 与其工作区，供重载后恢复。
+    // 仅在「本会话已主动打开过某个会话」后，关闭时才清除存储；否则首次挂载时
+    // activeConversationId 为 null 会误清掉上次保存的恢复目标。
+    if (!hasOpenedConversationRef.current) return;
+    if (!activeConversationId) {
+      try {
+        globalThis.localStorage?.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
+      } catch {
+        // 忽略存储异常。
+      }
+      return;
+    }
+    const snapshot = snapshots[activeConversationId];
+    const workspace = snapshot?.conversation.workspaceId ?? null;
+    try {
+      globalThis.localStorage?.setItem(
+        ACTIVE_CONVERSATION_STORAGE_KEY,
+        JSON.stringify({ conversationId: activeConversationId, workspaceId: workspace }),
+      );
+    } catch {
+      // 忽略存储异常。
+    }
+  }, [activeConversationId, snapshots]);
+
+  useEffect(() => {
+    // 刷新恢复上次会话：activeConversationId 尚未恢复时，用已持久化的会话 id 作为首选目标。
+    const restored = activeConversationId
+      ? activeConversationId
+      : (readStoredActiveConversation()?.conversationId ?? undefined);
+    void loadConversationList(statusFilter, restored);
     // active id 不作为重载触发；切换工作区时列表整体换防。
   }, [statusFilter, workspaceId, workspaceCanCreate]);
 

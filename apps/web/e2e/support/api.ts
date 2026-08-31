@@ -83,7 +83,11 @@ export const createConversation = async (
   request: APIRequestContext,
   title: string,
 ): Promise<Conversation> => {
-  const workspace = await createWorkspace(request, `工作区 ${title}`);
+  // 会话必须归属到已绑定工作区；工作区名用短随机名，避免标题超长触发名称长度上限。
+  const workspace = await createWorkspace(
+    request,
+    `会话工作区 ${tmpCounter}`,
+  );
   return createWorkspaceConversation(request, workspace.id, title);
 };
 
