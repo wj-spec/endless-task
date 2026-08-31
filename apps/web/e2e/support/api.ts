@@ -5,7 +5,7 @@ export const apiUrl = `http://127.0.0.1:${process.env.ENDLESS_TASK_E2E_API_PORT 
 
 let tmpCounter = 0;
 const tempDir = () => {
-  const path = `${process.env.ENDLESS_TASK_E2E_TMPDIR ?? "/tmp"}/endless-e2e-${Date.now()}-${tmpCounter++}`;
+  const path = `${process.env.ENDLESS_TASK_E2E_TMPDIR ?? "/tmp"}/endless-e2e-${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${tmpCounter++}`;
   mkdirSync(path, { recursive: true });
   return path;
 };
@@ -83,10 +83,11 @@ export const createConversation = async (
   request: APIRequestContext,
   title: string,
 ): Promise<Conversation> => {
-  // 会话必须归属到已绑定工作区；工作区名用短随机名，避免标题超长触发名称长度上限。
+  // 会话必须归属到已绑定工作区；工作区名用短随机名（跨项目/进程唯一），
+  // 避免标题超长触发名称长度上限，也避免多 worker 共享同一 DB 时名称冲突。
   const workspace = await createWorkspace(
     request,
-    `会话工作区 ${tmpCounter}`,
+    `会话工作区 ${crypto.randomUUID().slice(0, 8)}`,
   );
   return createWorkspaceConversation(request, workspace.id, title);
 };
