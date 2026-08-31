@@ -29,6 +29,7 @@ from endless_task.tooling import (
     ToolEffect,
     ToolError,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 FIRST_CONTENT = (
     "# 发布计划\n\n"
@@ -307,7 +308,7 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
             source_conversation_id="conv_seed",
             source_turn_id="turn_seed",
         )
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         created = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "request-1"},
@@ -335,7 +336,7 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
         provider = TextProvider([[UPDATED_CONTENT], [update_extraction_json(artifact_id)]])
         client, app = await self._client(provider)
 
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         created = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "request-1"},

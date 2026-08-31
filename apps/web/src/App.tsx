@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
 import type { TaskNotification } from "./features/chat/apiTypes";
@@ -9,11 +9,53 @@ import { SettingsOverlay } from "./features/settings/SettingsOverlay";
 import { WorkspaceSettingsModal } from "./features/workspace/WorkspaceSettingsModal";
 import { useWorkspace } from "./features/artifacts/useWorkspace";
 import { ChatWorkSurface } from "./features/chat/ChatWorkSurface";
+import { ResizableChatSplit } from "./features/chat/ResizableChatSplit";
 import { SessionRail } from "./features/chat/SessionRail";
 import { useChatApplication } from "./features/chat/useChatApplication";
 import { useProposals } from "./features/proposals/useProposals";
 
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+type AuxiliarySurface =
+  | { type: "none" }
+  | { type: "rail" }
+  | { type: "workspace" }
+  | { type: "assistant"; tab: AssistantPanelTab }
+  | { type: "settings" }
+  | { type: "workspace-settings" };
+
+type AuxiliarySurfaceAction =
+  | { type: "close" }
+  | { type: "close-workspace-surfaces" }
+  | { type: "open-rail" }
+  | { type: "open-workspace" }
+  | { type: "open-assistant"; tab: AssistantPanelTab }
+  | { type: "open-settings" }
+  | { type: "open-workspace-settings" };
+
+const reduceAuxiliarySurface = (
+  _current: AuxiliarySurface,
+  action: AuxiliarySurfaceAction,
+): AuxiliarySurface => {
+  switch (action.type) {
+    case "open-rail":
+      return { type: "rail" };
+    case "open-workspace":
+      return { type: "workspace" };
+    case "open-assistant":
+      return { type: "assistant", tab: action.tab };
+    case "open-settings":
+      return { type: "settings" };
+    case "open-workspace-settings":
+      return { type: "workspace-settings" };
+    case "close-workspace-surfaces":
+      return _current.type === "workspace" || _current.type === "workspace-settings"
+        ? { type: "none" }
+        : _current;
+    case "close":
+      return { type: "none" };
+  }
+};
 
 export function App() {
   const chat = useChatApplication();
@@ -21,7 +63,16 @@ export function App() {
     chat.activeConversationId,
     chat.sideConversationId,
   );
-  const [railOpen, setRailOpen] = useState(false);
+  const [activeSurface, dispatchSurface] = useReducer(reduceAuxiliarySurface, {
+    type: "none",
+  });
+  const railOpen = activeSurface.type === "rail";
+  const workspaceDrawerOpen = activeSurface.type === "workspace";
+  const assistantOpen = activeSurface.type === "assistant";
+  const settingsOpen = activeSurface.type === "settings";
+  const workspaceSettingsOpen = activeSurface.type === "workspace-settings";
+  const assistantTab =
+    activeSurface.type === "assistant" ? activeSurface.tab : "notifications";
   const [railPreferredCollapsed, setRailPreferredCollapsed] = useState(
     () => window.innerWidth < 1180,
   );
@@ -53,8 +104,7 @@ export function App() {
   useEffect(() => {
     if (!chat.sideConversationId) return;
     setWorkspaceCollapsed(true);
-    setWorkspaceDrawerOpen(false);
-    setAssistantOpen(false);
+    dispatchSurface({ type: "close" });
   }, [chat.sideConversationId]);
 
   useEffect(() => {
@@ -89,12 +139,7 @@ export function App() {
 
   const railCollapsed = railPreferredCollapsed;
 
-  const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
-  const [assistantOpen, setAssistantOpen] = useState(false);
-  const [assistantTab, setAssistantTab] = useState<AssistantPanelTab>("notifications");
   const [toasts, setToasts] = useState<TaskNotification[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const activeWorkspace = useMemo(
     () =>
       chat.workspaces.find(
@@ -105,8 +150,7 @@ export function App() {
 
   useEffect(() => {
     setWorkspaceCollapsed(false);
-    setWorkspaceDrawerOpen(false);
-    setWorkspaceSettingsOpen(false);
+    dispatchSurface({ type: "close-workspace-surfaces" });
   }, [chat.activeConversationId]);
 
   const pushToast = useCallback((item: TaskNotification) => {
@@ -135,14 +179,10 @@ export function App() {
     ),
   );
 
-  const openAssistantPanel = () => {
+  const openAssistantPanel = (tab: AssistantPanelTab = "notifications") => {
     void chat.refreshCapabilities();
-    setSettingsOpen(false);
-    setWorkspaceSettingsOpen(false);
-    setRailOpen(false);
-    setAssistantOpen(true);
+    dispatchSurface({ type: "open-assistant", tab });
     setWorkspaceCollapsed(true);
-    setWorkspaceDrawerOpen(false);
   };
 
   const openWorkspacePanel = async () => {
@@ -150,12 +190,8 @@ export function App() {
       const closed = await chat.closeSideConversation();
       if (!closed) return;
     }
-    setSettingsOpen(false);
-    setWorkspaceSettingsOpen(false);
-    setRailOpen(false);
-    setAssistantOpen(false);
+    dispatchSurface({ type: "open-workspace" });
     setWorkspaceCollapsed(false);
-    setWorkspaceDrawerOpen(true);
   };
 
   const dismissToast = async (item: TaskNotification) => {
@@ -179,43 +215,33 @@ export function App() {
       <SessionRail
         activeConversationId={chat.activeConversationId}
         collapsed={railCollapsed}
-        conversations={chat.conversations}
         open={railOpen}
         pendingTotal={hub.total}
         search={chat.search}
         statusFilter={chat.statusFilter}
         workspaceId={chat.workspaceId}
         workspaces={chat.workspaces}
+        workspaceCanCreate={chat.workspaceCanCreate}
+        currentWorkspace={chat.currentWorkspace}
         onCreateWorkspace={(name) => chat.createWorkspace(name)}
-        onSelectWorkspace={chat.selectWorkspace}
         onClose={() => {
           if (window.innerWidth <= 760) {
-            setRailOpen(false);
+            dispatchSurface({ type: "close" });
             return;
           }
           setRailPreferredCollapsed((current) => !current);
         }}
         onNewConversation={() => {
           void chat.newConversation();
-          setRailOpen(false);
+          dispatchSurface({ type: "close" });
         }}
         onSearchChange={chat.setSearch}
         onSelectConversation={(conversationId) => {
           void chat.openConversation(conversationId);
-          setRailOpen(false);
+          dispatchSurface({ type: "close" });
         }}
-        onOpenAssistant={(tab) => {
-          setAssistantTab(tab);
-          openAssistantPanel();
-          setRailOpen(false);
-        }}
-        onOpenSettings={() => {
-          setAssistantOpen(false);
-          setWorkspaceDrawerOpen(false);
-          setWorkspaceSettingsOpen(false);
-          setSettingsOpen(true);
-          setRailOpen(false);
-        }}
+        onOpenAssistant={openAssistantPanel}
+        onOpenSettings={() => dispatchSurface({ type: "open-settings" })}
         onStatusFilterChange={chat.setStatusFilter}
         onChangeConversationStatus={(conversationId, status) =>
           void chat.changeConversationStatus(status, conversationId)
@@ -227,6 +253,7 @@ export function App() {
           void chat.renameConversation(title, conversationId)
         }
       />
+      <ResizableChatSplit sideOpen={Boolean(chat.sideConversationId)}>
       <ChatWorkSurface
         conversation={chat.activeSnapshot}
         draft={chat.draft}
@@ -269,12 +296,7 @@ export function App() {
           const sourceLaneId =
             chat.viewLaneIds[chat.activeConversationId] ??
             chat.mainLaneIds[chat.activeConversationId];
-          if (!sourceLaneId) return;
-          void chat.forkLane(
-            chat.activeConversationId,
-            sourceLaneId,
-            forkTurnId,
-          );
+          void chat.forkLane(chat.activeConversationId, sourceLaneId, forkTurnId);
         }}
         onCreateTemporaryConversation={() =>
           void chat.createTemporaryConversation()
@@ -283,7 +305,7 @@ export function App() {
         onDismissError={chat.dismissPrimaryError}
         onDraftChange={chat.setDraft}
         onMenu={() => {
-          if (window.innerWidth <= 760) setRailOpen(true);
+          if (window.innerWidth <= 760) dispatchSurface({ type: "open-rail" });
           else setRailPreferredCollapsed(false);
         }}
         onPromote={() => void chat.promoteConversation()}
@@ -306,10 +328,7 @@ export function App() {
           void chat.changeConversationModel(providerProfileId, modelOverride)
         }
         onUploadFile={(file) => void chat.uploadFile(file)}
-        onOpenAssistantTab={(tab) => {
-          setAssistantTab(tab);
-          openAssistantPanel();
-        }}
+        onOpenAssistantTab={openAssistantPanel}
         onOpenConversation={(conversationId) =>
           void chat.openConversation(conversationId)
         }
@@ -320,12 +339,7 @@ export function App() {
         onOpenWorkspace={openWorkspacePanel}
         onOpenWorkspaceSettings={
           activeWorkspace
-            ? () => {
-                setSettingsOpen(false);
-                setAssistantOpen(false);
-                setWorkspaceDrawerOpen(false);
-                setWorkspaceSettingsOpen(true);
-              }
+            ? () => dispatchSurface({ type: "open-workspace-settings" })
             : undefined
         }
         onOpenLaneInSide={(laneId) => {
@@ -446,10 +460,7 @@ export function App() {
             onResolveRuntimeRecovery={(runId, action) =>
               void chat.resolveRuntimeRecovery(runId, action, "side")
             }
-            onOpenAssistantTab={(tab) => {
-              setAssistantTab(tab);
-              openAssistantPanel();
-            }}
+            onOpenAssistantTab={openAssistantPanel}
             onOpenWorkspace={() => {
               if (chat.sideMode !== "temporary_conversation") {
                 void openWorkspacePanel();
@@ -457,12 +468,8 @@ export function App() {
               }
               void chat.focusTemporaryConversation().then((focused) => {
                 if (!focused) return;
-                setSettingsOpen(false);
-                setWorkspaceSettingsOpen(false);
-                setRailOpen(false);
-                setAssistantOpen(false);
                 setWorkspaceCollapsed(false);
-                setWorkspaceDrawerOpen(true);
+                dispatchSurface({ type: "open-workspace" });
               });
             }}
             onOpenRunningLane={(laneId) => {
@@ -531,6 +538,7 @@ export function App() {
           />
         </section>
       ) : null}
+      </ResizableChatSplit>
       {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
         <WorkspacePanel
           conversationId={workspace.workspace!.conversationId}
@@ -538,7 +546,7 @@ export function App() {
           latestTurnId={latestTurn?.turn.id ?? null}
           onCollapse={() => {
             setWorkspaceCollapsed(true);
-            setWorkspaceDrawerOpen(false);
+            dispatchSurface({ type: "close-workspace-surfaces" });
           }}
           onWorkspaceRefresh={() => void workspace.refresh()}
           workspace={workspace.workspace!}
@@ -552,7 +560,7 @@ export function App() {
         <button
           className="workspace-reopen"
           onClick={() => {
-            setAssistantOpen(false);
+            dispatchSurface({ type: "close" });
             setWorkspaceCollapsed(false);
           }}
           type="button"
@@ -563,11 +571,11 @@ export function App() {
       {workspaceVisible ? (
         <button
           className="workspace-fab"
-          onClick={() => {
-            const opening = !workspaceDrawerOpen;
-            setWorkspaceDrawerOpen(opening);
-            if (opening) setAssistantOpen(false);
-          }}
+          onClick={() =>
+            dispatchSurface({
+              type: workspaceDrawerOpen ? "close" : "open-workspace",
+            })
+          }
           type="button"
         >
           工作区
@@ -577,7 +585,7 @@ export function App() {
         <button
           aria-label="关闭工作区"
           className="workspace-scrim"
-          onClick={() => setWorkspaceDrawerOpen(false)}
+          onClick={() => dispatchSurface({ type: "close" })}
           type="button"
         />
       ) : null}
@@ -585,7 +593,7 @@ export function App() {
         <button
           aria-label="关闭会话列表"
           className="rail-scrim"
-          onClick={() => setRailOpen(false)}
+          onClick={() => dispatchSurface({ type: "close" })}
           type="button"
         />
       ) : null}
@@ -594,11 +602,13 @@ export function App() {
           capabilities={chat.capabilities}
           conversationId={chat.activeConversationId}
           onCapabilitiesChanged={() => void chat.refreshCapabilities()}
-          onClose={() => setAssistantOpen(false)}
+          onClose={() => dispatchSurface({ type: "close" })}
           onOpenConversation={(conversationId) => {
             void chat.openConversation(conversationId);
           }}
-          onTabChange={setAssistantTab}
+          onTabChange={(tab) =>
+            dispatchSurface({ type: "open-assistant", tab })
+          }
           pendingProposals={hub.proposals}
           onProvidersChanged={() => void chat.refreshProviders()}
           runtimeConnection={chat.activeRuntimeConnection}
@@ -636,13 +646,17 @@ export function App() {
       </div>
       {settingsOpen ? (
         <SettingsOverlay
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => dispatchSurface({ type: "close" })}
           onModeChanged={() => undefined}
         />
       ) : null}
       {workspaceSettingsOpen && activeWorkspace ? (
         <WorkspaceSettingsModal
-          onClose={() => setWorkspaceSettingsOpen(false)}
+          onClose={() => dispatchSurface({ type: "close" })}
+          onDeleteWorkspace={async (workspaceId) => {
+            await chat.deleteWorkspace(workspaceId);
+            dispatchSurface({ type: "close" });
+          }}
           onWorkspaceUpdated={() => {
             void chat.refreshWorkspaces();
           }}

@@ -23,6 +23,7 @@ from endless_task.storage import (
     SqliteTaskRepository,
 )
 from endless_task.tasks import TaskProposalService
+from tests.fixtures.workspace_client import create_bound_conversation
 
 PERIODIC_USER = "以后每周一上午九点帮我总结上周的项目进展"
 PERIODIC_ANSWER = (
@@ -459,7 +460,7 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     async def _run_turn(client: httpx.AsyncClient, content: str) -> tuple:
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         created = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "request-1"},

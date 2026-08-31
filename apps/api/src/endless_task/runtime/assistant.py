@@ -334,27 +334,16 @@ class AssistantRuntime:
     async def request_cancel(self, *, turn_id: str, variant_id: str) -> bool:
         return await self._cancellation_manager.cancel(turn_id, variant_id)
 
-    _WORKSPACE_TOOLS = frozenset(
-        {
-            "read_workspace_file",
-            "write_workspace_file",
-            "list_workspace_dir",
-            "delete_workspace_file",
-            "run_shell",
-        }
-    )
-
     def _tool_filter_for_conversation(self, conversation_id: str):
-        """工作区运行时工具仅在「已绑定本地目录的工作区会话」可见。"""
-        if self._workspace_resolver is None:
-            return None
-        binding = self._workspace_resolver.resolve_binding(conversation_id)
-        if binding is None:
-            def filter_out(name: str) -> bool:
-                return name not in self._WORKSPACE_TOOLS
+        """工作区运行时工具仅在「已绑定本地目录的工作区会话」可见。
 
-            return filter_out
-        return None
+        延迟导入 workspace_runtime.visibility：runtime 包在启动早期被导入，
+        而 workspace_runtime → storage → artifacts → runtime 存在历史 import
+        环，模块顶层导入会在 runtime 尚未完成初始化时触发循环。
+        """
+        from endless_task.workspace_runtime.visibility import workspace_tool_filter
+
+        return workspace_tool_filter(self._workspace_resolver, conversation_id)
 
     async def resolve_approval(
         self,
@@ -409,6 +398,12 @@ class AssistantRuntime:
     def _provider_fallback_note(reason: Optional[str]) -> Optional[str]:
         if reason is None:
             return None
+        if reason in {"model_missing", "model_disabled"}:
+            state = "已移除" if reason == "model_missing" else "已停用"
+            return (
+                f"当前会话选择的模型{state}，已改用该服务的默认模型。"
+                "用户可在“模型”页重新选择。"
+            )
         reasons = {
             "missing": "当前会话选择的模型配置已不存在",
             "disabled": "当前会话选择的模型配置已停用",

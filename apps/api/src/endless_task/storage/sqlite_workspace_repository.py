@@ -122,6 +122,23 @@ class SqliteWorkspaceRepository:
             ).fetchall()
         return tuple(self._from_row(row) for row in rows)
 
+    def delete_workspace(self, workspace_id: str) -> bool:
+        """删除工作区注册记录；仅删除注册，绝不触碰目录/会话日志。
+
+        返回 False 表示 id 不存在。调用方需先确认该工作区没有承载会话
+        （否则应先迁移其会话）。
+        """
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT id FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                "DELETE FROM workspaces WHERE id = ?", (workspace_id,)
+            )
+        return True
+
     @staticmethod
     def _from_row(row) -> Workspace:
         return Workspace(

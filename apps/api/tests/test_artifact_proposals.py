@@ -24,6 +24,7 @@ from endless_task.storage import (
     SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 LONG_ANSWER = (
     "# 发布计划\n\n"
@@ -282,7 +283,7 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     async def _run_turn(client: httpx.AsyncClient) -> str:
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         created = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "request-1"},
@@ -407,7 +408,7 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
 
         provider = TextProvider([["好的。"]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             container = app.state.container
             container.artifact_proposal_repository.create_proposal(
                 conversation_id=conversation_id,

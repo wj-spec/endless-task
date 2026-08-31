@@ -20,6 +20,7 @@ from endless_task.storage import (
 )
 
 from test_sqlite_chat_repository import SequenceClock, SequenceIdFactory
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class TextProvider:
@@ -178,7 +179,7 @@ class MemoryInjectionGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的。", extraction, "我会记住你的偏好。"])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},

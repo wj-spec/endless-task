@@ -23,6 +23,7 @@ from endless_task.storage import (
     SqliteMemoryProposalRepository,
     SqliteMemoryRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class TextProvider:
@@ -389,7 +390,7 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的，我了解你的偏好了。", extraction])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -421,7 +422,7 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
             ["好的。", "不应到达"], fail_from_index=1
         )
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -455,7 +456,7 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的。", extraction])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -506,7 +507,7 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的。", extraction])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},

@@ -22,6 +22,7 @@ from endless_task.runtime import (
 )
 from endless_task.runtime.knowledge_query_rewriter import KnowledgeQueryRewriter
 from endless_task.storage import Database, SqliteKnowledgeRepository
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class ScriptedProvider:
@@ -122,7 +123,7 @@ class RewriteWiringTest(unittest.IsolatedAsyncioTestCase):
         self._seed_source()
         provider = ScriptedProvider(["咖啡机 奶管 清洗", "回答：要清洗奶管。"])
         async with rewrite_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "rw-1"},
@@ -150,7 +151,7 @@ class RewriteWiringTest(unittest.IsolatedAsyncioTestCase):
             [ProviderError("down", "改写失败", retryable=True), "正常回答。"]
         )
         async with rewrite_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "rw-2"},

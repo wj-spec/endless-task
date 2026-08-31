@@ -125,6 +125,30 @@ class FakeTool:
         return False
 
 
+class ReadOnlyToolWithoutConfirmationJudge:
+    """读工具的真实形态：不定义 requires_explicit_confirmation（继承自 Protocol）。"""
+
+    def __init__(self, name: str = "list_workspace_dir") -> None:
+        self.definition = ToolDefinition(
+            name=name,
+            description=f"Fake {name}",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            effect=ToolEffect.READ_ONLY,
+            approval_mode=ToolApprovalMode.AUTO,
+            timeout_seconds=2.0,
+        )
+        self.calls: list[ToolCall] = []
+
+    async def execute(self, call: ToolCall, cancellation_token: CancellationToken):
+        del cancellation_token
+        self.calls.append(call)
+        return ToolResult(tool_call_id=call.id, content="listing")
+
+
 class PausedTool(FakeTool):
     def __init__(self) -> None:
         super().__init__("paused_read")
@@ -281,6 +305,64 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             (ModelTurnStatus.COMPLETED, ModelTurnStatus.COMPLETED),
             tuple(turn.derived_status for turn in replay.model_turns),
         )
+
+    def test_read_only_tool_without_confirmation_judge_completes(self) -> None:
+        # 回归：只读工具（如 read_workspace_file / list_workspace_dir）不定义
+        # requires_explicit_confirmation（继承自 RegisteredTool Protocol），v2 曾因
+        # 无条件调用而抛 AttributeError，导致整个 run 变成 runtime_internal_error。
+        _, lane, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderTextDelta("先列出目录。"),
+                    ProviderToolCall(
+                        id="call_1",
+                        name="list_workspace_dir",
+                        arguments={},
+                    ),
+                    ProviderCompleted(
+                        finish_reason="tool_calls",
+                        input_tokens=8,
+                        output_tokens=3,
+                    ),
+                ),
+                (
+                    ProviderTextDelta("目录已列出。"),
+                    ProviderCompleted(
+                        finish_reason="stop",
+                        input_tokens=10,
+                        output_tokens=5,
+                    ),
+                ),
+            ]
+        )
+        tool = ReadOnlyToolWithoutConfirmationJudge()
+        self.assertFalse(hasattr(tool, "requires_explicit_confirmation"))
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual("先列出目录。目录已列出。", result.content)
+        tool_execution = self.repository.list_tool_executions(
+            result.model_turn_ids[0]
+        )[0]
+        self.assertEqual(ToolExecutionStatus.COMPLETED, tool_execution.status)
+        self.assertIsNotNone(tool_execution.result_entry_id)
+        self.assertEqual(1, len(tool.calls))
+
+        replay = RuntimeV2ReplayService(self.repository).replay_run(run.id)
+        self.assertEqual(RunStatus.COMPLETED, replay.derived_status)
+        self.assertEqual((), replay.warnings)
 
     def test_max_model_turns_safety_stop_persists_terminal_state(self) -> None:
         _, lane, _, run = self._create_run()

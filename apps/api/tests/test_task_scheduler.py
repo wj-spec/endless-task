@@ -13,6 +13,7 @@ import httpx
 from endless_task.api import AppSettings, create_app
 from endless_task.runtime import ProviderCompleted, ProviderError, ProviderTextDelta
 from endless_task.storage import Database, SqliteTaskRepository
+from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = (
     "到点执行完成：本周项目进展如下，任务调度与执行链路均正常工作，"
@@ -117,7 +118,7 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
         yesterday = datetime.now(timezone.utc) - timedelta(days=1)
         provider = TextProvider([[RUN_ANSWER], [json.dumps({"task": None})]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(
                 conversation_id,
                 self.past_time,
@@ -141,7 +142,7 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_not_due_task_does_not_run(self) -> None:
         provider = TextProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id, self.future_time)
             await asyncio.sleep(0.3)
             self.assertEqual([], await self._runs(client, task_id))
@@ -150,7 +151,7 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
         yesterday = datetime.now(timezone.utc) - timedelta(days=1)
         provider = TextProvider([[RUN_ANSWER]], fail_first=True)
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(
                 conversation_id,
                 self.past_time,
@@ -166,7 +167,7 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_paused_task_is_not_scheduled(self) -> None:
         provider = TextProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id, self.past_time)
             database = Database(self.database_path)
             with database.transaction() as connection:
@@ -182,7 +183,7 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
         async with local_client(
             self.database_path, provider, scheduler_enabled=False
         ) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id, self.past_time)
             await asyncio.sleep(0.3)
             self.assertEqual([], await self._runs(client, task_id))

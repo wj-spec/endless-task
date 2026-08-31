@@ -11,6 +11,7 @@ from endless_task.api import AppSettings, create_app
 from endless_task.domain.models import MemoryKind
 from endless_task.runtime import ProviderCompleted, ProviderTextDelta
 from endless_task.storage import Database, SqliteMemoryRepository
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class TextProvider:
@@ -98,7 +99,7 @@ class MemoryManagementTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_memories_include_source_conversation_title(self) -> None:
         async with local_client(self.database_path, TextProvider()) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             renamed = await client.patch(
                 f"/conversations/{conversation['id']}",
                 json={"title": "画像来源会话"},

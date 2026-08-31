@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { chatApi } from "../chat/api";
-import type { ProviderProfile } from "../chat/apiTypes";
+import { ApiClientError, chatApi } from "../chat/api";
+import type { ProviderModel, ProviderProfile } from "../chat/apiTypes";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 
 type ProviderManagementProps = {
@@ -9,38 +10,63 @@ type ProviderManagementProps = {
 
 type ProviderForm = {
   name: string;
-  defaultModel: string;
   baseUrl: string;
-  apiKeyRef: string;
+  apiKey: string;
   timeoutSeconds: string;
+  initialModel: string;
 };
 
 const emptyForm: ProviderForm = {
   name: "",
-  defaultModel: "",
   baseUrl: "",
-  apiKeyRef: "",
+  apiKey: "",
   timeoutSeconds: "60",
+  initialModel: "",
 };
 
 const formFromProfile = (profile: ProviderProfile): ProviderForm => ({
   name: profile.name,
-  defaultModel: profile.defaultModel,
   baseUrl: profile.baseUrl,
-  apiKeyRef: "",
+  apiKey: "",
   timeoutSeconds: String(profile.timeoutSeconds),
+  initialModel: profile.defaultModel,
 });
 
-const formPayload = (form: ProviderForm, includeApiKey: boolean) => ({
+const profilePayload = (form: ProviderForm, includeApiKey: boolean) => ({
   name: form.name.trim(),
-  defaultModel: form.defaultModel.trim(),
   baseUrl: form.baseUrl.trim(),
-  ...(includeApiKey ? { apiKeyRef: form.apiKeyRef.trim() } : {}),
+  defaultModel: form.initialModel.trim(),
+  ...(includeApiKey ? { apiKey: form.apiKey.trim() } : {}),
   timeoutSeconds: Number(form.timeoutSeconds || "60"),
 });
 
+const productErrorCodes = new Set([
+  "authentication_failed",
+  "builtin_provider_credentials",
+  "content_filtered",
+  "context_too_large",
+  "invalid_provider_credentials",
+  "model_discovery_unavailable",
+  "network_error",
+  "permission_denied",
+  "provider_error",
+  "provider_not_configured",
+  "provider_unavailable",
+  "rate_limited",
+  "request_timeout",
+]);
+
 const actionErrorMessage = (error: unknown, fallback: string) =>
-  error instanceof Error && error.message ? error.message : fallback;
+  error instanceof ApiClientError && productErrorCodes.has(error.code)
+    ? error.message
+    : fallback;
+
+const connectionLabel = (profile: ProviderProfile) => {
+  if (!profile.configured) return "未配置";
+  if (profile.connectionState === "failed") return "连接失败";
+  if (profile.connectionState === "ready") return "连接正常";
+  return "未验证";
+};
 
 export function ProviderManagement({ onChanged }: ProviderManagementProps) {
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
@@ -50,7 +76,13 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<ProviderForm>(emptyForm);
+  const [addingModelFor, setAddingModelFor] = useState<string | null>(null);
+  const [modelIdDraft, setModelIdDraft] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deletingProfile, setDeletingProfile] =
+    useState<ProviderProfile | null>(null);
+  const [deletingCredentialsFor, setDeletingCredentialsFor] =
+    useState<ProviderProfile | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -59,7 +91,7 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
       setProfiles(await chatApi.listProviders());
       setLoadError(null);
     } catch {
-      setLoadError("无法加载模型配置，请重试。");
+      setLoadError("无法加载模型服务，请重试。");
     } finally {
       setLoading(false);
     }
@@ -68,6 +100,11 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const reloadAll = async () => {
+    await load();
+    await onChanged();
+  };
 
   const updateForm = (patch: Partial<ProviderForm>) => {
     setForm((current) => ({ ...current, ...patch }));
@@ -78,15 +115,17 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
   };
 
   const createProfile = async () => {
+    setBusyId("create");
     setActionError(null);
     try {
-      await chatApi.createProvider(formPayload(form, true));
+      await chatApi.createProvider(profilePayload(form, Boolean(form.apiKey.trim())));
       setForm(emptyForm);
       setAdding(false);
-      await load();
-      await onChanged();
+      await reloadAll();
     } catch (error) {
-      setActionError(actionErrorMessage(error, "添加模型配置失败，请重试。"));
+      setActionError(actionErrorMessage(error, "添加模型服务失败，请重试。"));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -96,188 +135,256 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
     try {
       await chatApi.patchProvider(
         profile.id,
-        formPayload(editForm, editForm.apiKeyRef.trim().length > 0),
+        profilePayload(editForm, Boolean(editForm.apiKey.trim())),
       );
       setEditingId(null);
-      await load();
-      await onChanged();
+      await reloadAll();
     } catch (error) {
-      setActionError(actionErrorMessage(error, "保存模型配置失败，请重试。"));
+      setActionError(actionErrorMessage(error, "保存模型服务失败，请重试。"));
     } finally {
       setBusyId(null);
     }
   };
 
-  const toggleEnabled = async (profile: ProviderProfile) => {
+  const runProfileAction = async (
+    profile: ProviderProfile,
+    action: () => Promise<unknown>,
+    fallback: string,
+  ) => {
     setBusyId(profile.id);
     setActionError(null);
     try {
-      await chatApi.patchProvider(profile.id, { enabled: !profile.enabled });
-      await load();
-      await onChanged();
+      await action();
+      await reloadAll();
     } catch (error) {
-      setActionError(actionErrorMessage(error, "更新模型配置失败，请重试。"));
+      setActionError(actionErrorMessage(error, fallback));
     } finally {
       setBusyId(null);
     }
   };
 
-  const setDefault = async (profile: ProviderProfile) => {
-    setBusyId(profile.id);
-    setActionError(null);
-    try {
-      await chatApi.setDefaultProvider(profile.id);
-      await load();
-      await onChanged();
-    } catch (error) {
-      setActionError(actionErrorMessage(error, "设置默认模型失败，请重试。"));
-    } finally {
-      setBusyId(null);
-    }
+  const addModel = async (profile: ProviderProfile) => {
+    const modelId = modelIdDraft.trim();
+    if (!modelId) return;
+    await runProfileAction(
+      profile,
+      () => chatApi.addProviderModel(profile.id, { modelId }),
+      "添加模型失败，请重试。",
+    );
+    setAddingModelFor(null);
+    setModelIdDraft("");
   };
 
-  const removeProfile = async (profile: ProviderProfile) => {
-    if (!window.confirm(`删除模型配置「${profile.name}」？`)) return;
-    setBusyId(profile.id);
-    setActionError(null);
-    try {
-      await chatApi.deleteProvider(profile.id);
-      await load();
-      await onChanged();
-    } catch (error) {
-      setActionError(actionErrorMessage(error, "删除模型配置失败，请重试。"));
-    } finally {
-      setBusyId(null);
-    }
+  const updateModel = async (
+    profile: ProviderProfile,
+    model: ProviderModel,
+    enabled: boolean,
+  ) => {
+    await runProfileAction(
+      profile,
+      () => chatApi.patchProviderModel(profile.id, model.modelId, { enabled }),
+      "更新模型失败，请重试。",
+    );
   };
 
   return (
     <div className="panel-content">
       <div className="knowledge-toolbar">
         <p className="provider-summary">
-          支持 OpenAI-compatible 服务；云端 API Key 仅填写环境变量引用，本地端点可留空。
+          在这里接入模型服务并维护可用模型。API Key 只保存在本地后端，不会回传到浏览器。
         </p>
         <button
+          className="knowledge-add-button"
           onClick={() => {
             setAdding((value) => !value);
             setForm(emptyForm);
           }}
           type="button"
         >
-          {adding ? "取消" : "添加模型"}
+          {adding ? "取消" : "添加模型服务"}
         </button>
       </div>
+
       {actionError ? (
         <div className="proposal-error" role="alert">
           {actionError}
         </div>
       ) : null}
+
       {adding ? (
         <div className="knowledge-form provider-form">
-          <input
-            aria-label="模型名称"
-            onChange={(event) => updateForm({ name: event.target.value })}
-            placeholder="名称（如 DeepSeek）"
-            value={form.name}
-          />
-          <input
-            aria-label="默认模型"
-            onChange={(event) => updateForm({ defaultModel: event.target.value })}
-            placeholder="默认模型（如 deepseek-chat）"
-            value={form.defaultModel}
-          />
-          <input
-            aria-label="Base URL"
-            onChange={(event) => updateForm({ baseUrl: event.target.value })}
-            placeholder="Base URL（如 https://api.deepseek.com/v1）"
-            value={form.baseUrl}
-          />
-          <input
-            aria-label="API Key 引用"
-            onChange={(event) => updateForm({ apiKeyRef: event.target.value })}
-            placeholder={'API Key（仅支持 ${ENV_VAR}）'}
-            value={form.apiKeyRef}
-          />
-          <input
-            aria-label="超时时间（秒）"
-            inputMode="numeric"
-            onChange={(event) => updateForm({ timeoutSeconds: event.target.value })}
-            placeholder="超时秒数"
-            value={form.timeoutSeconds}
-          />
-          <button
-            disabled={!form.name.trim() || !form.defaultModel.trim()}
-            onClick={() => void createProfile()}
-            type="button"
-          >
-            保存
-          </button>
+          <label>
+            <span>服务名称</span>
+            <input
+              aria-label="服务名称"
+              onChange={(event) => updateForm({ name: event.target.value })}
+              placeholder="例如 DeepSeek"
+              value={form.name}
+            />
+          </label>
+          <label>
+            <span>Base URL</span>
+            <input
+              aria-label="Base URL"
+              onChange={(event) => updateForm({ baseUrl: event.target.value })}
+              placeholder="例如 https://api.deepseek.com/v1"
+              value={form.baseUrl}
+            />
+          </label>
+          <label>
+            <span>API Key</span>
+            <input
+              aria-label="API Key"
+              autoComplete="new-password"
+              onChange={(event) => updateForm({ apiKey: event.target.value })}
+              placeholder="输入后仅发送到本地后端"
+              type="password"
+              value={form.apiKey}
+            />
+          </label>
+          <label>
+            <span>初始模型（可选）</span>
+            <input
+              aria-label="初始模型"
+              onChange={(event) => updateForm({ initialModel: event.target.value })}
+              placeholder="服务不支持自动发现时填写模型 ID"
+              value={form.initialModel}
+            />
+          </label>
+          <label>
+            <span>超时时间（秒）</span>
+            <input
+              aria-label="超时时间（秒）"
+              inputMode="numeric"
+              onChange={(event) => updateForm({ timeoutSeconds: event.target.value })}
+              value={form.timeoutSeconds}
+            />
+          </label>
+          <div className="provider-form-actions">
+            <button
+              disabled={!form.name.trim() || busyId === "create"}
+              onClick={() => void createProfile()}
+              type="button"
+            >
+              保存服务
+            </button>
+          </div>
         </div>
       ) : null}
-      {loading ? <EmptyState title="正在加载模型配置" /> : null}
+
+      {loading ? <EmptyState title="正在加载模型服务" /> : null}
       {loadError ? <EmptyState title={loadError} /> : null}
+
       <div className="provider-list">
         {profiles.map((profile) => (
-          <article className={`provider-card${profile.enabled ? "" : " is-disabled"}`} key={profile.id}>
+          <article
+            className={`provider-card${profile.enabled ? "" : " is-disabled"}`}
+            key={profile.id}
+          >
             <header>
               <div>
                 <strong>{profile.name}</strong>
-                <span className="provider-model">{profile.defaultModel}</span>
+                <span className="provider-model">
+                  {profile.defaultModel
+                    ? `默认模型 · ${profile.defaultModel}`
+                    : "尚未选择默认模型"}
+                </span>
               </div>
               <div className="provider-badges">
-                {profile.isDefault ? <span className="knowledge-badge is-global">默认</span> : null}
-                {profile.isBuiltin ? <span className="knowledge-badge">环境配置</span> : null}
-                <span className={`knowledge-badge${profile.configured ? "" : " is-warning"}`}>
-                  {profile.configured ? "已配置" : "未配置"}
+                {profile.isDefault ? (
+                  <span className="knowledge-badge is-global">默认服务</span>
+                ) : null}
+                {profile.isBuiltin ? (
+                  <span className="knowledge-badge">环境配置</span>
+                ) : null}
+                <span
+                  className={`knowledge-badge${
+                    profile.connectionState === "failed" || !profile.configured
+                      ? " is-warning"
+                      : ""
+                  }`}
+                >
+                  {connectionLabel(profile)}
                 </span>
-                {!profile.enabled ? <span className="knowledge-badge">停用</span> : null}
+                {!profile.enabled ? (
+                  <span className="knowledge-badge">已停用</span>
+                ) : null}
               </div>
             </header>
+
             <dl>
               <div>
                 <dt>Base URL</dt>
-                <dd>{profile.baseUrl || "官方默认地址"}</dd>
+                <dd>{profile.baseUrl || "服务商默认地址"}</dd>
               </div>
               <div>
                 <dt>API Key</dt>
-                <dd>{profile.configured ? "已设置" : "未设置"}</dd>
+                <dd>{profile.apiKeyConfigured ? "已保存在本地后端" : "未设置"}</dd>
               </div>
               <div>
                 <dt>超时</dt>
                 <dd>{profile.timeoutSeconds} 秒</dd>
               </div>
             </dl>
+
+            {profile.lastError ? (
+              <p className="provider-connection-error" role="status">
+                无法验证模型服务，请检查服务地址和 API Key 后重试。
+              </p>
+            ) : null}
+
             {editingId === profile.id ? (
-              <div className="knowledge-form provider-form">
-                <input
-                  aria-label="编辑模型名称"
-                  onChange={(event) => updateEditForm({ name: event.target.value })}
-                  value={editForm.name}
-                />
-                <input
-                  aria-label="编辑默认模型"
-                  onChange={(event) => updateEditForm({ defaultModel: event.target.value })}
-                  value={editForm.defaultModel}
-                />
-                <input
-                  aria-label="编辑 Base URL"
-                  onChange={(event) => updateEditForm({ baseUrl: event.target.value })}
-                  value={editForm.baseUrl}
-                />
-                <input
-                  aria-label="编辑 API Key 引用"
-                  onChange={(event) => updateEditForm({ apiKeyRef: event.target.value })}
-                  placeholder={profile.isBuiltin ? "由环境配置维护" : "留空表示不修改 API Key"}
-                  value={editForm.apiKeyRef}
-                />
-                <input
-                  aria-label="编辑超时时间（秒）"
-                  inputMode="numeric"
-                  onChange={(event) => updateEditForm({ timeoutSeconds: event.target.value })}
-                  value={editForm.timeoutSeconds}
-                />
+              <div className="knowledge-form provider-form provider-edit-form">
+                <label>
+                  <span>服务名称</span>
+                  <input
+                    aria-label="编辑服务名称"
+                    onChange={(event) =>
+                      updateEditForm({ name: event.target.value })
+                    }
+                    value={editForm.name}
+                  />
+                </label>
+                <label>
+                  <span>Base URL</span>
+                  <input
+                    aria-label="编辑 Base URL"
+                    onChange={(event) =>
+                      updateEditForm({ baseUrl: event.target.value })
+                    }
+                    value={editForm.baseUrl}
+                  />
+                </label>
+                <label>
+                  <span>替换 API Key</span>
+                  <input
+                    aria-label="替换 API Key"
+                    autoComplete="new-password"
+                    onChange={(event) =>
+                      updateEditForm({ apiKey: event.target.value })
+                    }
+                    placeholder="留空表示不修改"
+                    type="password"
+                    value={editForm.apiKey}
+                  />
+                </label>
+                <label>
+                  <span>超时时间（秒）</span>
+                  <input
+                    aria-label="编辑超时时间（秒）"
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      updateEditForm({ timeoutSeconds: event.target.value })
+                    }
+                    value={editForm.timeoutSeconds}
+                  />
+                </label>
                 <div className="provider-form-actions">
-                  <button disabled={busyId === profile.id} onClick={() => void saveProfile(profile)} type="button">
+                  <button
+                    disabled={busyId === profile.id || !editForm.name.trim()}
+                    onClick={() => void saveProfile(profile)}
+                    type="button"
+                  >
                     保存
                   </button>
                   <button onClick={() => setEditingId(null)} type="button">
@@ -285,47 +392,242 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
                   </button>
                 </div>
               </div>
-            ) : (
-              <footer>
+            ) : null}
+
+            <section className="provider-models" aria-label={`${profile.name} 可用模型`}>
+              <div className="provider-models-heading">
+                <div>
+                  <strong>可用模型</strong>
+                  <span>{profile.models.filter((model) => model.enabled).length} 个已启用</span>
+                </div>
                 <button
-                  disabled={profile.isDefault || busyId === profile.id}
-                  onClick={() => void setDefault(profile)}
-                  type="button"
-                >
-                  设为默认
-                </button>
-                <button
-                  disabled={profile.isBuiltin || busyId === profile.id}
+                  disabled={busyId === profile.id}
                   onClick={() => {
-                    setEditingId(profile.id);
-                    setEditForm(formFromProfile(profile));
+                    setAddingModelFor(
+                      addingModelFor === profile.id ? null : profile.id,
+                    );
+                    setModelIdDraft("");
                   }}
                   type="button"
                 >
-                  编辑
+                  手工添加
                 </button>
-                <button
-                  disabled={profile.isDefault || busyId === profile.id}
-                  onClick={() => void toggleEnabled(profile)}
-                  type="button"
-                >
-                  {profile.enabled ? "停用" : "启用"}
-                </button>
-                {profile.isBuiltin ? null : (
+              </div>
+
+              {addingModelFor === profile.id ? (
+                <div className="provider-model-add">
+                  <input
+                    aria-label={`${profile.name} 模型 ID`}
+                    onChange={(event) => setModelIdDraft(event.target.value)}
+                    placeholder="模型 ID，例如 deepseek-chat"
+                    value={modelIdDraft}
+                  />
                   <button
-                    className="danger-button"
-                    disabled={busyId === profile.id}
-                    onClick={() => void removeProfile(profile)}
+                    disabled={!modelIdDraft.trim() || busyId === profile.id}
+                    onClick={() => void addModel(profile)}
                     type="button"
                   >
-                    删除
+                    添加
                   </button>
-                )}
-              </footer>
-            )}
+                </div>
+              ) : null}
+
+              {profile.models.length ? (
+                <ul className="provider-model-list">
+                  {profile.models.map((model) => (
+                    <li className={model.enabled ? "" : "is-disabled"} key={model.modelId}>
+                      <div>
+                        <strong>{model.displayName}</strong>
+                        {model.displayName !== model.modelId ? (
+                          <span>{model.modelId}</span>
+                        ) : null}
+                      </div>
+                      <div className="provider-model-actions">
+                        <span className="knowledge-badge">
+                          {model.source === "discovered" ? "自动发现" : "手工添加"}
+                        </span>
+                        {model.isDefault ? (
+                          <span className="knowledge-badge is-global">默认</span>
+                        ) : (
+                          <button
+                            disabled={!model.enabled || busyId === profile.id}
+                            onClick={() =>
+                              void runProfileAction(
+                                profile,
+                                () =>
+                                  chatApi.setProviderDefaultModel(
+                                    profile.id,
+                                    model.modelId,
+                                  ),
+                                "设置默认模型失败，请重试。",
+                              )
+                            }
+                            type="button"
+                          >
+                            设为默认
+                          </button>
+                        )}
+                        {!model.isDefault ? (
+                          <button
+                            disabled={busyId === profile.id}
+                            onClick={() =>
+                              void updateModel(profile, model, !model.enabled)
+                            }
+                            type="button"
+                          >
+                            {model.enabled ? "停用" : "启用"}
+                          </button>
+                        ) : null}
+                        {model.source === "manual" && !model.isDefault ? (
+                          <button
+                            className="danger-button"
+                            disabled={busyId === profile.id}
+                            onClick={() =>
+                              void runProfileAction(
+                                profile,
+                                () =>
+                                  chatApi.deleteProviderModel(
+                                    profile.id,
+                                    model.modelId,
+                                  ),
+                                "移除模型失败，请重试。",
+                              )
+                            }
+                            type="button"
+                          >
+                            移除
+                          </button>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="provider-model-empty">
+                  暂无模型。请刷新模型列表，或手工添加模型 ID。
+                </p>
+              )}
+            </section>
+
+            <footer>
+              {!profile.isBuiltin ? (
+                <button
+                  disabled={busyId === profile.id || !profile.configured}
+                  onClick={() =>
+                    void runProfileAction(
+                      profile,
+                      () => chatApi.refreshProviderModels(profile.id),
+                      "无法从该服务获取模型列表，可改为手工添加。",
+                    )
+                  }
+                  type="button"
+                >
+                  测试并刷新模型
+                </button>
+              ) : null}
+              <button
+                disabled={
+                  profile.isDefault ||
+                  busyId === profile.id ||
+                  !profile.enabled ||
+                  !profile.defaultModel
+                }
+                onClick={() =>
+                  void runProfileAction(
+                    profile,
+                    () => chatApi.setDefaultProvider(profile.id),
+                    "设置默认模型服务失败，请重试。",
+                  )
+                }
+                type="button"
+              >
+                设为默认服务
+              </button>
+              <button
+                disabled={profile.isBuiltin || busyId === profile.id}
+                onClick={() => {
+                  setEditingId(profile.id);
+                  setEditForm(formFromProfile(profile));
+                }}
+                type="button"
+              >
+                编辑服务
+              </button>
+              {!profile.isBuiltin && profile.apiKeyConfigured ? (
+                <button
+                  className="danger-button"
+                  disabled={busyId === profile.id}
+                  onClick={() => setDeletingCredentialsFor(profile)}
+                  type="button"
+                >
+                  删除 API Key
+                </button>
+              ) : null}
+              <button
+                disabled={profile.isDefault || busyId === profile.id}
+                onClick={() =>
+                  void runProfileAction(
+                    profile,
+                    () =>
+                      chatApi.patchProvider(profile.id, {
+                        enabled: !profile.enabled,
+                      }),
+                    "更新模型服务失败，请重试。",
+                  )
+                }
+                type="button"
+              >
+                {profile.enabled ? "停用服务" : "启用服务"}
+              </button>
+              {!profile.isBuiltin ? (
+                <button
+                  className="danger-button"
+                  disabled={profile.isDefault || busyId === profile.id}
+                  onClick={() => setDeletingProfile(profile)}
+                  type="button"
+                >
+                  删除服务
+                </button>
+              ) : null}
+            </footer>
           </article>
         ))}
       </div>
+
+      {deletingCredentialsFor ? (
+        <ConfirmDialog
+          body={`将删除模型服务“${deletingCredentialsFor.name}”保存在本地后端的 API Key。删除后，依赖该密钥的请求将不可用。`}
+          confirmLabel="删除 API Key"
+          onClose={() => setDeletingCredentialsFor(null)}
+          onConfirm={() =>
+            void runProfileAction(
+              deletingCredentialsFor,
+              () =>
+                chatApi.patchProvider(deletingCredentialsFor.id, {
+                  apiKeyRef: "",
+                }),
+              "删除 API Key 失败，请重试。",
+            )
+          }
+          title="删除已保存的 API Key？"
+        />
+      ) : null}
+
+      {deletingProfile ? (
+        <ConfirmDialog
+          body={`将删除模型服务“${deletingProfile.name}”及其模型目录。使用该服务的对话会改用默认模型服务。`}
+          confirmLabel="删除服务"
+          onClose={() => setDeletingProfile(null)}
+          onConfirm={() =>
+            void runProfileAction(
+              deletingProfile,
+              () => chatApi.deleteProvider(deletingProfile.id),
+              "删除模型服务失败，请重试。",
+            )
+          }
+          title="删除模型服务"
+        />
+      ) : null}
     </div>
   );
 }

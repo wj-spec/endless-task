@@ -24,6 +24,7 @@ from endless_task.tooling import (
     ToolRegistry,
     ToolResult,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class LocalWriteTool:
@@ -299,7 +300,7 @@ class PermissionCoverageRuntimeTest(unittest.IsolatedAsyncioTestCase):
         raise AssertionError("Turn did not request approval")
 
     async def _start_turn(self, client: httpx.AsyncClient) -> str:
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         created = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "request-1"},

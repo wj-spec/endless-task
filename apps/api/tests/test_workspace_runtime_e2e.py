@@ -98,10 +98,6 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
         )
         return conversation.json()["id"]
 
-    async def _generic_conversation(self, client: httpx.AsyncClient) -> str:
-        conversation = await client.post("/conversations", json={})
-        return conversation.json()["id"]
-
     @staticmethod
     async def _wait_for_approval(
         client: httpx.AsyncClient, turn_id: str
@@ -197,23 +193,20 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
         plain_result = await self._wait_for_terminal(plain_client, plain_turn)
         self.assertEqual("completed", plain_result["turnStatus"])
 
-    async def test_workspace_tools_invisible_in_generic_conversation(self) -> None:
+    async def test_create_conversation_without_workspace_is_rejected(self) -> None:
+        # 必选绑定设定：无工作区会话不再存在，创建即 409。
         provider = ScriptedToolProvider(
             tool_name="read_workspace_file",
             arguments={"path": "README.md"},
             follow_up="好的。",
         )
         client, _ = await self._client(provider)
-        conversation_id = await self._generic_conversation(client)
-        turn_id = await self._start_turn(client, conversation_id, "k-generic")
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertTrue(
-            any("当前会话不可用" in str(item) for item in provider.tool_results),
-            f"expected tool-not-available feedback, got {provider.tool_results}",
-        )
+        rejected = await client.post("/conversations", json={})
+        self.assertEqual(409, rejected.status_code)
+        self.assertEqual("workspace_required", rejected.json()["error"]["code"])
 
-    async def test_workspace_tools_invisible_in_unbound_workspace(self) -> None:
+    async def test_create_conversation_in_unbound_workspace_is_rejected(self) -> None:
+        # 必选绑定设定：未绑定目录的工作区不能承载会话。
         provider = ScriptedToolProvider(
             tool_name="list_workspace_dir",
             arguments={},
@@ -222,17 +215,11 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
         client, _ = await self._client(provider)
         created = await client.post("/workspaces", json={"name": "未绑定区"})
         workspace_id = created.json()["workspace"]["id"]
-        conversation = await client.post(
+        rejected = await client.post(
             "/conversations", json={"workspaceId": workspace_id}
         )
-        conversation_id = conversation.json()["id"]
-        turn_id = await self._start_turn(client, conversation_id, "k-unbound")
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertTrue(
-            any("当前会话不可用" in str(item) for item in provider.tool_results),
-            f"expected tool-not-available feedback, got {provider.tool_results}",
-        )
+        self.assertEqual(409, rejected.status_code)
+        self.assertEqual("workspace_not_bound", rejected.json()["error"]["code"])
 
 
 if __name__ == "__main__":

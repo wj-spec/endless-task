@@ -239,6 +239,37 @@ class SqliteChatRepository:
             )
             return self._get_conversation(connection, conversation_id)
 
+    def set_conversation_workspace(
+        self,
+        conversation_id: str,
+        workspace_id: Optional[str],
+    ) -> Conversation:
+        """迁移会话到另一工作区；workspace_id 为 None 表示置为无归属（一般不可用）。"""
+        with self._database.transaction() as connection:
+            self._get_conversation(connection, conversation_id)
+            connection.execute(
+                """
+                UPDATE conversations
+                SET workspace_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (workspace_id, self._clock(), conversation_id),
+            )
+            return self._get_conversation(connection, conversation_id)
+
+    def count_conversations_for_workspace(self, workspace_id: str) -> int:
+        """统计某工作区名下（含根与所有后代分支）的会话数。"""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM conversations
+                WHERE workspace_id = ?
+                """,
+                (workspace_id,),
+            ).fetchone()
+            return int(row["count"])
+
     def delete_conversation(self, conversation_id: str) -> None:
         with self._database.transaction() as connection:
             self._get_conversation(connection, conversation_id)

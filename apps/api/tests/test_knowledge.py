@@ -20,6 +20,7 @@ from endless_task.storage import (
     Database,
     SqliteKnowledgeRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class KnowledgeExpiryTest(unittest.TestCase):
@@ -177,7 +178,7 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_turn_in_normal_conversation_is_searchable(self):
         client = await self._client()
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         turn = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "req-1"},
@@ -194,7 +195,7 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_ephemeral_branch_is_not_searchable_until_promoted(self):
         client = await self._client()
-        parent_id = (await client.post("/conversations")).json()["id"]
+        parent_id = (await create_bound_conversation(client))["id"]
         turn = await client.post(
             f"/conversations/{parent_id}/turns",
             headers={"Idempotency-Key": "req-1"},
@@ -220,7 +221,7 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_archived_conversation_is_hidden_from_search(self):
         client = await self._client()
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await create_bound_conversation(client))["id"]
         turn = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "req-1"},
@@ -246,8 +247,8 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
             "咖啡机使用规范",
             "使用咖啡机后必须清洗奶管，否则奶路会堵塞。",
         )
-        create = await client.post("/conversations")
-        conversation_id = create.json()["id"]
+        create = await create_bound_conversation(client)
+        conversation_id = create["id"]
         turn = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "req-1"},
@@ -265,8 +266,8 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
         provider = FakeProvider(chunks=("收到。",))
         client = await self._client(provider)
         await self._create_note(client, "随便一条笔记", "这里写着银河计划的口令。")
-        create = await client.post("/conversations")
-        conversation_id = create.json()["id"]
+        create = await create_bound_conversation(client)
+        conversation_id = create["id"]
         turn = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "req-1"},

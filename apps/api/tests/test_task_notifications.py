@@ -29,6 +29,7 @@ from endless_task.storage import (
     SqliteTaskRepository,
 )
 from endless_task.tasks import TaskNotificationService
+from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = "到点执行完成：本周项目进展如下，任务调度与执行链路均正常工作。"
 QUESTION_ANSWER = "要生成总结我需要数据来源，请提供项目进展相关文件。"
@@ -169,7 +170,7 @@ class TaskNotificationsApiTest(unittest.IsolatedAsyncioTestCase):
             [[RUN_ANSWER], ['{"awaiting_user": false, "note": null}']]
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
             await client.post(f"/tasks/{task_id}/run")
             await self._wait_for_run(client, task_id, "completed")
@@ -199,7 +200,7 @@ class TaskNotificationsApiTest(unittest.IsolatedAsyncioTestCase):
             fail_at=2,
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             await client.post(f"/tasks/{task_id}/run")
@@ -231,7 +232,7 @@ class TaskNotificationsApiTest(unittest.IsolatedAsyncioTestCase):
         async with local_client(
             self.database_path, provider, notifications_enabled=False
         ) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
             await client.post(f"/tasks/{task_id}/run")
             await self._wait_for_run(client, task_id, "completed")

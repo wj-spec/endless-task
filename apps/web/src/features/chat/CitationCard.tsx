@@ -1,4 +1,5 @@
 import type { KnowledgeCitation } from "./apiTypes";
+import { CloseIcon } from "../ui/Icons";
 
 const SCOPE_LABELS: Record<KnowledgeCitation["scope"], string> = {
   source: "知识源",
@@ -39,7 +40,7 @@ export function CitationCard({
               onClick={onClose}
               type="button"
             >
-              ×
+              <CloseIcon size={16} />
             </button>
           </div>
           <div className="citation-card-title">
@@ -69,7 +70,7 @@ export function CitationCard({
               onClick={onClose}
               type="button"
             >
-              ×
+              <CloseIcon size={16} />
             </button>
           </div>
           <p className="citation-card-snippet">未找到这条引用的来源记录。</p>

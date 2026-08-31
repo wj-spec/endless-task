@@ -8,8 +8,8 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink: #22221f;
-  --muted: #777770;
-  --faint: #a3a39b;
+  --muted: #62625c;
+  --faint: #6d6d66;
   --line: #e6e5df;
   --rail: #f1f1ed;
   --paper: #fbfbf9;
@@ -21,9 +21,12 @@
   --accent-muted: #9cb3a9;
   --accent-faint: #c7cec9;
   --line-soft: #ecebe6;
+  --line-faint: #f1f0eb;
   --line-strong: #d8d7d0;
   --line-accent: #c5c8c2;
   --surface: #fdfdfb;
+  --surface-2: #f3f3ee;
+  --surface-raised: #fdfdfa;
   --danger-deep: #8a4842;
   --danger-mid: #b7665f;
   --danger-soft: #fbf5f4;
@@ -44,16 +47,39 @@
   --shadow-deep: 0 16px 48px rgba(20, 20, 18, 0.22);
   --shadow-drawer: -12px 0 32px rgba(20, 20, 18, 0.12);
   --shadow-toast: 0 8px 24px rgba(20, 20, 18, 0.12);
-  --fs-1: 11px;
-  --fs-2: 12px;
-  --fs-3: 13px;
-  --fs-4: 15px;
+  --fs-1: 12px;
+  --fs-2: 13px;
+  --fs-3: 14px;
+  --fs-4: 16px;
   --fs-5: 18px;
   --radius-xs: 4px;
   --radius-s: 6px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
   --radius-m: 10px;
   --radius-l: 16px;
   --radius-full: 999px;
+
+  /* 间距节奏：统一的 4px 基阶，用于组件内 padding/gap，避免散布 magic numbers */
+  --space-0: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* 桌面壳层：模块化宽度与共同 content frame（避免散布 magic numbers） */
+  --rail-w: 252px;
+  --rail-w-collapsed: 56px;
+  --aux-w: 380px;
+  --aux-w-compact: 340px;
+  --reading-w: 760px;
+  --composer-w: 800px;
+  --frame-w: 800px; /* header/composer 共同轴线 */
+
   --z-rail-scrim: 10;
   --z-workspace-reopen: 15;
   --z-workspace-fab: 18;
@@ -71,13 +97,16 @@
   --ink: #e8e6e1;
   --muted-strong: #b8b6af;
   --muted: #98968f;
-  --faint: #7c7a74;
+  --faint: #8e8c84;
   --paper: #171917;
   --rail: #1d201d;
   --surface: #202320;
+  --surface-2: #272b27;
+  --surface-raised: #262a26;
   --line: #333733;
   --line-soft: #2a2e2a;
-  --line-strong: #434843;
+  --line-faint: #262a26;
+  --line-strong: #454a45;
   --line-accent: #565c56;
   --accent: #6fbf9f;
   --accent-soft: #24352d;

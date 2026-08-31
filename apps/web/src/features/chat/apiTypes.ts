@@ -120,6 +120,16 @@ export type Conversation = {
   workspaceId: string | null;
 };
 
+export type ProviderModel = {
+  providerProfileId: string;
+  modelId: string;
+  displayName: string;
+  source: "discovered" | "manual";
+  enabled: boolean;
+  isDefault: boolean;
+  lastSeenAt: string | null;
+};
+
 export type ProviderProfile = {
   id: string;
   name: string;
@@ -131,14 +141,20 @@ export type ProviderProfile = {
   isBuiltin: boolean;
   isDefault: boolean;
   configured: boolean;
+  apiKeyConfigured: boolean;
+  connectionState: "untested" | "ready" | "failed";
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  models: ProviderModel[];
   createdAt: string;
   updatedAt: string;
 };
 
 export type ProviderProfileInput = {
   name: string;
-  defaultModel: string;
+  defaultModel?: string;
   baseUrl?: string;
+  apiKey?: string;
   apiKeyRef?: string;
   timeoutSeconds?: number;
   enabled?: boolean;

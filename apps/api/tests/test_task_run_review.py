@@ -16,6 +16,7 @@ from endless_task.runtime import (
     ProviderTextDelta,
 )
 from endless_task.storage import Database, SqliteTaskRepository
+from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = "到点执行完成：本周项目进展如下，任务调度与执行链路均正常工作。"
 QUESTION_ANSWER = (
@@ -106,7 +107,7 @@ class TaskRunReviewTest(unittest.IsolatedAsyncioTestCase):
             [[QUESTION_ANSWER], ['{"awaiting_user": true, "note": "需要提供进展材料"}']]
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             run = await self._run_and_wait(client, task_id, "completed")
@@ -119,7 +120,7 @@ class TaskRunReviewTest(unittest.IsolatedAsyncioTestCase):
             [[RUN_ANSWER], ['{"awaiting_user": false, "note": null}']]
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             run = await self._run_and_wait(client, task_id, "completed")
@@ -129,7 +130,7 @@ class TaskRunReviewTest(unittest.IsolatedAsyncioTestCase):
     async def test_review_degrades_on_bad_json(self) -> None:
         provider = ReviewProvider([[RUN_ANSWER], ["这次执行看起来已经完成了。"]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             run = await self._run_and_wait(client, task_id, "completed")
@@ -139,7 +140,7 @@ class TaskRunReviewTest(unittest.IsolatedAsyncioTestCase):
     async def test_review_degrades_on_provider_error(self) -> None:
         provider = ReviewProvider([[RUN_ANSWER]], fail_at=1)
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             run = await self._run_and_wait(client, task_id, "completed")
@@ -149,7 +150,7 @@ class TaskRunReviewTest(unittest.IsolatedAsyncioTestCase):
     async def test_failed_run_is_not_reviewed(self) -> None:
         provider = ReviewProvider([[RUN_ANSWER]], fail_at=0)
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             run = await self._run_and_wait(client, task_id, "failed")

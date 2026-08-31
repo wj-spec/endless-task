@@ -571,12 +571,16 @@ class RuntimeV2SessionGateway:
         provider_resolver: Optional[
             Callable[[Conversation], RuntimeProviderSelection]
         ] = None,
+        tool_filter_provider: Optional[
+            Callable[[str], Optional[Callable[[str], bool]]]
+        ] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
         self._provider = provider
         self._provider_resolver = provider_resolver
         self._tool_registry = tool_registry
+        self._tool_filter_provider = tool_filter_provider
         self._model = model
         self._max_output_tokens = max_output_tokens
         self._max_model_turns = max_model_turns
@@ -1245,6 +1249,7 @@ class RuntimeV2SessionGateway:
             approval_gate=self._approval_gate,
             provider_slot=self._provider_slot,
             context_prefix_messages=context_prefix_messages,
+            tool_filter_provider=self._tool_filter_provider,
         )
         task = asyncio.create_task(
             executor.execute(

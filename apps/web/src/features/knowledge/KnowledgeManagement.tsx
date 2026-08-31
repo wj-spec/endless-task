@@ -3,6 +3,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { KnowledgeSource, Workspace } from "../chat/apiTypes";
 import { formatRelativeTime } from "../artifacts/time";
+import { AddIcon } from "../ui/Icons";
 
 type StatusFilter = "active" | "expired";
 
@@ -187,7 +188,7 @@ export function KnowledgeContent({
           onClick={() => (adding ? resetDraft() : setAdding(true))}
           type="button"
         >
-          <span aria-hidden="true">＋</span>
+          <span aria-hidden="true"><AddIcon size={18} /></span>
           {adding ? "收起" : "添加知识"}
         </button>
       </div>

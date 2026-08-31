@@ -116,6 +116,46 @@ class ConversationPartitionTest(WorkspaceTestCase):
         branch = self.chat.create_branch(parent_conversation_id=parent.id)
         self.assertEqual(branch.workspace_id, workspace.id)
 
+    def test_set_conversation_workspace_migrates(self) -> None:
+        workspace_a = self.workspaces.create_workspace("计划A")
+        workspace_b = self.workspaces.create_workspace("计划B")
+        conversation = self.chat.create_conversation(workspace_a.id)
+        self.assertEqual(conversation.workspace_id, workspace_a.id)
+
+        migrated = self.chat.set_conversation_workspace(
+            conversation.id, workspace_b.id
+        )
+        self.assertEqual(migrated.workspace_id, workspace_b.id)
+
+    def test_count_conversations_for_workspace(self) -> None:
+        workspace = self.workspaces.create_workspace("计划A")
+        self.assertEqual(
+            self.chat.count_conversations_for_workspace(workspace.id), 0
+        )
+        self.chat.create_conversation(workspace.id)
+        self.chat.create_conversation(workspace.id)
+        self.assertEqual(
+            self.chat.count_conversations_for_workspace(workspace.id), 2
+        )
+        other = self.workspaces.create_workspace("计划B")
+        self.chat.create_conversation(other.id)
+        self.assertEqual(
+            self.chat.count_conversations_for_workspace(workspace.id), 2
+        )
+        self.assertEqual(
+            self.chat.count_conversations_for_workspace(other.id), 1
+        )
+
+    def test_delete_workspace_removes_registration_only(self) -> None:
+        workspace = self.workspaces.create_workspace("计划A")
+        same_id = workspace.id
+        removed = self.workspaces.delete_workspace(same_id)
+        self.assertTrue(removed)
+        self.assertFalse(self.workspaces.delete_workspace(same_id))
+        # 记录确实被删除。
+        with self.assertRaises(Exception):
+            self.workspaces.get_workspace(same_id)
+
 
 class KnowledgePartitionTest(WorkspaceTestCase):
     def test_list_sources_partition_visibility(self) -> None:

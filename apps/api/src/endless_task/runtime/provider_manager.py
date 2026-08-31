@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 from .openai_compatible_provider import OpenAICompatibleProvider, UnconfiguredProvider
 from .provider import ModelProvider
+from ..domain.repositories import NotFoundError
 from ..storage.provider_profile_protocol import ProviderProfileRepositoryProtocol
 from ..storage.sqlite_provider_profile_repository import (
     BUILTIN_PROFILE_ID,
@@ -32,9 +33,11 @@ class ProviderManager:
         *,
         repository: ProviderProfileRepositoryProtocol,
         fallback_provider: ModelProvider,
+        secret_resolver: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._repository = repository
         self._fallback_provider = fallback_provider
+        self._secret_resolver = secret_resolver or self._resolve_legacy_api_key
         self._providers: dict[str, ModelProvider] = {}
 
     def resolve(self, conversation) -> SelectedProvider:
@@ -60,7 +63,31 @@ class ProviderManager:
             ):
                 fallback_reason = "unconfigured"
                 profile = default_profile
-        model = conversation.model_override or profile.default_model
+
+        model_override = (
+            conversation.model_override if fallback_reason is None else None
+        )
+        if model_override:
+            try:
+                selected_model = self._repository.get_model(
+                    profile.id,
+                    model_override,
+                )
+            except NotFoundError:
+                fallback_reason = "model_missing"
+                model_override = None
+            else:
+                if not selected_model.enabled:
+                    fallback_reason = "model_disabled"
+                    model_override = None
+
+        model = model_override or profile.default_model
+        if not model and profile.id != BUILTIN_PROFILE_ID:
+            default_profile = self._default_profile()
+            if default_profile.id != profile.id and default_profile.default_model:
+                fallback_reason = "unconfigured"
+                profile = default_profile
+                model = profile.default_model
         return SelectedProvider(
             provider=self._provider_for_profile(profile),
             model=model,
@@ -74,6 +101,29 @@ class ProviderManager:
             provider=self._provider_for_profile(profile),
             model=profile.default_model,
             profile=profile,
+        )
+
+    def is_configured(self, profile: ProviderProfile) -> bool:
+        return not isinstance(self._provider_for_profile(profile), UnconfiguredProvider)
+
+    async def discover_models(self, profile_id: str) -> tuple[tuple[str, str], ...]:
+        profile = self._repository.get_profile(profile_id)
+        provider = self._provider_for_profile(profile)
+        if isinstance(provider, UnconfiguredProvider):
+            raise ValueError("模型服务尚未配置 URL 或 API Key。")
+        list_models = getattr(provider, "list_models", None)
+        if list_models is None:
+            raise ValueError("该模型服务不支持自动获取模型列表。")
+        models = await list_models()
+        return tuple(
+            sorted(
+                {
+                    (str(model_id).strip(), str(display_name).strip())
+                    for model_id, display_name in models
+                    if str(model_id).strip()
+                },
+                key=lambda item: item[1].casefold(),
+            )
         )
 
     async def invalidate(self, profile_id: str) -> None:
@@ -112,7 +162,7 @@ class ProviderManager:
         cached = self._providers.get(profile.id)
         if cached is not None:
             return cached
-        api_key = self._resolve_api_key(profile.api_key_ref)
+        api_key = self._secret_resolver(profile.api_key_ref)
         if not api_key and not profile.base_url.strip():
             provider: ModelProvider = UnconfiguredProvider(profile.name)
         else:
@@ -126,7 +176,7 @@ class ProviderManager:
         return provider
 
     @staticmethod
-    def _resolve_api_key(reference: str) -> Optional[str]:
+    def _resolve_legacy_api_key(reference: str) -> Optional[str]:
         value = (reference or "").strip()
         if not value:
             return None

@@ -169,7 +169,7 @@ class BudgetWiringTest(unittest.IsolatedAsyncioTestCase):
             base_url="http://testserver",
         )
         try:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "budget-1"},
@@ -201,6 +201,7 @@ class BudgetWiringTest(unittest.IsolatedAsyncioTestCase):
 
 
 import asyncio  # noqa: E402
+from tests.fixtures.workspace_client import create_bound_conversation
 
 if __name__ == "__main__":
     unittest.main()

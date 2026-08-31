@@ -12,6 +12,7 @@ import type {
 } from "../chat/apiTypes";
 import { MessageContent } from "../chat/MessageContent";
 import { formatRelativeTime } from "./time";
+import { ChevronIcon } from "../ui/Icons";
 
 type ArtifactDetailProps = {
   artifactId: string;
@@ -151,7 +152,8 @@ export function ArtifactDetail({
     <div className="workspace-detail">
       <div className="workspace-detail-header">
         <button className="workspace-back" onClick={onBack} type="button">
-          ← 返回列表
+          <ChevronIcon direction="left" size={16} />
+          返回列表
         </button>
         {detail ? (
           <>

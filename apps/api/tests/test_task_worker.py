@@ -12,6 +12,7 @@ import httpx
 from endless_task.api import AppSettings, create_app
 from endless_task.runtime import ProviderCompleted, ProviderError, ProviderTextDelta
 from endless_task.storage import Database, SqliteTaskRepository
+from tests.fixtures.workspace_client import create_bound_conversation
 
 COMMITMENT = "每周一 09:00 总结上周的项目进展"
 RUN_ANSWER = (
@@ -124,7 +125,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_manual_run_executes_in_source_conversation(self) -> None:
         provider = TextProvider([[RUN_ANSWER], [json.dumps({"task": None})]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             response = await client.post(f"/tasks/{task_id}/run")
@@ -148,7 +149,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_paused_and_missing_task_are_rejected(self) -> None:
         provider = TextProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
             database = Database(self.database_path)
             with database.transaction() as connection:
@@ -165,7 +166,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
         event = asyncio.Event()
         provider = BlockingProvider([[RUN_ANSWER]], event=event)
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             first = await client.post(f"/tasks/{task_id}/run")
@@ -181,7 +182,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_failed_turn_records_failed_run(self) -> None:
         provider = FailingProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             first = await client.post(f"/tasks/{task_id}/run")
@@ -195,7 +196,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_runs_list_route(self) -> None:
         provider = TextProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
             await client.post(f"/tasks/{task_id}/run")
             await self._wait_for_run(client, task_id, "completed")
@@ -210,7 +211,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_auto_turn_does_not_self_propose(self) -> None:
         provider = TextProvider([[RUN_ANSWER], [TASK_EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
             await client.post(f"/tasks/{task_id}/run")
             await self._wait_for_run(client, task_id, "completed")
@@ -231,7 +232,7 @@ class TaskWorkerGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_deleting_conversation_cancels_its_tasks(self) -> None:
         provider = TextProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
 
             deleted = await client.delete(f"/conversations/{conversation_id}")

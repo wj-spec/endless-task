@@ -297,6 +297,12 @@ export function useChatApplication() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(
     readStoredWorkspace,
   );
+  // 当前工作区上下文：仅当它是「已绑定本地目录」的工作区时才允许新建会话。
+  const currentWorkspace = useMemo(
+    () => workspaces.find((item) => item.id === workspaceId) ?? null,
+    [workspaces, workspaceId],
+  );
+  const workspaceCanCreate = Boolean(currentWorkspace?.rootPath);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -1000,8 +1006,8 @@ export function useChatApplication() {
       setError(null);
       try {
         let items = await chatApi.listConversations(status, undefined, workspaceId);
-        if (status === "active" && items.length === 0) {
-          const created = await chatApi.createConversation(workspaceId);
+        if (status === "active" && items.length === 0 && workspaceCanCreate) {
+          const created = await chatApi.createConversation(workspaceId!);
           items = [created];
         }
         setConversations(items);
@@ -1017,7 +1023,7 @@ export function useChatApplication() {
         setLoading(false);
       }
     },
-    [openConversation, workspaceId],
+    [openConversation, workspaceId, workspaceCanCreate],
   );
 
   useEffect(() => {
@@ -1028,7 +1034,16 @@ export function useChatApplication() {
       .catch(() => setCapabilities(null));
     void chatApi
       .listWorkspaces()
-      .then(setWorkspaces)
+      .then((items) => {
+        setWorkspaces(items);
+        // 必选绑定设定：无已存工作区上下文时，默认落到第一个已绑定目录的工作区，
+        // 使既有会话可见、可恢复，且新建会话入口可用。
+        setWorkspaceId((current) => {
+          if (current) return current;
+          const firstBound = items.find((item) => item.rootPath) ?? null;
+          return firstBound?.id ?? null;
+        });
+      })
       .catch(() => setWorkspaces([]));
     void chatApi.listProviders().then(setProviders).catch(() => setProviders([]));
   }, []);
@@ -1058,7 +1073,7 @@ export function useChatApplication() {
   useEffect(() => {
     void loadConversationList(statusFilter, activeConversationId ?? undefined);
     // active id 不作为重载触发；切换工作区时列表整体换防。
-  }, [statusFilter, workspaceId]);
+  }, [statusFilter, workspaceId, workspaceCanCreate]);
 
   useEffect(
     () => () => {
@@ -1284,8 +1299,17 @@ export function useChatApplication() {
   const newConversation = async () => {
     setPendingAction("new");
     setError(null);
+    if (!workspaceCanCreate) {
+      setError(
+        currentWorkspace
+          ? "该工作区尚未绑定本地目录，请先绑定目录后再新建对话。"
+          : "请先选择并绑定一个工作区目录，再新建对话。",
+      );
+      setPendingAction(null);
+      return;
+    }
     try {
-      const conversation = await chatApi.createConversation(workspaceId);
+      const conversation = await chatApi.createConversation(workspaceId!);
       setStatusFilter("active");
       setConversations((current) => [
         conversation,
@@ -1431,7 +1455,11 @@ export function useChatApplication() {
   );
 
   const forkLane = useCallback(
-    async (conversationId: string, sourceLaneId: string, forkTurnId?: string) => {
+    async (
+      conversationId: string,
+      sourceLaneId: string | null | undefined,
+      forkTurnId?: string,
+    ) => {
       setPendingAction("fork-lane");
       setError(null);
       try {
@@ -1447,8 +1475,13 @@ export function useChatApplication() {
         if (!baseEntryId || turnSnapshot?.turn.status !== "completed") {
           throw new Error("只能从完整回答结束处创建分支。");
         }
+        const resolvedSourceLaneId =
+          sourceLaneId ?? viewLaneIds[conversationId] ?? mainLaneIds[conversationId];
+        if (!resolvedSourceLaneId) {
+          throw new Error("当前会话暂不支持创建分支，请确认会话已加载主线。");
+        }
         const created = await chatApi.createRuntimeV2Lane(conversationId, {
-          sourceLaneId,
+          sourceLaneId: resolvedSourceLaneId,
           baseEntryId,
         });
         await refreshLaneTree(conversationId);
@@ -1459,7 +1492,7 @@ export function useChatApplication() {
         setPendingAction(null);
       }
     },
-    [openLaneInSide, refreshLaneTree, snapshots],
+    [mainLaneIds, openLaneInSide, refreshLaneTree, snapshots, viewLaneIds],
   );
 
   const promoteLane = useCallback(
@@ -2091,6 +2124,16 @@ export function useChatApplication() {
     }
   };
 
+  const deleteWorkspace = async (workspaceIdToDelete: string) => {
+    await chatApi.deleteWorkspace(workspaceIdToDelete);
+    setWorkspaces((current) =>
+      current.filter((item) => item.id !== workspaceIdToDelete),
+    );
+    if (workspaceId === workspaceIdToDelete) {
+      selectWorkspace(null);
+    }
+  };
+
   return {
     capabilities,
     activeConversationId,
@@ -2100,8 +2143,11 @@ export function useChatApplication() {
     activeRuntimeSnapshot,
     activeRuntimeStatus,
     createWorkspace,
+    currentWorkspace,
+    deleteWorkspace,
     refreshWorkspaces,
     selectWorkspace,
+    workspaceCanCreate,
     workspaceId,
     workspaces,
     changeConversationStatus,

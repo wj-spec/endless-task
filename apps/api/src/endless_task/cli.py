@@ -235,6 +235,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="只读校验迁移状态、数量与关系",
     )
+    eval_command = commands.add_parser(
+        "eval",
+        help="离线自动化评估（质量/回归）：对录制的 v2 Run 批量打分",
+    )
+    eval_sub = eval_command.add_subparsers(dest="eval_command")
+    eval_run = eval_sub.add_parser("run", help="筛选 Run 并跑确定性评估（可持久化为批次）")
+    eval_run.add_argument("--conversation", default=None)
+    eval_run.add_argument(
+        "--status",
+        action="append",
+        dest="statuses",
+        default=None,
+        help="可重复；默认 completed",
+    )
+    eval_run.add_argument("--require-tools", action="store_true")
+    eval_run.add_argument("--max", type=int, default=None, dest="max_runs")
+    eval_run.add_argument("--mode", default="deterministic")
+    eval_run.add_argument("--judge-provider", default=None)
+    eval_run.add_argument("--judge-model", default=None)
+    eval_run.add_argument(
+        "--read-only-tool", action="append", default=[], dest="read_only_tools"
+    )
+    eval_run.add_argument(
+        "--write-tool", action="append", default=[], dest="write_tools"
+    )
+    eval_run.add_argument("--no-persist", action="store_true")
+    eval_report = eval_sub.add_parser("report", help="输出某批次的报告")
+    eval_report.add_argument("--batch", required=True)
+    eval_export = eval_sub.add_parser("export", help="导出某批次为 jsonl 或 markdown")
+    eval_export.add_argument("--batch", required=True)
+    eval_export.add_argument(
+        "--format", choices=["jsonl", "markdown"], default="jsonl"
+    )
+    eval_diff = eval_sub.add_parser(
+        "diff", help="对比两个批次，检出回归（CI 门禁语义）"
+    )
+    eval_diff.add_argument("--baseline", required=True)
+    eval_diff.add_argument("--candidate", required=True)
+    eval_diff.add_argument(
+        "--tolerance",
+        action="append",
+        default=[],
+        dest="tolerances",
+        help="形如 metric=0.05；可重复",
+    )
+    eval_sub.add_parser("batches", help="列出已知评估批次")
     arguments = parser.parse_args(argv)
 
     settings = AppSettings.from_environment()
@@ -254,6 +300,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if command == "migrate-runtime-v2":
         return _runtime_v2_migration_command(settings, arguments)
+    if command == "eval":
+        from endless_task.eval.cli import run_eval_command
+
+        return run_eval_command(settings, arguments)
     if command == "restore":
         return _restore_command(settings, arguments)
 

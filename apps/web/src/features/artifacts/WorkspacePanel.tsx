@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { WorkspaceSnapshot } from "../chat/apiTypes";
 import { ArtifactDetail } from "./ArtifactDetail";
 import { formatRelativeTime } from "./time";
+import { useMediaQuery } from "../ui/useMediaQuery";
+import { useModalDialog } from "../ui/useModalDialog";
 
 type WorkspacePanelProps = {
   workspace: WorkspaceSnapshot;
@@ -25,27 +27,15 @@ export function WorkspacePanel({
   workspaceRootPath,
 }: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef(onCollapse);
-  closeRef.current = onCollapse;
-
-  useEffect(() => {
-    if (!drawerOpen || !window.matchMedia("(max-width: 760px)").matches) return;
-    const returnFocusTarget =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeButtonRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      event.preventDefault();
-      closeRef.current();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      if (returnFocusTarget?.isConnected) returnFocusTarget.focus();
-    };
-  }, [drawerOpen]);
+  const isMobile = useMediaQuery("(max-width: 760px)");
+  const isDrawerModal = drawerOpen && isMobile;
+  const drawerDialogRef = useModalDialog<HTMLElement>({
+    active: isDrawerModal,
+    initialFocusRef: closeButtonRef,
+    onClose: onCollapse,
+  });
 
   useEffect(() => {
     setSelectedArtifactId(null);
@@ -64,11 +54,18 @@ export function WorkspacePanel({
 
   return (
     <aside
+      aria-labelledby={titleId}
+      aria-modal={isDrawerModal ? true : undefined}
       className={`workspace-panel${drawerOpen ? " is-drawer-open" : ""}`}
-      aria-label="工作区"
+      ref={drawerDialogRef}
+      role={isDrawerModal ? "dialog" : undefined}
+      tabIndex={isDrawerModal ? -1 : undefined}
     >
       <header className="workspace-header">
-        <h2>工作区</h2>
+        <div className="workspace-header-titles">
+          <h2 id={titleId}>工作区资产</h2>
+          <span className="workspace-header-sub">此会话生成的产物与文档</span>
+        </div>
         {pendingCount > 0 ? (
           <span className="workspace-badge">{pendingCount} 项待确认</span>
         ) : null}

@@ -4,6 +4,7 @@ import {
   createConversation,
   openConversation,
   runtimeSnapshot,
+  expectConversationHeading,
 } from "../support/api";
 
 test("普通聊天完成后刷新仍恢复同一运行结果", async ({ page, request }) => {
@@ -20,7 +21,7 @@ test("普通聊天完成后刷新仍恢复同一运行结果", async ({ page, re
   await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  await expectConversationHeading(page, title);
   await expect(page.getByText("刷新后仍应看到这条消息")).toBeVisible();
   await expect(page.getByText("E2E 确定性回复")).toBeVisible();
 

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import AsyncIterator, Literal, Optional
+from typing import AsyncIterator, Callable, Literal, Optional
 
 from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -55,7 +55,7 @@ from endless_task.runtime import (
     TurnController,
     UnconfiguredProvider,
 )
-from endless_task.runtime.provider import ModelProvider, ProviderMessage
+from endless_task.runtime.provider import ModelProvider, ProviderError, ProviderMessage
 from endless_task.runtime.provider_manager import ProviderManager
 from endless_task.runtime_v2 import (
     LaneKind,
@@ -96,6 +96,7 @@ from endless_task.workspace_runtime import (
 )
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
 from endless_task.workspace_runtime.browse import browse_directory
+from endless_task.workspace_runtime.visibility import workspace_tool_filter
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import (
     CitationFeedbackProvider,
@@ -143,9 +144,11 @@ from endless_task.storage.sqlite_mcp_server_repository import (
     SqliteMcpServerRepository,
 )
 from endless_task.storage.sqlite_provider_profile_repository import (
+    ProviderModel,
     ProviderProfileDraft,
     SqliteProviderProfileRepository,
 )
+from endless_task.storage.provider_secret_store import ProviderSecretStore
 from endless_task.storage.sqlite_skill_override_repository import (
     SqliteSkillOverrideRepository,
 )
@@ -574,6 +577,7 @@ class AppContainer:
     workspace_resolver: WorkspaceResolver
     skill_service: SkillService
     provider_profile_repository: SqliteProviderProfileRepository
+    provider_secret_store: ProviderSecretStore
     provider_manager: ProviderManager
     mcp_server_repository: SqliteMcpServerRepository
     mcp_manager: McpManager
@@ -606,6 +610,7 @@ class ConversationPatch(BaseModel):
     status: Optional[ConversationStatus] = None
     providerProfileId: Optional[str] = None
     modelOverride: Optional[str] = None
+    workspaceId: Optional[str] = None
 
 
 class CreateBranchBody(BaseModel):
@@ -753,8 +758,9 @@ class ProviderProfileBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    defaultModel: str
+    defaultModel: str = ""
     baseUrl: str = ""
+    apiKey: Optional[str] = None
     apiKeyRef: str = ""
     timeoutSeconds: float = 60.0
     enabled: bool = True
@@ -766,6 +772,7 @@ class ProviderProfilePatchBody(BaseModel):
     name: Optional[str] = None
     defaultModel: Optional[str] = None
     baseUrl: Optional[str] = None
+    apiKey: Optional[str] = None
     apiKeyRef: Optional[str] = None
     timeoutSeconds: Optional[float] = None
     enabled: Optional[bool] = None
@@ -775,6 +782,25 @@ class ProviderDefaultBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profileId: str
+
+
+class ProviderModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    modelId: str
+    displayName: str = ""
+
+
+class ProviderModelPatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class ProviderDefaultModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    modelId: str
 
 
 class SkillPatchBody(BaseModel):
@@ -1126,6 +1152,9 @@ def _build_container(
     workspace_repository = SqliteWorkspaceRepository(database)
     skill_override_repository = SqliteSkillOverrideRepository(database)
     provider_profile_repository = SqliteProviderProfileRepository(database)
+    provider_secret_store = ProviderSecretStore(
+        settings.database_path.parent / "provider-secrets.json"
+    )
     mcp_server_repository = SqliteMcpServerRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
@@ -1188,8 +1217,17 @@ def _build_container(
     provider_manager = ProviderManager(
         repository=provider_profile_repository,
         fallback_provider=selected_provider,
+        secret_resolver=provider_secret_store.resolve,
     )
     selected_tool_registry = tool_registry or ToolRegistry()
+    workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
+
+    def _v2_workspace_tool_filter(
+        conversation_id: str,
+    ) -> Optional[Callable[[str], bool]]:
+        """v2 按会话过滤工作区工具；与 v1 `_tool_filter_for_conversation` 一致。"""
+        return workspace_tool_filter(workspace_resolver, conversation_id)
+
     runtime_v2_gateway = RuntimeV2SessionGateway(
         chat_repository=chat_repository,
         repository=runtime_v2_repository,
@@ -1202,6 +1240,7 @@ def _build_container(
         temperature=None,
         provider_slot_limit=settings.max_concurrent_model_calls,
         memory_repository=runtime_v2_memory_repository,
+        tool_filter_provider=_v2_workspace_tool_filter,
     )
     runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
         database=database,
@@ -1209,7 +1248,6 @@ def _build_container(
         default_runtime=settings.runtime,
         rollback_forced=settings.runtime_rollback,
     )
-    workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
         database_path=settings.database_path,
@@ -1624,6 +1662,7 @@ def _build_container(
         workspace_resolver=workspace_resolver,
         skill_service=skill_service,
         provider_profile_repository=provider_profile_repository,
+        provider_secret_store=provider_secret_store,
         provider_manager=provider_manager,
         mcp_server_repository=mcp_server_repository,
         mcp_manager=mcp_manager,
@@ -2036,7 +2075,8 @@ def create_app(
     async def create_conversation(
         body: Optional[CreateConversationBody] = None,
     ) -> dict[str, object]:
-        workspace_id = _resolve_workspace_reference(
+        # 必选绑定设定：新建会话必须归属到一个已绑定目录的工作区。
+        workspace_id = _require_bound_workspace(
             body.workspaceId if body is not None else None
         )
         return conversation_json(
@@ -2139,15 +2179,11 @@ def create_app(
         conversation_id: str,
         body: ConversationPatch,
     ) -> dict[str, object]:
-        if (
-            body.title is None
-            and body.status is None
-            and body.providerProfileId is None
-            and body.modelOverride is None
-        ):
+        supplied_fields = body.model_fields_set
+        if not supplied_fields:
             raise ApiRequestError(
                 "invalid_request",
-                "至少需要提供 title、status、providerProfileId 或 modelOverride。",
+                "至少需要提供 title、status、providerProfileId、modelOverride 或 workspaceId。",
             )
         conversation = container.chat_repository.get_conversation(conversation_id)
         if body.title is not None:
@@ -2160,11 +2196,87 @@ def create_app(
                 conversation_id,
                 body.status,
             )
-        if body.providerProfileId is not None or body.modelOverride is not None:
+        if "providerProfileId" in supplied_fields or "modelOverride" in supplied_fields:
+            provider_profile_id = (
+                body.providerProfileId
+                if "providerProfileId" in supplied_fields
+                else conversation.provider_profile_id
+            )
+            model_override = (
+                body.modelOverride
+                if "modelOverride" in supplied_fields
+                else conversation.model_override
+            )
+            if provider_profile_id is not None or model_override is not None:
+                profile_id = provider_profile_id
+                if profile_id is None:
+                    profile_id = (
+                        container.provider_profile_repository.get_default_profile_id()
+                    )
+                if profile_id is None:
+                    raise ApiRequestError(
+                        "provider_not_configured",
+                        "请先配置可用的模型服务。",
+                        status_code=409,
+                    )
+                try:
+                    profile = container.provider_profile_repository.get_profile(
+                        profile_id
+                    )
+                except NotFoundError as error:
+                    raise ApiRequestError(
+                        "provider_not_available",
+                        "所选模型服务已不存在，请重新选择。",
+                        status_code=409,
+                    ) from error
+                if not profile.enabled:
+                    raise ApiRequestError(
+                        "provider_disabled",
+                        "该模型服务已停用，请重新选择。",
+                        status_code=409,
+                    )
+                selected_model_id = model_override or profile.default_model
+                if not selected_model_id:
+                    raise ApiRequestError(
+                        "model_not_available",
+                        "该模型服务没有可用的默认模型，请先完成模型配置。",
+                        status_code=409,
+                    )
+                try:
+                    model = container.provider_profile_repository.get_model(
+                        profile_id,
+                        selected_model_id,
+                    )
+                except NotFoundError as error:
+                    raise ApiRequestError(
+                        "model_not_available",
+                        "所选模型不在该服务的可用模型中，请重新选择。",
+                        status_code=409,
+                    ) from error
+                if not model.enabled:
+                    raise ApiRequestError(
+                        "model_disabled",
+                        "该模型已停用，请重新选择。",
+                        status_code=409,
+                    )
             conversation = container.chat_repository.set_conversation_model(
                 conversation_id,
-                provider_profile_id=body.providerProfileId,
-                model_override=body.modelOverride,
+                provider_profile_id=provider_profile_id,
+                model_override=model_override,
+            )
+        if "workspaceId" in supplied_fields:
+            if conversation.kind != ConversationKind.NORMAL or (
+                conversation.parent_conversation_id is not None
+            ):
+                raise ApiRequestError(
+                    "workspace_conversation_mismatch",
+                    "临时/分支会话不允许跨工作区迁移。",
+                    status_code=409,
+                )
+            workspace_id = _require_bound_workspace(body.workspaceId)
+            conversation = container.chat_repository.set_conversation_workspace(
+                conversation_id,
+                workspace_id,
             )
         return conversation_json(conversation)
 
@@ -2262,6 +2374,35 @@ def create_app(
         container.workspace_repository.get_workspace(text)
         return text
 
+    def _require_bound_workspace(value: Optional[str]) -> str:
+        """校验目标工作区存在且已绑定本地目录，返回其 id。
+
+        会话必须归属到已绑定目录的工作区（必选绑定产品设定）。失败抛出
+        ApiRequestError（409），不返回 None。
+        """
+        text = (value or "").strip()
+        if not text or text == "general":
+            raise ApiRequestError(
+                "workspace_required",
+                "会话必须归属到一个工作区，请先选择并绑定工作区目录。",
+                status_code=409,
+            )
+        try:
+            workspace = container.workspace_repository.get_workspace(text)
+        except NotFoundError as error:
+            raise ApiRequestError(
+                "workspace_not_found",
+                "所选工作区已不存在，请重新选择。",
+                status_code=404,
+            ) from error
+        if not workspace.root_path:
+            raise ApiRequestError(
+                "workspace_not_bound",
+                "该工作区尚未绑定本地目录，请先绑定目录后再创建/迁移会话。",
+                status_code=409,
+            )
+        return text
+
     def _emit_knowledge_duplicates(source) -> None:
         service = container.knowledge_lifecycle_service
         if service is None:
@@ -2271,7 +2412,26 @@ def create_app(
         except Exception:  # noqa: BLE001 去重检测不影响写入本身
             logger.debug("Knowledge duplicate detection failed", exc_info=True)
 
+    def _provider_model_json(
+        model: ProviderModel,
+        *,
+        default_model: str,
+    ) -> dict[str, object]:
+        return {
+            "providerProfileId": model.provider_profile_id,
+            "modelId": model.model_id,
+            "displayName": model.display_name,
+            "source": model.source,
+            "enabled": model.enabled,
+            "isDefault": model.model_id == default_model,
+            "lastSeenAt": model.last_seen_at,
+        }
+
     def _provider_profile_json(profile) -> dict[str, object]:
+        configured = container.provider_manager.is_configured(profile)
+        connection_state = profile.connection_state
+        if profile.is_builtin:
+            connection_state = "ready" if configured else "failed"
         return {
             "id": profile.id,
             "name": profile.name,
@@ -2285,11 +2445,47 @@ def create_app(
                 profile.id
                 == container.provider_profile_repository.get_default_profile_id()
             ),
-            "configured": profile.is_builtin
-            or bool(profile.api_key_ref.strip() or profile.base_url.strip()),
+            "configured": configured,
+            "apiKeyConfigured": container.provider_secret_store.has(
+                profile.api_key_ref
+            ),
+            "connectionState": connection_state,
+            "lastCheckedAt": profile.last_checked_at,
+            "lastError": profile.last_error,
+            "models": [
+                _provider_model_json(model, default_model=profile.default_model)
+                for model in container.provider_profile_repository.list_models(profile.id)
+            ],
             "createdAt": profile.created_at,
             "updatedAt": profile.updated_at,
         }
+
+    def _provider_draft(
+        *,
+        current=None,
+        name: Optional[str] = None,
+        default_model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key_ref: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+        enabled: Optional[bool] = None,
+    ) -> ProviderProfileDraft:
+        return ProviderProfileDraft(
+            name=name if name is not None else current.name,
+            default_model=(
+                default_model if default_model is not None else current.default_model
+            ),
+            base_url=base_url if base_url is not None else current.base_url,
+            api_key_ref=(
+                api_key_ref if api_key_ref is not None else current.api_key_ref
+            ),
+            timeout_seconds=(
+                timeout_seconds
+                if timeout_seconds is not None
+                else current.timeout_seconds
+            ),
+            enabled=enabled if enabled is not None else current.enabled,
+        )
 
     @app.get("/providers")
     async def list_providers() -> dict[str, object]:
@@ -2304,6 +2500,16 @@ def create_app(
     async def create_provider_profile(
         body: ProviderProfileBody,
     ) -> dict[str, object]:
+        if (
+            body.apiKey
+            and body.apiKey.strip()
+            and body.apiKeyRef
+            and body.apiKeyRef.strip()
+        ):
+            raise ApiRequestError(
+                "invalid_provider_credentials",
+                "API Key 和 API Key 引用不能同时填写。",
+            )
         profile = container.provider_profile_repository.create_profile(
             ProviderProfileDraft(
                 name=body.name,
@@ -2314,6 +2520,19 @@ def create_app(
                 enabled=body.enabled,
             )
         )
+        try:
+            if body.apiKey and body.apiKey.strip():
+                reference = container.provider_secret_store.put(
+                    profile.id, body.apiKey
+                )
+                profile = container.provider_profile_repository.update_profile(
+                    profile.id,
+                    _provider_draft(current=profile, api_key_ref=reference),
+                )
+        except Exception:
+            container.provider_secret_store.delete(profile.id)
+            container.provider_profile_repository.delete_profile(profile.id)
+            raise
         return {"profile": _provider_profile_json(profile)}
 
     @app.patch("/providers/{profile_id}")
@@ -2321,41 +2540,182 @@ def create_app(
         profile_id: str, body: ProviderProfilePatchBody
     ) -> dict[str, object]:
         current = container.provider_profile_repository.get_profile(profile_id)
-        profile = container.provider_profile_repository.update_profile(
-            profile_id,
-            ProviderProfileDraft(
-                name=body.name if body.name is not None else current.name,
-                default_model=(
-                    body.defaultModel
-                    if body.defaultModel is not None
-                    else current.default_model
-                ),
-                base_url=body.baseUrl if body.baseUrl is not None else current.base_url,
-                api_key_ref=(
-                    body.apiKeyRef
-                    if body.apiKeyRef is not None
-                    else current.api_key_ref
-                ),
-                timeout_seconds=(
-                    body.timeoutSeconds
-                    if body.timeoutSeconds is not None
-                    else current.timeout_seconds
-                ),
-                enabled=body.enabled if body.enabled is not None else current.enabled,
+        if current.is_builtin and body.apiKey is not None:
+            raise ApiRequestError(
+                "builtin_provider_credentials",
+                "环境配置的模型服务不能在此修改 API Key。",
             )
-        )
+        if (
+            body.apiKey
+            and body.apiKey.strip()
+            and body.apiKeyRef
+            and body.apiKeyRef.strip()
+        ):
+            raise ApiRequestError(
+                "invalid_provider_credentials",
+                "API Key 和 API Key 引用不能同时填写。",
+            )
+        next_reference = body.apiKeyRef
+        stored_key_changed = body.apiKey is not None and bool(body.apiKey.strip())
+        previous_stored_secret = None
+        if stored_key_changed:
+            if current.api_key_ref == container.provider_secret_store.reference_for(
+                profile_id
+            ):
+                previous_stored_secret = container.provider_secret_store.resolve(
+                    current.api_key_ref
+                )
+            next_reference = container.provider_secret_store.put(
+                profile_id, body.apiKey or ""
+            )
+        try:
+            profile = container.provider_profile_repository.update_profile(
+                profile_id,
+                _provider_draft(
+                    current=current,
+                    name=body.name,
+                    default_model=body.defaultModel,
+                    base_url=body.baseUrl,
+                    api_key_ref=next_reference,
+                    timeout_seconds=body.timeoutSeconds,
+                    enabled=body.enabled,
+                ),
+            )
+        except Exception:
+            if stored_key_changed:
+                if previous_stored_secret:
+                    container.provider_secret_store.put(
+                        profile_id, previous_stored_secret
+                    )
+                else:
+                    container.provider_secret_store.delete(profile_id)
+            raise
+        if body.baseUrl is not None or stored_key_changed or body.apiKeyRef is not None:
+            profile = container.provider_profile_repository.set_connection_state(
+                profile_id,
+                state="untested",
+            )
+        stored_reference = container.provider_secret_store.reference_for(profile_id)
+        if (
+            body.apiKeyRef is not None
+            and current.api_key_ref == stored_reference
+            and profile.api_key_ref != stored_reference
+        ):
+            container.provider_secret_store.delete(profile_id)
         await container.provider_manager.invalidate(profile.id)
         return {"profile": _provider_profile_json(profile)}
 
     @app.delete("/providers/{profile_id}", status_code=204)
     async def delete_provider_profile(profile_id: str) -> None:
-        await container.provider_manager.invalidate(profile_id)
         container.provider_profile_repository.delete_profile(profile_id)
+        container.provider_secret_store.delete(profile_id)
+        await container.provider_manager.invalidate(profile_id)
 
     @app.post("/providers/default")
     async def set_default_provider(body: ProviderDefaultBody) -> dict[str, object]:
         container.provider_profile_repository.set_default_profile_id(body.profileId)
         profile = container.provider_profile_repository.get_profile(body.profileId)
+        return {"profile": _provider_profile_json(profile)}
+
+    @app.post("/providers/{profile_id}/refresh-models")
+    async def refresh_provider_models(profile_id: str) -> dict[str, object]:
+        try:
+            discovered = await container.provider_manager.discover_models(profile_id)
+        except ProviderError as error:
+            container.provider_profile_repository.set_connection_state(
+                profile_id,
+                state="failed",
+                error=error.safe_message,
+            )
+            raise ApiRequestError(
+                error.code,
+                error.safe_message,
+                status_code=422,
+            ) from error
+        except ValueError as error:
+            message = str(error) or "无法获取模型列表。"
+            container.provider_profile_repository.set_connection_state(
+                profile_id,
+                state="failed",
+                error=message,
+            )
+            raise ApiRequestError(
+                "model_discovery_unavailable",
+                message,
+                status_code=422,
+            ) from error
+        models = container.provider_profile_repository.replace_discovered_models(
+            profile_id,
+            discovered,
+        )
+        profile = container.provider_profile_repository.get_profile(profile_id)
+        if not profile.default_model and models:
+            profile = container.provider_profile_repository.set_default_model(
+                profile_id,
+                models[0].model_id,
+            )
+        profile = container.provider_profile_repository.set_connection_state(
+            profile_id,
+            state="ready",
+        )
+        return {"profile": _provider_profile_json(profile)}
+
+    @app.post("/providers/{profile_id}/models", status_code=201)
+    async def add_provider_model(
+        profile_id: str,
+        body: ProviderModelBody,
+    ) -> dict[str, object]:
+        model = container.provider_profile_repository.add_model(
+            profile_id,
+            model_id=body.modelId,
+            display_name=body.displayName,
+        )
+        profile = container.provider_profile_repository.get_profile(profile_id)
+        if not profile.default_model:
+            profile = container.provider_profile_repository.set_default_model(
+                profile_id,
+                model.model_id,
+            )
+        return {
+            "model": _provider_model_json(
+                model,
+                default_model=profile.default_model,
+            ),
+            "profile": _provider_profile_json(profile),
+        }
+
+    @app.patch("/providers/{profile_id}/models/{model_id:path}")
+    async def patch_provider_model(
+        profile_id: str,
+        model_id: str,
+        body: ProviderModelPatchBody,
+    ) -> dict[str, object]:
+        model = container.provider_profile_repository.set_model_enabled(
+            profile_id,
+            model_id,
+            enabled=body.enabled,
+        )
+        profile = container.provider_profile_repository.get_profile(profile_id)
+        return {
+            "model": _provider_model_json(
+                model,
+                default_model=profile.default_model,
+            )
+        }
+
+    @app.delete("/providers/{profile_id}/models/{model_id:path}", status_code=204)
+    async def delete_provider_model(profile_id: str, model_id: str) -> None:
+        container.provider_profile_repository.delete_model(profile_id, model_id)
+
+    @app.post("/providers/{profile_id}/default-model")
+    async def set_provider_default_model(
+        profile_id: str,
+        body: ProviderDefaultModelBody,
+    ) -> dict[str, object]:
+        profile = container.provider_profile_repository.set_default_model(
+            profile_id,
+            body.modelId,
+        )
         return {"profile": _provider_profile_json(profile)}
 
     def _mcp_json(config, status) -> dict[str, object]:
@@ -2556,6 +2916,27 @@ def create_app(
                 workspace_id, body.rootPath
             )
         return {"workspace": workspace_json(workspace)}
+
+    @app.delete("/workspaces/{workspace_id}", status_code=204)
+    async def delete_workspace(workspace_id: str) -> Response:
+        # 必选绑定设定：有会话的工作区禁止删除，需先迁移其会话。
+        conversation_count = container.chat_repository.count_conversations_for_workspace(
+            workspace_id
+        )
+        if conversation_count > 0:
+            raise ApiRequestError(
+                "workspace_not_empty",
+                f"该工作区下仍有 {conversation_count} 个会话，请先迁移这些会话后再删除工作区。",
+                status_code=409,
+            )
+        removed = container.workspace_repository.delete_workspace(workspace_id)
+        if not removed:
+            raise ApiRequestError(
+                "workspace_not_found",
+                "所选工作区已不存在。",
+                status_code=404,
+            )
+        return Response(status_code=204)
 
     @app.get("/filesystem/browse")
     async def browse_filesystem(

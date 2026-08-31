@@ -213,9 +213,24 @@ ENDLESS_TASK_TASK_RETRY_BACKOFF=60
 
 Runtime 会先为输出预留预算，再保留系统提示和当前消息，最后纳入本地摘要、记忆和最近的完整 Turn。当前消息不会被静默截断；无法安全放入上下文时返回 `context_too_large`。
 
+## 评估层（离线自动化评估）
+
+`endless-task eval` 对已录制的 v2 Run 做只读、可回归的批量打分（不进入聊天热路径，不触发工具，不改 runtime 数据）。默认筛选用过工具的 `completed` Run；`eval diff` 可检测质量回退并作为 CI 门禁（blocker 指标回退超容差时返回非零退出码）。
+
+```bash
+cd apps/api
+uv run endless-task eval run --require-tools          # 跑一轮确定性评估并持久化为批次
+uv run endless-task eval report --batch BATCH          # 人类可读报告
+uv run endless-task eval export --batch BATCH --format jsonl
+uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
+uv run endless-task eval batches                       # 列出已有批次
+```
+
+确定性指标：`completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`。设计见 [`docs/v2/evaluation-layer-design.md`](../docs/v2/evaluation-layer-design.md)，实现位于 `src/endless_task/eval/`。
+
 ## 运行测试
 
-当前开发基线：`uv run python -W error -m unittest discover -s tests -v`，616/616 通过。测试日志仍可能出现临时数据库关闭后的已知异步清理错误；最终 unittest 结果不受影响，但该生命周期问题仍是发布前治理项。
+当前开发基线：`uv run python -W error -m unittest discover -s tests -v`，662/662 通过。测试日志仍可能出现临时数据库关闭后的已知异步清理错误；最终 unittest 结果不受影响，但该生命周期问题仍是发布前治理项。
 
 ```bash
 cd apps/api
@@ -231,3 +246,4 @@ uv run python -W error -m unittest discover -s tests -v
 - `tests/test_memory_*.py`
 - `tests/test_artifact_*.py`
 - `tests/test_task_*.py`
+- `tests/test_eval.py`

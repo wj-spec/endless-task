@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   apiUrl,
   createCompletedConversation,
+  createTemporaryConversationFromMenu,
   openConversation,
   seedProposal,
   waitForRunStatus,
@@ -93,7 +94,7 @@ test("右侧 Temporary Conversation 接受 Artifact 后聚焦但保持临时属�
         `/api/v2/conversations/${conversation.id}/temporary-conversations`,
       ),
   );
-  await page.getByRole("button", { name: "开临时会话" }).click();
+  await createTemporaryConversationFromMenu(page);
   const temporary = (await (await createResponsePromise).json()) as {
     conversation: { id: string };
     lane: { id: string };

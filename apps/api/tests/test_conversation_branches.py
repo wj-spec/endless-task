@@ -25,6 +25,7 @@ from endless_task.storage import (
     SqliteChatRepository,
     SqliteTaskRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = (
     "收到执行请求。本周项目进展如下：完成了任务提案与确认链路，"
@@ -128,7 +129,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_branch_creation_listing_and_parent_title(self) -> None:
         provider = TextProvider(["第一回合的回答。", "第二回合的回答。"])
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             await self._send_turn(client, parent["id"], "第一件事实")
             await self._send_turn(client, parent["id"], "第二件事实")
 
@@ -159,7 +160,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
         """分支快照合并谱系历史：继承轮在前、自有轮在后，conversationId 可区分。"""
         provider = TextProvider(["第一轮的回答。", "第二轮的回答。"])
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             first = await self._send_turn(client, parent["id"], "第一轮事实")
             await self._send_turn(client, parent["id"], "第二轮事实")
 
@@ -194,9 +195,9 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_fork_turn_validation(self) -> None:
         provider = TextProvider(["回答甲。", "回答乙。"])
         async with local_client(self.database_path, provider) as client:
-            first = (await client.post("/conversations")).json()
+            first = await create_bound_conversation(client)
             await self._send_turn(client, first["id"], "甲会话的内容")
-            second = (await client.post("/conversations")).json()
+            second = await create_bound_conversation(client)
             self.assertNotEqual(first["id"], second["id"])
 
             empty = await client.post(f"/conversations/{second['id']}/branches", json={})
@@ -211,7 +212,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_promote_matrix(self) -> None:
         provider = TextProvider(["源会话的回答。"])
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             await self._send_turn(client, parent["id"], "源会话的一轮")
 
             normal = await client.post(f"/conversations/{parent['id']}/promote")
@@ -234,7 +235,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
             ["第一轮回答：青瓷。", "第二轮回答：建盏。", "分支里的回答。"]
         )
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             first = await self._send_turn(client, parent["id"], "第一件事实：青瓷")
             await self._send_turn(client, parent["id"], "第二件事实：建盏")
             first_turn_id = None
@@ -280,7 +281,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
         async with local_client(
             self.database_path, provider, memory_proposals=True
         ) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             await self._send_turn(client, parent["id"], "源会话：记住我喜欢本地优先。")
             branch = (
                 await client.post(f"/conversations/{parent['id']}/branches", json={})
@@ -314,7 +315,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
             ["源会话的回答：已经收到你的请求，我会按照约定的节奏持续跟进这件事，有进展会第一时间同步给你。", EMPTY_TASK_EXTRACTION, RUN_ANSWER, EMPTY_TASK_EXTRACTION]
         )
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             await self._send_turn(client, parent["id"], "请每周总结项目进展")
             while len(provider.requests) < 2:
                 await asyncio.sleep(0.005)
@@ -369,7 +370,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             await self._send_turn(client, parent["id"], "请每周总结项目进展")
             while len(provider.requests) < 2:
                 await asyncio.sleep(0.005)
@@ -415,7 +416,7 @@ class ConversationBranchGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_parent_delete_cascades_descendants(self) -> None:
         provider = TextProvider(["源会话的回答。", "分支的回答。"])
         async with local_client(self.database_path, provider) as client:
-            parent = (await client.post("/conversations")).json()
+            parent = await create_bound_conversation(client)
             await self._send_turn(client, parent["id"], "源会话的一轮")
             branch = (
                 await client.post(f"/conversations/{parent['id']}/branches", json={})

@@ -14,6 +14,7 @@ from endless_task.runtime import (
     ProviderTextDelta,
     ProviderToolCall,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class GateProvider:
@@ -136,7 +137,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "你好")
             terminal = await self._wait_for_terminal(client, created["turnId"])
 
@@ -145,8 +146,18 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([], terminal["activities"])
             self.assertEqual(1, len(provider.requests))
             # 工具定义可用，但模型不调用时不得产生任何工具状态。
+            # 会话现在归属已绑定工作区，工作区工具（fs/shell）也一并注入。
             self.assertEqual(
-                ("read_artifact", "read_skill_file", "read_text_file"),
+                (
+                    "delete_workspace_file",
+                    "list_workspace_dir",
+                    "read_artifact",
+                    "read_skill_file",
+                    "read_text_file",
+                    "read_workspace_file",
+                    "run_shell",
+                    "write_workspace_file",
+                ),
                 tuple(tool.name for tool in provider.requests[0].tools),
             )
             event_types = await self._event_types(client, created["turnId"])
@@ -156,7 +167,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_file_question_automatically_selects_file_tool(self) -> None:
         provider = GateProvider()
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             file_id = await self._upload_file(client, conversation_id)
             provider.responses = (
                 (
@@ -202,7 +213,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "帮我读一下文件")
             terminal = await self._wait_for_terminal(client, created["turnId"])
 
@@ -214,7 +225,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_tool_failure_is_understood_and_explained_by_assistant(self) -> None:
         provider = GateProvider()
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             file_id = await self._upload_file(client, conversation_id)
             provider.responses = (
                 (
@@ -254,7 +265,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             ((ProviderTextDelta("好的"), ProviderCompleted("stop")),)
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
 
             rejected = await client.post(
                 f"/conversations/{conversation_id}/turns",
@@ -277,7 +288,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             provider,
             max_agent_iterations=2,
         ) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             file_id = await self._upload_file(client, conversation_id)
             provider.responses = (
                 (

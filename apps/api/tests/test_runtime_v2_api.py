@@ -35,6 +35,7 @@ from endless_task.tooling import (
     ToolRegistry,
     ToolResult,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class ScriptedProvider:
@@ -236,7 +237,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(lanes["items"][0]["isMain"])
         self.assertEqual(lanes["items"][0]["id"], lanes["activeLaneId"])
 
-        next_conversation = (await client.post("/conversations")).json()
+        next_conversation = await create_bound_conversation(client)
         self.assertNotEqual(conversation.id, next_conversation["id"])
         self.assertEqual("新对话", next_conversation["title"])
         next_snapshot = await client.get(
@@ -337,9 +338,7 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
             runtime_rollback=True,
         )
         container = rollback_app.state.container
-        conversation = (
-            await rollback_client.post("/conversations")
-        ).json()
+        conversation = await create_bound_conversation(rollback_client)
 
         first_turn = await rollback_client.post(
             f"/conversations/{conversation['id']}/turns",

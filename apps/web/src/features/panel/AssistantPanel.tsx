@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useId,
-  useRef,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from "react";
+import { useId, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   CapabilitySnapshot,
   CapabilityState,
@@ -23,6 +18,9 @@ import { SkillsContent } from "../skills/SkillsManagement";
 import { McpContent } from "../mcp/McpManagement";
 import { ProviderManagement } from "../providers/ProviderManagement";
 import { RuntimeV2Panel } from "./RuntimeV2Panel";
+import { CloseIcon } from "../ui/Icons";
+import { useMediaQuery } from "../ui/useMediaQuery";
+import { useModalDialog } from "../ui/useModalDialog";
 
 export type AssistantPanelTab =
   | "notifications"
@@ -49,7 +47,7 @@ const PANEL_TABS: AssistantPanelTabItem[] = [
   { id: "knowledge", label: "知识", scope: "knowledge" },
   { id: "skills", label: "技能", scope: "system" },
   { id: "mcp", label: "MCP", scope: "system" },
-  { id: "providers", label: "模型", scope: "system" },
+  { id: "providers", label: "模型服务", scope: "system" },
   { id: "runtime-v2", label: "执行状态", scope: "system" },
 ];
 
@@ -107,26 +105,13 @@ export function AssistantPanel({
 }: AssistantPanelProps) {
   const panelId = useId();
   const selectedTabRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useEffect(() => {
-    const returnFocusTarget =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    selectedTabRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      event.preventDefault();
-      closeRef.current();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      if (returnFocusTarget?.isConnected) returnFocusTarget.focus();
-    };
-  }, []);
+  const isMobile = useMediaQuery("(max-width: 760px)");
+  const isDialog = isMobile;
+  const dialogRef = useModalDialog<HTMLElement>({
+    active: isDialog,
+    initialFocusRef: selectedTabRef,
+    onClose,
+  });
 
   const panelScope = TAB_SCOPES[tab];
   const visibleTabs = PANEL_TABS.filter((item) => item.scope === panelScope);
@@ -159,7 +144,7 @@ export function AssistantPanel({
     state: CapabilityState | "loading";
     tab: AssistantPanelTab;
   }> = [
-    { label: "模型", state: capabilities?.provider.state ?? "loading", tab: "providers" },
+    { label: "模型服务", state: capabilities?.provider.state ?? "loading", tab: "providers" },
     { label: "MCP", state: capabilities?.mcp.state ?? "loading", tab: "mcp" },
     { label: "技能", state: capabilities?.skills.state ?? "loading", tab: "skills" },
   ];
@@ -167,8 +152,10 @@ export function AssistantPanel({
   return (
     <aside
       aria-label={`${SCOPE_LABELS[panelScope]}面板`}
+      aria-modal={isDialog ? true : undefined}
       className="assistant-panel"
-      ref={panelRef}
+      ref={dialogRef}
+      role={isDialog ? "dialog" : undefined}
     >
       <header className="assistant-panel-header">
         <div
@@ -202,7 +189,7 @@ export function AssistantPanel({
           onClick={onClose}
           type="button"
         >
-          <span aria-hidden="true">×</span>
+          <CloseIcon size={20} />
         </button>
       </header>
       {panelScope === "system" ? (

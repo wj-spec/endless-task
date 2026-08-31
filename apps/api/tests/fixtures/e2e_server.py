@@ -5,6 +5,8 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from fastapi import Header, HTTPException
+
 from endless_task.api.app import AppSettings, create_app
 from endless_task.domain.models import ArtifactKind, KnowledgeProposalType, MemoryKind
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
@@ -199,6 +201,49 @@ app = create_app(
     provider=provider,
     tool_registry=tool_registry,
 )
+
+E2E_MODEL_CREDENTIALS = {
+    "Bearer e2e-model-key-one": "key-one",
+    "Bearer e2e-model-key-two": "key-two",
+}
+e2e_model_service_state: dict[str, str | None] = {
+    "lastCredentialVersion": None,
+}
+
+
+@app.get("/__e2e/openai/models")
+async def e2e_model_catalog(
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    credential_version = E2E_MODEL_CREDENTIALS.get(authorization or "")
+    if credential_version is None:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "invalid_api_key", "message": "invalid credential"},
+        )
+    e2e_model_service_state["lastCredentialVersion"] = credential_version
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "e2e-alpha",
+                "object": "model",
+                "created": 0,
+                "owned_by": "e2e",
+            },
+            {
+                "id": "e2e-beta",
+                "object": "model",
+                "created": 0,
+                "owned_by": "e2e",
+            },
+        ],
+    }
+
+
+@app.get("/__e2e/model-service")
+async def e2e_model_service_status() -> dict[str, str | None]:
+    return dict(e2e_model_service_state)
 
 
 @app.get("/__e2e/provider")

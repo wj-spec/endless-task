@@ -1,20 +1,38 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { BrowseItem, EffectLogEntry, Workspace } from "../chat/apiTypes";
 import { chatApi } from "../chat/api";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { useModalDialog } from "../ui/useModalDialog";
+import { CloseIcon, FileIcon, FolderIcon } from "../ui/Icons";
 
 type WorkspaceSettingsModalProps = {
   workspace: Workspace | null;
   onClose: () => void;
   onWorkspaceUpdated: (workspace: Workspace) => void;
+  onDeleteWorkspace: (workspaceId: string) => Promise<void>;
 };
 
 const QUICK_LOCATIONS = ["~/Desktop", "~/Documents"];
+
+const workspaceErrorText = (error: unknown): string => {
+  if (typeof error === "object" && error !== null) {
+    const maybe = error as { code?: string; message?: string };
+    if (maybe.code === "workspace_not_empty") {
+      return "当前工作区仍有会话，请先迁移这些会话后再删除工作区。";
+    }
+    if (maybe.code === "workspace_not_found") {
+      return "该工作区已不存在。";
+    }
+    if (maybe.message) return maybe.message;
+  }
+  return "删除工作区失败，请重试。";
+};
 
 export function WorkspaceSettingsModal({
   workspace,
   onClose,
   onWorkspaceUpdated,
+  onDeleteWorkspace,
 }: WorkspaceSettingsModalProps) {
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [items, setItems] = useState<BrowseItem[]>([]);
@@ -24,6 +42,9 @@ export function WorkspaceSettingsModal({
   const [bindingError, setBindingError] = useState<string | null>(null);
   const [logEntries, setLogEntries] = useState<EffectLogEntry[]>([]);
   const [showHidden, setShowHidden] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useModalDialog({
@@ -122,7 +143,7 @@ export function WorkspaceSettingsModal({
             title="关闭"
             type="button"
           >
-            <span aria-hidden="true">✕</span>
+            <CloseIcon size={18} />
           </button>
         </header>
         <div className="overlay-body">
@@ -212,8 +233,15 @@ export function WorkspaceSettingsModal({
                         }
                       }}
                     >
-                      <span className={item.kind === "directory" ? "dir-icon" : "file-icon"}>
-                        {item.kind === "directory" ? "📁" : "📄"}
+                      <span
+                        aria-hidden="true"
+                        className={item.kind === "directory" ? "dir-icon" : "file-icon"}
+                      >
+                        {item.kind === "directory" ? (
+                          <FolderIcon size={18} />
+                        ) : (
+                          <FileIcon size={18} />
+                        )}
                       </span>
                       <span className="directory-picker-name">{item.name}</span>
                       {item.kind === "directory" && (
@@ -254,6 +282,42 @@ export function WorkspaceSettingsModal({
               </ul>
             </div>
           )}
+
+          <div className="workspace-section-divider" />
+          <p className="settings-section-hint">
+            删除工作区只移除注册与分组，不影响目录与已存文件；仍含会话的工作区不能删除。
+          </p>
+          {deleteError && <p className="workspace-binding-error">{deleteError}</p>}
+          <button
+            className="danger-action"
+            disabled={deleting}
+            onClick={() => {
+              setDeleteError(null);
+              setConfirmingDelete(true);
+            }}
+            type="button"
+          >
+            {deleting ? "删除中…" : "删除工作区"}
+          </button>
+          {confirmingDelete && workspace ? (
+            <ConfirmDialog
+              body="删除后该工作区将从列表移除，其会话与文件保留。含会话的工作区无法删除，请先迁移。"
+              confirmLabel="删除工作区"
+              onClose={() => setConfirmingDelete(false)}
+              onConfirm={() => {
+                setConfirmingDelete(false);
+                setDeleting(true);
+                setDeleteError(null);
+                void onDeleteWorkspace(workspace.id)
+                  .then(onClose)
+                  .catch((error) => {
+                    setDeleteError(workspaceErrorText(error));
+                  })
+                  .finally(() => setDeleting(false));
+              }}
+              title="删除这个工作区？"
+            />
+          ) : null}
         </div>
       </div>
     </div>

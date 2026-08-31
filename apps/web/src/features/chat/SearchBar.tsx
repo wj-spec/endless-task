@@ -1,3 +1,5 @@
+import { ChevronIcon, CloseIcon, SearchIcon } from "../ui/Icons";
+
 type SearchBarProps = {
   current: number;
   hitCount: number;
@@ -20,7 +22,7 @@ export function SearchBar({
   return (
     <div className="search-bar" role="search">
       <span aria-hidden="true" className="search-glyph">
-        ⌕
+        <SearchIcon size={17} />
       </span>
       <input
         aria-label="搜索当前会话"
@@ -52,7 +54,7 @@ export function SearchBar({
         onClick={onPrev}
         type="button"
       >
-        ↑
+        <ChevronIcon direction="up" size={18} />
       </button>
       <button
         aria-label="下一个匹配"
@@ -60,10 +62,10 @@ export function SearchBar({
         onClick={onNext}
         type="button"
       >
-        ↓
+        <ChevronIcon direction="down" size={18} />
       </button>
       <button aria-label="关闭搜索" onClick={onClose} type="button">
-        ×
+        <CloseIcon size={18} />
       </button>
     </div>
   );

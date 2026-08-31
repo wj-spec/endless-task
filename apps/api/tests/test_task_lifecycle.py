@@ -19,6 +19,7 @@ from endless_task.storage import (
     SqliteTaskRunRepository,
 )
 from endless_task.tasks import TaskScheduler
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class TextProvider:
@@ -102,7 +103,7 @@ class TaskLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_transition_matrix_and_visibility(self) -> None:
         async with local_client(self.database_path) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id, self.future_time)
 
             missing = await client.post("/tasks/task_missing/pause")

@@ -24,6 +24,7 @@ from endless_task.storage import (
     Database,
     SqliteReminderRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = (
     "好的，明天下午三点我会提醒你整理这份文档；"
@@ -126,7 +127,7 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider([[RUN_ANSWER], [extraction]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             response = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "req-rem-1"},
@@ -179,7 +180,7 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             [[RUN_ANSWER], ['{"awaiting_user": false, "note": null}']]
         )
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             # 源会话需存在：用 API 重建同 id 不可行，改为新建提醒指向真实会话。
             reminders.cancel_reminder(reminder.id)
             due2 = ReminderDue(at=past_local.strftime("%Y-%m-%dT%H:%M"))
@@ -225,7 +226,7 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
         reminders = SqliteReminderRepository(database)
         provider = TextProvider([[RUN_ANSWER]])
         async with local_client(self.database_path, provider) as client:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             reminder = reminders.create_reminder(
                 title="发结果",
                 commitment="把结果发给我",

@@ -19,6 +19,7 @@ from endless_task.storage import (
     SqliteMemoryProposalRepository,
     SqliteMemoryRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class TextProvider:
@@ -198,7 +199,7 @@ class MemoryLifecycleGateTest(unittest.IsolatedAsyncioTestCase):
         conflict = json.dumps({"superseded": [seeded.id]})
         provider = TextProvider(["好的。", extraction, conflict, "好的，按杭州来。"])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             response = await client.post(
                 f"/conversations/{conversation['id']}/turns",
                 headers={"Idempotency-Key": "request-1"},

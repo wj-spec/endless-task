@@ -157,6 +157,26 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         return client
 
     @staticmethod
+    async def _new_conversation(
+        client: httpx.AsyncClient,
+    ) -> dict[str, object]:
+        """创建并绑定一个本地目录作为工作区，再在其下新建一个会话。
+
+        必选绑定产品设定：新建会话必须归属到一个已绑定目录的工作区。本 helper
+        用临时目录作为工作区根，便于 API 层会话创建测试。
+        """
+        workspace = await client.post(
+            "/workspaces",
+            json={"name": "测试工作区", "rootPath": tempfile.mkdtemp(prefix="ws-")},
+        )
+        workspace_id = workspace.json()["workspace"]["id"]
+        response = await client.post(
+            "/conversations", json={"workspaceId": workspace_id}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
     async def _wait_for_terminal(
         client: httpx.AsyncClient,
         turn_id: str,
@@ -199,7 +219,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry()
         registry.register(tool)
         client = await self._client(provider, tool_registry=registry)
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         created = await self._create_turn(client, conversation_id)
         turn_id = created.json()["turnId"]
 
@@ -233,7 +253,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry()
         registry.register(tool)
         client = await self._client(provider, tool_registry=registry)
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         created = await self._create_turn(client, conversation_id)
         turn_id = created.json()["turnId"]
         approval = await self._wait_for_approval(client, turn_id)
@@ -254,7 +274,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry()
         registry.register(tool)
         client = await self._client(provider, tool_registry=registry)
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         created = await self._create_turn(client, conversation_id)
         turn_id = created.json()["turnId"]
         approval = await self._wait_for_approval(client, turn_id)
@@ -273,8 +293,17 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_conversation_is_reused_until_first_turn(self) -> None:
         client = await self._client()
-        first = await client.post("/conversations")
-        second = await client.post("/conversations")
+        workspace = await client.post(
+            "/workspaces",
+            json={"name": "测试工作区", "rootPath": tempfile.mkdtemp(prefix="ws-")},
+        )
+        workspace_id = workspace.json()["workspace"]["id"]
+        first = await client.post(
+            "/conversations", json={"workspaceId": workspace_id}
+        )
+        second = await client.post(
+            "/conversations", json={"workspaceId": workspace_id}
+        )
 
         self.assertEqual(201, first.status_code)
         self.assertEqual(first.json()["id"], second.json()["id"])
@@ -282,12 +311,14 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         turn = await self._create_turn(client, first.json()["id"])
         self.assertEqual(202, turn.status_code)
         await self._wait_for_terminal(client, turn.json()["turnId"])
-        third = await client.post("/conversations")
+        third = await client.post(
+            "/conversations", json={"workspaceId": workspace_id}
+        )
         self.assertNotEqual(first.json()["id"], third.json()["id"])
 
     async def test_conversation_text_file_upload_listing_and_delete(self) -> None:
         client = await self._client()
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
 
         uploaded = await client.post(
             f"/conversations/{conversation_id}/files",
@@ -313,7 +344,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_file_upload_enforces_streaming_size_limit(self) -> None:
         client = await self._client(max_file_bytes=4)
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
 
         response = await client.post(
             f"/conversations/{conversation_id}/files",
@@ -326,7 +357,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_uploaded_file_can_be_read_through_the_chat_agent_loop(self) -> None:
         initial_client = await self._client()
-        conversation_id = (await initial_client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(initial_client))["id"]
         uploaded = await initial_client.post(
             f"/conversations/{conversation_id}/files",
             params={"filename": "brief.md"},
@@ -372,7 +403,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_file_tool_exposes_only_a_natural_activity(self) -> None:
         client = await self._client(FileReadingProvider("file_missing"))
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         created = await self._create_turn(client, conversation_id)
 
         result = await self._wait_for_terminal(client, created.json()["turnId"])
@@ -388,7 +419,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_turn_command_snapshot_and_sse_replay(self) -> None:
         client = await self._client()
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         created = await self._create_turn(client, conversation_id)
         self.assertEqual(202, created.status_code)
         payload = created.json()
@@ -423,7 +454,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_sse_emits_heartbeat_while_waiting(self) -> None:
         client = await self._client(DelayedProvider(), heartbeat_seconds=0.005)
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         created = await self._create_turn(client, conversation_id)
 
         stream = await client.get(created.json()["eventsUrl"])
@@ -433,7 +464,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_idempotent_create_and_regenerate_return_original_ids(self) -> None:
         client = await self._client()
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         first = await self._create_turn(client, conversation_id)
         first_payload = first.json()
         await self._wait_for_terminal(client, first_payload["turnId"])
@@ -471,7 +502,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_errors_use_stable_envelope(self) -> None:
         client = await self._client()
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
 
         missing_key = await client.post(
             f"/conversations/{conversation_id}/turns",
@@ -507,7 +538,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         untrusted = await client.get("/health", headers={"Host": "attacker.example"})
         self.assertEqual(400, untrusted.status_code)
 
-        conversation_id = (await client.post("/conversations")).json()["id"]
+        conversation_id = (await self._new_conversation(client))["id"]
         oversized = await client.post(
             f"/conversations/{conversation_id}/turns",
             headers={"Idempotency-Key": "oversized"},
@@ -515,3 +546,85 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(413, oversized.status_code)
         self.assertEqual("message_too_large", oversized.json()["error"]["code"])
+
+
+class WorkspaceBindingApiTest(LocalApiTest):
+    """S2：必选绑定设定——会话创建/迁移必须归属已绑定目录的工作区；删除保护。"""
+
+    async def test_create_conversation_requires_bound_workspace(self) -> None:
+        client = await self._client()
+        # 不提供 workspaceId → 409 workspace_required。
+        missing = await client.post("/conversations")
+        self.assertEqual(409, missing.status_code)
+        self.assertEqual("workspace_required", missing.json()["error"]["code"])
+
+        # 指向未绑定目录的工作区 → 409 workspace_not_bound。
+        workspace = await client.post(
+            "/workspaces", json={"name": "未绑定工作区"}
+        )
+        workspace_id = workspace.json()["workspace"]["id"]
+        unbound = await client.post(
+            "/conversations", json={"workspaceId": workspace_id}
+        )
+        self.assertEqual(409, unbound.status_code)
+        self.assertEqual("workspace_not_bound", unbound.json()["error"]["code"])
+
+        # 不存在的工作区 → 404 workspace_not_found。
+        missing_ws = await client.post(
+            "/conversations", json={"workspaceId": "ws_missing"}
+        )
+        self.assertEqual(404, missing_ws.status_code)
+        self.assertEqual("workspace_not_found", missing_ws.json()["error"]["code"])
+
+    async def test_patch_conversation_migrates_between_bound_workspaces(self) -> None:
+        client = await self._client()
+        conversation_id = (await self._new_conversation(client))["id"]
+
+        target_workspace = await client.post(
+            "/workspaces",
+            json={"name": "目标工作区", "rootPath": tempfile.mkdtemp(prefix="ws-")},
+        )
+        target_id = target_workspace.json()["workspace"]["id"]
+
+        migrated = await client.patch(
+            f"/conversations/{conversation_id}",
+            json={"workspaceId": target_id},
+        )
+        self.assertEqual(200, migrated.status_code)
+        self.assertEqual(target_id, migrated.json()["workspaceId"])
+
+    async def test_patch_conversation_rejects_unbound_target(self) -> None:
+        client = await self._client()
+        conversation_id = (await self._new_conversation(client))["id"]
+
+        unbound_workspace = await client.post(
+            "/workspaces", json={"name": "未绑定目标"}
+        )
+        unbound_id = unbound_workspace.json()["workspace"]["id"]
+        rejected = await client.patch(
+            f"/conversations/{conversation_id}",
+            json={"workspaceId": unbound_id},
+        )
+        self.assertEqual(409, rejected.status_code)
+        self.assertEqual("workspace_not_bound", rejected.json()["error"]["code"])
+
+    async def test_delete_workspace_with_conversations_is_rejected(self) -> None:
+        client = await self._client()
+        # 先建一个承载会话的工作区。
+        conversation_id = (await self._new_conversation(client))["id"]
+        conversation = await client.get(f"/conversations/{conversation_id}")
+        workspace_id = conversation.json()["conversation"]["workspaceId"]
+
+        rejected = await client.delete(f"/workspaces/{workspace_id}")
+        self.assertEqual(409, rejected.status_code)
+        self.assertEqual("workspace_not_empty", rejected.json()["error"]["code"])
+
+    async def test_delete_empty_workspace_succeeds(self) -> None:
+        client = await self._client()
+        workspace = await client.post(
+            "/workspaces",
+            json={"name": "空工作区", "rootPath": tempfile.mkdtemp(prefix="ws-")},
+        )
+        workspace_id = workspace.json()["workspace"]["id"]
+        deleted = await client.delete(f"/workspaces/{workspace_id}")
+        self.assertEqual(204, deleted.status_code)

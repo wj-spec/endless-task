@@ -16,6 +16,8 @@ import type {
 import { chatApi } from "./api";
 import type { RuntimeConnectionPhase } from "./runtimeController";
 import { CitationCard } from "./CitationCard";
+import { RuntimeTracePanel } from "./RuntimeTracePanel";
+import { buildRuntimeToolTrace } from "./runtimeTrace";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { KnowledgeProposalCard } from "../proposals/KnowledgeProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
@@ -26,9 +28,10 @@ import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { RowMenu } from "../ui/RowMenu";
-import { SidebarToggleIcon } from "../ui/SidebarToggleIcon";
+import { BranchIcon, ChevronIcon } from "../ui/Icons";
 import { StatusBadge } from "../ui/StatusBadge";
-import { BranchNavigator } from "./BranchNavigator";
+import { ChatComposer } from "./ChatComposer";
+import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 
 type ChatWorkSurfaceProps = {
   conversation: ConversationSnapshot | null;
@@ -245,8 +248,6 @@ export function ChatWorkSurface({
   variant = "main",
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -259,12 +260,7 @@ export function ChatWorkSurface({
     turnId: string;
     label: string;
   } | null>(null);
-  const [modelDraft, setModelDraft] = useState("");
   const [inheritedHistoryOpen, setInheritedHistoryOpen] = useState(false);
-
-  useEffect(() => {
-    setModelDraft(conversation?.conversation.modelOverride ?? "");
-  }, [conversation?.conversation.id, conversation?.conversation.modelOverride]);
 
   const handleCitationClick = async (turnId: string, label: string) => {
     if (
@@ -315,6 +311,10 @@ export function ChatWorkSurface({
   };
 
   const conversationId = conversation?.conversation.id;
+  const activeWorkspace =
+    workspaces?.find(
+      (item) => item.id === conversation?.conversation.workspaceId,
+    ) ?? null;
   const currentLane = branchLanes.find((lane) => lane.id === currentLaneId) ?? null;
   const mainLane = branchLanes.find((lane) => lane.isMain) ?? null;
   const viewingBranch = variant === "main" && currentLane !== null && !currentLane.isMain;
@@ -368,14 +368,14 @@ export function ChatWorkSurface({
   }, [conversationId, conversation?.conversation.title]);
 
   useEffect(() => {
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth";
+    streamRef.current?.scrollTo({
+      top: streamRef.current.scrollHeight,
+      behavior,
+    });
   }, [conversation?.turns.length, latestLiveContent]);
-
-  useEffect(() => {
-    if (variant === "side" && !loading && conversation) {
-      composerRef.current?.focus();
-    }
-  }, [variant, loading, conversationId]);
 
   const submitTitle = () => {
     const title = titleDraft.trim();
@@ -384,14 +384,6 @@ export function ChatWorkSurface({
   };
 
   const archived = conversation?.conversation.status === "archived";
-  const defaultProvider = providers.find((item) => item.isDefault) ?? providers[0];
-  const selectedProvider = providers.find(
-    (item) => item.id === conversation?.conversation.providerProfileId,
-  );
-  const effectiveProvider = selectedProvider ?? defaultProvider;
-  const providerUnavailable =
-    (health !== null && !health.providerConfigured) ||
-    effectiveProvider?.configured === false;
   const runningLane = runtimeSnapshot?.runningLaneId
     ? branchLanes.find((lane) => lane.id === runtimeSnapshot.runningLaneId) ?? null
     : null;
@@ -402,28 +394,13 @@ export function ChatWorkSurface({
   );
   const runningLaneLabel =
     runningLane?.displayName ?? runningLane?.title ?? runningLane?.summary ?? "另一分支";
-  const composerDisabled =
-    !conversation || archived || providerUnavailable || otherLaneRunning;
-  const selectableProviders = providers.filter(
-    (item) => item.enabled || item.id === selectedProvider?.id,
-  );
 
-  const changeProvider = (value: string) => {
-    if (value === "__manage__") {
-      onOpenAssistantTab?.("providers");
-      return;
-    }
-    onModelChange(value || null, modelDraft.trim() || null);
-  };
-
-  const commitModelDraft = () => {
-    if (!conversation) return;
-    const nextModel = modelDraft.trim();
-    if (nextModel === (conversation.conversation.modelOverride ?? "")) return;
-    onModelChange(conversation.conversation.providerProfileId, nextModel || null);
-  };
-  const attachmentDisabled =
-    !conversation || archived || isGenerating || pendingAction !== null;
+  const activeSnapshot = runtimeSnapshot?.activeRunId && runtimeSnapshot.runState
+    ? runtimeSnapshot
+    : null;
+  const runtimeTools = activeSnapshot
+    ? buildRuntimeToolTrace(activeSnapshot.entries, activeSnapshot.toolStates)
+    : [];
 
   const SurfaceRoot = variant === "side" ? "section" : "main";
 
@@ -432,149 +409,39 @@ export function ChatWorkSurface({
       className={variant === "side" ? "chat-surface is-side" : "chat-surface"}
     >
       <div className="surface-top">
-        {variant === "side" ? (
-          <header className="surface-header side-surface-header">
-            <div className="conversation-heading">
-              <h1>
-                {sideMode === "branch_lane"
-                  ? currentLaneLabel
-                  : (conversation?.conversation.title ?? "临时对话")}
-              </h1>
-              {sideMode === "temporary_conversation" ? (
-                <span className="temporary-close-hint">关闭即删除</span>
-              ) : sideMode === "branch_lane" ? (
-                <span className="temporary-close-hint">关闭仅收起，不删除分支</span>
-              ) : null}
-            </div>
-            <div className="surface-header-side">
-              <button
-                aria-label={
-                  sideMode === "branch_lane"
-                    ? "收起分支对照"
-                    : "关闭并删除临时对话"
-                }
-                className="icon-button side-close"
-                onClick={requestSideClose}
-                type="button"
-              >
-                <span aria-hidden="true">×</span>
-              </button>
-            </div>
-          </header>
-        ) : (
-        <header className="surface-header">
-          <button
-            aria-label="展开侧栏"
-            className="icon-button mobile-menu"
-            onClick={onMenu}
-            title="展开侧栏"
-            type="button"
-          >
-            <SidebarToggleIcon expanded={false} />
-          </button>
-          <div className="conversation-heading">
-            {renaming ? (
-              <input
-                aria-label="会话标题"
-                autoFocus
-                className="title-input"
-                onBlur={submitTitle}
-                onChange={(event) => setTitleDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") submitTitle();
-                  if (event.key === "Escape") setRenaming(false);
-                }}
-                value={titleDraft}
-              />
-            ) : (
-              <h1>{conversation?.conversation.title ?? "Endless"}</h1>
-            )}
-            {archived ? <span className="archived-chip">已归档</span> : null}
-            {variant === "main" &&
-            conversationId &&
-            branchLanes.length > 0 &&
-            onCreateBranch &&
-            onArchiveLane &&
-            onOpenLaneInSide &&
-            onPromoteLane &&
-            onRenameLane &&
-            onRestoreLane &&
-            onShowArchivedLanes &&
-            onSwitchLane ? (
-              <BranchNavigator
-                conversationId={conversationId}
-                currentLaneId={currentLaneId}
-                disabled={isGenerating || pendingAction !== null}
-                lanes={branchLanes}
-                onArchive={onArchiveLane}
-                onOpenSide={onOpenLaneInSide}
-                onPromote={onPromoteLane}
-                onRename={onRenameLane}
-                onRestore={onRestoreLane}
-                onShowArchived={onShowArchivedLanes}
-                onSwitch={onSwitchLane}
-              />
-            ) : null}
-          </div>
-          <div className="surface-header-side">
-            {conversation ? (
-              <div className="conversation-actions">
-                <button
-                  aria-label="搜索当前会话"
-                  className="icon-button conversation-icon-button"
-                  onClick={search.openSearch}
-                  title="搜索当前会话"
-                  type="button"
-                >
-                  <span aria-hidden="true">⌕</span>
-                </button>
-                <button
-                  aria-label="开临时会话"
-                  className="icon-button conversation-icon-button"
-                  disabled={
-                    isGenerating ||
-                    pendingAction !== null ||
-                    !onCreateTemporaryConversation ||
-                    (conversation?.turns.length ?? 0) === 0
-                  }
-                  onClick={() => onCreateTemporaryConversation?.()}
-                  title="基于当前对话开一个临时会话：深究或多方案并行，不污染原会话"
-                  type="button"
-                >
-                  <span aria-hidden="true">⑂</span>
-                </button>
-                <RowMenu
-                  trigger={<span aria-hidden="true">⋯</span>}
-                  triggerAriaLabel="更多会话操作"
-                  triggerClassName="icon-button conversation-icon-button"
-                  items={[
-                    { label: "重命名", onSelect: () => setRenaming(true) },
-                    ...(onOpenWorkspaceSettings
-                      ? [
-                          {
-                            label: "配置当前工作区",
-                            onSelect: onOpenWorkspaceSettings,
-                          },
-                        ]
-                      : []),
-                    {
-                      label: archived ? "恢复" : "归档",
-                      disabled: isGenerating,
-                      onSelect: archived ? onRestore : onArchive,
-                    },
-                    {
-                      danger: true,
-                      disabled: isGenerating,
-                      label: "删除",
-                      onSelect: () => setConfirmingDelete(true),
-                    },
-                  ]}
-                />
-              </div>
-            ) : null}
-          </div>
-        </header>
-        )}
+        <ChatSurfaceHeader
+          activeWorkspace={activeWorkspace}
+          archived={archived}
+          branchLanes={branchLanes}
+          conversation={conversation}
+          currentLaneId={currentLaneId}
+          currentLaneLabel={currentLaneLabel}
+          isGenerating={isGenerating}
+          pendingAction={pendingAction}
+          renaming={renaming}
+          sideMode={sideMode}
+          titleDraft={titleDraft}
+          variant={variant}
+          onArchive={onArchive}
+          onArchiveLane={onArchiveLane}
+          onCreateBranch={onCreateBranch}
+          onCreateTemporaryConversation={onCreateTemporaryConversation}
+          onMenu={onMenu}
+          onOpenLaneInSide={onOpenLaneInSide}
+          onOpenWorkspaceSettings={onOpenWorkspaceSettings}
+          onPromoteLane={onPromoteLane}
+          onRenameLane={onRenameLane}
+          onRequestSideClose={requestSideClose}
+          onRestore={onRestore}
+          onRestoreLane={onRestoreLane}
+          onSearch={search.openSearch}
+          onSetConfirmingDelete={() => setConfirmingDelete(true)}
+          onSetRenaming={setRenaming}
+          onShowArchivedLanes={onShowArchivedLanes}
+          onSubmitTitle={submitTitle}
+          onSwitchLane={onSwitchLane}
+          onTitleDraftChange={setTitleDraft}
+        />
 
         {conversation?.conversation.kind === "ephemeral" ? (
           <div className="branch-banner" role="note">
@@ -670,7 +537,15 @@ export function ChatWorkSurface({
 
       </div>
 
-      <div className="conversation-stream" ref={streamRef}>
+      <div
+        aria-atomic="false"
+        aria-label="对话记录"
+        aria-live="polite"
+        aria-relevant="additions"
+        className="conversation-stream"
+        ref={streamRef}
+        role="log"
+      >
         {error ? (
           <div className="inline-error" role="alert">
             <span>{error}</span>
@@ -823,7 +698,9 @@ export function ChatWorkSurface({
                         onJump={jumpCitation}
                       />
                     ) : null}
-                    {activities.length ? (
+                    {activeSnapshot && isLatest ? (
+                      <RuntimeTracePanel tools={runtimeTools} />
+                    ) : activities.length ? (
                       <div className="activity-list" aria-label="操作状态">
                         {activities.map((activity) => (
                           <div
@@ -934,7 +811,7 @@ export function ChatWorkSurface({
                               }
                               type="button"
                             >
-                              ‹
+                              <ChevronIcon direction="left" size={16} />
                             </button>
                             <span>
                               {selectedIndex + 1} / {turnSnapshot.responseVariants.length}
@@ -953,12 +830,13 @@ export function ChatWorkSurface({
                               }
                               type="button"
                             >
-                              ›
+                              <ChevronIcon direction="right" size={16} />
                             </button>
                           </div>
                         ) : null}
                         {status === "completed" && onCreateBranch ? (
                           <button
+                            aria-busy={pendingAction === "fork-lane"}
                             aria-label="从此回答创建分支"
                             className="branch-from-answer"
                             disabled={isGenerating || pendingAction !== null}
@@ -966,8 +844,8 @@ export function ChatWorkSurface({
                             title="保留到这条完整回答，在右侧开始分支"
                             type="button"
                           >
-                            <span aria-hidden="true">⑂</span>
-                            创建分支
+                            <BranchIcon size={16} />
+                            {pendingAction === "fork-lane" ? "正在创建…" : "创建分支"}
                           </button>
                         ) : null}
                       </div>
@@ -1073,163 +951,26 @@ export function ChatWorkSurface({
         </div>
       </div>
 
-      <footer className="composer-region">
-        <div className="composer">
-          {variant !== "side" && conversation?.files.length ? (
-            <div className="composer-files" aria-label="当前对话文件">
-              {conversation.files.map((file) => (
-                <span className="composer-file" key={file.id}>
-                  <span aria-hidden="true">⌑</span>
-                  <span title={file.originalName}>{file.originalName}</span>
-                  <button
-                    aria-label={`移除 ${file.originalName}`}
-                    disabled={attachmentDisabled}
-                    onClick={() => onRemoveFile(file.id)}
-                    type="button"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          ) : null}
-          <div className="composer-input-row">
-            {variant === "side" ? null : (
-              <>
-                <input
-                  ref={fileInputRef}
-                  accept=".txt,.md,.markdown,.json,.csv,.tsv,.py,.js,.jsx,.ts,.tsx,.html,.css,.yaml,.yml,.toml"
-                  className="file-input"
-                  disabled={attachmentDisabled}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) onUploadFile(file);
-                    event.target.value = "";
-                  }}
-                  type="file"
-                />
-                <button
-                  aria-label="添加文本文件"
-                  className="attach-button"
-                  disabled={attachmentDisabled}
-                  onClick={() => fileInputRef.current?.click()}
-                  type="button"
-                >
-                  <span aria-hidden="true">＋</span>
-                </button>
-              </>
-            )}
-            <textarea
-              aria-label="给 Endless 发送消息"
-              ref={composerRef}
-              disabled={composerDisabled || isGenerating}
-              onChange={(event) => onDraftChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  onSend();
-                }
-              }}
-              placeholder={
-                archived
-                  ? "恢复对话后继续"
-                  : otherLaneRunning
-                    ? `${runningLaneLabel}正在运行，请先查看或停止`
-                    : providerUnavailable
-                      ? "请先配置模型服务"
-                      : variant === "side"
-                        ? sideMode === "branch_lane"
-                          ? "在此分支中继续对话"
-                          : "在临时会话中发送消息"
-                        : "给 Endless 发送消息"
-              }
-              rows={1}
-              value={draft}
-            />
-            {isGenerating ? (
-              <button
-                aria-label="停止生成"
-                className="send-button stop-button"
-                disabled={pendingAction === "cancel"}
-                onClick={onCancel}
-                type="button"
-              >
-                <span aria-hidden="true" />
-              </button>
-            ) : (
-              <button
-                aria-label="发送消息"
-                className="send-button"
-                disabled={composerDisabled || !draft.trim() || pendingAction !== null}
-                onClick={onSend}
-                type="button"
-              >
-                ↑
-              </button>
-            )}
-          </div>
-        </div>
-        <p className="composer-note">
-          <span
-            className={
-              health?.providerConfigured
-                ? "composer-status"
-                : "composer-status is-warning"
-            }
-          >
-            <span
-              aria-hidden="true"
-              className={
-                health?.providerConfigured
-                  ? "status-light"
-                  : "status-light is-warning"
-              }
-            />
-            <span
-              aria-atomic="true"
-              aria-live="polite"
-              className="composer-status-text"
-              role="status"
-            >
-              {health ? (health.providerConfigured ? "服务已连接" : "需要配置模型服务") : "本地服务未连接"}
-            </span>
-            <select
-              aria-label="当前对话模型"
-              className="model-select"
-              disabled={!conversation || archived || pendingAction !== null}
-              onChange={(event) => changeProvider(event.target.value)}
-              value={conversation?.conversation.providerProfileId ?? ""}
-            >
-              <option value="">
-                {defaultProvider
-                  ? `默认 · ${defaultProvider.name} · ${defaultProvider.defaultModel}`
-                  : "默认模型"}
-              </option>
-              {selectableProviders.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name} · {provider.defaultModel}
-                </option>
-              ))}
-              <option value="__manage__">管理模型…</option>
-            </select>
-            <input
-              aria-label="当前对话模型覆盖"
-              className="model-input"
-              disabled={!conversation || archived || pendingAction !== null}
-              onBlur={commitModelDraft}
-              onChange={(event) => setModelDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") event.currentTarget.blur();
-              }}
-              placeholder="模型"
-              value={modelDraft}
-            />
-          </span>
-          <span className="composer-hint">
-            Enter 发送 · Shift + Enter 换行 · 可附加 UTF-8 文本（≤ 1 MB）
-          </span>
-        </p>
-      </footer>
+      <ChatComposer
+        conversation={conversation}
+        draft={draft}
+        health={health}
+        isGenerating={isGenerating}
+        loading={loading}
+        otherLaneRunning={otherLaneRunning}
+        pendingAction={pendingAction}
+        providers={providers}
+        runningLaneLabel={runningLaneLabel}
+        sideMode={sideMode}
+        variant={variant}
+        onCancel={onCancel}
+        onDraftChange={onDraftChange}
+        onModelChange={onModelChange}
+        onOpenProviders={() => onOpenAssistantTab?.("providers")}
+        onRemoveFile={onRemoveFile}
+        onSend={onSend}
+        onUploadFile={onUploadFile}
+      />
 
       {confirmingClose ? (
         <ConfirmDialog
@@ -1265,7 +1006,7 @@ export function ChatWorkSurface({
 function EmptyConversation({ onSuggestion }: { onSuggestion: (value: string) => void }) {
   return (
     <section className="empty-conversation">
-      <span className="empty-symbol">∞</span>
+      <span aria-hidden="true" className="empty-symbol">∞</span>
       <h2>今天想聊些什么？</h2>
       <p>从一个问题、一个想法，或一件想理清的事开始。</p>
       <div className="prompt-suggestions">

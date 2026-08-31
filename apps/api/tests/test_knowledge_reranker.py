@@ -17,6 +17,7 @@ from endless_task.runtime.provider import (
     ProviderCompleted,
     ProviderTextDelta,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 def _hit(ref_id: str, title: str = "标题", snippet: str = "片段") -> KnowledgeHit:
@@ -151,7 +152,7 @@ class RerankIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 )
             ).json()["source"]
 
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             response = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "rerank-1"},
@@ -197,7 +198,7 @@ class RerankIntegrationTest(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"
         )
         try:
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             response = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "norank-1"},

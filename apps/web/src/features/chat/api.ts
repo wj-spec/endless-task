@@ -11,6 +11,7 @@ import type { KnowledgeProposal,
   ConversationSnapshot,
   ConversationStatus,
   HealthSnapshot,
+  ProviderModel,
   ProviderProfile,
   ProviderProfileInput,
   MemoryProposal,
@@ -146,6 +147,47 @@ export const chatApi = {
       method: "POST",
       body: JSON.stringify({ profileId: providerId }),
     }).then((response) => response.profile),
+  refreshProviderModels: (providerId: string) =>
+    request<{ profile: ProviderProfile }>(
+      `/providers/${providerId}/refresh-models`,
+      { method: "POST" },
+    ).then((response) => response.profile),
+  addProviderModel: (
+    providerId: string,
+    model: { modelId: string; displayName?: string },
+  ) =>
+    request<{ profile: ProviderProfile; model: ProviderModel }>(
+      `/providers/${providerId}/models`,
+      {
+        method: "POST",
+        body: JSON.stringify(model),
+      },
+    ),
+  patchProviderModel: (
+    providerId: string,
+    modelId: string,
+    patch: { enabled: boolean },
+  ) =>
+    request<{ model: ProviderModel }>(
+      `/providers/${providerId}/models/${encodeURIComponent(modelId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      },
+    ).then((response) => response.model),
+  deleteProviderModel: (providerId: string, modelId: string) =>
+    request<void>(
+      `/providers/${providerId}/models/${encodeURIComponent(modelId)}`,
+      { method: "DELETE" },
+    ),
+  setProviderDefaultModel: (providerId: string, modelId: string) =>
+    request<{ profile: ProviderProfile }>(
+      `/providers/${providerId}/default-model`,
+      {
+        method: "POST",
+        body: JSON.stringify({ modelId }),
+      },
+    ).then((response) => response.profile),
   listConversations: async (
     status: ConversationStatus,
     query?: string,
@@ -161,12 +203,10 @@ export const chatApi = {
     );
     return response.items;
   },
-  createConversation: (workspaceId?: string | null) =>
+  createConversation: (workspaceId: string) =>
     request<Conversation>("/conversations", {
       method: "POST",
-      body: JSON.stringify({
-        workspaceId: workspaceId === null ? "general" : workspaceId,
-      }),
+      body: JSON.stringify({ workspaceId }),
     }),
   listWorkspaces: async () => {
     const response = await request<{ items: Workspace[] }>("/workspaces");
@@ -184,6 +224,11 @@ export const chatApi = {
       method: "PATCH",
       body: JSON.stringify({ rootPath }),
     }).then((response) => response.workspace),
+  deleteWorkspace: async (workspaceId: string) => {
+    await request<void>(`/workspaces/${workspaceId}`, {
+      method: "DELETE",
+    });
+  },
   browseFilesystem: async (path?: string, showHidden = false) => {
     const parameters = new URLSearchParams();
     if (path) parameters.set("path", path);

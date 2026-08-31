@@ -106,7 +106,7 @@ npm run dev
 
 当前开发基线：
 
-- 后端：`uv run python -W error -m unittest discover -s tests -v`，616/616 通过。
+- 后端：`uv run python -W error -m unittest discover -s tests -v`，662/662 通过。
 - 前端：`npm run build` 通过。
 - 浏览器：`npm run test:e2e`，桌面 13、移动端 1，共 14/14 通过。
 - 依赖审计：`npm audit --json`，0 vulnerabilities。
@@ -134,6 +134,23 @@ npm run test:e2e
 - `apps/api/tests/test_memory_*.py`
 - `apps/api/tests/test_artifact_*.py`
 - `apps/api/tests/test_task_*.py`
+- `apps/api/tests/test_eval.py`
+
+## 评估层（离线自动化评估）
+
+`endless-task eval` 对**已录制**的 v2 Run 做只读、可回归的批量打分（不走聊天热路径，不触发工具，不改 runtime 数据）。默认筛选用过工具的 `completed` Run，可用 `eval diff` 检测质量回退并作为 CI 门禁。
+
+```bash
+# 跑一轮确定性评估并持久化为一个批次
+uv run endless-task eval run --require-tools
+# 查看报告 / 导出
+uv run endless-task eval report --batch BATCH
+uv run endless-task eval export --batch BATCH --format jsonl
+# 对比两个批次，blocker 指标回退超容差时返回非零退出码
+uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
+```
+
+确定性指标：`completion`（未完成/无输出=blocker）、`tool_correctness`、`approval_gate`（已知写/执行工具未审批=blocker）、`robustness`（Replay 状态冲突）、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`（复用 `SafetyStopPolicy` 检测重复签名/连续失败）。设计见 [`docs/v2/evaluation-layer-design.md`](docs/v2/evaluation-layer-design.md)。
 
 ## 演示主链路
 

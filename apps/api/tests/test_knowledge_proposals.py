@@ -33,6 +33,7 @@ from endless_task.storage import (
     SqliteKnowledgeProposalRepository,
     SqliteKnowledgeRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class TextProvider:
@@ -384,7 +385,7 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             turn_id = await self._complete_turn(
                 client, conversation["id"], "request-1", "咖啡机用完必须清洗奶管，记一下。"
             )
@@ -426,7 +427,7 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             await self._complete_turn(client, conversation["id"], "request-1", "聊聊。")
             items = await self._wait_for_proposals(client, conversation["id"], 1)
             response = await client.post(
@@ -449,7 +450,7 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction, "好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction])
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             turn_id = await self._complete_turn(
                 client, conversation["id"], "request-1", "聊聊。"
             )
@@ -470,7 +471,7 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_extraction_failure_does_not_affect_turn(self) -> None:
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", "不应到达"], fail_from_index=1)
         async with local_client(self.database_path, provider) as client:
-            conversation = (await client.post("/conversations")).json()
+            conversation = await create_bound_conversation(client)
             await self._complete_turn(client, conversation["id"], "request-1", "聊聊。")
             await asyncio.sleep(0.05)
             response = await client.get(

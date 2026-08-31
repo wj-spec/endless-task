@@ -166,12 +166,21 @@ class ToolExecutionCoordinator:
         repository: "SqliteRuntimeV2Repository",
         tool_registry: ToolRegistry,
         approval_gate: Optional[ToolApprovalGate] = None,
+        tool_filter_provider: Optional[
+            Callable[[str], Optional[Callable[[str], bool]]]
+        ] = None,
     ) -> None:
         self._repository = repository
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate or WaitingToolApprovalGate()
+        self._tool_filter_provider = tool_filter_provider
 
-    def definitions(self) -> tuple[ProviderToolDefinition, ...]:
+    def definitions(self, conversation_id: str) -> tuple[ProviderToolDefinition, ...]:
+        predicate = (
+            self._tool_filter_provider(conversation_id)
+            if self._tool_filter_provider is not None
+            else None
+        )
         return tuple(
             ProviderToolDefinition(
                 name=definition.name,
@@ -179,6 +188,7 @@ class ToolExecutionCoordinator:
                 input_schema=definition.input_schema,
             )
             for definition in self._tool_registry.definitions()
+            if predicate is None or predicate(definition.name)
         )
 
     async def execute(
@@ -228,9 +238,18 @@ class ToolExecutionCoordinator:
                 tool = self._resolve_tool(item.provider_call.name)
                 call = self._tool_call(item, run, model_turn)
                 self._validate_arguments(tool, item.provider_call.arguments)
+                force_confirm = False
+                confirmation_judge = getattr(
+                    tool, "requires_explicit_confirmation", None
+                )
+                if callable(confirmation_judge):
+                    try:
+                        force_confirm = bool(confirmation_judge(call))
+                    except Exception:  # 判定失败按需确认处理（安全默认）
+                        force_confirm = True
                 needs_approval = (
                     tool.definition.approval_mode.value == "required"
-                    or tool.requires_explicit_confirmation(call)
+                    or force_confirm
                 )
             except ToolValidationError as error:
                 item.status = ToolExecutionStatus.FAILED
@@ -593,7 +612,7 @@ class ModelTurnRunner:
             messages=tuple(messages),
             max_output_tokens=self._max_output_tokens,
             temperature=self._temperature,
-            tools=self._tool_coordinator.definitions(),
+            tools=self._tool_coordinator.definitions(run.conversation_id),
         )
 
         try:
@@ -828,6 +847,9 @@ class AgentRunExecutor:
         provider_slot: Optional[asyncio.Semaphore] = None,
         compaction_hook: Optional[ContextCompactionHook] = None,
         context_prefix_messages: Sequence[ProviderMessage] = (),
+        tool_filter_provider: Optional[
+            Callable[[str], Optional[Callable[[str], bool]]]
+        ] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -846,6 +868,7 @@ class AgentRunExecutor:
             repository=repository,
             tool_registry=tool_registry,
             approval_gate=approval_gate,
+            tool_filter_provider=tool_filter_provider,
         )
         self._model_turn_runner = ModelTurnRunner(
             repository=repository,

@@ -1,26 +1,34 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Conversation,
   ConversationStatus,
   Workspace,
 } from "./apiTypes";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { EmptyState } from "../ui/EmptyState";
-import { RowMenu } from "../ui/RowMenu";
+import { AddIcon, SearchIcon } from "../ui/Icons";
 import { SidebarToggleIcon } from "../ui/SidebarToggleIcon";
+import { useModalDialog } from "../ui/useModalDialog";
+import { RecentSessionGroup } from "./RecentSessionGroup";
+import { WorkspaceNavigationGroup } from "./WorkspaceNavigationGroup";
+import { useWorkspaceNavigation } from "./useWorkspaceNavigation";
+import {
+  buildWorkspaceNavigationModel,
+  conversationTitle,
+  type SessionActions,
+} from "./workspaceNavigationModel";
 
 type SessionRailProps = {
   activeConversationId: string | null;
   collapsed: boolean;
-  conversations: Conversation[];
   open: boolean;
   search: string;
   statusFilter: ConversationStatus;
   workspaceId: string | null;
   workspaces: Workspace[];
+  workspaceCanCreate: boolean;
+  currentWorkspace: Workspace | null;
   pendingTotal: number;
   onCreateWorkspace: (name: string) => Promise<unknown>;
-  onSelectWorkspace: (workspaceId: string | null) => void;
   onOpenAssistant: (tab: "notifications" | "memory") => void;
   onOpenSettings: () => void;
   onChangeConversationStatus: (
@@ -36,33 +44,18 @@ type SessionRailProps = {
   onStatusFilterChange: (status: ConversationStatus) => void;
 };
 
-const formatRelativeTime = (value: string) => {
-  const timestamp = new Date(value).getTime();
-  const elapsed = Date.now() - timestamp;
-  const minutes = Math.max(0, Math.floor(elapsed / 60_000));
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
-  return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(
-    new Date(value),
-  );
-};
-
 export function SessionRail({
   activeConversationId,
   collapsed,
-  conversations,
   open,
   search,
   statusFilter,
   workspaceId,
   workspaces,
+  workspaceCanCreate,
+  currentWorkspace,
   pendingTotal,
   onCreateWorkspace,
-  onSelectWorkspace,
   onOpenAssistant,
   onOpenSettings,
   onChangeConversationStatus,
@@ -77,48 +70,162 @@ export function SessionRail({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-
-  const handleWorkspaceChange = async (value: string) => {
-    if (value === "__create__") {
-      if (creatingWorkspace) return;
-      const name = globalThis.window?.prompt("新工作区名称：");
-      const trimmed = (name ?? "").trim();
-      if (!trimmed) return;
-      setCreatingWorkspace(true);
-      try {
-        await onCreateWorkspace(trimmed);
-      } finally {
-        setCreatingWorkspace(false);
-      }
-      return;
-    }
-    onSelectWorkspace(value === "general" ? null : value);
-  };
+  const [workspaceCreateOpen, setWorkspaceCreateOpen] = useState(false);
+  const [workspaceDraft, setWorkspaceDraft] = useState("");
+  const [workspaceCreateError, setWorkspaceCreateError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
-  const primaryConversations = conversations.filter(
-    (item) => item.kind !== "ephemeral",
+  const createWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const railRef = useModalDialog<HTMLElement>({
+    active: open,
+    initialFocusRef: closeButtonRef,
+    onClose,
+  });
+
+  const nav = useWorkspaceNavigation(workspaces, statusFilter, search);
+
+  const model = useMemo(
+    () =>
+      buildWorkspaceNavigationModel({
+        workspaces,
+        byWorkspace: nav.byWorkspace,
+        general: nav.general,
+      }),
+    [workspaces, nav.byWorkspace, nav.general],
   );
 
-  const startRename = (conversation: Conversation) => {
-    setRenamingId(conversation.id);
-    setRenameDraft(conversation.title);
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  const [showAllGroups, setShowAllGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [recentShowAll, setRecentShowAll] = useState(false);
+  const previousActiveWorkspaceIdRef = useRef<string | null>(null);
+  const sessionNavRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const targetGroup =
+      (activeConversationId
+        ? model.groups.find((group) =>
+            group.conversations.some((item) => item.id === activeConversationId),
+          )
+        : undefined) ?? model.groups.find((group) => group.id === workspaceId);
+
+    const nextWorkspaceId = targetGroup?.id ?? null;
+    const previousWorkspaceId = previousActiveWorkspaceIdRef.current;
+
+    // 仅当活动会话所属工作区（或工作区上下文）真正切换时才自动展开目标组并让选中行可见；
+    // 工作区身份未变（含用户手动收起后 active 未变）时保持现状，避免被反复强制展开造成状态循环。
+    if (nextWorkspaceId !== null && nextWorkspaceId !== previousWorkspaceId) {
+      setOpenGroups((prev) => {
+        const next = new Set(prev);
+        next.add(nextWorkspaceId);
+        return next;
+      });
+      if (activeConversationId) {
+        requestAnimationFrame(() => {
+          sessionNavRef.current
+            ?.querySelector<HTMLElement>(
+              `[data-conversation-id="${activeConversationId}"]`,
+            )
+            ?.scrollIntoView({ block: "nearest" });
+        });
+      }
+    }
+
+    previousActiveWorkspaceIdRef.current = nextWorkspaceId;
+  }, [activeConversationId, model, workspaceId]);
+
+  const toggleGroupOpen = (workspaceGroupId: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(workspaceGroupId)) next.delete(workspaceGroupId);
+      else next.add(workspaceGroupId);
+      return next;
+    });
+  };
+  const toggleGroupShowAll = (workspaceGroupId: string) => {
+    setShowAllGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(workspaceGroupId)) next.delete(workspaceGroupId);
+      else next.add(workspaceGroupId);
+      return next;
+    });
   };
 
+  const findConversation = (conversationId: string): Conversation | null => {
+    for (const group of model.groups) {
+      const found = group.conversations.find((item) => item.id === conversationId);
+      if (found) return found;
+    }
+    return model.recent.find((item) => item.id === conversationId) ?? null;
+  };
+
+  const createWorkspace = async () => {
+    if (creatingWorkspace) return;
+    const trimmed = workspaceDraft.trim();
+    if (!trimmed) {
+      setWorkspaceCreateError("请输入工作区名称。");
+      return;
+    }
+    setCreatingWorkspace(true);
+    setWorkspaceCreateError(null);
+    try {
+      await onCreateWorkspace(trimmed);
+      setWorkspaceCreateOpen(false);
+      setWorkspaceDraft("");
+      nav.refresh();
+      requestAnimationFrame(() => createWorkspaceButtonRef.current?.focus());
+    } catch {
+      setWorkspaceCreateError("创建失败，请重试。");
+    } finally {
+      setCreatingWorkspace(false);
+    }
+  };
+
+  const startRename = (conversationId: string) => {
+    const conversation = findConversation(conversationId);
+    setRenamingId(conversationId);
+    setRenameDraft(conversation ? conversationTitle(conversation) : "");
+  };
   const commitRename = () => {
     if (!renamingId) return;
     const title = renameDraft.trim();
     if (title) onRenameConversation(renamingId, title);
     setRenamingId(null);
+    nav.refresh();
   };
+
+  const actions: SessionActions = {
+    onSelectConversation: (conversationId) => {
+      onSelectConversation(conversationId);
+    },
+    onRenameStart: startRename,
+    onRenameDraftChange: setRenameDraft,
+    onRenameCommit: commitRename,
+    onRenameCancel: () => setRenamingId(null),
+    onChangeStatus: (conversationId, status) => {
+      onChangeConversationStatus(conversationId, status);
+      nav.refresh();
+    },
+    onDelete: (conversationId) => {
+      const conversation = findConversation(conversationId);
+      if (conversation) setDeleteTarget(conversation);
+    },
+  };
+
   const railExpanded = open || !collapsed;
   const railToggleLabel = railExpanded ? "收起侧栏" : "展开侧栏";
 
   return (
     <aside
       aria-label="会话导航"
+      aria-modal={open ? true : undefined}
       className={`session-rail${open ? " is-open" : ""}${
         collapsed ? " is-collapsed" : ""
       }`}
+      ref={railRef}
+      role={open ? "dialog" : undefined}
+      tabIndex={open ? -1 : undefined}
     >
       <header className="rail-header">
         <div className="wordmark" aria-label="Endless Task">
@@ -129,6 +236,7 @@ export function SessionRail({
           aria-label={railToggleLabel}
           className="icon-button rail-toggle"
           onClick={onClose}
+          ref={closeButtonRef}
           title={railToggleLabel}
           type="button"
         >
@@ -136,40 +244,32 @@ export function SessionRail({
         </button>
       </header>
 
-      <div className="workspace-switcher">
-        <label className="sr-only" htmlFor="workspace-switcher-select">
-          当前工作区
-        </label>
-        <select
-          disabled={creatingWorkspace}
-          id="workspace-switcher-select"
-          onChange={(event) => void handleWorkspaceChange(event.target.value)}
-          value={workspaceId ?? "general"}
-        >
-          <option value="general">通用</option>
-          {workspaces.map((workspace) => (
-            <option key={workspace.id} value={workspace.id}>
-              {workspace.name}
-            </option>
-          ))}
-          <option value="__create__">＋ 新建工作区…</option>
-        </select>
-      </div>
-
       <button
+        aria-disabled={!workspaceCanCreate}
         aria-label="新对话"
         className="new-chat-button"
+        disabled={!workspaceCanCreate}
         onClick={onNewConversation}
-        title={collapsed ? "新对话" : undefined}
+        title={
+          !workspaceCanCreate
+            ? currentWorkspace
+              ? "当前工作区尚未绑定本地目录，请先绑定目录后再新建对话"
+              : "请先选择并绑定一个工作区目录，再新建对话"
+            : collapsed
+              ? "新对话"
+              : undefined
+        }
         type="button"
       >
-        <span aria-hidden="true" className="new-chat-icon">＋</span>
+        <span aria-hidden="true" className="new-chat-icon">
+          <AddIcon size={20} />
+        </span>
         <span className="new-chat-label">新对话</span>
       </button>
 
       <label className="conversation-search">
         <span className="sr-only">搜索对话</span>
-        <span aria-hidden="true">⌕</span>
+        <SearchIcon size={17} />
         <input
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="搜索对话"
@@ -179,93 +279,117 @@ export function SessionRail({
       </label>
 
       <div className="rail-filter" role="tablist" aria-label="会话状态">
-        <button
-          aria-selected={statusFilter === "active"}
-          className={statusFilter === "active" ? "is-active" : ""}
-          onClick={() => onStatusFilterChange("active")}
-          role="tab"
-          type="button"
-        >
-          最近
-        </button>
-        <button
-          aria-selected={statusFilter === "archived"}
-          className={statusFilter === "archived" ? "is-active" : ""}
-          onClick={() => onStatusFilterChange("archived")}
-          role="tab"
-          type="button"
-        >
-          已归档
-        </button>
+        {(["active", "archived"] as const).map((status) => (
+          <button
+            aria-selected={statusFilter === status}
+            className={statusFilter === status ? "is-active" : ""}
+            key={status}
+            onClick={() => onStatusFilterChange(status)}
+            role="tab"
+            type="button"
+          >
+            {status === "active" ? "进行中" : "已归档"}
+          </button>
+        ))}
       </div>
 
-      <nav className="session-list" aria-label="会话列表">
-        {primaryConversations.length === 0 ? (
-          <EmptyState
-            className="rail-empty"
-            desc={search ? "换个关键词试试。" : "点「新对话」开始，助手会记住你们聊过什么。"}
-            title={search ? "没有匹配的对话" : "这里还没有对话"}
-          />
-        ) : null}
-        {primaryConversations.map((conversation) => {
-          const isActive = conversation.id === activeConversationId;
-          const archived = conversation.status === "archived";
-          return (
-            <div
-              className={isActive ? "session-item is-active" : "session-item"}
-              key={conversation.id}
-            >
-              {renamingId === conversation.id ? (
-                <div className="session-rename">
-                  <input
-                    autoFocus
-                    onBlur={commitRename}
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") commitRename();
-                      if (event.key === "Escape") setRenamingId(null);
-                    }}
-                    value={renameDraft}
-                  />
-                </div>
-              ) : (
-                <button
-                  aria-current={isActive ? "page" : undefined}
-                  className="session-item-main"
-                  onClick={() => onSelectConversation(conversation.id)}
-                  type="button"
-                >
-                  <span>{conversation.title}</span>
-                  <time dateTime={conversation.updatedAt}>
-                    {formatRelativeTime(conversation.updatedAt)}
-                  </time>
-                </button>
-              )}
-              <RowMenu
-                className="session-row-menu"
-                items={[
-                  { label: "重命名", onSelect: () => startRename(conversation) },
-                  {
-                    label: archived ? "取消归档" : "归档",
-                    onSelect: () =>
-                      onChangeConversationStatus(
-                        conversation.id,
-                        archived ? "active" : "archived",
-                      ),
-                  },
-                  {
-                    danger: true,
-                    label: "删除",
-                    onSelect: () => setDeleteTarget(conversation),
-                  },
-                ]}
-                triggerAriaLabel={`管理对话：${conversation.title}`}
-                triggerClassName="session-menu-button"
-              />
+      <section aria-label="工作区" className="workspace-navigation">
+        <div className="workspace-navigation-header">
+          <span>工作区</span>
+          <button
+            aria-expanded={workspaceCreateOpen}
+            aria-label="新建工作区"
+            disabled={creatingWorkspace}
+            onClick={() => {
+              setWorkspaceCreateOpen((current) => !current);
+              setWorkspaceCreateError(null);
+            }}
+            ref={createWorkspaceButtonRef}
+            title="新建工作区"
+            type="button"
+          >
+            <AddIcon size={18} />
+          </button>
+        </div>
+        {workspaceCreateOpen ? (
+          <form
+            className="workspace-create-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createWorkspace();
+            }}
+          >
+            <label htmlFor="workspace-create-name">工作区名称</label>
+            <input
+              aria-describedby={
+                workspaceCreateError ? "workspace-create-error" : undefined
+              }
+              autoFocus
+              disabled={creatingWorkspace}
+              id="workspace-create-name"
+              onChange={(event) => {
+                setWorkspaceDraft(event.target.value);
+                if (workspaceCreateError) setWorkspaceCreateError(null);
+              }}
+              placeholder="例如：个人项目"
+              value={workspaceDraft}
+            />
+            {workspaceCreateError ? (
+              <span id="workspace-create-error" role="alert">
+                {workspaceCreateError}
+              </span>
+            ) : null}
+            <div className="workspace-create-actions">
+              <button disabled={creatingWorkspace} type="submit">
+                {creatingWorkspace ? "创建中…" : "创建"}
+              </button>
+              <button
+                disabled={creatingWorkspace}
+                onClick={() => {
+                  setWorkspaceCreateOpen(false);
+                  setWorkspaceDraft("");
+                  setWorkspaceCreateError(null);
+                  requestAnimationFrame(() =>
+                    createWorkspaceButtonRef.current?.focus(),
+                  );
+                }}
+                type="button"
+              >
+                取消
+              </button>
             </div>
-          );
-        })}
-      </nav>
+          </form>
+        ) : null}
+        <nav
+          aria-label="会话列表"
+          className="session-navigation"
+          ref={sessionNavRef}
+        >
+          {model.groups.map((group) => (
+            <WorkspaceNavigationGroup
+              actions={actions}
+              activeConversationId={activeConversationId}
+              group={group}
+              key={group.id}
+              onToggleOpen={() => toggleGroupOpen(group.id)}
+              onToggleShowAll={() => toggleGroupShowAll(group.id)}
+              open={openGroups.has(group.id)}
+              renameDraft={renameDraft}
+              renamingId={renamingId}
+              showAll={showAllGroups.has(group.id)}
+            />
+          ))}
+          <RecentSessionGroup
+            actions={actions}
+            activeConversationId={activeConversationId}
+            conversations={model.recent}
+            onToggleShowAll={() => setRecentShowAll((current) => !current)}
+            renameDraft={renameDraft}
+            renamingId={renamingId}
+            showAll={recentShowAll}
+          />
+        </nav>
+      </section>
 
       <nav aria-label="应用入口" className="rail-footer">
         <button onClick={() => onOpenAssistant("notifications")} type="button">
@@ -285,7 +409,10 @@ export function SessionRail({
           body="删除后无法恢复；该对话相关的安排与提醒会一并取消。"
           confirmLabel="删除"
           onClose={() => setDeleteTarget(null)}
-          onConfirm={() => onDeleteConversation(deleteTarget.id)}
+          onConfirm={() => {
+            onDeleteConversation(deleteTarget.id);
+            nav.refresh();
+          }}
           title="删除这段对话？"
         />
       ) : null}

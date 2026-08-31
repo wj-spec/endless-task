@@ -9,6 +9,7 @@ import httpx
 
 from endless_task.api import AppSettings, create_app
 from endless_task.runtime import FakeProvider
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class CapabilitiesApiTest(unittest.IsolatedAsyncioTestCase):
@@ -137,7 +138,7 @@ class CapabilitiesApiTest(unittest.IsolatedAsyncioTestCase):
                     transport=httpx.ASGITransport(app=app),
                     base_url="http://testserver",
                 ) as client:
-                    conversation = (await client.post("/conversations")).json()
+                    conversation = await create_bound_conversation(client)
                     created = await client.post(
                         f"/conversations/{conversation['id']}/turns",
                         headers={"Idempotency-Key": "broken-skill"},

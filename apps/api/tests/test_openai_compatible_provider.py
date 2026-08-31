@@ -82,9 +82,27 @@ class BlockingCompletions(StubCompletions):
             raise
 
 
+class StubModels:
+    def __init__(self, *, items=(), error=None) -> None:
+        self.items = items
+        self.error = error
+
+    async def list(self):
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(data=self.items)
+
+
 class StubClient:
-    def __init__(self, completions: StubCompletions) -> None:
+    def __init__(
+        self,
+        completions: StubCompletions,
+        *,
+        models: StubModels | None = None,
+    ) -> None:
         self.chat = SimpleNamespace(completions=completions)
+        if models is not None:
+            self.models = models
         self.closed = False
 
     async def close(self) -> None:
@@ -139,6 +157,45 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
 
     async def _token(self):
         return await CancellationManager().acquire("turn-1", "variant-1")
+
+    async def test_list_models_normalizes_ids_and_names(self) -> None:
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            client=StubClient(
+                StubCompletions(),
+                models=StubModels(
+                    items=(
+                        SimpleNamespace(id=" model-b ", name="Model B"),
+                        SimpleNamespace(id="model-a", name=None),
+                        SimpleNamespace(id="", name="Ignored"),
+                    )
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            (("model-b", "Model B"), ("model-a", "model-a")),
+            await provider.list_models(),
+        )
+
+    async def test_list_models_normalizes_connection_errors(self) -> None:
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            client=StubClient(
+                StubCompletions(),
+                models=StubModels(error=ApiConnectionError()),
+            ),
+        )
+
+        with self.assertRaises(ProviderError) as raised:
+            await provider.list_models()
+
+        self.assertEqual("network_error", raised.exception.code)
+        self.assertTrue(raised.exception.retryable)
 
     async def test_stream_maps_chunks_finish_reason_and_usage(self) -> None:
         usage = SimpleNamespace(prompt_tokens=12, completion_tokens=3)

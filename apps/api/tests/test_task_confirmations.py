@@ -18,6 +18,7 @@ from endless_task.storage import (
     SqliteTaskProposalRepository,
     SqliteTaskRepository,
 )
+from tests.fixtures.workspace_client import create_bound_conversation
 
 PERIODIC_USER = "以后每周一上午九点帮我总结上周的项目进展"
 PERIODIC_ANSWER = (
@@ -183,7 +184,7 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_end_to_end_proposal_to_task(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER], [TASK_EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -230,7 +231,7 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_reject_via_api_writes_no_task(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER], [TASK_EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -257,7 +258,7 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(404, missing.status_code)
 
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -281,7 +282,7 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_confirmation_clause_follows_flag(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "request-1"},
@@ -295,7 +296,7 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
         async with local_client(
             self.database_path, provider_off, task_proposals_enabled=False
         ) as (client, app):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await client.post(
                 f"/conversations/{conversation_id}/turns",
                 headers={"Idempotency-Key": "request-1"},

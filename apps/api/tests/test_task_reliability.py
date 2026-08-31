@@ -23,6 +23,7 @@ from endless_task.storage import (
     SqliteTaskRunRepository,
 )
 from endless_task.tasks import TaskScheduler
+from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = "到点执行完成：本周项目进展如下，一切正常。"
 
@@ -150,7 +151,7 @@ class TaskReliabilityTest(unittest.IsolatedAsyncioTestCase):
             task_max_attempts=2,
             task_retry_backoff_seconds=0.05,
         ) as (client, _):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(
                 conversation_id,
                 self.past_time,
@@ -184,7 +185,7 @@ class TaskReliabilityTest(unittest.IsolatedAsyncioTestCase):
             task_max_attempts=2,
             task_retry_backoff_seconds=0.05,
         ) as (client, _):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(
                 conversation_id,
                 self.past_time,
@@ -205,7 +206,7 @@ class TaskReliabilityTest(unittest.IsolatedAsyncioTestCase):
             task_max_attempts=3,
             task_retry_backoff_seconds=0.05,
         ) as (client, _):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id, self.future_time)
             response = await client.post(f"/tasks/{task_id}/run")
             self.assertEqual(202, response.status_code)

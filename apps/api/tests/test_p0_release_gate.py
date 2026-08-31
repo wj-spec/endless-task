@@ -16,6 +16,7 @@ from endless_task.runtime import (
     ProviderTextDelta,
 )
 from endless_task.storage import Database, SqliteChatRepository, SqliteRuntimeRepository
+from tests.fixtures.workspace_client import create_bound_conversation
 
 
 class ContextAuditProvider:
@@ -124,7 +125,7 @@ class P0ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_ten_turns_refresh_and_service_restart_restore_state(self) -> None:
         provider = ContextAuditProvider()
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             for ordinal in range(1, 11):
                 created = await self._submit(
                     client,
@@ -166,7 +167,7 @@ class P0ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             pause_after_chunks=1,
         )
         async with local_client(self.database_path, provider) as (client, _):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "请慢慢回答")
             await asyncio.wait_for(provider.paused.wait(), timeout=1)
 
@@ -211,7 +212,7 @@ class P0ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_provider_failure_is_retryable_through_public_api(self) -> None:
         provider = FlakyProvider()
         async with local_client(self.database_path, provider) as (client, _):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "请回答")
             failed = await self._wait_for_terminal(client, created["turnId"])
             self.assertEqual("failed", failed["turnStatus"])
@@ -271,7 +272,7 @@ class P0ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             base_url="https://api.deepseek.com",
             api_key=secret,
         ) as (client, _):
-            conversation_id = (await client.post("/conversations")).json()["id"]
+            conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "普通消息")
             await self._wait_for_terminal(client, created["turnId"])
 
@@ -280,14 +281,14 @@ class P0ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_conversations_do_not_mix_events_or_context(self) -> None:
         provider = EchoProvider("echo-a")
         async with local_client(self.database_path, provider) as (client, _):
-            first_conversation = (await client.post("/conversations")).json()["id"]
+            first_conversation = (await create_bound_conversation(client))["id"]
             first_created = await self._submit(
                 client,
                 first_conversation,
                 1,
                 "只属于第一会话",
             )
-            second_conversation = (await client.post("/conversations")).json()["id"]
+            second_conversation = (await create_bound_conversation(client))["id"]
             second_created = await self._submit(
                 client,
                 second_conversation,
@@ -319,7 +320,7 @@ class P0ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
         ):
             async with local_client(path, provider) as (client, _):
                 health = (await client.get("/health")).json()
-                conversation_id = (await client.post("/conversations")).json()["id"]
+                conversation_id = (await create_bound_conversation(client))["id"]
                 created = await self._submit(client, conversation_id, 1, "相同客户端请求")
                 completed = await self._wait_for_terminal(client, created["turnId"])
                 payloads.append((health, created, completed))

@@ -49,6 +49,30 @@ class OpenAICompatibleProvider:
             client = AsyncOpenAI(**options)
         self._client = client
 
+    async def list_models(self) -> tuple[tuple[str, str], ...]:
+        try:
+            response = await self._client.models.list()
+            items = getattr(response, "data", response)
+            models: list[tuple[str, str]] = []
+            for item in items or ():
+                model_id = getattr(item, "id", None)
+                if not isinstance(model_id, str) or not model_id.strip():
+                    continue
+                display_name = getattr(item, "name", None)
+                models.append(
+                    (
+                        model_id.strip(),
+                        display_name.strip()
+                        if isinstance(display_name, str) and display_name.strip()
+                        else model_id.strip(),
+                    )
+                )
+            return tuple(models)
+        except ProviderError:
+            raise
+        except Exception as error:
+            raise self._normalize_error(error) from error
+
     async def close(self) -> None:
         close = getattr(self._client, "close", None)
         if close is None:

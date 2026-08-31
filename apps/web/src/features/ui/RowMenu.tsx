@@ -6,6 +6,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import { MoreIcon } from "./Icons";
 
 export type RowMenuItem = {
   label: string;
@@ -32,7 +33,7 @@ const enabledMenuItems = (menu: HTMLDivElement | null) =>
 
 export function RowMenu({
   items,
-  trigger = "⋯",
+  trigger = <MoreIcon />,
   triggerClassName,
   triggerAriaLabel = "更多操作",
   placement = "down",

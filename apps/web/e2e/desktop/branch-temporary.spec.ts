@@ -3,6 +3,7 @@ import {
   apiUrl,
   createBranch,
   createCompletedConversation,
+  createTemporaryConversationFromMenu,
   listLanes,
   openConversation,
   runtimeSnapshot,
@@ -11,6 +12,7 @@ import {
 } from "../support/api";
 
 test("从完整回答创建 Branch 后默认在右侧打开", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   const title = `E2E Branch Create ${Date.now()}`;
   const { conversation } = await createCompletedConversation(request, title);
   const initialLanes = await listLanes(request, conversation.id);
@@ -23,19 +25,94 @@ test("从完整回答创建 Branch 后默认在右侧打开", async ({ page, req
 
   await openConversation(page, title);
   const main = page.getByRole("main");
-  await main.locator(".turn").last().hover();
+  const createBranchButton = main.getByRole("button", {
+    name: "从此回答创建分支",
+  });
+  await expect(createBranchButton).toHaveCSS("opacity", "0.72");
+  await page.route(
+    `**/api/v2/conversations/${conversation.id}/lanes`,
+    async (route) => {
+      if (route.request().method() === "POST") {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      await route.continue();
+    },
+  );
   const createResponsePromise = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       response.url().endsWith(`/api/v2/conversations/${conversation.id}/lanes`),
   );
-  await main.getByRole("button", { name: "从此回答创建分支" }).click();
+  await createBranchButton.click();
+  await expect(createBranchButton).toHaveText("正在创建…");
   const created = await createResponsePromise;
   expect(created.ok()).toBeTruthy();
   expect((await created.json()).baseEntryId).toBe(assistantBoundary);
 
-  await expect(page.getByRole("region", { name: "分支对照" })).toBeVisible();
-  await expect(main.getByRole("heading", { name: title })).toBeVisible();
+  const side = page.getByRole("region", { name: "分支对照" });
+  await expect(side).toBeVisible();
+  await expect(side).toHaveCSS("transform", "none");
+
+  const split = page.locator(".chat-split");
+  const mainSurface = split.locator(":scope > .chat-surface");
+  const mainComposer = mainSurface.locator(".composer");
+  const sideComposer = side.locator(".composer");
+  const resizer = page.getByRole("separator", {
+    name: "调整主会话与分支宽度",
+  });
+  await expect(resizer).toHaveAttribute("aria-valuenow", "60");
+
+  const initialLayout = await page.evaluate(() => {
+    const splitElement = document.querySelector<HTMLElement>(".chat-split")!;
+    const mainElement = document.querySelector<HTMLElement>(
+      ".chat-split > .chat-surface",
+    )!;
+    const sideElement = document.querySelector<HTMLElement>(".side-chat-panel")!;
+    const mainComposerElement = mainElement.querySelector<HTMLElement>(".composer")!;
+    const sideComposerElement = sideElement.querySelector<HTMLElement>(".composer")!;
+    const splitBox = splitElement.getBoundingClientRect();
+    const mainBox = mainElement.getBoundingClientRect();
+    const sideBox = sideElement.getBoundingClientRect();
+    const mainComposerBox = mainComposerElement.getBoundingClientRect();
+    const sideComposerBox = sideComposerElement.getBoundingClientRect();
+    return {
+      mainRatio: mainBox.width / (mainBox.width + sideBox.width),
+      mainComposerBottom: mainComposerBox.bottom,
+      mainComposerInset: mainComposerBox.left - mainBox.left,
+      sideComposerBottom: sideComposerBox.bottom,
+      sideComposerInset: sideComposerBox.left - sideBox.left,
+      splitRight: splitBox.right,
+      sideRight: sideBox.right,
+    };
+  });
+  expect(initialLayout.mainRatio).toBeGreaterThan(0.59);
+  expect(initialLayout.mainRatio).toBeLessThan(0.61);
+  expect(Math.abs(initialLayout.mainComposerBottom - initialLayout.sideComposerBottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(initialLayout.mainComposerInset - initialLayout.sideComposerInset)).toBeLessThanOrEqual(1);
+  expect(Math.abs(initialLayout.splitRight - initialLayout.sideRight)).toBeLessThanOrEqual(1);
+
+  const dividerBox = await resizer.boundingBox();
+  expect(dividerBox).not.toBeNull();
+  await page.mouse.move(dividerBox!.x + dividerBox!.width / 2, dividerBox!.y + 120);
+  await page.mouse.down();
+  await page.mouse.move(dividerBox!.x + 100, dividerBox!.y + 120, { steps: 5 });
+  await page.mouse.up();
+  await expect(resizer).toHaveAttribute("aria-valuenow", /6[5-9]|7[0-2]/);
+  expect((await mainSurface.boundingBox())!.width).toBeGreaterThan(
+    initialLayout.mainRatio * ((await split.boundingBox())!.width - dividerBox!.width),
+  );
+
+  await resizer.dblclick();
+  await expect(resizer).toHaveAttribute("aria-valuenow", "60");
+  await resizer.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "58");
+  await page.keyboard.press("Enter");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "60");
+  await expect(mainComposer).toBeVisible();
+  await expect(sideComposer).toBeVisible();
+
+  await expect(main.locator(".heading-sub").filter({ hasText: title })).toBeVisible();
   expect((await listLanes(request, conversation.id)).mainLaneId).toBe(originalMainId);
   await expect(
     main.getByRole("button", { name: "从这条消息创建分支或临时对话" }),
@@ -201,7 +278,7 @@ test("刷新后仍跟踪其他 Lane 的活动 Run", async ({ page, request }) =>
   const main = page.getByRole("main");
   await expect(main.getByText(/后台运行分支.*正在运行/)).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  await expect(main.locator(".heading-sub").filter({ hasText: title })).toBeVisible();
   await expect(main.getByText(/后台运行分支.*正在运行/)).toBeVisible();
   await expect(main.getByRole("textbox", { name: "给 Endless 发送消息" })).toBeDisabled();
 
@@ -247,7 +324,7 @@ test("Temporary 始终复制主线完整路径并折叠继承内容", async ({ p
       response.request().method() === "POST" &&
       response.url().endsWith(`/api/v2/conversations/${conversation.id}/temporary-conversations`),
   );
-  await page.getByRole("button", { name: "开临时会话" }).click();
+  await createTemporaryConversationFromMenu(page);
   const payload = (await (await createResponsePromise).json()) as {
     conversation: { id: string };
     lane: { id: string };
@@ -289,7 +366,7 @@ test("Temporary Conversation 可与来源 Conversation 并行且状态互不污�
       response.request().method() === "POST" &&
       response.url().endsWith(`/api/v2/conversations/${conversation.id}/temporary-conversations`),
   );
-  await page.getByRole("button", { name: "开临时会话" }).click();
+  await createTemporaryConversationFromMenu(page);
   const temporaryPayload = (await (await createResponsePromise).json()) as {
     conversation: { id: string };
     lane: { id: string };
@@ -340,7 +417,7 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
       response.request().method() === "POST" &&
       response.url().endsWith(`/api/v2/conversations/${conversation.id}/temporary-conversations`),
   );
-  await page.getByRole("button", { name: "开临时会话" }).click();
+  await createTemporaryConversationFromMenu(page);
   const createResponse = await createResponsePromise;
   expect(createResponse.ok()).toBeTruthy();
   const temporaryPayload = (await createResponse.json()) as {
@@ -382,7 +459,7 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
       response.request().method() === "POST" &&
       response.url().endsWith(`/api/v2/conversations/${conversation.id}/temporary-conversations`),
   );
-  await page.getByRole("button", { name: "开临时会话" }).click();
+  await createTemporaryConversationFromMenu(page);
   const promotedConversationId = (await (await promoteCreatePromise).json()).conversation.id as string;
   const promoteResponsePromise = page.waitForResponse(
     (response) =>
@@ -401,4 +478,38 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
   const promoted = await request.get(`${apiUrl}/conversations/${promotedConversationId}`);
   expect(promoted.ok()).toBeTruthy();
   expect((await promoted.json()).conversation.kind).not.toBe("ephemeral");
+});
+
+test("创建分支接口失败时展示可理解错误而非无反应", async ({ page, request }) => {
+  const title = `E2E Branch Create Error ${Date.now()}`;
+  const { conversation } = await createCompletedConversation(request, title);
+  await openConversation(page, title);
+
+  const main = page.getByRole("main");
+  const createBranchButton = main.getByRole("button", { name: "从此回答创建分支" });
+  await expect(createBranchButton).toBeEnabled();
+
+  // 强制 lanes 创建接口失败，验证点击后给出可理解反馈而非静默无反应。
+  await page.route(
+    `**/api/v2/conversations/${conversation.id}/lanes`,
+    async (route) => {
+      if (route.request().method() === "POST") {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "branch_create_failed" }),
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
+
+  await createBranchButton.click();
+  const alert = main.getByRole("alert");
+  await expect(alert).toBeVisible();
+  await expect(alert).toContainText(/创建分支|失败|主线|会话/);
+  // 创建失败后按钮不应卡在“正在创建…”状态。
+  await expect(createBranchButton).toHaveText("创建分支");
+  await expect(createBranchButton).toHaveText(/创建分支/);
 });
