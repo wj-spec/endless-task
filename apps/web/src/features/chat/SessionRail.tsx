@@ -28,9 +28,10 @@ type SessionRailProps = {
   workspaceCanCreate: boolean;
   currentWorkspace: Workspace | null;
   pendingTotal: number;
-  onCreateWorkspace: (name: string) => Promise<unknown>;
+  onCreateWorkspace: () => void;
   onOpenAssistant: (tab: "notifications" | "memory") => void;
   onOpenSettings: () => void;
+  onRequestBindWorkspace: (workspaceId: string) => void;
   onChangeConversationStatus: (
     conversationId: string,
     status: ConversationStatus,
@@ -58,6 +59,7 @@ export function SessionRail({
   onCreateWorkspace,
   onOpenAssistant,
   onOpenSettings,
+  onRequestBindWorkspace,
   onChangeConversationStatus,
   onClose,
   onDeleteConversation,
@@ -69,10 +71,6 @@ export function SessionRail({
 }: SessionRailProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [workspaceCreateOpen, setWorkspaceCreateOpen] = useState(false);
-  const [workspaceDraft, setWorkspaceDraft] = useState("");
-  const [workspaceCreateError, setWorkspaceCreateError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
   const createWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -160,28 +158,6 @@ export function SessionRail({
     return model.recent.find((item) => item.id === conversationId) ?? null;
   };
 
-  const createWorkspace = async () => {
-    if (creatingWorkspace) return;
-    const trimmed = workspaceDraft.trim();
-    if (!trimmed) {
-      setWorkspaceCreateError("请输入工作区名称。");
-      return;
-    }
-    setCreatingWorkspace(true);
-    setWorkspaceCreateError(null);
-    try {
-      await onCreateWorkspace(trimmed);
-      setWorkspaceCreateOpen(false);
-      setWorkspaceDraft("");
-      nav.refresh();
-      requestAnimationFrame(() => createWorkspaceButtonRef.current?.focus());
-    } catch {
-      setWorkspaceCreateError("创建失败，请重试。");
-    } finally {
-      setCreatingWorkspace(false);
-    }
-  };
-
   const startRename = (conversationId: string) => {
     const conversation = findConversation(conversationId);
     setRenamingId(conversationId);
@@ -211,6 +187,7 @@ export function SessionRail({
       const conversation = findConversation(conversationId);
       if (conversation) setDeleteTarget(conversation);
     },
+    onBindWorkspace: (workspaceId) => onRequestBindWorkspace(workspaceId),
   };
 
   const railExpanded = open || !collapsed;
@@ -297,13 +274,9 @@ export function SessionRail({
         <div className="workspace-navigation-header">
           <span>工作区</span>
           <button
-            aria-expanded={workspaceCreateOpen}
             aria-label="新建工作区"
-            disabled={creatingWorkspace}
-            onClick={() => {
-              setWorkspaceCreateOpen((current) => !current);
-              setWorkspaceCreateError(null);
-            }}
+            className="icon-button rail-create-workspace"
+            onClick={onCreateWorkspace}
             ref={createWorkspaceButtonRef}
             title="新建工作区"
             type="button"
@@ -311,55 +284,6 @@ export function SessionRail({
             <AddIcon size={18} />
           </button>
         </div>
-        {workspaceCreateOpen ? (
-          <form
-            className="workspace-create-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void createWorkspace();
-            }}
-          >
-            <label htmlFor="workspace-create-name">工作区名称</label>
-            <input
-              aria-describedby={
-                workspaceCreateError ? "workspace-create-error" : undefined
-              }
-              autoFocus
-              disabled={creatingWorkspace}
-              id="workspace-create-name"
-              onChange={(event) => {
-                setWorkspaceDraft(event.target.value);
-                if (workspaceCreateError) setWorkspaceCreateError(null);
-              }}
-              placeholder="例如：个人项目"
-              value={workspaceDraft}
-            />
-            {workspaceCreateError ? (
-              <span id="workspace-create-error" role="alert">
-                {workspaceCreateError}
-              </span>
-            ) : null}
-            <div className="workspace-create-actions">
-              <button disabled={creatingWorkspace} type="submit">
-                {creatingWorkspace ? "创建中…" : "创建"}
-              </button>
-              <button
-                disabled={creatingWorkspace}
-                onClick={() => {
-                  setWorkspaceCreateOpen(false);
-                  setWorkspaceDraft("");
-                  setWorkspaceCreateError(null);
-                  requestAnimationFrame(() =>
-                    createWorkspaceButtonRef.current?.focus(),
-                  );
-                }}
-                type="button"
-              >
-                取消
-              </button>
-            </div>
-          </form>
-        ) : null}
         <nav
           aria-label="会话列表"
           className="session-navigation"

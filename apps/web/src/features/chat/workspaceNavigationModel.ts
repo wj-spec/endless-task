@@ -14,6 +14,8 @@ export type SessionActions = {
   onRenameCancel: () => void;
   onChangeStatus: (id: string, status: ConversationStatus) => void;
   onDelete: (id: string) => void;
+  /** 未绑定目录的工作区：请求打开绑定入口以承载会话。 */
+  onBindWorkspace?: (workspaceId: string) => void;
 };
 
 export type WorkspaceNavigationGroup = {

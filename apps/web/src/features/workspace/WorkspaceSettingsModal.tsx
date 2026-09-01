@@ -7,8 +7,10 @@ import { CloseIcon, FileIcon, FolderIcon } from "../ui/Icons";
 
 type WorkspaceSettingsModalProps = {
   workspace: Workspace | null;
+  createMode?: boolean;
   onClose: () => void;
   onWorkspaceUpdated: (workspace: Workspace) => void;
+  onCreateWorkspace: (name: string, rootPath: string) => Promise<Workspace>;
   onDeleteWorkspace: (workspaceId: string) => Promise<void>;
 };
 
@@ -30,10 +32,16 @@ const workspaceErrorText = (error: unknown): string => {
 
 export function WorkspaceSettingsModal({
   workspace,
+  createMode = false,
   onClose,
   onWorkspaceUpdated,
+  onCreateWorkspace,
   onDeleteWorkspace,
 }: WorkspaceSettingsModalProps) {
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [selectedRoot, setSelectedRoot] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [items, setItems] = useState<BrowseItem[]>([]);
   const [browseError, setBrowseError] = useState<string | null>(null);
@@ -118,6 +126,37 @@ export function WorkspaceSettingsModal({
     }
   };
 
+  const selectDirectory = (path: string) => {
+    setSelectedRoot(path);
+    setCreateError(null);
+  };
+
+  const submitCreateWorkspace = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmed = workspaceName.trim();
+    if (!trimmed) {
+      setCreateError("请输入工作区名称。");
+      return;
+    }
+    if (!selectedRoot) {
+      setCreateError("请选择一个本地目录作为工作区根目录。");
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const created = await onCreateWorkspace(trimmed, selectedRoot);
+      onWorkspaceUpdated(created);
+      onClose();
+    } catch (error) {
+      setCreateError(
+        error instanceof Error ? error.message : "创建工作区失败，请重试。",
+      );
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <div
       className="overlay confirm-scrim workspace-settings-scrim"
@@ -134,7 +173,7 @@ export function WorkspaceSettingsModal({
         tabIndex={-1}
       >
         <header className="overlay-header">
-          <h2 id={titleId}>工作区设置</h2>
+          <h2 id={titleId}>{createMode ? "新建工作区" : "工作区设置"}</h2>
           <button
             aria-label="关闭工作区设置"
             className="icon-button"
@@ -147,11 +186,45 @@ export function WorkspaceSettingsModal({
           </button>
         </header>
         <div className="overlay-body">
-          <p className="settings-section-hint">
-            {workspace
-              ? `为「${workspace.name}」绑定本地目录后，助手才能在项目里读写文件、执行命令。`
-              : "请先选择一个工作区。"}
-          </p>
+          {createMode ? (
+            <form className="workspace-create-form" onSubmit={submitCreateWorkspace}>
+              <label htmlFor="workspace-create-name">工作区名称</label>
+              <input
+                aria-describedby={createError ? "workspace-create-error" : undefined}
+                autoFocus
+                disabled={creating}
+                id="workspace-create-name"
+                onChange={(event) => {
+                  setWorkspaceName(event.target.value);
+                  if (createError) setCreateError(null);
+                }}
+                placeholder="例如：个人项目"
+                value={workspaceName}
+              />
+              <p className="settings-section-hint">
+                选择「{selectedRoot ?? "一个本地目录"}」作为工作区根后，助手才能在工作区里读写文件、执行命令。
+              </p>
+              {createError ? (
+                <span id="workspace-create-error" role="alert" className="workspace-binding-error">
+                  {createError}
+                </span>
+              ) : null}
+              <div className="workspace-create-actions">
+                <button disabled={creating} type="submit">
+                  {creating ? "创建中…" : "创建"}
+                </button>
+                <button disabled={creating} onClick={onClose} type="button">
+                  取消
+                </button>
+              </div>
+            </form>
+          ) : (
+            <p className="settings-section-hint">
+              {workspace
+                ? `为「${workspace.name}」绑定本地目录后，助手才能在项目里读写文件、执行命令。`
+                : "请先选择一个工作区。"}
+            </p>
+          )}
 
           {workspace?.rootPath ? (
             <div className="workspace-binding">
@@ -247,14 +320,22 @@ export function WorkspaceSettingsModal({
                       {item.kind === "directory" && (
                         <button
                           className="directory-bind-button"
-                          disabled={binding}
+                          disabled={binding || creating}
                           onClick={(event) => {
                             event.stopPropagation();
-                            void bindRoot(item.path);
+                            if (createMode) {
+                              selectDirectory(item.path);
+                            } else {
+                              void bindRoot(item.path);
+                            }
                           }}
                           type="button"
                         >
-                          绑定到此目录
+                          {createMode
+                            ? selectedRoot === item.path
+                              ? "已选择"
+                              : "选择为工作区根"
+                            : "绑定到此目录"}
                         </button>
                       )}
                     </div>

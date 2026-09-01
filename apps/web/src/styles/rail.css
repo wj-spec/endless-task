@@ -636,3 +636,32 @@
 .workspace-conversations .rail-empty {
   margin: 12px 10px 14px 28px;
 }
+
+/* 未绑定目录的工作区：提示 + 绑定入口，避免「无法新建会话」死路。 */
+.workspace-unbound {
+  margin: 8px 10px 2px 28px;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--fs-2);
+}
+
+.workspace-unbound-hint {
+  line-height: 1.4;
+}
+
+.workspace-unbound-bind {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.workspace-unbound-bind:hover {
+  background: var(--sheen-strong);
+}

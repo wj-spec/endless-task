@@ -212,10 +212,10 @@ export const chatApi = {
     const response = await request<{ items: Workspace[] }>("/workspaces");
     return response.items;
   },
-  createWorkspace: async (name: string) => {
+  createWorkspace: async (name: string, rootPath?: string | null) => {
     const response = await request<{ workspace: Workspace }>("/workspaces", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, rootPath: rootPath ?? null }),
     });
     return response.workspace;
   },

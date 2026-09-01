@@ -243,3 +243,19 @@ test("切换到另一工作区会话后目标组自动展开且选中行可见",
   // 表头仍指向活动会话，说明 active 未变，只做了手动收起。
   await expect(page.locator(".heading-sub")).toHaveText(betaTitle);
 });
+
+test("新建工作区必须先选择本地目录", async ({ page, request }) => {
+  const ws = await createWorkspace(request, "占位工作区");
+  await page.goto("/");
+  await expect(page.getByText("模型服务可用").first()).toBeVisible();
+
+  // 打开创建对话框：不选目录直接提交 → 必须提示先选择目录。
+  await page.getByRole("button", { name: "新建工作区" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("工作区名称").fill(`要求选目录 ${Date.now()}`);
+  await dialog.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(
+    dialog.getByText("请选择一个本地目录作为工作区根目录。"),
+  ).toBeVisible();
+});

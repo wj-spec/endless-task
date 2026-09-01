@@ -22,7 +22,8 @@ type AuxiliarySurface =
   | { type: "workspace" }
   | { type: "assistant"; tab: AssistantPanelTab }
   | { type: "settings" }
-  | { type: "workspace-settings" };
+  | { type: "workspace-settings" }
+  | { type: "workspace-create" };
 
 type AuxiliarySurfaceAction =
   | { type: "close" }
@@ -31,7 +32,8 @@ type AuxiliarySurfaceAction =
   | { type: "open-workspace" }
   | { type: "open-assistant"; tab: AssistantPanelTab }
   | { type: "open-settings" }
-  | { type: "open-workspace-settings" };
+  | { type: "open-workspace-settings" }
+  | { type: "open-workspace-create" };
 
 const reduceAuxiliarySurface = (
   _current: AuxiliarySurface,
@@ -48,8 +50,11 @@ const reduceAuxiliarySurface = (
       return { type: "settings" };
     case "open-workspace-settings":
       return { type: "workspace-settings" };
+    case "open-workspace-create":
+      return { type: "workspace-create" };
     case "close-workspace-surfaces":
-      return _current.type === "workspace" || _current.type === "workspace-settings"
+      return _current.type === "workspace" ||
+        _current.type === "workspace-settings"
         ? { type: "none" }
         : _current;
     case "close":
@@ -71,11 +76,16 @@ export function App() {
   const assistantOpen = activeSurface.type === "assistant";
   const settingsOpen = activeSurface.type === "settings";
   const workspaceSettingsOpen = activeSurface.type === "workspace-settings";
+  const workspaceCreateOpen = activeSurface.type === "workspace-create";
   const assistantTab =
     activeSurface.type === "assistant" ? activeSurface.tab : "notifications";
   const [railPreferredCollapsed, setRailPreferredCollapsed] = useState(
     () => window.innerWidth < 1180,
   );
+  // 工作区设置的目标：默认是当前会话的工作区；从侧栏「绑定目录」可指定具体工作区。
+  const [workspaceSettingsTargetId, setWorkspaceSettingsTargetId] = useState<
+    string | null
+  >(null);
 
   const latestTurn = chat.activeSnapshot?.turns.at(-1);
   const sideLatestTurn = chat.sideSnapshot?.turns.at(-1);
@@ -147,6 +157,10 @@ export function App() {
       ) ?? null,
     [chat.activeSnapshot?.conversation.workspaceId, chat.workspaces],
   );
+
+  const workspaceSettingsTarget =
+    chat.workspaces.find((item) => item.id === workspaceSettingsTargetId) ??
+    activeWorkspace;
 
   useEffect(() => {
     setWorkspaceCollapsed(false);
@@ -223,7 +237,11 @@ export function App() {
         workspaces={chat.workspaces}
         workspaceCanCreate={chat.workspaceCanCreate}
         currentWorkspace={chat.currentWorkspace}
-        onCreateWorkspace={(name) => chat.createWorkspace(name)}
+        onCreateWorkspace={() => dispatchSurface({ type: "open-workspace-create" })}
+        onRequestBindWorkspace={(workspaceId) => {
+          setWorkspaceSettingsTargetId(workspaceId);
+          dispatchSurface({ type: "open-workspace-settings" });
+        }}
         onClose={() => {
           if (window.innerWidth <= 760) {
             dispatchSurface({ type: "close" });
@@ -339,7 +357,10 @@ export function App() {
         onOpenWorkspace={openWorkspacePanel}
         onOpenWorkspaceSettings={
           activeWorkspace
-            ? () => dispatchSurface({ type: "open-workspace-settings" })
+            ? () => {
+                setWorkspaceSettingsTargetId(activeWorkspace.id);
+                dispatchSurface({ type: "open-workspace-settings" });
+              }
             : undefined
         }
         onOpenLaneInSide={(laneId) => {
@@ -650,9 +671,13 @@ export function App() {
           onModeChanged={() => undefined}
         />
       ) : null}
-      {workspaceSettingsOpen && activeWorkspace ? (
+      {workspaceSettingsOpen && workspaceSettingsTarget ? (
         <WorkspaceSettingsModal
-          onClose={() => dispatchSurface({ type: "close" })}
+          onClose={() => {
+            setWorkspaceSettingsTargetId(null);
+            dispatchSurface({ type: "close" });
+          }}
+          onCreateWorkspace={(name, rootPath) => chat.createWorkspace(name, rootPath)}
           onDeleteWorkspace={async (workspaceId) => {
             await chat.deleteWorkspace(workspaceId);
             dispatchSurface({ type: "close" });
@@ -660,7 +685,22 @@ export function App() {
           onWorkspaceUpdated={() => {
             void chat.refreshWorkspaces();
           }}
-          workspace={activeWorkspace}
+          workspace={workspaceSettingsTarget}
+        />
+      ) : null}
+      {workspaceCreateOpen ? (
+        <WorkspaceSettingsModal
+          createMode
+          onClose={() => dispatchSurface({ type: "close" })}
+          onCreateWorkspace={(name, rootPath) => chat.createWorkspace(name, rootPath)}
+          onDeleteWorkspace={async (workspaceId) => {
+            await chat.deleteWorkspace(workspaceId);
+            dispatchSurface({ type: "close" });
+          }}
+          onWorkspaceUpdated={() => {
+            void chat.refreshWorkspaces();
+          }}
+          workspace={null}
         />
       ) : null}
     </div>

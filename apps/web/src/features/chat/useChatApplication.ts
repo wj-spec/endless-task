@@ -2183,8 +2183,8 @@ export function useChatApplication() {
     }
   };
 
-  const createWorkspace = async (name: string) => {
-    const workspace = await chatApi.createWorkspace(name);
+  const createWorkspace = async (name: string, rootPath?: string | null) => {
+    const workspace = await chatApi.createWorkspace(name, rootPath);
     setWorkspaces((current) => [...current, workspace]);
     selectWorkspace(workspace.id);
     return workspace;

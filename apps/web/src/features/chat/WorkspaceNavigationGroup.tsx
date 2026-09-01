@@ -29,6 +29,7 @@ export function WorkspaceNavigationGroup({
   onToggleShowAll,
   actions,
 }: WorkspaceNavigationGroupProps) {
+  const unbound = group.rootPath === null;
   return (
     <div
       className={`workspace-group${open ? " is-open" : ""}`}
@@ -51,11 +52,29 @@ export function WorkspaceNavigationGroup({
       </button>
       {open ? (
         <div className="workspace-conversations">
+          {unbound && actions.onBindWorkspace ? (
+            <div className="workspace-unbound">
+              <p className="workspace-unbound-hint">
+                尚未绑定本地目录，绑定后才能新建对话。
+              </p>
+              <button
+                className="workspace-unbound-bind"
+                onClick={() => actions.onBindWorkspace?.(group.id)}
+                type="button"
+              >
+                绑定目录…
+              </button>
+            </div>
+          ) : null}
           <WorkspaceSessionList
             actions={actions}
             activeConversationId={activeConversationId}
             conversations={group.conversations}
-            emptyDescription="在这个工作区中新建一段对话。"
+            emptyDescription={
+              unbound
+                ? "绑定本地目录后，你才能在这个工作区里新建对话。"
+                : "在这个工作区中新建一段对话。"
+            }
             emptyTitle="这里还没有对话"
             listClassName="workspace-session-list"
             onToggleShowAll={onToggleShowAll}
