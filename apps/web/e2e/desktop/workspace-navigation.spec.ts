@@ -63,9 +63,16 @@ test("多工作区嵌套且未绑定组为空", async ({ page, request }) => {
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
 
   const nav = navFor(page);
-  // 展开两个工作区组
-  await nav.locator(".workspace-item-main").filter({ hasText: "项目 Alpha" }).click();
-  await nav.locator(".workspace-item-main").filter({ hasText: "产品 Beta" }).click();
+  // 展开两个工作区组：组可能因「自动打开活动会话」已展开，仅对尚未展开的组点击，
+  // 避免把已展开组再点成收起。
+  const alphaGroup = nav.locator(".workspace-item-main").filter({ hasText: "项目 Alpha" });
+  const betaGroup = nav.locator(".workspace-item-main").filter({ hasText: "产品 Beta" });
+  if ((await alphaGroup.getAttribute("aria-expanded")) === "false") {
+    await alphaGroup.click();
+  }
+  if ((await betaGroup.getAttribute("aria-expanded")) === "false") {
+    await betaGroup.click();
+  }
 
   await expect(
     nav.locator(".session-item-main").filter({ hasText: "Alpha-需求梳理" }),

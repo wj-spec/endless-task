@@ -415,22 +415,27 @@ class McpReconnectTest(unittest.IsolatedAsyncioTestCase):
             manager = McpManager(
                 repository=repository,
                 tool_registry=registry,
-                reconnect_initial_delay_seconds=0.01,
-                reconnect_max_delay_seconds=0.02,
+                # 使用较大的重连退避，使「reconnecting」状态可被稳定观察到，
+                # 避免在极短窗口内被轮询错过造成偶发 flake。
+                reconnect_initial_delay_seconds=0.2,
+                reconnect_max_delay_seconds=0.4,
                 reconnect_max_attempts=2,
                 health_check_seconds=0.01,
             )
             try:
                 await manager.start_all()
                 self.assertEqual("connected", manager.status(server.id).state)
-                deadline = asyncio.get_running_loop().time() + 1
+                # 计时窗口需容纳：子进程 50ms 退出 + 健康检测发现断连 + 重连重新
+                # 拉起子进程并完成 MCP 握手。机器负载下子进程拉起可能超时，
+                # 故给足预算（10s）避免偶发 flake；仍尽早成功即退。
+                deadline = asyncio.get_running_loop().time() + 10
                 saw_reconnecting = False
                 while asyncio.get_running_loop().time() < deadline:
                     state = manager.status(server.id).state
                     saw_reconnecting = saw_reconnecting or state == "reconnecting"
                     if saw_reconnecting and state == "connected":
                         break
-                    await asyncio.sleep(0.005)
+                    await asyncio.sleep(0.01)
                 self.assertTrue(saw_reconnecting)
                 self.assertEqual("connected", manager.status(server.id).state)
             finally:

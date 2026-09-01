@@ -148,6 +148,11 @@ class McpManager:
             await connection.task
         except asyncio.CancelledError:
             pass
+        except Exception:
+            # 主动断开时，对端进程可能已退出，MCP stdio 客户端会在清理阶段抛出
+            # ConnectionResetError 等；断开本身是意图内的，不应在 stop/disconnect
+            # 中失败，故吞掉连接任务的异常（诊断信息仍保留在 connection.state/errors）。
+            pass
 
     async def _supervise_server(
         self,

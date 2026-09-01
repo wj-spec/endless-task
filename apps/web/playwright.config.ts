@@ -11,6 +11,7 @@ export default defineConfig({
   workers: 1,
   timeout: 30_000,
   expect: { timeout: 8_000 },
+  globalTeardown: "./e2e/globalTeardown.ts",
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [["line"], ["html", { open: "never" }]] : "line",

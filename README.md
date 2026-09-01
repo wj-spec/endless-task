@@ -108,7 +108,7 @@ npm run dev
 
 - 后端：`uv run python -W error -m unittest discover -s tests -v`，662/662 通过。
 - 前端：`npm run build` 通过。
-- 浏览器：`npm run test:e2e`，桌面 13、移动端 1，共 14/14 通过。
+- 浏览器：`npm run test:e2e`，桌面 36、移动端 10，共 46/46 通过。
 - 依赖审计：`npm audit --json`，0 vulnerabilities。
 - 迁移恢复：schema `042` → `045` 自动化 dry-run/apply/audit/restore、重复执行、部分失败回滚和损坏备份拒绝通过；`045` 另覆盖已应用旧版 `044` 的候选数据库修复。真实旧库与应用降级仍待正式验收。
 
