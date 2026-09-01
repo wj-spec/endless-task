@@ -1,4 +1,5 @@
 import { ChevronIcon, FolderIcon } from "../ui/Icons";
+import { RowMenu } from "../ui/RowMenu";
 import type { SessionActions } from "./workspaceNavigationModel";
 import {
   WORKSPACE_VISIBLE_SESSIONS,
@@ -9,6 +10,7 @@ import { WorkspaceSessionList } from "./WorkspaceSessionList";
 type WorkspaceNavigationGroupProps = {
   group: WorkspaceNavigationGroupModel;
   activeConversationId: string | null;
+  currentWorkspaceId: string | null;
   open: boolean;
   showAll: boolean;
   renamingId: string | null;
@@ -18,9 +20,16 @@ type WorkspaceNavigationGroupProps = {
   actions: SessionActions;
 };
 
+function displayRoot(rootPath: string | null): string {
+  if (!rootPath) return "";
+  const parts = rootPath.split("/").filter(Boolean);
+  return parts.at(-1) ?? rootPath;
+}
+
 export function WorkspaceNavigationGroup({
   group,
   activeConversationId,
+  currentWorkspaceId,
   open,
   showAll,
   renamingId,
@@ -30,26 +39,54 @@ export function WorkspaceNavigationGroup({
   actions,
 }: WorkspaceNavigationGroupProps) {
   const unbound = group.rootPath === null;
+  const isCurrent = group.id === currentWorkspaceId;
   return (
     <div
-      className={`workspace-group${open ? " is-open" : ""}`}
+      className={`workspace-group${open ? " is-open" : ""}${
+        isCurrent ? " is-current" : ""
+      }`}
       data-workspace-id={group.id}
     >
-      <button
-        aria-expanded={open}
-        className="workspace-item-main"
-        onClick={onToggleOpen}
-        title={group.rootPath ?? group.name}
-        type="button"
-      >
-        <span aria-hidden="true" className="workspace-folder-icon">
-          <FolderIcon size={18} />
-        </span>
-        <span className="workspace-item-name">{group.name}</span>
-        <span aria-hidden="true" className="workspace-item-chevron">
-          <ChevronIcon direction={open ? "down" : "right"} size={16} />
-        </span>
-      </button>
+      <div className="workspace-item">
+        <button
+          aria-expanded={open}
+          aria-current={isCurrent ? "true" : undefined}
+          className="workspace-item-main"
+          onClick={onToggleOpen}
+          title={group.rootPath ?? group.name}
+          type="button"
+        >
+          <span aria-hidden="true" className="workspace-folder-icon">
+            <FolderIcon size={18} />
+          </span>
+          <span className="workspace-item-name">{group.name}</span>
+          <span className={`workspace-item-meta${unbound ? " is-unbound" : ""}`}>
+            {unbound ? "未绑定" : displayRoot(group.rootPath)}
+          </span>
+          <span aria-hidden="true" className="workspace-item-chevron">
+            <ChevronIcon direction={open ? "down" : "right"} size={16} />
+          </span>
+        </button>
+        <RowMenu
+          className="workspace-row-menu"
+          items={[
+            ...(unbound && actions.onBindWorkspace
+              ? [{ label: "绑定目录…", onSelect: () => actions.onBindWorkspace?.(group.id) }]
+              : []),
+            ...(actions.onDeleteWorkspace
+              ? [
+                  {
+                    danger: true,
+                    label: "删除工作区",
+                    onSelect: () => actions.onDeleteWorkspace?.(group.id),
+                  },
+                ]
+              : []),
+          ]}
+          triggerAriaLabel={`管理工作区：${group.name}`}
+          triggerClassName="workspace-menu-button"
+        />
+      </div>
       {open ? (
         <div className="workspace-conversations">
           {unbound && actions.onBindWorkspace ? (

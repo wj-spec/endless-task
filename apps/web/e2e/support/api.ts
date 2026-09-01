@@ -19,6 +19,7 @@ type Conversation = {
 type Workspace = {
   id: string;
   name: string;
+  rootPath: string | null;
 };
 
 type Lane = {

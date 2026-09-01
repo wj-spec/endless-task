@@ -259,3 +259,39 @@ test("新建工作区必须先选择本地目录", async ({ page, request }) => 
     dialog.getByText("请选择一个本地目录作为工作区根目录。"),
   ).toBeVisible();
 });
+
+test("工作区行显示绑定目录、当前态与删除菜单", async ({ page, request }) => {
+  const name = `管理工作区 ${Date.now()}`;
+  const convTitle = `管理会话 ${Date.now()}`;
+  const ws = await createWorkspace(request, name);
+  await createWorkspaceConversation(request, ws.id, convTitle);
+
+  await page.goto("/");
+  await expect(page.getByText("模型服务可用").first()).toBeVisible();
+  const nav = navFor(page);
+  const group = nav.locator(".workspace-item-main").filter({ hasText: name });
+
+  // 绑定目录显示于行的 meta 区域（目录名取自 rootPath 最后一段）。
+  const rootName = ws.rootPath!.split("/").filter(Boolean).at(-1)!;
+  await expect(
+    group.locator(".workspace-item-meta").filter({ hasText: rootName }),
+  ).toBeVisible();
+
+  // 打开该工作区会话后，工作区行呈现当前态（is-current / aria-current）。
+  if ((await group.getAttribute("aria-expanded")) === "false") {
+    await group.click();
+  }
+  await nav.locator(".session-item-main").filter({ hasText: convTitle }).click();
+  const currentGroup = nav.locator(".workspace-item-main").filter({ hasText: name });
+  await expect(currentGroup).toHaveAttribute("aria-current", "true");
+
+  // 工作区行菜单提供「删除工作区」快捷入口。
+  await currentGroup.hover();
+  await currentGroup
+    .locator("..")
+    .getByRole("button", { name: `管理工作区：${name}` })
+    .click();
+  await expect(page.getByRole("menuitem", { name: "删除工作区" })).toBeVisible();
+});
+
+

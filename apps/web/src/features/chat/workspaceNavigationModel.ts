@@ -16,6 +16,8 @@ export type SessionActions = {
   onDelete: (id: string) => void;
   /** 未绑定目录的工作区：请求打开绑定入口以承载会话。 */
   onBindWorkspace?: (workspaceId: string) => void;
+  /** 删除工作区（有会话的工作区后端会拒绝；调用方负责确认/提示）。 */
+  onDeleteWorkspace?: (workspaceId: string) => void;
 };
 
 export type WorkspaceNavigationGroup = {

@@ -579,11 +579,18 @@
   margin-bottom: 2px;
 }
 
+.workspace-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+}
+
 .workspace-item-main {
   display: grid;
   width: 100%;
   min-height: 38px;
-  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  grid-template-columns: 18px minmax(0, 1fr) auto 16px;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -605,6 +612,13 @@
   font-weight: 620;
 }
 
+/* 当前选中的工作区：左侧高亮描边。 */
+.workspace-group.is-current > .workspace-item .workspace-item-main {
+  box-shadow: inset 2px 0 0 var(--accent-strong, var(--ink-raise));
+  color: var(--ink);
+  font-weight: 650;
+}
+
 .workspace-folder-icon {
   display: inline-flex;
   align-items: center;
@@ -622,10 +636,62 @@
   white-space: nowrap;
 }
 
+/* 工作区绑定目录显示：已绑定显示目录名，未绑定显示「未绑定」。 */
+.workspace-item-meta {
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: var(--fs-1);
+  font-weight: 500;
+}
+
+.workspace-item-meta.is-unbound {
+  color: var(--danger, #b4533a);
+  font-weight: 650;
+}
+
 .workspace-item-chevron {
   color: var(--faint);
   font-size: var(--fs-3);
   text-align: center;
+}
+
+/* 工作区行菜单按钮。 */
+.workspace-row-menu {
+  display: inline-flex;
+  align-items: center;
+  padding-right: 4px;
+}
+
+.workspace-menu-button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--faint);
+  opacity: 0;
+}
+
+.workspace-item:hover .workspace-menu-button,
+.workspace-row-menu:focus-within .workspace-menu-button {
+  opacity: 1;
+}
+
+.workspace-menu-button:hover {
+  background: var(--sheen-strong);
+  color: var(--ink-raise);
+}
+
+.rail-error {
+  margin: 8px 10px 0;
+  color: var(--danger, #b4533a);
+  font-size: var(--fs-2);
+  line-height: 1.4;
 }
 
 .workspace-conversations {

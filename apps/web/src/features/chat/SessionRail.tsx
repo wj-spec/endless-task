@@ -38,6 +38,7 @@ type SessionRailProps = {
   ) => void;
   onClose: () => void;
   onDeleteConversation: (conversationId: string) => void;
+  onDeleteWorkspace: (workspaceId: string) => Promise<void>;
   onNewConversation: () => void;
   onRenameConversation: (conversationId: string, title: string) => void;
   onSearchChange: (value: string) => void;
@@ -63,6 +64,7 @@ export function SessionRail({
   onChangeConversationStatus,
   onClose,
   onDeleteConversation,
+  onDeleteWorkspace,
   onNewConversation,
   onRenameConversation,
   onSearchChange,
@@ -72,6 +74,13 @@ export function SessionRail({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+  const [deleteWorkspaceTarget, setDeleteWorkspaceTarget] = useState<
+    Workspace | null
+  >(null);
+  const [deleteWorkspaceError, setDeleteWorkspaceError] = useState<string | null>(
+    null,
+  );
+  const [deletingWorkspace, setDeletingWorkspace] = useState(false);
   const createWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const railRef = useModalDialog<HTMLElement>({
@@ -99,6 +108,17 @@ export function SessionRail({
   const [recentShowAll, setRecentShowAll] = useState(false);
   const previousActiveWorkspaceIdRef = useRef<string | null>(null);
   const sessionNavRef = useRef<HTMLElement | null>(null);
+
+  // 当前工作区：优先取活动会话所属工作区，否则用侧栏工作区上下文。
+  const currentWorkspaceId = useMemo(() => {
+    if (activeConversationId) {
+      const activeGroup = model.groups.find((group) =>
+        group.conversations.some((item) => item.id === activeConversationId),
+      );
+      if (activeGroup) return activeGroup.id;
+    }
+    return workspaceId;
+  }, [activeConversationId, model.groups, workspaceId]);
 
   useEffect(() => {
     const targetGroup =
@@ -188,6 +208,11 @@ export function SessionRail({
       if (conversation) setDeleteTarget(conversation);
     },
     onBindWorkspace: (workspaceId) => onRequestBindWorkspace(workspaceId),
+    onDeleteWorkspace: (workspaceId) => {
+      setDeleteWorkspaceError(null);
+      const workspace = workspaces.find((item) => item.id === workspaceId);
+      if (workspace) setDeleteWorkspaceTarget(workspace);
+    },
   };
 
   const railExpanded = open || !collapsed;
@@ -293,6 +318,7 @@ export function SessionRail({
             <WorkspaceNavigationGroup
               actions={actions}
               activeConversationId={activeConversationId}
+              currentWorkspaceId={currentWorkspaceId}
               group={group}
               key={group.id}
               onToggleOpen={() => toggleGroupOpen(group.id)}
@@ -339,6 +365,42 @@ export function SessionRail({
           }}
           title="删除这段对话？"
         />
+      ) : null}
+      {deleteWorkspaceTarget ? (
+        <ConfirmDialog
+          body={
+            deleteWorkspaceTarget.rootPath
+              ? `将删除工作区「${deleteWorkspaceTarget.name}」。目录与已存文件保留；若其下仍有会话，删除会被拒绝。`
+              : `将删除尚未绑定目录的工作区「${deleteWorkspaceTarget.name}」。`
+          }
+          confirmLabel={deletingWorkspace ? "删除中…" : "删除工作区"}
+          onClose={() => {
+            setDeleteWorkspaceTarget(null);
+            setDeleteWorkspaceError(null);
+          }}
+          onConfirm={() => {
+            setDeletingWorkspace(true);
+            setDeleteWorkspaceError(null);
+            void onDeleteWorkspace(deleteWorkspaceTarget.id)
+              .then(() => {
+                setDeleteWorkspaceTarget(null);
+                setDeleteWorkspaceError(null);
+                nav.refresh();
+              })
+              .catch((error) => {
+                setDeleteWorkspaceError(
+                  error instanceof Error ? error.message : "删除工作区失败，请重试。",
+                );
+              })
+              .finally(() => setDeletingWorkspace(false));
+          }}
+          title="删除这个工作区？"
+        />
+      ) : null}
+      {deleteWorkspaceError ? (
+        <p className="rail-error" role="alert">
+          {deleteWorkspaceError}
+        </p>
       ) : null}
     </aside>
   );

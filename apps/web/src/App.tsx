@@ -242,6 +242,7 @@ export function App() {
           setWorkspaceSettingsTargetId(workspaceId);
           dispatchSurface({ type: "open-workspace-settings" });
         }}
+        onDeleteWorkspace={(workspaceId) => chat.deleteWorkspace(workspaceId)}
         onClose={() => {
           if (window.innerWidth <= 760) {
             dispatchSurface({ type: "close" });
