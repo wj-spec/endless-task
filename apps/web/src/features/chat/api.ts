@@ -23,6 +23,7 @@ import type { KnowledgeProposal,
   RuntimeV2MessageResponse,
   RuntimeV2ConversationRuntimeStatus,
   RuntimeV2GlobalRuntimeStatus,
+  RuntimeV2Metrics,
   RuntimeV2MemoryCreateResponse,
   RuntimeV2MemoryListResponse,
   RuntimeV2MemoryPromotionCreateResponse,
@@ -884,6 +885,10 @@ export async function streamTurnEvents(options: {
     }
     if (done) return;
   }
+}
+
+export async function fetchRuntimeV2Metrics(): Promise<RuntimeV2Metrics> {
+  return request<RuntimeV2Metrics>("/api/v2/metrics");
 }
 
 export async function streamRuntimeV2Events(options: {

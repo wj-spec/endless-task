@@ -190,6 +190,8 @@ class RuntimeV2MemoryRecord:
     created_at: str = ""
     updated_at: str = ""
     expired_at: Optional[str] = None
+    superseded_by: Optional[str] = None
+    superseded_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

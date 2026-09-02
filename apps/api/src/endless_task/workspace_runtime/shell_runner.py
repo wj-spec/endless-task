@@ -13,7 +13,7 @@ import re
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from endless_task.tooling import ToolError
 
@@ -65,6 +65,8 @@ async def run_shell_command(
     no_change_timeout_seconds: float = DEFAULT_NO_CHANGE_TIMEOUT_SECONDS,
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     env: Optional[dict[str, str]] = None,
+    on_progress: Optional[Callable[[str, Optional[float]], None]] = None,
+    progress_interval_seconds: float = 5.0,
 ) -> ShellResult:
     if not command or not command.strip():
         raise ToolError("invalid_command", "命令不能为空。", retryable=False)
@@ -82,6 +84,9 @@ async def run_shell_command(
             retryable=False,
         ) from error
     started = asyncio.get_running_loop().time()
+    last_progress_at = started
+    if on_progress is not None:
+        on_progress("命令开始执行", 0.0)
     process = await asyncio.create_subprocess_exec(
         "bash",
         "-c",
@@ -122,6 +127,9 @@ async def run_shell_command(
             buffers=(out_buffer, err_buffer),
             timeout_seconds=timeout_seconds,
             no_change_timeout_seconds=no_change_timeout_seconds,
+            on_progress=on_progress,
+            progress_interval_seconds=progress_interval_seconds,
+            started=started,
         )
     except asyncio.CancelledError:
         _terminate_process_group(process)
@@ -150,11 +158,15 @@ async def _wait_with_timeouts(
     timeout_seconds: float,
     no_change_timeout_seconds: float,
     poll_seconds: float = 0.05,
+    on_progress: Optional[Callable[[str, Optional[float]], None]] = None,
+    progress_interval_seconds: float = 5.0,
+    started: float = 0.0,
 ) -> tuple[bool, bool]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
     last_output = loop.time()
     last_total = sum(len(buffer) for buffer in buffers)
+    last_progress_at = loop.time()
     while True:
         if all(task.done() for task in pump_tasks):
             return (False, False)
@@ -168,6 +180,10 @@ async def _wait_with_timeouts(
             _terminate_process_group(process)
             await _drain_exit(process)
             return (True, True)
+        if on_progress is not None and now - last_progress_at >= progress_interval_seconds:
+            last_progress_at = now
+            elapsed = int(now - started) if started else 0
+            on_progress(f"命令仍在运行，已执行 {elapsed} 秒", None)
         if now >= deadline:
             _terminate_process_group(process)
             await _drain_exit(process)

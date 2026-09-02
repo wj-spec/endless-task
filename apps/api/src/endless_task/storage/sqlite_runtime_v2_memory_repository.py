@@ -135,6 +135,7 @@ class SqliteRuntimeV2MemoryRepository:
                 SELECT * FROM v2_runtime_memories
                 WHERE scope = 'user_global' AND status = 'active'
                   AND (expired_at IS NULL OR expired_at > ?)
+                  AND superseded_by IS NULL
                   AND conversation_id = ? AND content = ?
                 ORDER BY updated_at, id
                 LIMIT 1
@@ -158,6 +159,7 @@ class SqliteRuntimeV2MemoryRepository:
                 SELECT id, content FROM v2_runtime_memories
                 WHERE conversation_id = ? AND status = 'active'
                   AND (expired_at IS NULL OR expired_at > ?)
+                  AND superseded_by IS NULL
                 ORDER BY updated_at, id
                 LIMIT ?
                 """,
@@ -180,6 +182,36 @@ class SqliteRuntimeV2MemoryRepository:
                 (now, now),
             )
             return cursor.rowcount
+
+        return self._write(operation)
+
+    def supersede_memory(
+        self,
+        memory_id: str,
+        *,
+        superseded_by: str,
+    ) -> RuntimeV2MemoryRecord:
+        """把一条记忆标记为被另一条取代（UPDATE 语义，旧记忆保留可追溯）。"""
+        now = self._clock()
+
+        def operation(connection: sqlite3.Connection) -> RuntimeV2MemoryRecord:
+            row = self._get_memory_row(connection, memory_id)
+            if row["status"] != "active":
+                raise InvalidStateError("Only active memories can be superseded")
+            target = self._get_memory_row(connection, superseded_by)
+            if target["conversation_id"] != row["conversation_id"]:
+                raise InvalidStateError("Superseding memory belongs to another conversation")
+            connection.execute(
+                """
+                UPDATE v2_runtime_memories
+                SET superseded_by = ?, superseded_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (superseded_by, now, now, memory_id),
+            )
+            return self._memory_from_row(
+                self._get_memory_row(connection, memory_id)
+            )
 
         return self._write(operation)
 
@@ -215,6 +247,7 @@ class SqliteRuntimeV2MemoryRepository:
                 SELECT * FROM v2_runtime_memories
                 WHERE status = 'active'
                   AND (expired_at IS NULL OR expired_at > ?)
+                  AND superseded_by IS NULL
                   AND (
                     scope = 'user_global'
                     OR (scope = 'workspace' AND {workspace_clause})
@@ -708,6 +741,8 @@ class SqliteRuntimeV2MemoryRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             expired_at=row["expired_at"],
+            superseded_by=row["superseded_by"],
+            superseded_at=row["superseded_at"],
         )
 
     @staticmethod

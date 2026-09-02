@@ -462,6 +462,14 @@ class ProductRuntimeEventProjection:
                 "status": _string(payload, "status"),
                 "resultEntryId": _string(payload, "resultEntryId"),
             }
+        if event_type == "tool_progress_update":
+            return "tool_execution.progress", {
+                "runId": event.run_id,
+                "modelTurnId": event.model_turn_id,
+                "toolExecutionId": _string(payload, "toolExecutionId"),
+                "message": _string(payload, "message"),
+                "percent": payload.get("percent"),
+            }
         if event_type == "approval_requested":
             return "approval.requested", {
                 "runId": event.run_id,

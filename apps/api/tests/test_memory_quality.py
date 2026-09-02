@@ -92,6 +92,7 @@ class MemoryQualityServiceTest(MemoryQualityBase):
             memory_repository=self.repository,
             embedder=embedder,
             similarity_threshold=0.5,
+            update_threshold=0.3,
         )
         duplicate = service.find_duplicate(
             conversation_id=self.conversation_id,
@@ -107,6 +108,7 @@ class MemoryQualityServiceTest(MemoryQualityBase):
             memory_repository=self.repository,
             embedder=embedder,
             similarity_threshold=0.9,
+            update_threshold=0.5,
         )
         duplicate = service.find_duplicate(
             conversation_id=self.conversation_id,
@@ -130,6 +132,7 @@ class MemoryQualityServiceTest(MemoryQualityBase):
             memory_repository=self.repository,
             embedder=FailingEmbedder(),
             similarity_threshold=0.5,
+            update_threshold=0.3,
         )
         # 语义路径失败:降级后仅字面匹配,不同文本不命中。
         duplicate = service.find_duplicate(
@@ -188,3 +191,86 @@ class MemoryExpiryTest(MemoryQualityBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DictEmbedder:
+    """按文本返回预置向量的确定性 embedder(精确控制相似度)。"""
+
+    model_name = "dict"
+
+    def __init__(self, vectors) -> None:
+        self.vectors = dict(vectors)
+
+    def ensure_ready(self) -> None:
+        pass
+
+    def embed_batch(self, texts):
+        return [self.vectors[text] for text in texts]
+
+
+class MemoryUpdateSemanticsTest(MemoryQualityBase):
+    def _service(self, **overrides) -> RuntimeV2MemoryQualityService:
+        options = {
+            "memory_repository": self.repository,
+            "embedder": DictEmbedder(
+                {
+                    "旧记忆：用户偏好简洁。": (1.0, 0.0, 0.0),
+                    "更强版本：用户偏好中文简洁回答。": (0.7, 0.71414284, 0.0),
+                    "完全不同：用户在北京工作。": (0.0, 1.0, 0.0),
+                }
+            ),
+            "similarity_threshold": 0.85,
+            "update_threshold": 0.6,
+        }
+        options.update(overrides)
+        return RuntimeV2MemoryQualityService(**options)
+
+    def test_update_candidate_detects_stronger_semantic_variation(self) -> None:
+        self._add("旧记忆：用户偏好简洁。")
+        service = self._service()
+        candidate = service.find_update_candidate(
+            conversation_id=self.conversation_id,
+            content="更强版本：用户偏好中文简洁回答。",
+        )
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.content, "旧记忆：用户偏好简洁。")
+
+    def test_exact_duplicate_is_not_update_candidate(self) -> None:
+        self._add("旧记忆：用户偏好简洁。")
+        service = self._service()
+        candidate = service.find_update_candidate(
+            conversation_id=self.conversation_id,
+            content="旧记忆：用户偏好简洁。",
+        )
+        self.assertIsNone(candidate)  # 重复归 NOOP,不进 UPDATE
+
+    def test_distinct_content_is_not_update_candidate(self) -> None:
+        self._add("旧记忆：用户偏好简洁。")
+        service = self._service()
+        candidate = service.find_update_candidate(
+            conversation_id=self.conversation_id,
+            content="完全不同：用户在北京工作。",
+        )
+        self.assertIsNone(candidate)
+
+    def test_supersede_marks_and_filters(self) -> None:
+        old = self._add("旧记忆：用户偏好简洁。")
+        new = self._add("更强版本：用户偏好中文简洁回答。")
+        self.repository.supersede_memory(old.id, superseded_by=new.id)
+
+        # 旧记忆不再出现在去重候选与 user_global 精确查询中。
+        candidates = self.repository.list_active_memories_content(
+            self.conversation_id
+        )
+        self.assertEqual([memory_id for memory_id, _ in candidates], [new.id])
+        exact = self.repository.find_active_user_global_memory(
+            conversation_id=self.conversation_id,
+            content="旧记忆：用户偏好简洁。",
+        )
+        self.assertIsNone(exact)
+        # 新记忆仍可见。
+        exact_new = self.repository.find_active_user_global_memory(
+            conversation_id=self.conversation_id,
+            content="更强版本：用户偏好中文简洁回答。",
+        )
+        self.assertIsNotNone(exact_new)

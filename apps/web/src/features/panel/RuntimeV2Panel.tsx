@@ -1,9 +1,12 @@
+import { useEffect, useState } from "react";
 import type {
   RuntimeV2ConversationRuntimeStatus,
   RuntimeV2Lane,
+  RuntimeV2Metrics,
   RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
 } from "../chat/apiTypes";
+import { fetchRuntimeV2Metrics } from "../chat/api";
 import type { RuntimeConnectionPhase } from "../chat/runtimeController";
 import { StatusBadge } from "../ui/StatusBadge";
 
@@ -56,6 +59,7 @@ const entryText: Record<string, string> = {
   tool_call: "工具调用",
   tool_result: "工具结果",
   context_summary: "上下文摘要",
+  plan: "计划",
 };
 
 type RuntimeV2PanelProps = {
@@ -79,6 +83,20 @@ export function RuntimeV2Panel({
   snapshot,
 }: RuntimeV2PanelProps) {
   const activeRun = snapshot?.runState ?? null;
+  const [metrics, setMetrics] = useState<RuntimeV2Metrics | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchRuntimeV2Metrics()
+      .then((value) => {
+        if (!cancelled) setMetrics(value);
+      })
+      .catch(() => {
+        /* 指标不可用时保持空白 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const presentation = runtimeStatusPresentation(activeRun?.status);
   const selectedLane =
     lanes.find((lane) => lane.id === snapshot?.activeLaneId) ?? null;
@@ -143,6 +161,24 @@ export function RuntimeV2Panel({
             </span>
             <span>工具 {snapshot.toolStates.length}</span>
           </div>
+
+          {metrics ? (
+            <div className="runtime-v2-card">
+              <strong>运行时指标（本进程）</strong>
+              <p>
+                Runs {metrics.runs.count} · 平均首 token{" "}
+                {metrics.modelTurns.avgFirstTokenLatencyMs ?? "—"}ms · 压缩{" "}
+                {metrics.compactions.events} 次
+              </p>
+              <p>
+                前缀稳定率{" "}
+                {metrics.prefixStability.stableRate == null
+                  ? "—"
+                  : `${Math.round(metrics.prefixStability.stableRate * 100)}%`}{" "}
+                · 审批 {metrics.approvals.count} 次
+              </p>
+            </div>
+          ) : null}
 
           <div className="runtime-v2-lanes">
             <div className="runtime-v2-lane-toolbar">
@@ -232,6 +268,8 @@ export function RuntimeV2Panel({
                     {entry.data.content ??
                       entry.data.toolName ??
                       entry.data.errorCode ??
+                      (entry.data.reference as { content?: string } | undefined)
+                        ?.content ??
                       entry.id}
                   </p>
                 </div>

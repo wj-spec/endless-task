@@ -101,12 +101,16 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             "050_runtime_v2_memory_quality.sql",
             self.database.applied_migrations(),
         )
+        self.assertIn(
+            "051_runtime_v2_memory_update.sql",
+            self.database.applied_migrations(),
+        )
         self.database.initialize()
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(50, row["count"])
+        self.assertEqual(51, row["count"])
 
     def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
         conversation = self.chat_repository.create_conversation()

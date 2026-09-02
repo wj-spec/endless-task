@@ -115,6 +115,36 @@ class RunShellTool:
             no_change_timeout_seconds=self._no_change_timeout_seconds,
             max_output_bytes=self._max_output_bytes,
         )
+        return await self._finish(call, result, command, binding)
+
+    async def execute_with_progress(
+        self,
+        call: ToolCall,
+        token: CancellationToken,
+        *,
+        on_progress,
+    ) -> ToolResult:
+        """长命令执行中按间隔上报进度(可选能力,协调器检测到即启用)。"""
+        token.raise_if_cancelled()
+        binding = self._resolver.require_binding(call.conversation_id)
+        command = str(call.arguments["command"])
+        result: ShellResult = await run_shell_command(
+            command=command,
+            cwd=binding.root,
+            timeout_seconds=self._timeout_seconds,
+            no_change_timeout_seconds=self._no_change_timeout_seconds,
+            max_output_bytes=self._max_output_bytes,
+            on_progress=on_progress,
+        )
+        return await self._finish(call, result, command, binding)
+
+    async def _finish(
+        self,
+        call: ToolCall,
+        result: ShellResult,
+        command: str,
+        binding,
+    ) -> ToolResult:
         combined = result.stdout
         if result.stderr:
             combined += ("\n" if combined else "") + f"[stderr]\n{result.stderr}"

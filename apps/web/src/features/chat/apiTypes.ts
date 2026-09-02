@@ -411,6 +411,31 @@ export type RuntimeV2ConversationRuntimeStatus = {
   reason: string;
 };
 
+export type RuntimeV2Metrics = {
+  runs: {
+    count: number;
+    byStatus: Record<string, number>;
+    avgDurationMs: number | null;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    compactedRuns: number;
+    compactionReleasedTokens: number;
+  };
+  modelTurns: {
+    count: number;
+    avgFirstTokenLatencyMs: number | null;
+    avgDurationMs: number | null;
+    finishReasons: Record<string, number>;
+  };
+  approvals: {
+    count: number;
+    avgWaitMs: number | null;
+    decisions: Record<string, number>;
+  };
+  compactions: { events: number };
+  prefixStability: { comparisons: number; stableRate: number | null };
+};
+
 export type LiveTurn = {
   turnId: string;
   responseVariantId: string;

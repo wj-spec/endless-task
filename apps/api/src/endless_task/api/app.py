@@ -1515,6 +1515,41 @@ def _build_container(
         or embedding_indexer is not None
     ):
 
+        def _write_v2_memory_auto(
+            *,
+            conversation_id: str,
+            content: str,
+            kind: str,
+        ) -> None:
+            """自动写入记忆:NOOP(重复)/UPDATE(同主题更强)/ADD(新增)。"""
+            similar = runtime_v2_memory_quality_service.find_similar(
+                conversation_id=conversation_id,
+                content=content,
+            )
+            if similar is None:
+                runtime_v2_memory_repository.create_memory(
+                    scope=MemoryScope.USER_GLOBAL,
+                    kind=kind,
+                    content=content,
+                    conversation_id=conversation_id,
+                )
+                return
+            if (
+                similar.similarity
+                >= runtime_v2_memory_quality_service.similarity_threshold
+            ):
+                return  # NOOP:重复内容不新增
+            created = runtime_v2_memory_repository.create_memory(
+                scope=MemoryScope.USER_GLOBAL,
+                kind=kind,
+                content=content,
+                conversation_id=conversation_id,
+            )
+            runtime_v2_memory_repository.supersede_memory(
+                similar.record.id,
+                superseded_by=created.id,
+            )  # UPDATE:新记忆取代旧记忆(旧保留可追溯)
+
         async def on_v2_run_completed(run_id: str) -> None:
             run = runtime_v2_repository.get_run(run_id)
             if (
@@ -1549,23 +1584,14 @@ def _build_container(
                         """v2 运行的自动提取写入 v2 user_global(读取端统一 v2 表)。"""
                         del turn_id
                         try:
-                            if (
-                                runtime_v2_memory_quality_service.find_duplicate(
-                                    conversation_id=conversation_id,
-                                    content=content,
-                                )
-                                is not None
-                            ):
-                                return
-                            runtime_v2_memory_repository.create_memory(
-                                scope=MemoryScope.USER_GLOBAL,
+                            _write_v2_memory_auto(
+                                conversation_id=conversation_id,
+                                content=content,
                                 kind=(
                                     kind.value
                                     if isinstance(kind, MemoryKind)
                                     else str(kind)
                                 ),
-                                content=content,
-                                conversation_id=conversation_id,
                             )
                         except Exception:  # noqa: BLE001 自动写入失败不阻断提取
                             logger.debug(
@@ -3320,20 +3346,32 @@ def create_app(
         if status.effective_runtime != "v2":
             return
         try:
-            if (
-                container.runtime_v2_memory_quality_service.find_duplicate(
-                    conversation_id=conversation_id,
+            quality = container.runtime_v2_memory_quality_service
+            repository = container.runtime_v2_memory_repository
+            similar = quality.find_similar(
+                conversation_id=conversation_id,
+                content=memory.content,
+            )
+            if similar is None:
+                repository.create_memory(
+                    scope=MemoryScope.USER_GLOBAL,
+                    kind=memory.kind.value,
                     content=memory.content,
+                    conversation_id=conversation_id,
                 )
-                is not None
-            ):
                 return
-            container.runtime_v2_memory_repository.create_memory(
+            if similar.similarity >= quality.similarity_threshold:
+                return  # NOOP:重复内容不新增
+            created = repository.create_memory(
                 scope=MemoryScope.USER_GLOBAL,
                 kind=memory.kind.value,
                 content=memory.content,
                 conversation_id=conversation_id,
             )
+            repository.supersede_memory(
+                similar.record.id,
+                superseded_by=created.id,
+            )  # UPDATE:新记忆取代旧记忆(旧保留可追溯)
         except Exception:  # noqa: BLE001 镜像失败不影响提案确认
             logger.debug(
                 "Failed to mirror confirmed memory to v2",

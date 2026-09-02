@@ -368,7 +368,6 @@ class ToolExecutionCoordinator:
         prepared: _PreparedToolExecution,
         cancellation_token: CancellationToken,
     ) -> None:
-        del run, model_turn
         item = prepared.item
         tool = prepared.tool
         call = prepared.call
@@ -410,11 +409,13 @@ class ToolExecutionCoordinator:
         )
         item.status = ToolExecutionStatus.RUNNING
         try:
-            result = await self._execute_tool(
-                tool,
-                call,
-                cancellation_token,
-                timeout_seconds=tool.definition.timeout_seconds,
+            result = await self._execute_tool_with_progress(
+                run=run,
+                model_turn=model_turn,
+                tool=tool,
+                call=call,
+                cancellation_token=cancellation_token,
+                item=item,
             )
         except RuntimeCancelled:
             item.status = ToolExecutionStatus.CANCELLED
@@ -485,6 +486,69 @@ class ToolExecutionCoordinator:
                 "invalid_tool_arguments",
                 "模型提供的工具参数不符合要求。",
             ) from error
+
+    async def _execute_tool_with_progress(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        tool: RegisteredTool,
+        call: ToolCall,
+        cancellation_token: CancellationToken,
+        item: _ToolWorkItem,
+    ) -> ToolResult:
+        execute_with_progress = getattr(tool, "execute_with_progress", None)
+        if not callable(execute_with_progress):
+            return await self._execute_tool(
+                tool,
+                call,
+                cancellation_token,
+                timeout_seconds=tool.definition.timeout_seconds,
+            )
+
+        def on_progress(*, message: str, percent: Optional[float] = None) -> None:
+            self._repository.append_runtime_event(
+                run_id=run.id,
+                model_turn_id=model_turn.id,
+                event_type="tool_progress_update",
+                payload={
+                    "toolExecutionId": item.record_id,
+                    "message": message,
+                    "percent": percent,
+                },
+            )
+
+        execution = asyncio.create_task(
+            execute_with_progress(call, cancellation_token, on_progress=on_progress)
+        )
+        cancellation = asyncio.create_task(cancellation_token.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                (execution, cancellation),
+                timeout=tool.definition.timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancellation in done:
+                raise RuntimeCancelled()
+            if execution not in done:
+                raise ToolError(
+                    "tool_timeout",
+                    "工具执行超时，可以重试。",
+                    retryable=True,
+                )
+            result = execution.result()
+            if not isinstance(result, ToolResult) or result.tool_call_id != call.id:
+                raise ToolError(
+                    "invalid_tool_result",
+                    "工具返回了无效结果。",
+                    retryable=False,
+                )
+            return result
+        finally:
+            for task in (execution, cancellation):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(execution, cancellation, return_exceptions=True)
 
     @staticmethod
     async def _execute_tool(

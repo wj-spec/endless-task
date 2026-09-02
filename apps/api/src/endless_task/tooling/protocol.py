@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Protocol
 
 from .schema import ToolSchemaError, check_tool_schema
 
@@ -39,6 +39,13 @@ class ApprovalStatus(str, Enum):
     DENIED = "denied"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+
+
+class ProgressReporter(Protocol):
+    """工具执行进度的回调签名(可选能力,工具不实现则无中间进度)。"""
+
+    def __call__(self, *, message: str, percent: Optional[float] = None) -> None:
+        ...
 
 
 class ToolValidationError(ValueError):
