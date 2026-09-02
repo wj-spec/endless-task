@@ -109,6 +109,15 @@ export function SessionRail({
   const previousActiveWorkspaceIdRef = useRef<string | null>(null);
   const sessionNavRef = useRef<HTMLElement | null>(null);
 
+  // 待删工作区的会话数：用于删除确认的醒目提示。
+  const deleteWorkspaceConversationCount = useMemo(() => {
+    if (!deleteWorkspaceTarget) return 0;
+    return (
+      model.groups.find((group) => group.id === deleteWorkspaceTarget.id)
+        ?.totalCount ?? 0
+    );
+  }, [deleteWorkspaceTarget, model.groups]);
+
   // 当前工作区：优先取活动会话所属工作区，否则用侧栏工作区上下文。
   const currentWorkspaceId = useMemo(() => {
     if (activeConversationId) {
@@ -368,10 +377,24 @@ export function SessionRail({
       ) : null}
       {deleteWorkspaceTarget ? (
         <ConfirmDialog
+          tone="danger"
+          warning={
+            deleteWorkspaceConversationCount > 0
+              ? `该工作区下有 ${deleteWorkspaceConversationCount} 个会话，删除后将一并删除，无法恢复。`
+              : undefined
+          }
           body={
             deleteWorkspaceTarget.rootPath
-              ? `将删除工作区「${deleteWorkspaceTarget.name}」。目录与已存文件保留；若其下仍有会话，删除会被拒绝。`
-              : `将删除尚未绑定目录的工作区「${deleteWorkspaceTarget.name}」。`
+              ? `将删除工作区「${deleteWorkspaceTarget.name}」${
+                  deleteWorkspaceConversationCount > 0
+                    ? `及名下 ${deleteWorkspaceConversationCount} 个会话`
+                    : ""
+                }。本地目录与已存文件不会被删除。`
+              : `将删除尚未绑定目录的工作区「${deleteWorkspaceTarget.name}」${
+                  deleteWorkspaceConversationCount > 0
+                    ? `及名下 ${deleteWorkspaceConversationCount} 个会话`
+                    : ""
+                }。`
           }
           confirmLabel={deletingWorkspace ? "删除中…" : "删除工作区"}
           onClose={() => {

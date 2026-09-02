@@ -3018,16 +3018,33 @@ def create_app(
 
     @app.delete("/workspaces/{workspace_id}", status_code=204)
     async def delete_workspace(workspace_id: str) -> Response:
-        # 必选绑定设定：有会话的工作区禁止删除，需先迁移其会话。
-        conversation_count = container.chat_repository.count_conversations_for_workspace(
+        # 级联删除：该工作区名下的会话（含后代分支）一并删除；先清理其相关的
+        # 提醒/任务/提案，再删除会话，最后删除工作区注册。
+        conversation_ids = container.chat_repository.list_workspace_conversation_ids(
             workspace_id
         )
-        if conversation_count > 0:
-            raise ApiRequestError(
-                "workspace_not_empty",
-                f"该工作区下仍有 {conversation_count} 个会话，请先迁移这些会话后再删除工作区。",
-                status_code=409,
-            )
+        for target_id in conversation_ids:
+            descendant_ids = container.chat_repository.list_descendant_ids(target_id)
+            for delete_id in (target_id, *descendant_ids):
+                container.reminder_repository.cancel_reminders_for_conversation(
+                    delete_id
+                )
+                container.task_repository.cancel_tasks_for_conversation(delete_id)
+                container.task_proposal_repository.cancel_proposals_for_conversation(
+                    delete_id
+                )
+                container.proposal_repository.cancel_proposals_for_conversation(
+                    delete_id
+                )
+        for target_id in conversation_ids:
+            try:
+                container.chat_repository.delete_conversation(target_id)
+            except InvalidStateError as error:
+                raise ApiRequestError(
+                    "workspace_conversation_active",
+                    f"工作区下的会话「{target_id}」仍在运行，请先停止后重试。",
+                    status_code=409,
+                ) from error
         removed = container.workspace_repository.delete_workspace(workspace_id)
         if not removed:
             raise ApiRequestError(

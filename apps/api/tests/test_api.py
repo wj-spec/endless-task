@@ -608,16 +608,25 @@ class WorkspaceBindingApiTest(LocalApiTest):
         self.assertEqual(409, rejected.status_code)
         self.assertEqual("workspace_not_bound", rejected.json()["error"]["code"])
 
-    async def test_delete_workspace_with_conversations_is_rejected(self) -> None:
+    async def test_delete_workspace_cascades_conversations(self) -> None:
         client = await self._client()
         # 先建一个承载会话的工作区。
         conversation_id = (await self._new_conversation(client))["id"]
         conversation = await client.get(f"/conversations/{conversation_id}")
         workspace_id = conversation.json()["conversation"]["workspaceId"]
 
-        rejected = await client.delete(f"/workspaces/{workspace_id}")
-        self.assertEqual(409, rejected.status_code)
-        self.assertEqual("workspace_not_empty", rejected.json()["error"]["code"])
+        # 确认存在再删除：级联删除工作区及其名下会话。
+        deleted = await client.delete(f"/workspaces/{workspace_id}")
+        self.assertEqual(204, deleted.status_code)
+        # 会话已被一并删除。
+        gone = await client.get(f"/conversations/{conversation_id}")
+        self.assertEqual(404, gone.status_code)
+        # 工作区已不存在。
+        workspaces = await client.get("/workspaces")
+        self.assertNotIn(
+            workspace_id,
+            [item["id"] for item in workspaces.json()["items"]],
+        )
 
     async def test_delete_empty_workspace_succeeds(self) -> None:
         client = await self._client()

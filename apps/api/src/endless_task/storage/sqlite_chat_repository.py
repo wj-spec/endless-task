@@ -270,6 +270,19 @@ class SqliteChatRepository:
             ).fetchone()
             return int(row["count"])
 
+    def list_workspace_conversation_ids(self, workspace_id: str) -> Sequence[str]:
+        """列出某工作区名下的全部会话 id（含后代分支），供级联删除使用。"""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM conversations
+                WHERE workspace_id = ?
+                ORDER BY created_at, id
+                """,
+                (workspace_id,),
+            ).fetchall()
+            return tuple(row["id"] for row in rows)
+
     def delete_conversation(self, conversation_id: str) -> None:
         with self._database.transaction() as connection:
             self._get_conversation(connection, conversation_id)

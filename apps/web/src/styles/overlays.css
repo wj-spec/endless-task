@@ -92,6 +92,23 @@
   padding: 20px;
 }
 
+/* 危险确认：醒目提示条 + 强调边框。 */
+.confirm-panel.is-danger {
+  border-color: var(--danger, #b4533a);
+  box-shadow: 0 0 0 1px var(--danger, #b4533a), var(--shadow-lift);
+}
+
+.confirm-warning {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger, #b4533a);
+  background: color-mix(in srgb, var(--danger, #b4533a) 10%, transparent);
+  color: var(--danger, #b4533a);
+  font-size: var(--fs-3);
+  font-weight: 650;
+  line-height: 1.5;
+}
+
 .confirm-panel h3 {
   margin: 0 0 8px;
   color: var(--ink-raise);

@@ -146,6 +146,20 @@ class ConversationPartitionTest(WorkspaceTestCase):
             self.chat.count_conversations_for_workspace(other.id), 1
         )
 
+    def test_list_workspace_conversation_ids(self) -> None:
+        workspace = self.workspaces.create_workspace("计划A")
+        self.assertEqual(self.chat.list_workspace_conversation_ids(workspace.id), ())
+        first = self.chat.create_conversation(workspace.id)
+        second = self.chat.create_conversation(workspace.id)
+        ids = self.chat.list_workspace_conversation_ids(workspace.id)
+        self.assertEqual({first.id, second.id}, set(ids))
+        other = self.workspaces.create_workspace("计划B")
+        self.chat.create_conversation(other.id)
+        self.assertEqual(
+            {first.id, second.id}, set(self.chat.list_workspace_conversation_ids(workspace.id))
+        )
+        self.assertEqual(len(self.chat.list_workspace_conversation_ids(other.id)), 1)
+
     def test_delete_workspace_removes_registration_only(self) -> None:
         workspace = self.workspaces.create_workspace("计划A")
         same_id = workspace.id
