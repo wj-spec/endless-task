@@ -58,6 +58,7 @@ class SqliteRuntimeV2MemoryRepository:
         source_memory_id: Optional[str] = None,
         source_entry_id: Optional[str] = None,
         memory_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
     ) -> RuntimeV2MemoryRecord:
         memory_id = memory_id or self._id_factory("v2mem")
         normalized_content = content.strip()
@@ -89,9 +90,9 @@ class SqliteRuntimeV2MemoryRepository:
                 INSERT INTO v2_runtime_memories(
                     id, scope, kind, content, status, conversation_id,
                     workspace_id, lane_id, run_id, source_memory_id,
-                    source_entry_id, created_at, updated_at
+                    source_entry_id, created_at, updated_at, expired_at
                 )
-                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -106,6 +107,7 @@ class SqliteRuntimeV2MemoryRepository:
                     source_entry_id,
                     now,
                     now,
+                    expires_at,
                 ),
             )
             return self._memory_from_row(
@@ -118,6 +120,68 @@ class SqliteRuntimeV2MemoryRepository:
         with self._database.connect() as connection:
             row = self._get_memory_row(connection, memory_id)
         return self._memory_from_row(row)
+
+    def find_active_user_global_memory(
+        self,
+        *,
+        conversation_id: str,
+        content: str,
+    ) -> Optional[RuntimeV2MemoryRecord]:
+        """按内容查找 user_global 作用域的 active 记忆（写入侧幂等去重用）。"""
+        with self._database.connect() as connection:
+            now = self._clock()
+            row = connection.execute(
+                """
+                SELECT * FROM v2_runtime_memories
+                WHERE scope = 'user_global' AND status = 'active'
+                  AND (expired_at IS NULL OR expired_at > ?)
+                  AND conversation_id = ? AND content = ?
+                ORDER BY updated_at, id
+                LIMIT 1
+                """,
+                (now, conversation_id, content),
+            ).fetchone()
+        return self._memory_from_row(row) if row is not None else None
+
+    def list_active_memories_content(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 200,
+    ) -> tuple[tuple[str, str], ...]:
+        """返回会话内未过期的 active 记忆 (id, content)，供语义去重比较。"""
+        with self._database.connect() as connection:
+            self._ensure_conversation(connection, conversation_id)
+            now = self._clock()
+            rows = connection.execute(
+                """
+                SELECT id, content FROM v2_runtime_memories
+                WHERE conversation_id = ? AND status = 'active'
+                  AND (expired_at IS NULL OR expired_at > ?)
+                ORDER BY updated_at, id
+                LIMIT ?
+                """,
+                (conversation_id, now, limit),
+            ).fetchall()
+        return tuple((str(row["id"]), str(row["content"])) for row in rows)
+
+    def expire_overdue_memories(self) -> int:
+        """把已过期的 active 记忆软删（status='deleted'），返回处理条数。"""
+        now = self._clock()
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(
+                """
+                UPDATE v2_runtime_memories
+                SET status = 'deleted', updated_at = ?
+                WHERE status = 'active'
+                  AND expired_at IS NOT NULL AND expired_at <= ?
+                """,
+                (now, now),
+            )
+            return cursor.rowcount
+
+        return self._write(operation)
 
     def list_visible_memories(
         self,
@@ -145,10 +209,12 @@ class SqliteRuntimeV2MemoryRepository:
             parameters.append(run_id)
         with self._database.connect() as connection:
             self._ensure_conversation(connection, conversation_id)
+            now = self._clock()
             rows = connection.execute(
                 f"""
                 SELECT * FROM v2_runtime_memories
                 WHERE status = 'active'
+                  AND (expired_at IS NULL OR expired_at > ?)
                   AND (
                     scope = 'user_global'
                     OR (scope = 'workspace' AND {workspace_clause})
@@ -175,7 +241,7 @@ class SqliteRuntimeV2MemoryRepository:
                     ELSE 7
                 END, updated_at, id
                 """,
-                parameters,
+                (now, *parameters),
             ).fetchall()
         return tuple(self._memory_from_row(row) for row in rows)
 
@@ -641,6 +707,7 @@ class SqliteRuntimeV2MemoryRepository:
             source_entry_id=row["source_entry_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            expired_at=row["expired_at"],
         )
 
     @staticmethod

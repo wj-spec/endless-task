@@ -42,10 +42,12 @@ from .lane import RuntimeV2LaneCreationResult, RuntimeV2LaneService
 from .memory import RuntimeV2MemoryService
 from .execution import (
     AgentRunExecutor,
+    ContextCompactionHook,
     RunExecutionResult,
     ToolApprovalDecision,
     ToolApprovalGate,
 )
+from .metrics import ApprovalMetric, RuntimeV2MetricsCollector
 from .replay import (
     CrashRecoveryReport,
     ConversationRuntimeSnapshot,
@@ -142,10 +144,12 @@ class GatewayToolApprovalGate(ToolApprovalGate):
         repository: "SqliteRuntimeV2Repository",
         pending_approvals: dict[str, PendingApproval],
         lock: asyncio.Lock,
+        metrics: Optional[RuntimeV2MetricsCollector] = None,
     ) -> None:
         self._repository = repository
         self._pending_approvals = pending_approvals
         self._lock = lock
+        self._metrics = metrics
         self._waiters: dict[str, asyncio.Future[ToolApprovalDecision]] = {}
 
     async def decide(
@@ -203,6 +207,7 @@ class GatewayToolApprovalGate(ToolApprovalGate):
             },
         )
 
+        wait_started = asyncio.get_running_loop().time()
         try:
             decision = await self._wait_for_decision(
                 approval_id,
@@ -211,6 +216,17 @@ class GatewayToolApprovalGate(ToolApprovalGate):
                 cancellation_token,
             )
         finally:
+            if self._metrics is not None:
+                self._metrics.record_approval(
+                    ApprovalMetric(
+                        run_id=model_turn.run_id,
+                        approval_id=approval_id,
+                        wait_ms=int(
+                            (asyncio.get_running_loop().time() - wait_started) * 1000
+                        ),
+                        decision=decision.value,
+                    )
+                )
             async with self._lock:
                 self._pending_approvals.pop(approval_id, None)
                 self._waiters.pop(approval_id, None)
@@ -483,6 +499,12 @@ class ProductRuntimeEventProjection:
                 "runId": event.run_id,
                 "content": _string(payload, "content"),
             }
+        if event_type == "plan_updated":
+            return "plan.updated", {
+                "runId": event.run_id,
+                "planEntryId": _string(payload, "planEntryId"),
+                "content": _string(payload, "content"),
+            }
         if event_type == "safety_stop":
             return "run.status_changed", {
                 "runId": event.run_id,
@@ -574,6 +596,8 @@ class RuntimeV2SessionGateway:
         tool_filter_provider: Optional[
             Callable[[str], Optional[Callable[[str], bool]]]
         ] = None,
+        compaction_hook: Optional[ContextCompactionHook] = None,
+        metrics_collector: Optional[RuntimeV2MetricsCollector] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
@@ -581,6 +605,8 @@ class RuntimeV2SessionGateway:
         self._provider_resolver = provider_resolver
         self._tool_registry = tool_registry
         self._tool_filter_provider = tool_filter_provider
+        self._compaction_hook = compaction_hook
+        self._metrics = metrics_collector or RuntimeV2MetricsCollector()
         self._model = model
         self._max_output_tokens = max_output_tokens
         self._max_model_turns = max_model_turns
@@ -621,6 +647,7 @@ class RuntimeV2SessionGateway:
             repository=repository,
             pending_approvals=self._pending_approvals,
             lock=self._lock,
+            metrics=self._metrics,
         )
         self.driver = AgentSessionDriver(self)
 
@@ -734,6 +761,7 @@ class RuntimeV2SessionGateway:
         kind: str,
         content: str,
         source_entry_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
     ) -> RuntimeV2MemoryRecord:
         self.validate_session(conversation_id)
         self._require_memory_service()
@@ -743,6 +771,7 @@ class RuntimeV2SessionGateway:
             kind=kind,
             content=content,
             source_entry_id=source_entry_id,
+            expires_at=expires_at,
         )
 
     def create_run_memory(
@@ -753,6 +782,7 @@ class RuntimeV2SessionGateway:
         kind: str,
         content: str,
         source_entry_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
     ) -> RuntimeV2MemoryRecord:
         self.validate_session(conversation_id)
         self._require_memory_service()
@@ -762,6 +792,7 @@ class RuntimeV2SessionGateway:
             kind=kind,
             content=content,
             source_entry_id=source_entry_id,
+            expires_at=expires_at,
         )
 
     def create_memory_promotion(
@@ -1122,6 +1153,9 @@ class RuntimeV2SessionGateway:
         reports = self.recovery_reports(conversation_id)
         return tuple(_recovery_report_json(report) for report in reports)
 
+    def metrics_summary(self) -> dict[str, object]:
+        return self._metrics.summary()
+
     def project_events(
         self,
         conversation_id: str,
@@ -1230,6 +1264,10 @@ class RuntimeV2SessionGateway:
             *product_context_messages,
             *memory_context_messages,
         )
+        self._metrics.record_prefix_fingerprint(
+            conversation_id=conversation_id,
+            fingerprint=_prefix_fingerprint(context_prefix_messages),
+        )
         selected_provider = self._provider
         selected_model = self._model
         if self._provider_resolver is not None:
@@ -1250,6 +1288,8 @@ class RuntimeV2SessionGateway:
             provider_slot=self._provider_slot,
             context_prefix_messages=context_prefix_messages,
             tool_filter_provider=self._tool_filter_provider,
+            compaction_hook=self._compaction_hook,
+            metrics=self._metrics,
         )
         task = asyncio.create_task(
             executor.execute(
@@ -1303,6 +1343,17 @@ class RuntimeV2SessionGateway:
                 "Runtime v2 post-run processing failed",
                 extra={"run_id": run_id},
             )
+
+
+def _prefix_fingerprint(
+    messages: Sequence[ProviderMessage],
+) -> str:
+    """前两条 system 前缀消息的内容指纹,用于估计前缀缓存稳定度。"""
+    import hashlib
+
+    stable_prefix = [message for message in messages if message.role == "system"][:2]
+    joined = "\n".join(message.content for message in stable_prefix)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
 
 def product_event_json(event: ProductRuntimeEventRecord) -> dict[str, object]:

@@ -89,12 +89,24 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             "047_eval.sql",
             self.database.applied_migrations(),
         )
+        self.assertIn(
+            "048_memory_auto_fact_origin.sql",
+            self.database.applied_migrations(),
+        )
+        self.assertIn(
+            "049_runtime_v2_migrate_v1_memories.sql",
+            self.database.applied_migrations(),
+        )
+        self.assertIn(
+            "050_runtime_v2_memory_quality.sql",
+            self.database.applied_migrations(),
+        )
         self.database.initialize()
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(47, row["count"])
+        self.assertEqual(50, row["count"])
 
     def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
         conversation = self.chat_repository.create_conversation()

@@ -189,6 +189,7 @@ class RuntimeV2MemoryRecord:
     source_entry_id: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
+    expired_at: Optional[str] = None
 
 
 @dataclass(frozen=True)

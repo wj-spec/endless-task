@@ -56,6 +56,10 @@ class ContextPolicy:
             return ContextPolicy(True, "full", TRUSTED)
         if entry_type is TranscriptEntryType.SYSTEM_NOTICE:
             return ContextPolicy(True, "full", TRUSTED)
+        if entry_type is TranscriptEntryType.PLAN:
+            # 执行计划由模型自己书写并固化,进入模型上下文供后续执行对照
+            # (trust_level=model_output;不属于用户输入/工具输出)。
+            return ContextPolicy(True, "full", TRUSTED)
         if entry_type is TranscriptEntryType.TOOL_CALL:
             return ContextPolicy(False, "none", UNTRUSTED)
         return ContextPolicy(False, "none", UNTRUSTED)
@@ -77,11 +81,24 @@ class ContextProjection:
         *,
         prefix_messages: Sequence[ProviderMessage] = (),
     ) -> ContextProjectionResult:
+        ordered = list(entries)
+        # 上下文压缩:context_summary entry 携带 coveredEntryIds,被覆盖的
+        # 原始 entry 不再进入模型上下文(原文保留,仅投影层跳过)。
+        skip_ids: set[str] = set()
+        for entry in ordered:
+            if entry.type is TranscriptEntryType.CONTEXT_SUMMARY:
+                covered = entry.payload.get("coveredEntryIds")
+                if isinstance(covered, (list, tuple)):
+                    skip_ids.update(str(item) for item in covered)
+
         messages: list[ProviderMessage] = list(prefix_messages)
         included: list[str] = []
         skipped: list[str] = []
 
-        for entry in entries:
+        for entry in ordered:
+            if entry.id in skip_ids:
+                skipped.append(entry.id)
+                continue
             policy = ContextPolicy.from_mapping(
                 entry.context_policy,
                 entry_type=entry.type,
@@ -121,6 +138,8 @@ class ContextProjection:
         if entry.type is TranscriptEntryType.ASSISTANT_MESSAGE:
             return ProviderMessage(role="assistant", content=self._content(entry))
         if entry.type is TranscriptEntryType.CONTEXT_SUMMARY:
+            return ProviderMessage(role="system", content=self._content(entry))
+        if entry.type is TranscriptEntryType.PLAN:
             return ProviderMessage(role="system", content=self._content(entry))
         if entry.type is TranscriptEntryType.SYSTEM_NOTICE:
             return ProviderMessage(role="system", content=self._content(entry))

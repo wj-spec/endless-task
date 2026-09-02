@@ -31,6 +31,7 @@ from .domain import (
     TranscriptEntryType,
 )
 from .context import ContextPolicy, ContextProjection, ContextProjectionResult
+from .compaction import RuntimeV2ContextCompactionService
 from .execution import (
     AgentRunExecutor,
     ContextCompactionHook,
@@ -59,6 +60,9 @@ from .gateway import (
 )
 from .lane import RuntimeV2LaneCreationResult, RuntimeV2LaneService
 from .memory import RuntimeV2MemoryService
+from .memory_quality import RuntimeV2MemoryQualityService
+from .metrics import RuntimeV2MetricsCollector
+from .plan_tool import UpdatePlanTool
 from .migration import (
     RuntimeV2MigrationAuditReport,
     RuntimeV2MigrationReport,
@@ -114,6 +118,7 @@ __all__ = [
     "ContextPolicy",
     "ContextProjection",
     "ContextProjectionResult",
+    "RuntimeV2ContextCompactionService",
     "AgentRunExecutor",
     "ContextCompactionHook",
     "ContextCompactionResult",
@@ -139,6 +144,9 @@ __all__ = [
     "RuntimeV2LaneCreationResult",
     "RuntimeV2LaneService",
     "RuntimeV2MemoryService",
+    "RuntimeV2MemoryQualityService",
+    "RuntimeV2MetricsCollector",
+    "UpdatePlanTool",
     "SafetyStopError",
     "SafetyStopPolicy",
     "SafetyStopReason",

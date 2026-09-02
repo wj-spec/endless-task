@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable, Optional, Protocol, Sequence, TYPE_CHECKING
@@ -43,6 +44,7 @@ from .safety import (
     SafetyStopReason,
     SafetyStopState,
 )
+from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
 
 if TYPE_CHECKING:
     from endless_task.storage.sqlite_runtime_v2_repository import (
@@ -571,6 +573,7 @@ class ModelTurnRunner:
         max_output_tokens: int,
         temperature: Optional[float] = None,
         provider_slot: Optional[asyncio.Semaphore] = None,
+        metrics: Optional["RuntimeV2MetricsCollector"] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -579,6 +582,8 @@ class ModelTurnRunner:
         self._max_output_tokens = max_output_tokens
         self._temperature = temperature
         self._provider_slot = provider_slot
+        self._metrics = metrics
+        self._last_first_event_at: Optional[float] = None
 
     async def run(
         self,
@@ -606,6 +611,33 @@ class ModelTurnRunner:
         completion: Optional[ProviderCompleted] = None
         content_parts: list[str] = []
         request_id = f"{run.id}:{model_turn.turn_index}"
+        turn_started = time.monotonic()
+
+        def _record_turn_metric(
+            *,
+            finish_reason: str,
+            input_tokens: Optional[int],
+            output_tokens: Optional[int],
+        ) -> None:
+            if self._metrics is None:
+                return
+            first_latency: Optional[int] = None
+            if self._last_first_event_at is not None:
+                first_latency = int(
+                    (self._last_first_event_at - turn_started) * 1000
+                )
+            self._metrics.record_model_turn(
+                ModelTurnMetric(
+                    run_id=run.id,
+                    turn_index=model_turn.turn_index,
+                    first_token_latency_ms=first_latency,
+                    duration_ms=int((time.monotonic() - turn_started) * 1000),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    finish_reason=finish_reason,
+                )
+            )
+
         request = ProviderRequest(
             request_id=request_id,
             model=self._model,
@@ -626,6 +658,7 @@ class ModelTurnRunner:
                         provider_calls=provider_calls,
                         content_parts=content_parts,
                         on_text_delta=on_text_delta,
+                        turn_started=turn_started,
                     )
             else:
                 completion = await self._consume_provider(
@@ -636,6 +669,7 @@ class ModelTurnRunner:
                     provider_calls=provider_calls,
                     content_parts=content_parts,
                     on_text_delta=on_text_delta,
+                    turn_started=turn_started,
                 )
         except RuntimeCancelled:
             self._repository.transition_model_turn_status(
@@ -728,6 +762,11 @@ class ModelTurnRunner:
                     event_type="run_status_changed",
                     payload={"status": RunStatus.WAITING_APPROVAL.value},
                 )
+                _record_turn_metric(
+                    finish_reason=completion.finish_reason,
+                    input_tokens=completion.input_tokens,
+                    output_tokens=completion.output_tokens,
+                )
                 return ModelTurnOutcome(
                     model_turn_id=model_turn.id,
                     content=content,
@@ -747,6 +786,11 @@ class ModelTurnRunner:
                 input_tokens=completion.input_tokens,
                 output_tokens=completion.output_tokens,
             )
+            _record_turn_metric(
+                finish_reason=completion.finish_reason,
+                input_tokens=completion.input_tokens,
+                output_tokens=completion.output_tokens,
+            )
             return ModelTurnOutcome(
                 model_turn_id=model_turn.id,
                 content=content,
@@ -762,6 +806,11 @@ class ModelTurnRunner:
             model_turn.id,
             _MODEL_TURN_COMPLETED_STATUS,
             event_type="model_turn_completed",
+            input_tokens=completion.input_tokens,
+            output_tokens=completion.output_tokens,
+        )
+        _record_turn_metric(
+            finish_reason=completion.finish_reason,
             input_tokens=completion.input_tokens,
             output_tokens=completion.output_tokens,
         )
@@ -786,17 +835,22 @@ class ModelTurnRunner:
         provider_calls: list[ProviderToolCall],
         content_parts: list[str],
         on_text_delta: Optional[Callable[[str], Awaitable[None]]],
+        turn_started: float,
     ) -> Optional[ProviderCompleted]:
         self._repository.transition_model_turn_status(
             model_turn.id,
             _MODEL_TURN_STREAMING_STATUS,
             event_type="model_turn_started",
         )
+        first_event_at: Optional[float] = None
         async for provider_event in self._provider.stream(
             request,
             cancellation_token,
         ):
             cancellation_token.raise_if_cancelled()
+            if first_event_at is None:
+                first_event_at = time.monotonic()
+                self._last_first_event_at = first_event_at
             if isinstance(provider_event, ProviderTextDelta):
                 if not provider_event.text:
                     continue
@@ -850,6 +904,7 @@ class AgentRunExecutor:
         tool_filter_provider: Optional[
             Callable[[str], Optional[Callable[[str], bool]]]
         ] = None,
+        metrics: Optional["RuntimeV2MetricsCollector"] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -864,6 +919,8 @@ class AgentRunExecutor:
         self._provider_slot = provider_slot
         self._compaction_hook = compaction_hook
         self._context_prefix_messages = tuple(context_prefix_messages)
+        self._metrics = metrics
+        self._run_compacted = False
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -878,6 +935,7 @@ class AgentRunExecutor:
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             provider_slot=provider_slot,
+            metrics=metrics,
         )
         self._context_projection = ContextProjection()
         self._steering_messages: list[str] = []
@@ -896,6 +954,8 @@ class AgentRunExecutor:
         run = self._repository.get_run(run_id)
         self._active_run_id = run.id
         self._cancellation_token = cancellation_token
+        self._run_compacted = False
+        run_started = time.monotonic()
         entries = self._repository.list_entry_context_entries(run.trigger_entry_id)
         projection = self._context_projection.project(entries)
         provider_messages: list[ProviderMessage] = list(
@@ -1059,6 +1119,21 @@ class AgentRunExecutor:
         finally:
             self._active_run_id = None
             self._cancellation_token = None
+            if self._metrics is not None:
+                final_run = self._repository.get_run(run.id)
+                self._metrics.record_run(
+                    RunMetric(
+                        run_id=run.id,
+                        conversation_id=run.conversation_id,
+                        status=final_run.status.value,
+                        duration_ms=int((time.monotonic() - run_started) * 1000),
+                        model_turn_count=len(model_turn_ids),
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        compacted=self._run_compacted,
+                        compaction_released_tokens=0,
+                    )
+                )
 
     async def enqueue_user_message(self, content: str) -> bool:
         async with self._queue_lock:
@@ -1130,7 +1205,19 @@ class AgentRunExecutor:
                 payload={"changed": False},
             )
             return
-        provider_messages[:] = list(result.messages)
+        self._run_compacted = True
+        if result.summary_entry_id is not None:
+            # entry 层面压缩:summary entry 已固化到 lane,从当前 leaf 重建投影。
+            # covered entries 由 ContextProjection 跳过,当前 run 立即收敛;
+            # 后续 Run 的投影同样命中同一规则。
+            entries = self._repository.list_lane_context_entries(run.lane_id)
+            projection = self._context_projection.project(entries)
+            provider_messages[:] = [
+                *self._context_prefix_messages,
+                *projection.messages,
+            ]
+        else:
+            provider_messages[:] = list(result.messages)
         self._repository.append_runtime_event(
             run_id=run.id,
             event_type="compaction_completed",

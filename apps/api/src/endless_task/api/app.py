@@ -73,6 +73,10 @@ from endless_task.runtime_v2 import (
     ToolApprovalDecision,
     product_event_json,
 )
+from endless_task.runtime_v2.compaction import RuntimeV2ContextCompactionService
+from endless_task.runtime_v2.memory_quality import RuntimeV2MemoryQualityService
+from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
+from endless_task.runtime_v2.plan_tool import UpdatePlanTool
 from endless_task.artifacts import (
     ArtifactProposalService,
     SourceReferenceResolver,
@@ -283,6 +287,8 @@ class AppSettings:
     heartbeat_seconds: float = 15.0
     memory_proposals_enabled: bool = True
     memory_marker_gate_enabled: bool = True
+    memory_auto_fact: bool = False
+    context_compaction_enabled: bool = True
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -395,6 +401,12 @@ class AppSettings:
             ),
             memory_marker_gate_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_MEMORY_MARKER_GATE", "1")
+            ),
+            memory_auto_fact=_parse_flag(
+                env.get("ENDLESS_TASK_MEMORY_AUTO_FACT", "0")
+            ),
+            context_compaction_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_CONTEXT_COMPACTION", "1")
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -599,6 +611,7 @@ class AppContainer:
     controller: TurnController
     runtime_v2_repository: SqliteRuntimeV2Repository
     runtime_v2_memory_repository: SqliteRuntimeV2MemoryRepository
+    runtime_v2_memory_quality_service: RuntimeV2MemoryQualityService
     runtime_v2_gateway: RuntimeV2SessionGateway
     runtime_v2_selection_service: RuntimeV2RuntimeSelectionService
 
@@ -670,6 +683,7 @@ class RuntimeV2MemoryBody(BaseModel):
     content: str
     laneId: Optional[str] = None
     sourceEntryId: Optional[str] = None
+    expiresAt: Optional[str] = None
 
 
 class RuntimeV2RunMemoryBody(BaseModel):
@@ -678,6 +692,7 @@ class RuntimeV2RunMemoryBody(BaseModel):
     kind: Literal["preference", "fact"]
     content: str
     sourceEntryId: Optional[str] = None
+    expiresAt: Optional[str] = None
 
 
 class RuntimeV2MemoryPromotionBody(BaseModel):
@@ -1178,6 +1193,7 @@ def _build_container(
         hybrid_semantic_weight=settings.hybrid_semantic_weight,
     )
     embedding_indexer: Optional[EmbeddingIndexer] = None
+    embedder: Optional[Embedder] = None
     if settings.embedding_enabled:
         embedder = build_embedder(
             backend=settings.embedding_backend,
@@ -1214,6 +1230,11 @@ def _build_container(
     selected_provider = provider or _provider_from_settings(settings)
     runtime_v2_repository = SqliteRuntimeV2Repository(database)
     runtime_v2_memory_repository = SqliteRuntimeV2MemoryRepository(database)
+    runtime_v2_memory_quality_service = RuntimeV2MemoryQualityService(
+        memory_repository=runtime_v2_memory_repository,
+        embedder=embedder,
+    )
+    runtime_v2_metrics_collector = RuntimeV2MetricsCollector()
     provider_manager = ProviderManager(
         repository=provider_profile_repository,
         fallback_provider=selected_provider,
@@ -1228,6 +1249,16 @@ def _build_container(
         """v2 按会话过滤工作区工具；与 v1 `_tool_filter_for_conversation` 一致。"""
         return workspace_tool_filter(workspace_resolver, conversation_id)
 
+    runtime_v2_compaction_hook = (
+        RuntimeV2ContextCompactionService(
+            repository=runtime_v2_repository,
+            max_context_tokens=settings.context_window_tokens,
+            metrics=runtime_v2_metrics_collector,
+        )
+        if settings.context_compaction_enabled
+        else None
+    )
+
     runtime_v2_gateway = RuntimeV2SessionGateway(
         chat_repository=chat_repository,
         repository=runtime_v2_repository,
@@ -1241,6 +1272,8 @@ def _build_container(
         provider_slot_limit=settings.max_concurrent_model_calls,
         memory_repository=runtime_v2_memory_repository,
         tool_filter_provider=_v2_workspace_tool_filter,
+        compaction_hook=runtime_v2_compaction_hook,
+        metrics_collector=runtime_v2_metrics_collector,
     )
     runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
         database=database,
@@ -1313,6 +1346,7 @@ def _build_container(
                 max_output_bytes=settings.shell_max_output_bytes,
             )
         )
+        selected_tool_registry.register(UpdatePlanTool(runtime_v2_repository))
     system_prompt = settings.system_prompt
     system_prompt_version = settings.system_prompt_version
     if settings.artifact_proposals_enabled:
@@ -1379,16 +1413,14 @@ def _build_container(
     ) -> tuple[ProviderMessage]:
         del lane_id
         conversation = chat_repository.get_conversation(conversation_id)
-        return (
-            ProviderMessage(
-                role="system",
-                content=context_builder.build_system_context(
-                    conversation_id,
-                    user_content,
-                    turn_id=run_id,
-                    workspace_id=conversation.workspace_id,
-                ),
-            ),
+        return context_builder.build_system_messages(
+            conversation_id,
+            user_content,
+            turn_id=run_id,
+            workspace_id=conversation.workspace_id,
+            # v2 记忆统一由 <runtime-memory> 注入，S3 层不再叠加 v1 记忆，
+            # 避免 v1/v2 记忆双重注入（v1 存量已由 migration 049 迁入 v2）。
+            include_v1_memory=False,
         )
 
     runtime_v2_gateway.set_context_prefix_builder(
@@ -1438,6 +1470,7 @@ def _build_container(
             memory_repository=memory_repository,
             model=settings.model,
             marker_gate_enabled=settings.memory_marker_gate_enabled,
+            auto_fact_enabled=settings.memory_auto_fact,
         )
 
     knowledge_proposal_service: Optional[KnowledgeProposalService] = None
@@ -1509,11 +1542,43 @@ def _build_container(
                 if proposal_budget is None or proposal_budget.allow(
                     run.conversation_id
                 ):
+
+                    def _write_v2_user_global_memory(
+                        kind, content, conversation_id, turn_id
+                    ) -> None:
+                        """v2 运行的自动提取写入 v2 user_global(读取端统一 v2 表)。"""
+                        del turn_id
+                        try:
+                            if (
+                                runtime_v2_memory_quality_service.find_duplicate(
+                                    conversation_id=conversation_id,
+                                    content=content,
+                                )
+                                is not None
+                            ):
+                                return
+                            runtime_v2_memory_repository.create_memory(
+                                scope=MemoryScope.USER_GLOBAL,
+                                kind=(
+                                    kind.value
+                                    if isinstance(kind, MemoryKind)
+                                    else str(kind)
+                                ),
+                                content=content,
+                                conversation_id=conversation_id,
+                            )
+                        except Exception:  # noqa: BLE001 自动写入失败不阻断提取
+                            logger.debug(
+                                "Failed to write auto-fact memory to v2",
+                                exc_info=True,
+                            )
+
                     await memory_proposal_service.generate_for_turn(
                         conversation_id=run.conversation_id,
                         turn_id=run.id,
                         user_message=user_message,
                         assistant_message=assistant_message,
+                        auto_write_target=_write_v2_user_global_memory,
                     )
             if knowledge_proposal_service is not None and not ephemeral:
                 if proposal_budget is None or proposal_budget.allow(
@@ -1685,6 +1750,7 @@ def _build_container(
         controller=controller,
         runtime_v2_repository=runtime_v2_repository,
         runtime_v2_memory_repository=runtime_v2_memory_repository,
+        runtime_v2_memory_quality_service=runtime_v2_memory_quality_service,
         runtime_v2_gateway=runtime_v2_gateway,
         runtime_v2_selection_service=runtime_v2_selection_service,
     )
@@ -2326,10 +2392,17 @@ def create_app(
         return {"conversation": conversation_json(conversation)}
 
     @app.get("/memories")
-    async def list_memories(include_deleted: bool = False) -> dict[str, object]:
+    async def list_memories(
+        include_deleted: bool = False,
+        write_origin: Optional[str] = Query(default=None),
+    ) -> dict[str, object]:
         memories = container.memory_repository.list_memories(
             include_deleted=include_deleted
         )
+        if write_origin is not None:
+            memories = [
+                item for item in memories if item.write_origin == write_origin
+            ]
         titles: dict[str, str] = {}
         for item in memories:
             conversation_id = item.source_conversation_id
@@ -3230,6 +3303,43 @@ def create_app(
             logger.debug("Failed to record search event", exc_info=True)
         return {"groups": groups}
 
+    def _mirror_confirmed_memory_to_v2(container, memory) -> None:
+        """v2 会话的确认记忆镜像到 v2 user_global。
+
+        读取端（v2 链路）统一只读 v2_runtime_memories，因此 v2 会话确认的
+        记忆必须同时进入 v2 表；v1 表保留（提案状态机完整），但不再被
+        v2 链路读取，避免 v1/v2 记忆双重注入。
+        """
+        conversation_id = memory.source_conversation_id
+        try:
+            status = container.runtime_v2_selection_service.describe(
+                conversation_id
+            )
+        except Exception:  # noqa: BLE001 会话不存在等场景不镜像
+            return
+        if status.effective_runtime != "v2":
+            return
+        try:
+            if (
+                container.runtime_v2_memory_quality_service.find_duplicate(
+                    conversation_id=conversation_id,
+                    content=memory.content,
+                )
+                is not None
+            ):
+                return
+            container.runtime_v2_memory_repository.create_memory(
+                scope=MemoryScope.USER_GLOBAL,
+                kind=memory.kind.value,
+                content=memory.content,
+                conversation_id=conversation_id,
+            )
+        except Exception:  # noqa: BLE001 镜像失败不影响提案确认
+            logger.debug(
+                "Failed to mirror confirmed memory to v2",
+                exc_info=True,
+            )
+
     @app.post("/memory-proposals/{proposal_id}/resolve")
     async def resolve_memory_proposal(
         proposal_id: str, body: ResolveMemoryProposalBody
@@ -3242,6 +3352,7 @@ def create_app(
         )
         if container.memory_conflict_service is not None:
             await container.memory_conflict_service.resolve_conflicts_for(memory)
+        _mirror_confirmed_memory_to_v2(container, memory)
         return {
             "proposal": memory_proposal_json(proposal),
             "memory": memory_record_json(memory),
@@ -3871,6 +3982,7 @@ def create_app(
             kind=body.kind,
             content=body.content,
             source_entry_id=body.sourceEntryId,
+            expires_at=body.expiresAt,
         )
         return {"memory": _runtime_v2_memory_json(memory)}
 
@@ -3886,6 +3998,7 @@ def create_app(
             kind=body.kind,
             content=body.content,
             source_entry_id=body.sourceEntryId,
+            expires_at=body.expiresAt,
         )
         return {"memory": _runtime_v2_memory_json(memory)}
 
@@ -3971,6 +4084,10 @@ def create_app(
             "userMessageId": handle.user_message_id,
             "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
         }
+
+    @app.get("/api/v2/metrics")
+    async def get_runtime_v2_metrics() -> dict[str, object]:
+        return container.runtime_v2_gateway.metrics_summary()
 
     @app.get("/api/v2/conversations/{conversation_id}/snapshot")
     async def get_runtime_v2_snapshot(

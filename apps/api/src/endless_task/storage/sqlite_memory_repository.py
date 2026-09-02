@@ -16,6 +16,7 @@ from .sqlite_chat_repository import IdFactory, new_id, utc_now
 Clock = Callable[[], str]
 
 CONFIRMED_PROPOSAL_ORIGIN = "confirmed_proposal"
+AUTO_FACT_ORIGIN = "auto_fact"
 
 
 def insert_memory_row(
@@ -28,6 +29,7 @@ def insert_memory_row(
     source_turn_id: str,
     timestamp: str,
     source_proposal_id: Optional[str] = None,
+    write_origin: str = CONFIRMED_PROPOSAL_ORIGIN,
 ) -> None:
     connection.execute(
         """
@@ -45,7 +47,7 @@ def insert_memory_row(
             MemoryStatus.ACTIVE.value,
             source_conversation_id,
             source_turn_id,
-            CONFIRMED_PROPOSAL_ORIGIN,
+            write_origin,
             timestamp,
             timestamp,
             source_proposal_id,
@@ -114,11 +116,14 @@ class SqliteMemoryRepository:
         content: str,
         source_conversation_id: str,
         source_turn_id: str,
+        write_origin: str = CONFIRMED_PROPOSAL_ORIGIN,
     ) -> MemoryRecord:
         normalized_kind = self._validate_kind(kind)
         normalized_content = self._validate_content(content)
         if not source_conversation_id.strip() or not source_turn_id.strip():
             raise ValidationError("Memory source conversation and turn are required.")
+        if write_origin not in (CONFIRMED_PROPOSAL_ORIGIN, AUTO_FACT_ORIGIN):
+            raise ValidationError("Memory write origin is not supported.")
         now = self._clock()
         memory_id = self._id_factory("mem")
         with self._database.transaction() as connection:
@@ -130,6 +135,7 @@ class SqliteMemoryRepository:
                 source_conversation_id=source_conversation_id.strip(),
                 source_turn_id=source_turn_id.strip(),
                 timestamp=now,
+                write_origin=write_origin,
             )
         self._notify_hook("submit", memory_id)
         return self.get_memory(memory_id)

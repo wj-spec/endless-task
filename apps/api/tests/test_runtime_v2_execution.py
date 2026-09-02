@@ -182,10 +182,11 @@ class StaticCompactionHook:
     async def compact(self, run, messages):
         del run
         self.calls.append(tuple(messages))
+        # 纯消息替换语义:不固化 summary entry,直接给出替换后的完整消息。
         return ContextCompactionResult(
             messages=(ProviderMessage(role="system", content="压缩摘要"),),
-            summary_entry_id="summary_entry",
-            covered_entry_ids=("covered_entry",),
+            summary_entry_id=None,
+            covered_entry_ids=(),
         )
 
 

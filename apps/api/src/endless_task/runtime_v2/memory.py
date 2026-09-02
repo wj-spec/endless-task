@@ -110,6 +110,7 @@ class RuntimeV2MemoryService:
         kind: str,
         content: str,
         source_entry_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
     ) -> RuntimeV2MemoryRecord:
         normalized_kind = self._validate_kind(kind)
         lane = self._runtime_repository.get_lane(lane_id)
@@ -129,6 +130,7 @@ class RuntimeV2MemoryService:
             conversation_id=conversation_id,
             lane_id=lane_id,
             source_entry_id=source_entry_id,
+            expires_at=expires_at,
         )
 
     def create_run_memory(
@@ -139,6 +141,7 @@ class RuntimeV2MemoryService:
         kind: str,
         content: str,
         source_entry_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
     ) -> RuntimeV2MemoryRecord:
         normalized_kind = self._validate_kind(kind)
         run = self._runtime_repository.get_run(run_id)
@@ -152,6 +155,7 @@ class RuntimeV2MemoryService:
             lane_id=run.lane_id,
             run_id=run_id,
             source_entry_id=source_entry_id,
+            expires_at=expires_at,
         )
 
     def create_promotion(

@@ -21,6 +21,9 @@ from .repository import RuntimeRepository
 
 logger = logging.getLogger(__name__)
 
+# v2 运行时内部工具(依赖 v2 repository),v1 冻结路径不暴露。
+_V2_INTERNAL_TOOLS: frozenset[str] = frozenset({"update_plan"})
+
 
 @dataclass(frozen=True)
 class RuntimeConfiguration:
@@ -343,7 +346,20 @@ class AssistantRuntime:
         """
         from endless_task.workspace_runtime.visibility import workspace_tool_filter
 
-        return workspace_tool_filter(self._workspace_resolver, conversation_id)
+        base = workspace_tool_filter(self._workspace_resolver, conversation_id)
+        if base is None:
+
+            def _filter_internal_only(name: str) -> bool:
+                return name not in _V2_INTERNAL_TOOLS
+
+            return _filter_internal_only
+
+        def _filtered(name: str) -> bool:
+            if name in _V2_INTERNAL_TOOLS:
+                return False
+            return base(name)
+
+        return _filtered
 
     async def resolve_approval(
         self,

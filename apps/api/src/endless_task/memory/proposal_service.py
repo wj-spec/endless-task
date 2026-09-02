@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Optional, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple
 
 from endless_task.domain.models import MemoryKind, MemoryProposal
 from endless_task.domain.repositories import RepositoryError
@@ -18,6 +18,7 @@ from endless_task.storage import (
     SqliteMemoryProposalRepository,
     SqliteMemoryRepository,
 )
+from endless_task.storage.sqlite_memory_repository import AUTO_FACT_ORIGIN
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,11 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "随附“待确认/已记住清单”：与已记住语义相同的不要再提案；"
     "与待确认语义相同的照常输出新提案，并把旧提案 id 填入该条目的 supersedes"
     "（系统会取消旧提案、保留新提案）。"
+    "confidence 表示该陈述的明确程度：用户直接、明确陈述为 high；较明确但存在推断空间"
+    "为 medium；含糊或仅间接提示为 low。"
     '只输出 JSON：{"proposals":[{"kind":"preference|fact",'
     '"content":"规范化后的记忆文本","reason":"为什么值得记住",'
+    '"confidence":"low|medium|high",'
     '"supersedes":"旧提案 id 或省略"}]}；'
     "没有合适内容时输出 {\"proposals\":[]}。"
 )
@@ -66,11 +70,17 @@ PENDING_LIST_CAP = 10
 ACTIVE_LIST_CAP = 20
 LIST_SNIPPET_CHARS = 200
 
+# 自动写入只放行明确度达标的 fact；低明确度一律降级为待确认提案。
+_AUTO_FACT_CONFIDENCE = frozenset({"medium", "high"})
+
 
 class MemoryProposalService:
     """Generates pending memory proposals from completed turns.
 
-    The service never writes to ``memories``; confirmation belongs to R2.2.
+    The service never writes to ``memories`` unless ``auto_fact_enabled`` is on:
+    fact memories with sufficient extraction confidence are written directly with
+    ``write_origin=auto_fact``; preferences and low-confidence facts still require
+    confirmation through proposals. Confirmation belongs to R2.2.
     """
 
     def __init__(
@@ -83,6 +93,7 @@ class MemoryProposalService:
         max_proposals_per_turn: int = 2,
         max_output_tokens: int = 600,
         marker_gate_enabled: bool = True,
+        auto_fact_enabled: bool = False,
     ) -> None:
         if max_proposals_per_turn <= 0:
             raise ValueError("max_proposals_per_turn must be positive")
@@ -93,6 +104,7 @@ class MemoryProposalService:
         self._max_proposals_per_turn = max_proposals_per_turn
         self._max_output_tokens = max_output_tokens
         self._marker_gate_enabled = marker_gate_enabled
+        self._auto_fact_enabled = auto_fact_enabled
 
     async def generate_for_turn(
         self,
@@ -101,6 +113,9 @@ class MemoryProposalService:
         turn_id: str,
         user_message: str,
         assistant_message: str,
+        auto_write_target: Optional[
+            Callable[[MemoryKind, str, str, str], None]
+        ] = None,
     ) -> Tuple[MemoryProposal, ...]:
         if self._marker_gate_enabled and not has_memory_marker(user_message):
             return ()
@@ -110,6 +125,7 @@ class MemoryProposalService:
                 turn_id=turn_id,
                 user_message=user_message,
                 assistant_message=assistant_message,
+                auto_write_target=auto_write_target,
             )
         except Exception as error:  # noqa: BLE001 - proposal generation must never fail a turn
             logger.warning(
@@ -126,6 +142,9 @@ class MemoryProposalService:
         turn_id: str,
         user_message: str,
         assistant_message: str,
+        auto_write_target: Optional[
+            Callable[[MemoryKind, str, str, str], None]
+        ] = None,
     ) -> Tuple[MemoryProposal, ...]:
         transcript = (
             f"用户：{user_message.strip()}\nAssistant：{assistant_message.strip()}"
@@ -157,11 +176,22 @@ class MemoryProposalService:
             content = str(item.get("content", "")).strip()
             if not content or content in active_contents:
                 continue
+            kind = self._parse_kind(item.get("kind"))
+            if self._auto_write_fact(kind, item):
+                self._auto_write_fact_memory(
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    kind=kind,
+                    content=content,
+                    supersedes=item.get("supersedes"),
+                    write_target=auto_write_target,
+                )
+                continue
             try:
                 proposal = self._proposal_repository.create_proposal(
                     conversation_id=conversation_id,
                     turn_id=turn_id,
-                    kind=self._parse_kind(item.get("kind")),
+                    kind=kind,
                     content=content,
                     reason=str(item.get("reason", "")).strip() or "用户对话中明确表达",
                 )
@@ -170,6 +200,82 @@ class MemoryProposalService:
             self._supersede(conversation_id, proposal, item.get("supersedes"))
             created.append(proposal)
         return tuple(created)
+
+    def _auto_write_fact(self, kind: MemoryKind, item: Mapping[str, object]) -> bool:
+        if not self._auto_fact_enabled or kind is not MemoryKind.FACT:
+            return False
+        confidence = str(item.get("confidence", "")).strip().lower()
+        return confidence in _AUTO_FACT_CONFIDENCE
+
+    def _auto_write_fact_memory(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        kind: MemoryKind,
+        content: str,
+        supersedes: object,
+        write_target: Optional[Callable[[MemoryKind, str, str, str], None]] = None,
+    ) -> None:
+        if write_target is not None:
+            # v2 运行时:自动写入目标由调用方注入(v2 user_global 记忆)。
+            try:
+                write_target(kind, content, conversation_id, turn_id)
+            except Exception:  # noqa: BLE001 自动写入失败不阻断提取
+                logger.warning(
+                    "Auto-fact memory write failed for conversation %s: %s",
+                    conversation_id,
+                    content,
+                )
+                return
+        else:
+            try:
+                self._memory_repository.create_memory(
+                    kind=kind,
+                    content=content,
+                    source_conversation_id=conversation_id,
+                    source_turn_id=turn_id,
+                    write_origin=AUTO_FACT_ORIGIN,
+                )
+            except RepositoryError:
+                return
+        logger.info(
+            "Auto-written fact memory for conversation %s: %s",
+            conversation_id,
+            content,
+        )
+        # 自动写入后取消同内容的待确认提案与 supersedes 指向的旧提案，
+        # 避免用户再确认一条已经自动记住的内容。
+        if isinstance(supersedes, str) and supersedes.strip():
+            self._cancel_pending_proposal(conversation_id, supersedes.strip())
+        self._cancel_pending_with_content(conversation_id, content)
+
+    def _cancel_pending_proposal(self, conversation_id: str, proposal_id: str) -> None:
+        try:
+            referenced = self._proposal_repository.get_proposal(proposal_id)
+        except RepositoryError:
+            return
+        if (
+            referenced.conversation_id == conversation_id
+            and referenced.status.value == "pending"
+        ):
+            try:
+                self._proposal_repository.cancel_proposal(proposal_id)
+            except RepositoryError:
+                pass
+
+    def _cancel_pending_with_content(self, conversation_id: str, content: str) -> None:
+        for pending in self._proposal_repository.list_proposals(
+            conversation_id=conversation_id
+        ):
+            if (
+                pending.status.value == "pending"
+                and pending.content.strip() == content.strip()
+            ):
+                try:
+                    self._proposal_repository.cancel_proposal(pending.id)
+                except RepositoryError:
+                    continue
 
     def _supersede(
         self,
