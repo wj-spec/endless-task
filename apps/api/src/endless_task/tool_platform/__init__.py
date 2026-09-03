@@ -79,6 +79,15 @@ from .scheduler import (
     ToolScheduler,
 )
 from .spill import DEFAULT_SPILL_MARKER, spill_outcome
+from .surface import (
+    TOOL_SURFACE_SCHEMA_VERSION,
+    SurfaceBudget,
+    ToolSurfacePlan,
+    estimate_surface_tokens,
+    estimate_tool_schema_tokens,
+    plan_tool_surface,
+)
+from .search_tools import SEARCH_TOOLS_NAME, SearchToolsTool
 from .legacy_policy import (
     BUILTIN_LEGACY_TOOL_NAMES,
     BUILTIN_LEGACY_TOOL_POLICIES,
@@ -171,5 +180,13 @@ __all__ = [
     "capability_grant_for_workspace_binding",
     "OPENAI_COMPATIBLE_PROFILE_LIMITS",
     "create_openai_compatible_profile",
+    "SEARCH_TOOLS_NAME",
+    "SearchToolsTool",
+    "SurfaceBudget",
+    "TOOL_SURFACE_SCHEMA_VERSION",
+    "ToolSurfacePlan",
+    "estimate_surface_tokens",
+    "estimate_tool_schema_tokens",
+    "plan_tool_surface",
     "validate_capability",
 ]
