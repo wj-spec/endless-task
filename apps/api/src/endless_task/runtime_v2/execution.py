@@ -257,6 +257,7 @@ class ToolExecutionCoordinator:
         tool_definitions_provider: Optional[
             Callable[[str], tuple[ProviderToolDefinition, ...]]
         ] = None,
+        v2_pipeline_enabled: bool = False,
         limits: Optional[ToolExecutionLimits] = None,
     ) -> None:
         self._repository = repository
@@ -267,6 +268,12 @@ class ToolExecutionCoordinator:
         # surface comes from the version-2 planner instead of the legacy
         # predicate; the default None keeps the legacy path byte-identical.
         self._tool_definitions_provider = tool_definitions_provider
+        # AP-107 Stage 4c: when enabled, the auto-approved subset of each
+        # batch runs through the version-2 pipeline (scheduler + adapters);
+        # approval-needed items keep the legacy WAIT/resume path.
+        if not isinstance(v2_pipeline_enabled, bool):
+            raise ValueError("v2_pipeline_enabled must be boolean")
+        self._v2_pipeline_enabled = v2_pipeline_enabled
         self._limits = limits or ToolExecutionLimits()
         self._execution_slots = asyncio.Semaphore(self._limits.max_concurrent_calls)
 
@@ -386,7 +393,29 @@ class ToolExecutionCoordinator:
                 cancellation_token=cancellation_token,
             )
             async with asyncio.TaskGroup() as task_group:
-                for prepared_item in prepared_items:
+                if self._v2_pipeline_enabled:
+                    v2_auto = tuple(
+                        prepared
+                        for prepared in prepared_items
+                        if not prepared.needs_approval
+                    )
+                    if v2_auto:
+                        task_group.create_task(
+                            self._execute_v2_auto_batch(
+                                run=run,
+                                model_turn=model_turn,
+                                prepared_items=v2_auto,
+                                cancellation_token=cancellation_token,
+                            )
+                        )
+                    legacy_items = tuple(
+                        prepared
+                        for prepared in prepared_items
+                        if prepared.needs_approval
+                    )
+                else:
+                    legacy_items = prepared_items
+                for prepared_item in legacy_items:
                     task_group.create_task(
                         self._execute_prepared_item(
                             run=run,
@@ -484,7 +513,113 @@ class ToolExecutionCoordinator:
             terminate=request_terminate,
         )
 
+    async def _execute_v2_auto_batch(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        prepared_items: Sequence["_PreparedToolExecution"],
+        cancellation_token: CancellationToken,
+    ) -> None:
+        """Run the auto-approved subset through the v2 pipeline.
+
+        Execution of each tool still goes through the same registered tool
+        via ``LegacyToolAdapter``; per-item repository transitions mirror the
+        legacy runner so results, events and replay stay identical.
+        """
+        from endless_task.tool_platform import (
+            DefaultToolPipeline,
+            LegacyToolAdapter,
+            ResolvedToolCall,
+            ToolBatchRequest,
+            ToolExecutionRequest,
+            ToolScheduler,
+        )
+
+        for prepared in prepared_items:
+            self._repository.transition_tool_execution_status(
+                prepared.item.record_id,
+                ToolExecutionStatus.RUNNING,
+                event_type="tool_execution_started",
+                payload={"toolExecutionId": prepared.item.record_id},
+            )
+            prepared.item.status = ToolExecutionStatus.RUNNING
+        calls: list[ResolvedToolCall] = []
+        for prepared in prepared_items:
+            call = self._tool_call(prepared.item, run, model_turn)
+            adapter = LegacyToolAdapter(prepared.tool)
+            request = ToolExecutionRequest(
+                call_id=call.id,
+                tool_name=call.tool_name,
+                arguments=call.arguments,
+                conversation_id=call.conversation_id,
+                run_id=run.id,
+                model_turn_id=model_turn.id,
+                correlation_id=run.correlation_id or run.id,
+                cancellation=cancellation_token,
+                created_at=call.created_at,
+                legacy_turn_id=call.turn_id,
+                legacy_response_variant_id=call.response_variant_id,
+            )
+            calls.append(ResolvedToolCall(request=request, tool=adapter))
+        pipeline = DefaultToolPipeline(
+            scheduler=ToolScheduler(
+                max_concurrent=self._limits.max_concurrent_calls
+            )
+        )
+        result = await pipeline.execute(ToolBatchRequest(calls=tuple(calls)))
+        for prepared, outcome in zip(prepared_items, result.outcomes):
+            self._apply_v2_outcome(prepared.item, outcome)
+
+    def _apply_v2_outcome(
+        self,
+        item: _ToolWorkItem,
+        outcome: ToolOutcome,
+    ) -> None:
+        """Mirror a v2 pipeline outcome onto a legacy work item."""
+        status_value = outcome.status.value
+        if status_value == "completed":
+            item.status = ToolExecutionStatus.COMPLETED
+            item.content = outcome.content
+            item.structured_content = outcome.structured_content
+            item.error = None
+            item.terminate = outcome.terminate
+            return
+        diagnostic = outcome.diagnostic
+        code = diagnostic.code if diagnostic is not None else "tool_execution_unknown"
+        safe_message = (
+            diagnostic.safe_message
+            if diagnostic is not None
+            else "工具执行返回未知结果，副作用状态无法确认。"
+        )
+        retryable = diagnostic.retryable if diagnostic is not None else False
+        if status_value == "cancelled":
+            self._fail_item(
+                item,
+                ToolCallError(
+                    code=code,
+                    safe_message=safe_message,
+                    retryable=retryable,
+                ),
+                status=ToolExecutionStatus.CANCELLED,
+            )
+            return
+        self._fail_item(
+            item,
+            ToolCallError(
+                code=code,
+                safe_message=safe_message,
+                retryable=retryable,
+            ),
+            status=(
+                ToolExecutionStatus.REJECTED
+                if status_value == "rejected"
+                else ToolExecutionStatus.FAILED
+            ),
+        )
+
     def _prepare_tool_batch(
+
         self,
         *,
         run: RunRecord,
@@ -1342,6 +1477,7 @@ class AgentRunExecutor:
         tool_definitions_provider: Optional[
             Callable[[str], tuple[ProviderToolDefinition, ...]]
         ] = None,
+        v2_pipeline_enabled: bool = False,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -1364,6 +1500,7 @@ class AgentRunExecutor:
             approval_gate=approval_gate,
             tool_filter_provider=tool_filter_provider,
             tool_definitions_provider=tool_definitions_provider,
+            v2_pipeline_enabled=v2_pipeline_enabled,
             limits=tool_execution_limits,
         )
         self._model_turn_runner = ModelTurnRunner(

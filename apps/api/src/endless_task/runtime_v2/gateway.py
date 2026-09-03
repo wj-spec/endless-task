@@ -650,6 +650,7 @@ class RuntimeV2SessionGateway:
         tool_definitions_provider: Optional[
             Callable[[str], tuple[ProviderToolDefinition, ...]]
         ] = None,
+        v2_pipeline_enabled: bool = False,
         compaction_hook: Optional[ContextCompactionHook] = None,
         metrics_collector: Optional[RuntimeV2MetricsCollector] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -663,6 +664,7 @@ class RuntimeV2SessionGateway:
         self._tool_registry = tool_registry
         self._tool_filter_provider = tool_filter_provider
         self._tool_definitions_provider = tool_definitions_provider
+        self._v2_pipeline_enabled = v2_pipeline_enabled
         self._compaction_hook = compaction_hook
         self._metrics = metrics_collector or RuntimeV2MetricsCollector()
         self._model = model
@@ -1352,6 +1354,7 @@ class RuntimeV2SessionGateway:
             context_prefix_messages=context_prefix_messages,
             tool_filter_provider=self._tool_filter_provider,
             tool_definitions_provider=self._tool_definitions_provider,
+            v2_pipeline_enabled=self._v2_pipeline_enabled,
             compaction_hook=self._compaction_hook,
             metrics=self._metrics,
             agent_timeout_seconds=self._agent_timeout_seconds,

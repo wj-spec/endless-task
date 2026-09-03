@@ -288,8 +288,8 @@ class AppSettings:
     memory_marker_gate_enabled: bool = True
     memory_auto_fact: bool = False
     context_compaction_enabled: bool = True
-    # Agent Platform v2 tool path; default off. Illegal env values fail startup.
-    tool_platform_v2_enabled: bool = False
+    # Agent Platform v2 tool path; default on after AP-107 flip. Illegal env values fail startup.
+    tool_platform_v2_enabled: bool = True
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -416,7 +416,7 @@ class AppSettings:
                 env.get("ENDLESS_TASK_CONTEXT_COMPACTION", "1")
             ),
             tool_platform_v2_enabled=_parse_strict_flag(
-                env.get("ENDLESS_TASK_TOOL_PLATFORM_V2", "0"),
+                env.get("ENDLESS_TASK_TOOL_PLATFORM_V2", "1"),
                 name="ENDLESS_TASK_TOOL_PLATFORM_V2",
             ),
             artifact_proposals_enabled=_parse_flag(
@@ -1368,6 +1368,7 @@ def _build_container(
             if settings.tool_platform_v2_enabled
             else None
         ),
+        v2_pipeline_enabled=settings.tool_platform_v2_enabled,
         compaction_hook=runtime_v2_compaction_hook,
         metrics_collector=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
@@ -1396,6 +1397,7 @@ def _build_container(
             if settings.tool_platform_v2_enabled
             else None
         ),
+        v2_pipeline_enabled=settings.tool_platform_v2_enabled,
         metrics=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
