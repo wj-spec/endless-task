@@ -1339,6 +1339,9 @@ class AgentRunExecutor:
         tool_filter_provider: Optional[
             Callable[[str], Optional[Callable[[str], bool]]]
         ] = None,
+        tool_definitions_provider: Optional[
+            Callable[[str], tuple[ProviderToolDefinition, ...]]
+        ] = None,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -1360,6 +1363,7 @@ class AgentRunExecutor:
             tool_registry=tool_registry,
             approval_gate=approval_gate,
             tool_filter_provider=tool_filter_provider,
+            tool_definitions_provider=tool_definitions_provider,
             limits=tool_execution_limits,
         )
         self._model_turn_runner = ModelTurnRunner(

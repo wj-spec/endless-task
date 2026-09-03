@@ -1242,6 +1242,96 @@ def _build_container(
 
         return allows
 
+    def _v2_surface_definitions_provider(
+        *,
+        unattended: bool,
+    ):
+        """Build the flag-gated v2 model surface for one conversation.
+
+        Composes the nine built-in adapters plus any registered MCP bridges
+        into a v2 catalog, applies the workspace-binding capability grant
+        (legacy predicate parity, AP-105a) and projects the authorized
+        surface with the calibrated provider profile. ``unattended`` also
+        hides approval-required tools, matching the legacy unattended
+        filter. Execution still resolves tools by name through the legacy
+        registry, so only the model surface switches.
+        """
+
+        def provider(conversation_id: str):
+            from endless_task.runtime.provider import ProviderToolDefinition
+            from endless_task.tool_platform import (
+                ApprovalPolicy,
+                CapabilityContext,
+                CapabilityProfile,
+                InMemoryToolCatalog,
+                LegacyToolAdapter,
+                ToolProvenance,
+                ToolProvenanceKind,
+                ToolScope,
+                ToolSurfaceRequest,
+                capability_grant_for_workspace_binding,
+                create_openai_compatible_profile,
+                project_tool_surface,
+            )
+
+            binding = workspace_resolver.resolve_binding(conversation_id)
+            catalog = InMemoryToolCatalog()
+            allowed: set[str] = set()
+            approval_by_name: dict[str, ApprovalPolicy] = {}
+            for definition in selected_tool_registry.definitions():
+                tool = selected_tool_registry.resolve(definition.name)
+                adapter = LegacyToolAdapter(tool)
+                kind = (
+                    ToolProvenanceKind.MCP
+                    if definition.name.startswith("mcp__")
+                    else ToolProvenanceKind.LEGACY_ADAPTER
+                )
+                catalog.register(
+                    adapter,
+                    scope=ToolScope.BUILTIN,
+                    provenance=ToolProvenance(
+                        kind=kind,
+                        source_id=(
+                            "builtin"
+                            if kind is ToolProvenanceKind.LEGACY_ADAPTER
+                            else "mcp"
+                        ),
+                    ),
+                )
+                allowed.update(adapter.definition.required_capabilities)
+                approval_by_name[definition.name] = adapter.definition.approval
+
+            granted = capability_grant_for_workspace_binding(
+                binding is not None,
+                frozenset(allowed),
+            )
+            surface = catalog.surface(
+                ToolSurfaceRequest(
+                    context=CapabilityContext(
+                        profile=CapabilityProfile(
+                            name="v2_surface",
+                            allowed_capabilities=granted,
+                        ),
+                    ),
+                )
+            )
+            report = project_tool_surface(surface, create_openai_compatible_profile())
+            return tuple(
+                ProviderToolDefinition(
+                    name=projected.name,
+                    description=projected.description,
+                    input_schema=dict(projected.input_schema),
+                )
+                for projected in report.projected
+                if not (
+                    unattended
+                    and approval_by_name.get(projected.name)
+                    is ApprovalPolicy.REQUIRED
+                )
+            )
+
+        return provider
+
     runtime_v2_compaction_hook = (
         RuntimeV2ContextCompactionService(
             repository=runtime_v2_repository,
@@ -1273,6 +1363,11 @@ def _build_container(
         provider_slot_limit=settings.max_concurrent_model_calls,
         memory_repository=runtime_v2_memory_repository,
         tool_filter_provider=_v2_workspace_tool_filter,
+        tool_definitions_provider=(
+            _v2_surface_definitions_provider(unattended=False)
+            if settings.tool_platform_v2_enabled
+            else None
+        ),
         compaction_hook=runtime_v2_compaction_hook,
         metrics_collector=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
@@ -1296,6 +1391,11 @@ def _build_container(
         ),
         compaction_hook=runtime_v2_compaction_hook,
         tool_filter_provider=_v2_unattended_tool_filter,
+        tool_definitions_provider=(
+            _v2_surface_definitions_provider(unattended=True)
+            if settings.tool_platform_v2_enabled
+            else None
+        ),
         metrics=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
