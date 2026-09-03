@@ -2,6 +2,7 @@
 
 from .conformance import assert_execution_environment_conformance
 from .fakes import FakeExecutionEnvironment
+from .local import LocalExecutionBackend
 from .protocol import (
     EXECUTION_PROTOCOL_VERSION,
     CheckpointRef,
@@ -27,6 +28,7 @@ __all__ = [
     "ExecutionPolicy",
     "FakeExecutionEnvironment",
     "FileMutationOperation",
+    "LocalExecutionBackend",
     "FileMutationRequest",
     "FileReadResult",
     "NetworkMode",
