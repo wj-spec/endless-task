@@ -538,8 +538,13 @@ class McpReconnectTest(unittest.IsolatedAsyncioTestCase):
             manager = McpManager(
                 repository=repository,
                 tool_registry=registry,
-                reconnect_initial_delay_seconds=0.01,
-                reconnect_max_delay_seconds=0.02,
+                reconnect_initial_delay_seconds=0.05,
+                # reconnect budget 的语义是「reconnect_max_delay_seconds 窗口内的
+                # 快速失败连击」：任何一次尝试的耗时达到窗口值都会把 attempts 归零
+                # 重新起算。因此窗口必须显著大于真实子进程拉起耗时（python 启动 +
+                # marker 判定约 20-60ms）。旧配置 0.02s 低于任何真实尝试耗时，预算
+                # 结构性不可达，manager 永远停在 reconnecting，导致本用例 flake。
+                reconnect_max_delay_seconds=1.0,
                 reconnect_max_attempts=2,
             )
             try:
