@@ -288,6 +288,8 @@ class AppSettings:
     memory_marker_gate_enabled: bool = True
     memory_auto_fact: bool = False
     context_compaction_enabled: bool = True
+    # Agent Platform v2 tool path; default off. Illegal env values fail startup.
+    tool_platform_v2_enabled: bool = False
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -412,6 +414,10 @@ class AppSettings:
             ),
             context_compaction_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_CONTEXT_COMPACTION", "1")
+            ),
+            tool_platform_v2_enabled=_parse_strict_flag(
+                env.get("ENDLESS_TASK_TOOL_PLATFORM_V2", "0"),
+                name="ENDLESS_TASK_TOOL_PLATFORM_V2",
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -904,6 +910,13 @@ class ApiRequestError(RuntimeError):
         self.status_code = status_code
 
 
+def _tool_platform_v2_profile_name() -> str:
+    """Name of the calibrated provider profile used by the v2 tool path."""
+    from endless_task.tool_platform import create_openai_compatible_profile
+
+    return create_openai_compatible_profile().name
+
+
 def _correlation_id() -> str:
     return f"corr_{uuid.uuid4().hex}"
 
@@ -1073,6 +1086,16 @@ def _resolve_runtime_v2_conversation(
 
 def _parse_flag(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_strict_flag(value: str, *, name: str) -> bool:
+    """Strict boolean env parsing: any value outside 0/1 fails startup."""
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} 只允许 0 或 1")
 
 
 def _parse_hybrid_weights(value: str) -> tuple[float, float]:
@@ -2029,6 +2052,14 @@ def create_app(
                     else None
                 ),
                 "ready": embedding_ready,
+            },
+            "toolPlatformV2": {
+                "enabled": container.settings.tool_platform_v2_enabled,
+                "profileName": (
+                    _tool_platform_v2_profile_name()
+                    if container.settings.tool_platform_v2_enabled
+                    else None
+                ),
             },
         }
 

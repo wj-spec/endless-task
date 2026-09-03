@@ -163,3 +163,48 @@ class CapabilitiesApiTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ToolPlatformV2CapabilitiesTest(unittest.IsolatedAsyncioTestCase):
+    async def _payload(self, *, enabled: bool) -> dict:
+        with tempfile.TemporaryDirectory() as directory:
+            app = create_app(
+                settings=AppSettings(
+                    database_path=Path(directory) / "api.db",
+                    memory_proposals_enabled=False,
+                    knowledge_proposals_enabled=False,
+                    tool_platform_v2_enabled=enabled,
+                ),
+                provider=FakeProvider(chunks=("ok",)),
+            )
+            lifespan = app.router.lifespan_context(app)
+            await lifespan.__aenter__()
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver",
+                ) as client:
+                    response = await client.get("/capabilities")
+                    self.assertEqual(200, response.status_code)
+                    return response.json()["toolPlatformV2"]
+            finally:
+                await lifespan.__aexit__(None, None, None)
+
+    async def test_flag_off_echoes_disabled_without_profile(self) -> None:
+        payload = await self._payload(enabled=False)
+        self.assertFalse(payload["enabled"])
+        self.assertIsNone(payload["profileName"])
+
+    async def test_flag_on_echoes_enabled_with_calibrated_profile(self) -> None:
+        payload = await self._payload(enabled=True)
+        self.assertTrue(payload["enabled"])
+        self.assertEqual("openai_compatible_default", payload["profileName"])
+
+    def test_strict_flag_parsing_fails_closed_on_illegal_values(self) -> None:
+        from endless_task.api.app import _parse_strict_flag
+
+        self.assertTrue(_parse_strict_flag("1", name="F"))
+        self.assertTrue(_parse_strict_flag("TRUE", name="F"))
+        self.assertFalse(_parse_strict_flag("0", name="F"))
+        self.assertFalse(_parse_strict_flag("off", name="F"))
+        with self.assertRaises(ValueError):
+            _parse_strict_flag("maybe", name="F")
