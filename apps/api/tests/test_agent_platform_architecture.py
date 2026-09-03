@@ -33,6 +33,7 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "context_engine" / "relevance.py",
     SOURCE_ROOT / "reliability" / "retry.py",
     SOURCE_ROOT / "reliability" / "stop.py",
+    SOURCE_ROOT / "reliability" / "retry_runtime.py",
     SOURCE_ROOT / "execution_env" / "protocol.py",
     SOURCE_ROOT / "execution_env" / "local.py",
     SOURCE_ROOT / "execution_env" / "checkpoint.py",

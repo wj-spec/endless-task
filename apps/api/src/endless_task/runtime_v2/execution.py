@@ -1135,6 +1135,8 @@ class ModelTurnRunner:
         temperature: Optional[float] = None,
         provider_slot: Optional[asyncio.Semaphore] = None,
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
+        provider_retry_evaluator: Optional[object] = None,
+        provider_retry_observer: Optional[object] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -1144,6 +1146,10 @@ class ModelTurnRunner:
         self._temperature = temperature
         self._provider_slot = provider_slot
         self._metrics = metrics
+        # M3A RS-1: optional provider retry orchestration (default off =
+        # legacy behavior; shadow observers may still be attached).
+        self._provider_retry_evaluator = provider_retry_evaluator
+        self._provider_retry_observer = provider_retry_observer
         self._last_first_event_at: Optional[float] = None
 
     async def run(
@@ -1414,34 +1420,58 @@ class ModelTurnRunner:
             _MODEL_TURN_STREAMING_STATUS,
             event_type="model_turn_started",
         )
-        first_event_at: Optional[float] = None
-        async for provider_event in self._provider.stream(
-            request,
-            cancellation_token,
-        ):
-            cancellation_token.raise_if_cancelled()
-            if first_event_at is None:
-                first_event_at = time.monotonic()
-                self._last_first_event_at = first_event_at
-            if isinstance(provider_event, ProviderTextDelta):
-                if not provider_event.text:
-                    continue
-                content_parts.append(provider_event.text)
-                self._repository.append_runtime_event(
-                    run_id=run.id,
-                    model_turn_id=model_turn.id,
-                    event_type="model_text_delta",
-                    payload={"delta": provider_event.text},
-                )
-                if on_text_delta is not None:
-                    await on_text_delta(provider_event.text)
-                continue
-            if isinstance(provider_event, ProviderToolCall):
-                provider_calls.append(provider_event)
-                continue
-            if isinstance(provider_event, ProviderCompleted):
-                return provider_event
-        return None
+        evaluator = self._provider_retry_evaluator
+        observer = self._provider_retry_observer
+        attempts_used = 0
+        while True:
+            first_event_at: Optional[float] = None
+            normal_end = False
+            try:
+                async for provider_event in self._provider.stream(
+                    request,
+                    cancellation_token,
+                ):
+                    cancellation_token.raise_if_cancelled()
+                    if first_event_at is None:
+                        first_event_at = time.monotonic()
+                        self._last_first_event_at = first_event_at
+                    if isinstance(provider_event, ProviderTextDelta):
+                        if not provider_event.text:
+                            continue
+                        content_parts.append(provider_event.text)
+                        self._repository.append_runtime_event(
+                            run_id=run.id,
+                            model_turn_id=model_turn.id,
+                            event_type="model_text_delta",
+                            payload={"delta": provider_event.text},
+                        )
+                        if on_text_delta is not None:
+                            await on_text_delta(provider_event.text)
+                        continue
+                    if isinstance(provider_event, ProviderToolCall):
+                        provider_calls.append(provider_event)
+                        continue
+                    if isinstance(provider_event, ProviderCompleted):
+                        return provider_event
+                normal_end = True
+            except ProviderError as error:
+                if evaluator is not None:
+                    record = evaluator.evaluate(
+                        error_code=error.code,
+                        attempts_used=attempts_used,
+                        emitted_events=first_event_at is not None,
+                        retry_after_ms=error.retry_after_ms,
+                    )
+                    if observer is not None:
+                        observer(record)
+                    if record.would_retry:
+                        attempts_used += 1
+                        await asyncio.sleep(record.delay_seconds)
+                        cancellation_token.raise_if_cancelled()
+                        continue
+                raise
+            if normal_end:
+                return None
 
 
 @dataclass(frozen=True)
@@ -1480,6 +1510,8 @@ class AgentRunExecutor:
         v2_pipeline_enabled: bool = False,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
+        provider_retry_evaluator: Optional[object] = None,
+        provider_retry_observer: Optional[object] = None,
         agent_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._repository = repository
@@ -1494,6 +1526,8 @@ class AgentRunExecutor:
         self._context_prefix_messages = tuple(context_prefix_messages)
         self._metrics = metrics
         self._run_compacted = False
+        self._provider_retry_evaluator = provider_retry_evaluator
+        self._provider_retry_observer = provider_retry_observer
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1512,6 +1546,8 @@ class AgentRunExecutor:
             temperature=temperature,
             provider_slot=provider_slot,
             metrics=metrics,
+            provider_retry_evaluator=self._provider_retry_evaluator,
+            provider_retry_observer=self._provider_retry_observer,
         )
         self._context_projection = ContextProjection()
         self._steering_messages: list[str] = []
