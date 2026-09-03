@@ -247,6 +247,22 @@ class WorkspaceVisibilityParityTest(unittest.TestCase):
             UNBOUND_WORKSPACE_DENIED_CAPABILITIES,
         )
 
+    def test_path_scoped_tools_carry_a_recognized_path_argument(self) -> None:
+        from endless_task.tool_platform import PATH_ARGUMENT_KEYS
+
+        classes_by_name = {
+            real_tool_definition(cls).name: cls for cls in BUILTIN_TOOL_CLASSES
+        }
+        for policy in BUILTIN_LEGACY_TOOL_POLICIES:
+            if policy.execution_mode is not ToolExecutionMode.PATH_SCOPED:
+                continue
+            definition = real_tool_definition(classes_by_name[policy.tool_name])
+            properties = definition.input_schema.get("properties", {})
+            self.assertTrue(
+                set(properties).intersection(PATH_ARGUMENT_KEYS),
+                f"{policy.tool_name} must declare a path argument for path-scoped scheduling",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
