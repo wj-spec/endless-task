@@ -1604,6 +1604,7 @@ class AgentRunExecutor:
         provider_retry_evaluator: Optional[object] = None,
         provider_retry_observer: Optional[object] = None,
         no_progress_observer: Optional[object] = None,
+        context_shadow_observer: Optional[object] = None,
         agent_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._repository = repository
@@ -1621,6 +1622,7 @@ class AgentRunExecutor:
         self._provider_retry_evaluator = provider_retry_evaluator
         self._provider_retry_observer = provider_retry_observer
         self._no_progress_observer = no_progress_observer
+        self._context_shadow_observer = context_shadow_observer
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1663,6 +1665,10 @@ class AgentRunExecutor:
         run_started = time.monotonic()
         entries = self._repository.list_entry_context_entries(run.trigger_entry_id)
         projection = self._context_projection.project(entries)
+        if self._context_shadow_observer is not None:
+            from .context_segments import build_context_shadow
+
+            self._context_shadow_observer(build_context_shadow(entries))
         provider_messages: list[ProviderMessage] = list(
             self._context_prefix_messages
         )
