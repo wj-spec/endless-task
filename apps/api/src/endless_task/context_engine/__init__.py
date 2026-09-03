@@ -2,6 +2,13 @@
 
 from .compatibility import LegacyContextEngineAdapter
 from .conformance import assert_context_parity
+from .planner import (
+    CONTEXT_PLANNER_SCHEMA_VERSION,
+    ContextPlan,
+    estimate_text_tokens,
+    fingerprint_context,
+    plan_context_segments,
+)
 from .protocol import (
     CONTEXT_PROTOCOL_VERSION,
     BootstrapRequest,
@@ -23,6 +30,7 @@ from .protocol import (
 )
 
 __all__ = [
+    "CONTEXT_PLANNER_SCHEMA_VERSION",
     "CONTEXT_PROTOCOL_VERSION",
     "BootstrapRequest",
     "CommitResult",
@@ -32,6 +40,7 @@ __all__ = [
     "ContextEngine",
     "ContextInput",
     "ContextInputKind",
+    "ContextPlan",
     "ContextRequest",
     "ContextSegment",
     "ContextSegmentKind",
@@ -42,4 +51,7 @@ __all__ = [
     "MaintenanceResult",
     "TurnOutcome",
     "assert_context_parity",
+    "estimate_text_tokens",
+    "fingerprint_context",
+    "plan_context_segments",
 ]
