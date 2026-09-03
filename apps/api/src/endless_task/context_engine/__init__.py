@@ -2,6 +2,16 @@
 
 from .compatibility import LegacyContextEngineAdapter
 from .conformance import assert_context_parity
+from .relevance import (
+    MEMORY_RELEVANCE_SCHEMA_VERSION,
+    MemoryCandidate,
+    MemoryScorer,
+    RankedMemoryHit,
+    WeightedMemoryScorer,
+    memory_search,
+    rank_memory_candidates,
+    tokenize,
+)
 from .checkpoint import (
     CHECKPOINT_JSON_SCHEMA,
     CHECKPOINT_SCHEMA_VERSION,
@@ -75,11 +85,19 @@ __all__ = [
     "CheckpointEffectRef",
     "CheckpointFileRef",
     "StructuredContextCheckpoint",
+    "MEMORY_RELEVANCE_SCHEMA_VERSION",
+    "MemoryCandidate",
+    "MemoryScorer",
+    "RankedMemoryHit",
+    "WeightedMemoryScorer",
     "checkpoint_entry_conflicts",
     "estimate_text_tokens",
     "fingerprint_context",
     "parse_checkpoint_json",
+    "memory_search",
     "plan_context_segments",
     "plan_tool_result_retention",
+    "rank_memory_candidates",
     "render_checkpoint_message",
+    "tokenize",
 ]
