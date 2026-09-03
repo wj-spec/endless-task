@@ -12,6 +12,7 @@ from .relevance import (
     rank_memory_candidates,
     tokenize,
 )
+from .engine import DefaultContextEngine
 from .checkpoint import (
     CHECKPOINT_JSON_SCHEMA,
     CHECKPOINT_SCHEMA_VERSION,
@@ -72,6 +73,7 @@ __all__ = [
     "ContextSegmentKind",
     "ContextSnapshot",
     "ContextTransform",
+    "DefaultContextEngine",
     "LegacyContextEngineAdapter",
     "MaintenanceRequest",
     "MaintenanceResult",
