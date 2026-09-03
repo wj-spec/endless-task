@@ -33,6 +33,14 @@ from endless_task.agent_platform import (
 )
 from endless_task.runtime_ledger import TraceContext
 
+from .checkpoint import (
+    CheckpointManifest,
+    apply_restore,
+    create_checkpoint,
+    plan_restore,
+    read_manifest,
+)
+from .ledger import FileMutationLedger, LedgerEntry, ledger_timestamp
 from .protocol import (
     CheckpointRef,
     CheckpointRequest,
@@ -72,6 +80,8 @@ class LocalExecutionBackend(ExecutionEnvironment):
         self,
         *,
         receipt_sink: Optional[Callable[[EffectReceipt], None]] = None,
+        checkpoint_store: Optional[Path] = None,
+        ledger: Optional[FileMutationLedger] = None,
     ) -> None:
         if receipt_sink is not None and not callable(receipt_sink):
             raise AgentPlatformError(
@@ -79,6 +89,11 @@ class LocalExecutionBackend(ExecutionEnvironment):
                 "receipt_sink must be callable",
             )
         self._receipt_sink = receipt_sink
+        if checkpoint_store is not None:
+            self._store = Path(checkpoint_store).expanduser().resolve(strict=False)
+        else:
+            self._store = None
+        self._ledger = ledger
 
     async def read_file(self, request: ReadFileRequest) -> FileReadResult:
         if not isinstance(request, ReadFileRequest):
@@ -205,7 +220,7 @@ class LocalExecutionBackend(ExecutionEnvironment):
                 "invalid_execution_value",
                 "Unsupported file mutation operation",
             )
-        return self._issue_receipt(
+        receipt = self._issue_receipt(
             effect_id=request.effect_id,
             tool_call_id=request.tool_call_id,
             effect_type=effect_type,
@@ -217,6 +232,22 @@ class LocalExecutionBackend(ExecutionEnvironment):
             after_ref=after_ref,
             idempotency_key=request.idempotency_key,
         )
+        if self._ledger is not None:
+            try:
+                relative = target.relative_to(root).as_posix()
+            except ValueError:
+                relative = request.path
+            self._ledger.append(
+                LedgerEntry(
+                    effect_id=request.effect_id,
+                    path=relative,
+                    operation=request.operation.value,
+                    timestamp=ledger_timestamp(),
+                    before_hash=before_hash,
+                    after_hash=after_ref,
+                )
+            )
+        return receipt
 
     async def run_process(self, request: ProcessRequest) -> ProcessResult:
         if not isinstance(request, ProcessRequest):
@@ -292,20 +323,68 @@ class LocalExecutionBackend(ExecutionEnvironment):
         )
 
     async def checkpoint(self, request: CheckpointRequest) -> CheckpointRef:
-        del request
-        raise AgentPlatformError(
-            "not_implemented_in_slice",
-            "Checkpoint backend belongs to AP-305.",
-            retryable=False,
+        if not isinstance(request, CheckpointRequest):
+            raise AgentPlatformError(
+                "invalid_execution_value",
+                "Checkpoint requires a CheckpointRequest",
+            )
+        if self._store is None:
+            raise AgentPlatformError(
+                "not_implemented_in_slice",
+                "Checkpoint store 未配置，无法创建 checkpoint。",
+                retryable=False,
+            )
+        root = _root_path(request.policy)
+        manifest = create_checkpoint(
+            root,
+            self._store,
+            checkpoint_id=request.run_id,
+        )
+        return CheckpointRef(
+            checkpoint_id=manifest.checkpoint_id,
+            run_id=request.run_id,
+            backend="local-content",
+            root_fingerprint=manifest.root_fingerprint,
+            manifest_ref=f"manifests/{manifest.checkpoint_id}.json",
+            created_at=request.created_at,
         )
 
     async def restore(self, request: RestoreRequest) -> RestoreResult:
-        del request
-        raise AgentPlatformError(
-            "not_implemented_in_slice",
-            "Restore backend belongs to AP-305.",
-            retryable=False,
+        if not isinstance(request, RestoreRequest):
+            raise AgentPlatformError(
+                "invalid_execution_value",
+                "Restore requires a RestoreRequest",
+            )
+        if self._store is None:
+            raise AgentPlatformError(
+                "not_implemented_in_slice",
+                "Checkpoint store 未配置，无法恢复。",
+                retryable=False,
+            )
+        if request.checkpoint.backend != "local-content":
+            raise AgentPlatformError(
+                "restore_backend_mismatch",
+                "Checkpoint 不属于本地内容寻址后端。",
+                retryable=False,
+            )
+        manifest = read_manifest(self._store, request.checkpoint.checkpoint_id)
+        root = _root_path(request.policy)
+        if request.dry_run:
+            plan = plan_restore(manifest, root, ledger=self._ledger)
+            return RestoreResult(
+                applied=False,
+                restored_paths=plan.would_apply,
+                skipped_paths=(
+                    plan.user_modified_skipped + plan.new_files_untouched
+                ),
+            )
+        restored, skipped = apply_restore(
+            manifest,
+            root,
+            self._store,
+            ledger=self._ledger,
         )
+        return RestoreResult(applied=True, restored_paths=restored, skipped_paths=skipped)
 
     def _issue_receipt(
         self,
