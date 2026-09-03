@@ -3,6 +3,7 @@
 from .conformance import assert_execution_environment_conformance
 from .fakes import FakeExecutionEnvironment
 from .local import LocalExecutionBackend
+from .seatbelt import SeatbeltBackend, build_seatbelt_profile, probe_seatbelt
 from .protocol import (
     EXECUTION_PROTOCOL_VERSION,
     CheckpointRef,
@@ -29,6 +30,9 @@ __all__ = [
     "FakeExecutionEnvironment",
     "FileMutationOperation",
     "LocalExecutionBackend",
+    "SeatbeltBackend",
+    "build_seatbelt_profile",
+    "probe_seatbelt",
     "FileMutationRequest",
     "FileReadResult",
     "NetworkMode",

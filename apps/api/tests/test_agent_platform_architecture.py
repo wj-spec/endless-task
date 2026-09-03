@@ -37,6 +37,7 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "execution_env" / "local.py",
     SOURCE_ROOT / "execution_env" / "checkpoint.py",
     SOURCE_ROOT / "execution_env" / "ledger.py",
+    SOURCE_ROOT / "execution_env" / "seatbelt.py",
     SOURCE_ROOT / "delegation" / "protocol.py",
     SOURCE_ROOT / "runtime_ledger" / "protocol.py",
 )
