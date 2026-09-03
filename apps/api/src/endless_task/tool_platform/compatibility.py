@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
+from typing import Optional, cast
 
 from endless_task.agent_platform import AgentPlatformError, SafeDiagnostic
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
 from endless_task.tooling import (
-    ToolApprovalMode as LegacyApprovalMode,
     ToolCall as LegacyToolCall,
     ToolCallStatus as LegacyToolCallStatus,
-    ToolEffect as LegacyToolEffect,
     ToolError as LegacyToolError,
 )
 from endless_task.tooling.registry import RegisteredTool
 
+from .legacy_policy import (
+    LegacyToolPolicy,
+    adapt_legacy_approval,
+    adapt_legacy_effect,
+    builtin_legacy_tool_policy,
+)
 from .protocol import (
     AgentToolV2,
-    ApprovalPolicy,
     IdempotencyPolicy,
     RetryPolicy,
     ToolDefinitionV2,
@@ -27,39 +30,49 @@ from .protocol import (
     ToolOutcomeStatus,
 )
 
-_EFFECTS = {
-    LegacyToolEffect.READ_ONLY: ToolEffect.READ_ONLY,
-    LegacyToolEffect.LOCAL_WRITE: ToolEffect.LOCAL_WRITE,
-    LegacyToolEffect.EXTERNAL_ACTION: ToolEffect.EXTERNAL_ACTION,
-}
-_APPROVALS = {
-    LegacyApprovalMode.AUTO: ApprovalPolicy.AUTO,
-    LegacyApprovalMode.REQUIRED: ApprovalPolicy.REQUIRED,
-}
-
 
 class LegacyToolAdapter:
-    """Executes a v1 RegisteredTool through the v2 contract without changing behavior."""
+    """Executes a v1 RegisteredTool through the v2 contract without changing behavior.
 
-    def __init__(self, tool: RegisteredTool) -> None:
+    Tool semantics not expressed by the v1 definition (execution mode,
+    idempotency, capabilities) come from the audited built-in policy table
+    (``legacy_policy.py``); unknown tools keep the conservative generic
+    mapping.
+    """
+
+    def __init__(
+        self,
+        tool: RegisteredTool,
+        *,
+        policy: Optional[LegacyToolPolicy] = None,
+    ) -> None:
         self._tool = tool
         definition = tool.definition
-        effect = _EFFECTS[definition.effect]
+        effect = adapt_legacy_effect(definition.effect)
+        resolved_policy = policy or builtin_legacy_tool_policy(definition.name)
+        if resolved_policy is not None:
+            execution_mode = resolved_policy.execution_mode
+            idempotency = resolved_policy.idempotency
+            required_capabilities = resolved_policy.required_capabilities
+        else:
+            execution_mode = ToolExecutionMode.PARALLEL
+            idempotency = (
+                IdempotencyPolicy.SAFE
+                if effect is ToolEffect.READ_ONLY
+                else IdempotencyPolicy.UNKNOWN
+            )
+            required_capabilities = _generic_capabilities(effect)
         self.definition = ToolDefinitionV2(
             name=definition.name,
             description=definition.description,
             input_schema=definition.input_schema,
             output_schema=None,
             effect=effect,
-            approval=_APPROVALS[definition.approval_mode],
-            execution_mode=ToolExecutionMode.PARALLEL,
-            idempotency=(
-                IdempotencyPolicy.SAFE
-                if effect is ToolEffect.READ_ONLY
-                else IdempotencyPolicy.UNKNOWN
-            ),
+            approval=adapt_legacy_approval(definition.approval_mode),
+            execution_mode=execution_mode,
+            idempotency=idempotency,
             retry_policy=RetryPolicy(max_attempts=1),
-            required_capabilities=_legacy_capabilities(effect),
+            required_capabilities=required_capabilities,
             timeout_seconds=definition.timeout_seconds,
             max_output_characters=definition.max_output_characters,
         )
@@ -141,9 +154,11 @@ def adapt_legacy_tool(tool: RegisteredTool) -> AgentToolV2:
     return LegacyToolAdapter(tool)
 
 
-def _legacy_capabilities(effect: ToolEffect) -> frozenset[str]:
+def _generic_capabilities(effect: ToolEffect) -> frozenset[str]:
     if effect is ToolEffect.READ_ONLY:
         return frozenset()
     if effect is ToolEffect.LOCAL_WRITE:
         return frozenset({"workspace.write"})
-    return frozenset({"external.action"})
+    if effect is ToolEffect.EXTERNAL_ACTION:
+        return frozenset({"external.action"})
+    return frozenset()

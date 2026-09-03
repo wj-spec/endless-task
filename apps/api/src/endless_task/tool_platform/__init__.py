@@ -77,6 +77,17 @@ from .scheduler import (
     ToolScheduler,
 )
 from .spill import DEFAULT_SPILL_MARKER, spill_outcome
+from .legacy_policy import (
+    BUILTIN_LEGACY_TOOL_NAMES,
+    BUILTIN_LEGACY_TOOL_POLICIES,
+    LEGACY_TOOL_POLICY_SCHEMA_VERSION,
+    UNBOUND_WORKSPACE_DENIED_CAPABILITIES,
+    LegacyToolPolicy,
+    adapt_legacy_approval,
+    adapt_legacy_effect,
+    builtin_legacy_tool_policy,
+    capability_grant_for_workspace_binding,
+)
 
 __all__ = [
     "BUILTIN_CAPABILITY_PROFILES",
@@ -147,5 +158,14 @@ __all__ = [
     "schema_fingerprint",
     "spill_outcome",
     "tool_may_degrade",
+    "BUILTIN_LEGACY_TOOL_NAMES",
+    "BUILTIN_LEGACY_TOOL_POLICIES",
+    "LEGACY_TOOL_POLICY_SCHEMA_VERSION",
+    "LegacyToolPolicy",
+    "UNBOUND_WORKSPACE_DENIED_CAPABILITIES",
+    "adapt_legacy_approval",
+    "adapt_legacy_effect",
+    "builtin_legacy_tool_policy",
+    "capability_grant_for_workspace_binding",
     "validate_capability",
 ]

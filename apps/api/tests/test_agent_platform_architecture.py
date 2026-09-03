@@ -19,6 +19,7 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "tool_platform" / "pipeline.py",
     SOURCE_ROOT / "tool_platform" / "middleware.py",
     SOURCE_ROOT / "tool_platform" / "spill.py",
+    SOURCE_ROOT / "tool_platform" / "legacy_policy.py",
     SOURCE_ROOT / "extensions" / "protocol.py",
     SOURCE_ROOT / "extensions" / "decisions.py",
     SOURCE_ROOT / "extensions" / "bus.py",
