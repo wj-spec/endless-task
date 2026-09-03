@@ -2,6 +2,16 @@
 
 from .compatibility import LegacyContextEngineAdapter
 from .conformance import assert_context_parity
+from .checkpoint import (
+    CHECKPOINT_JSON_SCHEMA,
+    CHECKPOINT_SCHEMA_VERSION,
+    CheckpointEffectRef,
+    CheckpointFileRef,
+    StructuredContextCheckpoint,
+    checkpoint_entry_conflicts,
+    parse_checkpoint_json,
+    render_checkpoint_message,
+)
 from .retention import (
     DEFAULT_MAX_RESULT_SHARE,
     RETENTION_SCHEMA_VERSION,
@@ -60,8 +70,16 @@ __all__ = [
     "DEFAULT_MAX_RESULT_SHARE",
     "RETENTION_SCHEMA_VERSION",
     "ToolResultRetention",
+    "CHECKPOINT_JSON_SCHEMA",
+    "CHECKPOINT_SCHEMA_VERSION",
+    "CheckpointEffectRef",
+    "CheckpointFileRef",
+    "StructuredContextCheckpoint",
+    "checkpoint_entry_conflicts",
     "estimate_text_tokens",
     "fingerprint_context",
+    "parse_checkpoint_json",
     "plan_context_segments",
     "plan_tool_result_retention",
+    "render_checkpoint_message",
 ]
