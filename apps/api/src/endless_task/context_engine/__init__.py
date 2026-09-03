@@ -2,6 +2,12 @@
 
 from .compatibility import LegacyContextEngineAdapter
 from .conformance import assert_context_parity
+from .retention import (
+    DEFAULT_MAX_RESULT_SHARE,
+    RETENTION_SCHEMA_VERSION,
+    ToolResultRetention,
+    plan_tool_result_retention,
+)
 from .planner import (
     CONTEXT_PLANNER_SCHEMA_VERSION,
     ContextPlan,
@@ -51,7 +57,11 @@ __all__ = [
     "MaintenanceResult",
     "TurnOutcome",
     "assert_context_parity",
+    "DEFAULT_MAX_RESULT_SHARE",
+    "RETENTION_SCHEMA_VERSION",
+    "ToolResultRetention",
     "estimate_text_tokens",
     "fingerprint_context",
     "plan_context_segments",
+    "plan_tool_result_retention",
 ]
