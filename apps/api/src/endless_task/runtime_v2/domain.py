@@ -288,6 +288,9 @@ class ToolExecutionRecord:
     finished_at: Optional[str] = None
     error_code: Optional[str] = None
     safe_message: Optional[str] = None
+    retryable: Optional[bool] = None
+    correlation_id: Optional[str] = None
+    error_details: Optional[dict[str, Any]] = None
     result_entry_id: Optional[str] = None
 
 

@@ -12,6 +12,24 @@ const phaseLabel: Record<RuntimeToolPhase, string> = {
   cancelled: "已取消",
 };
 
+// 将后端 errorCode 映射为对人类/模型都友好的说明，避免直接把内部编码暴露给用户。
+const errorLabel: Record<string, string> = {
+  invalid_tool_arguments: "工具参数无效",
+  invalid_tool_result: "工具返回结果无效",
+  tool_not_found: "工具不存在",
+  invalid_tool_name: "工具名无效",
+  cancelled: "工具已取消",
+  timeout: "工具执行超时",
+};
+
+const describeError = (tool: RuntimeToolItem): string => {
+  if (!tool.errorCode) return "";
+  const base = errorLabel[tool.errorCode] ?? tool.errorCode;
+  // result 里通常携带反馈给模型的 safe_message，优先展示它。
+  const detail = tool.result?.trim();
+  return detail ? `${base}：${detail}` : base;
+};
+
 const formatValue = (value: unknown): string => {
   if (value === undefined || value === null) return "";
   if (typeof value === "string") return value;
@@ -23,9 +41,27 @@ const formatValue = (value: unknown): string => {
   }
 };
 
-function RuntimeToolCard({ tool }: { tool: RuntimeToolItem }) {
+// 从 structuredContent 里识别 terminal 结果（run_shell 等），渲染成退出码 + 输出。
+const readTerminal = (
+  structured: unknown,
+): { exitCode: number | null; output: string } | null => {
+  if (!structured || typeof structured !== "object") return null;
+  const record = structured as Record<string, unknown>;
+  const exitCode =
+    typeof record["exitCode"] === "number" ? record["exitCode"] : null;
+  const stdout = typeof record["stdout"] === "string" ? record["stdout"] : "";
+  const stderr = typeof record["stderr"] === "string" ? record["stderr"] : "";
+  if (exitCode === null && !stdout && !stderr) return null;
+  const output = [stdout, stderr ? `[stderr]\n${stderr}` : ""]
+    .filter(Boolean)
+    .join("\n");
+  return { exitCode, output };
+};
+
+export function RuntimeToolCard({ tool }: { tool: RuntimeToolItem }) {
   const [open, setOpen] = useState(false);
-  const hasBody = tool.hasArgs || tool.hasResult || Boolean(tool.errorCode);
+  const hasBody = tool.hasArgs || tool.hasResult || tool.isError;
+  const errorText = describeError(tool);
 
   return (
     <div className={`runtime-tool-card is-${tool.phase}`}>
@@ -38,9 +74,14 @@ function RuntimeToolCard({ tool }: { tool: RuntimeToolItem }) {
       >
         <span aria-hidden="true" className="runtime-tool-dot" />
         <span className="runtime-tool-name">{tool.toolName}</span>
-        <span className="runtime-tool-status">
+        <span className={`runtime-tool-status is-${tool.phase}`}>
           {phaseLabel[tool.phase] ?? tool.phase}
         </span>
+        {tool.isError ? (
+          <span className="runtime-tool-error" title={errorText}>
+            {errorText || "执行出错"}
+          </span>
+        ) : null}
         {hasBody ? (
           <span className="runtime-tool-chevron">
             <ChevronIcon direction={open ? "up" : "down"} size={14} />
@@ -56,19 +97,49 @@ function RuntimeToolCard({ tool }: { tool: RuntimeToolItem }) {
               <pre className="runtime-tool-pre">{formatValue(tool.arguments)}</pre>
             </div>
           ) : null}
-          {tool.hasResult || tool.errorCode ? (
+          {hasBody ? (
             <div className="runtime-tool-section">
               <span className="runtime-tool-label">结果</span>
-              {tool.errorCode ? (
-                <p className="runtime-tool-error">{tool.errorCode}</p>
+              {errorText ? (
+                <p className="runtime-tool-error runtime-tool-error-block">
+                  {errorText}
+                </p>
               ) : null}
-              <pre className="runtime-tool-pre">{formatValue(tool.result)}</pre>
+              {renderResult(tool)}
             </div>
           ) : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+function renderResult(tool: RuntimeToolItem) {
+  const terminal = readTerminal(tool.structuredContent);
+  if (terminal && (terminal.output || terminal.exitCode !== null)) {
+    return (
+      <div className="runtime-tool-terminal">
+        {terminal.exitCode !== null ? (
+          <span
+            className={`runtime-tool-exit is-${terminal.exitCode === 0 ? "ok" : "err"}`}
+          >
+            退出码 {terminal.exitCode}
+          </span>
+        ) : null}
+        {terminal.output ? (
+          <pre className="runtime-tool-pre runtime-tool-terminal-pre">
+            {terminal.output}
+          </pre>
+        ) : null}
+      </div>
+    );
+  }
+  if (tool.hasResult || tool.structuredContent !== undefined) {
+    return (
+      <pre className="runtime-tool-pre">{formatValue(tool.result || tool.structuredContent)}</pre>
+    );
+  }
+  return null;
 }
 
 /**

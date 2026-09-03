@@ -62,6 +62,48 @@ const entryText: Record<string, string> = {
   plan: "计划",
 };
 
+type PlanStep = { title?: string; status?: string };
+type PlanPayload = {
+  title?: string;
+  steps?: PlanStep[];
+  currentStepIndex?: number | null;
+};
+
+const planStatusLabel: Record<string, string> = {
+  pending: "待办",
+  in_progress: "进行中",
+  completed: "完成",
+  skipped: "跳过",
+  failed: "失败",
+};
+
+function PlanView({ payload }: { payload: PlanPayload | undefined }) {
+  const title = payload?.title ?? "计划";
+  const steps = payload?.steps ?? [];
+  return (
+    <div className="plan-card">
+      <strong>{title}</strong>
+      {steps.length ? (
+        <ul>
+          {steps.map((step, index) => (
+            <li
+              className={
+                index === payload?.currentStepIndex ? "is-current" : undefined
+              }
+              key={index}
+            >
+              <span>{planStatusLabel[step.status ?? "pending"] ?? step.status}</span>
+              <span>{step.title}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>（计划尚未包含步骤）</p>
+      )}
+    </div>
+  );
+}
+
 type RuntimeV2PanelProps = {
   connection: {
     phase: RuntimeConnectionPhase;
@@ -135,18 +177,8 @@ export function RuntimeV2Panel({
       {runtimeStatus ? (
         <div className="runtime-v2-runtime">
           <div>
-            <strong>Runtime {runtimeStatus.effectiveRuntime}</strong>
-            <p>
-              {runtimeStatus.rollbackForced
-                ? "全局 v1 回滚已启用"
-                : runtimeStatus.rollbackReconciliationRequired
-                  ? "回滚后产生 v1 增量，需先 reconciliation"
-                  : runtimeStatus.v1ReadOnly
-                    ? "v1 数据已迁移归档为只读"
-                    : runtimeStatus.requiresMigration
-                      ? "该会话尚未迁移到 v2"
-                      : runtimeStatus.reason}
-            </p>
+            <strong>Runtime v2</strong>
+            <p>{runtimeStatus.reason}</p>
           </div>
         </div>
       ) : null}
@@ -264,14 +296,23 @@ export function RuntimeV2Panel({
               snapshot.entries.map((entry) => (
                 <div key={entry.id}>
                   <span>{entryText[entry.type] ?? entry.type}</span>
-                  <p>
-                    {entry.data.content ??
-                      entry.data.toolName ??
-                      entry.data.errorCode ??
-                      (entry.data.reference as { content?: string } | undefined)
-                        ?.content ??
-                      entry.id}
-                  </p>
+                  {entry.type === "plan" ? (
+                    <PlanView
+                      payload={
+                        entry.data.reference as PlanPayload | undefined
+                      }
+                    />
+                  ) : (
+                    <p>
+                      {entry.data.content ??
+                        entry.data.toolName ??
+                        entry.data.errorCode ??
+                        (entry.data.reference as
+                          | { content?: string }
+                          | undefined)?.content ??
+                        entry.id}
+                    </p>
+                  )}
                 </div>
               ))
             ) : (

@@ -41,7 +41,7 @@ class ReadTextFileTool:
         try:
             name = self._repository.get_file(
                 conversation_id=call.conversation_id,
-                file_id=str(call.arguments["file_id"]),
+                file_id=call.require_argument("file_id", str),
             ).metadata.original_name
         except (FileError, KeyError):
             name = "已上传文档"
@@ -61,7 +61,7 @@ class ReadTextFileTool:
         try:
             stored = self._repository.get_file(
                 conversation_id=call.conversation_id,
-                file_id=str(call.arguments["file_id"]),
+                file_id=call.require_argument("file_id", str),
             )
         except FileError as error:
             raise ToolError(
@@ -73,8 +73,8 @@ class ReadTextFileTool:
         lines = stored.content.splitlines()
         if not lines:
             lines = [""]
-        start_line = int(call.arguments.get("start_line", 1))
-        line_count = int(call.arguments.get("line_count", 120))
+        start_line = call.optional_argument("start_line", int, 1)
+        line_count = call.optional_argument("line_count", int, 120)
         if start_line > len(lines):
             raise ToolError(
                 "file_line_out_of_range",

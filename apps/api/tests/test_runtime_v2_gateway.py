@@ -38,6 +38,7 @@ from endless_task.tooling import (
     ToolCall,
     ToolDefinition,
     ToolEffect,
+    ToolError,
     ToolRegistry,
     ToolResult,
 )
@@ -144,6 +145,24 @@ class FakeTool:
         return False
 
 
+class FailingTool(FakeTool):
+    async def execute(
+        self,
+        call: ToolCall,
+        cancellation_token: CancellationToken,
+    ) -> ToolResult:
+        cancellation_token.raise_if_cancelled()
+        raise ToolError(
+            "temporary_unavailable",
+            "工具暂时不可用。",
+            retryable=True,
+            correlation_id="corr_gateway_tool",
+            path="$.path",
+            keyword="available",
+            expected=True,
+        )
+
+
 async def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -171,9 +190,11 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
         provider_slot_limit: int | None = None,
         context_prefix_messages: Sequence[ProviderMessage] = (),
         provider_resolver=None,
+        tool=None,
+        approval_timeout_seconds: float | None = None,
     ) -> RuntimeV2SessionGateway:
         registry = ToolRegistry()
-        registry.register(FakeTool())
+        registry.register(tool or FakeTool())
         return RuntimeV2SessionGateway(
             chat_repository=self.chat_repository,
             repository=self.repository,
@@ -184,6 +205,7 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             provider_slot_limit=provider_slot_limit,
             context_prefix_messages=context_prefix_messages,
             provider_resolver=provider_resolver,
+            approval_timeout_seconds=approval_timeout_seconds,
         )
 
     async def test_gateway_injects_prefix_and_invokes_completion_callback(
@@ -431,6 +453,53 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("message.updated", event_types)
         self.assertIn("tool_execution.started", event_types)
         self.assertIn("run.finished", event_types)
+
+    async def test_failed_tool_contract_is_exposed_in_snapshot_and_events(self) -> None:
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_failure",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("已处理失败。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        gateway = self._gateway(provider, tool=FailingTool())
+        conversation = self.chat_repository.create_conversation()
+
+        handle = await gateway.send(conversation.id, "读取文件")
+        await _wait_until(
+            lambda: self.repository.get_run(handle.run_id).status
+            is RunStatus.COMPLETED
+        )
+
+        snapshot = gateway.snapshot(conversation.id)
+        tool_state = snapshot["toolStates"][0]
+        self.assertEqual("temporary_unavailable", tool_state["errorCode"])
+        self.assertEqual("工具暂时不可用。", tool_state["safeMessage"])
+        self.assertTrue(tool_state["retryable"])
+        self.assertEqual("corr_gateway_tool", tool_state["correlationId"])
+        self.assertEqual(
+            {"path": "$.path", "keyword": "available", "expected": True},
+            tool_state["errorDetails"],
+        )
+
+        failed_event = next(
+            event
+            for event in gateway.project_events(conversation.id)
+            if event.event_type == "tool_execution.failed"
+        )
+        self.assertEqual("temporary_unavailable", failed_event.data["errorCode"])
+        self.assertTrue(failed_event.data["retryable"])
+        self.assertEqual("corr_gateway_tool", failed_event.data["correlationId"])
+        self.assertEqual(tool_state["errorDetails"], failed_event.data["errorDetails"])
 
     async def test_temporary_conversation_inherits_frozen_base_context(self) -> None:
         provider = ScriptedProvider(
@@ -876,7 +945,108 @@ class RuntimeV2GatewayTest(unittest.IsolatedAsyncioTestCase):
             tuple(event.event_type for event in approval_events),
         )
         self.assertNotIn("metadata", approval_events[0].data)
+        self.assertEqual(approval["id"], approval_events[0].data["toolExecutionId"])
+        self.assertEqual(approval["id"], approval_events[1].data["toolExecutionId"])
         self.assertEqual("approve", approval_events[1].data["decision"])
+
+    async def test_cancelling_while_waiting_for_approval_preserves_cancel_state(self) -> None:
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_cancel",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+            ]
+        )
+        registry = ToolRegistry()
+        registry.register(FakeTool(approval_mode=ToolApprovalMode.REQUIRED))
+        gateway = RuntimeV2SessionGateway(
+            chat_repository=self.chat_repository,
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            max_output_tokens=128,
+        )
+        conversation = self.chat_repository.create_conversation()
+
+        handle = await gateway.send(conversation.id, "读取文件")
+        await _wait_until(lambda: gateway.pending_approvals(conversation.id))
+
+        self.assertTrue(await gateway.cancel(handle.run_id))
+        await _wait_until(
+            lambda: self.repository.get_run(handle.run_id).status
+            is RunStatus.CANCELLED
+        )
+        await _wait_until(lambda: not gateway.has_active_run(conversation.id))
+
+        self.assertEqual((), gateway.pending_approvals(conversation.id))
+        tool_execution = self.repository.list_tool_executions(
+            self.repository.list_model_turns(handle.run_id)[0].id
+        )[0]
+        self.assertEqual(ToolExecutionStatus.CANCELLED, tool_execution.status)
+        approval_metrics = gateway.metrics_summary()["approvals"]
+        self.assertEqual(1, approval_metrics["decisions"]["cancelled"])
+
+    async def test_approval_timeout_expires_tool_and_ignores_late_resolution(self) -> None:
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_timeout",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("工具未执行。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        gateway = self._gateway(
+            provider,
+            tool=FakeTool(approval_mode=ToolApprovalMode.REQUIRED),
+            approval_timeout_seconds=0.02,
+        )
+        conversation = self.chat_repository.create_conversation()
+
+        handle = await gateway.send(conversation.id, "读取文件")
+        await _wait_until(
+            lambda: self.repository.get_run(handle.run_id).status
+            is RunStatus.COMPLETED
+        )
+
+        self.assertEqual((), gateway.pending_approvals(conversation.id))
+        tool_execution = self.repository.list_tool_executions(
+            self.repository.list_model_turns(handle.run_id)[0].id
+        )[0]
+        self.assertEqual(ToolExecutionStatus.EXPIRED, tool_execution.status)
+        self.assertEqual("approval_timeout", tool_execution.error_code)
+        self.assertEqual("等待用户授权已超时。", tool_execution.safe_message)
+        self.assertIsNotNone(tool_execution.result_entry_id)
+        self.assertFalse(
+            await gateway.resolve_approval(
+                tool_execution.id,
+                ToolApprovalDecision.APPROVE,
+            )
+        )
+
+        events = gateway.project_events(conversation.id)
+        event_types = tuple(event.event_type for event in events)
+        self.assertIn("approval.expired", event_types)
+        expired_event = next(
+            event for event in events if event.event_type == "approval.expired"
+        )
+        self.assertEqual(tool_execution.id, expired_event.data["toolExecutionId"])
+        self.assertIn("tool_execution.expired", event_types)
+        approval_metrics = gateway.metrics_summary()["approvals"]
+        self.assertEqual(1, approval_metrics["decisions"]["expired"])
 
     async def test_provider_slot_limit_is_global_across_runs(self) -> None:
         provider = BlockingProvider()

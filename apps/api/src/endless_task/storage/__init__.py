@@ -5,14 +5,12 @@ from .sqlite_embedding_repository import SqliteEmbeddingRepository
 from .sqlite_artifact_proposal_repository import SqliteArtifactProposalRepository
 from .sqlite_artifact_repository import SqliteArtifactRepository
 from .sqlite_chat_repository import SqliteChatRepository
-from .sqlite_context_repository import SqliteContextRepository
 from .sqlite_file_repository import SqliteTextFileRepository
 from .sqlite_knowledge_repository import SqliteKnowledgeRepository
 from .sqlite_knowledge_proposal_repository import SqliteKnowledgeProposalRepository
 from .sqlite_memory_repository import SqliteMemoryRepository
 from .sqlite_preferences_repository import SqlitePreferencesRepository
 from .sqlite_memory_proposal_repository import SqliteMemoryProposalRepository
-from .sqlite_runtime_repository import SqliteRuntimeRepository
 from .sqlite_runtime_v2_repository import SqliteRuntimeV2Repository
 from .sqlite_runtime_v2_memory_repository import SqliteRuntimeV2MemoryRepository
 from .sqlite_task_repository import SqliteTaskRepository
@@ -30,9 +28,7 @@ __all__ = [
     "SqliteKnowledgeRepository",
     "SqliteWorkspaceRepository",
     "SqliteChatRepository",
-    "SqliteContextRepository",
     "SqliteTextFileRepository",
-    "SqliteRuntimeRepository",
     "SqliteRuntimeV2Repository",
     "SqliteRuntimeV2MemoryRepository",
 ]

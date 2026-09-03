@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -14,9 +15,10 @@ from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.domain.models import (
     ArtifactKind,
     ArtifactVersionOperation,
-    ToolCallJournal,
 )
 from endless_task.runtime import FakeProvider, ProviderCompleted, ProviderTextDelta
+from endless_task.runtime_v2 import RunStatus
+from endless_task.runtime_v2.domain import ToolExecutionStatus
 from endless_task.storage import (
     Database,
     SqliteArtifactProposalRepository,
@@ -29,6 +31,7 @@ from endless_task.tooling import (
     ToolEffect,
     ToolError,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 FIRST_CONTENT = (
@@ -84,12 +87,27 @@ class TextProvider:
         yield ProviderCompleted()
 
 
-class StubRuntimeRepository:
-    def __init__(self, calls=()) -> None:
-        self._calls = tuple(calls)
+@dataclass
+class _StubToolExecution:
+    tool_name: str
+    status: ToolExecutionStatus
+    arguments: dict
 
-    def list_tool_calls(self, turn_id: str):
-        return self._calls
+
+@dataclass
+class _StubModelTurn:
+    id: str
+
+
+class StubRuntimeRepository:
+    def __init__(self, executions=()) -> None:
+        self._executions = tuple(executions)
+
+    def list_model_turns(self, run_id: str):
+        return (_StubModelTurn(id=run_id),)
+
+    def list_tool_executions(self, turn_id: str):
+        return self._executions
 
 
 def make_call(arguments) -> ToolCall:
@@ -170,12 +188,12 @@ class ChatContinueServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         return snapshot.artifact.id
 
-    def _service(self, provider, *, runtime_repository=None):
+    def _service(self, provider, *, runtime_v2_repository=None):
         return ArtifactProposalService(
             provider=provider,
             proposal_repository=self.proposals,
             model="test-model",
-            runtime_repository=runtime_repository,
+            runtime_v2_repository=runtime_v2_repository,
             artifact_repository=self.artifacts,
         )
 
@@ -219,16 +237,15 @@ class ChatContinueServiceTest(unittest.IsolatedAsyncioTestCase):
         artifact_id = self._seed_artifact(labels=("file:file_aaa",))
         runtime = StubRuntimeRepository(
             (
-                ToolCallJournal(
-                    id="call_1",
+                _StubToolExecution(
                     tool_name="read_text_file",
+                    status=ToolExecutionStatus.COMPLETED,
                     arguments={"file_id": "file_bbb"},
-                    status="completed",
                 ),
             )
         )
         provider = TextProvider([update_extraction_json(artifact_id)])
-        service = self._service(provider, runtime_repository=runtime)
+        service = self._service(provider, runtime_v2_repository=runtime)
         created = await service.generate_for_turn(
             conversation_id="conv_1",
             turn_id="turn_1",
@@ -255,15 +272,12 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
 
-    @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
+    async def _run_turn(self, client, content: str):
+        conversation_id = (await create_bound_conversation(client))["id"]
+        handle = await send_message(
+            client, conversation_id, content, idempotency_key="request-1"
+        )
+        return conversation_id, handle["runId"]
 
     async def _wait_for_proposals(self, client, conversation_id: str, count: int):
         for _ in range(200):
@@ -276,11 +290,18 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.005)
         raise AssertionError("Proposals did not appear in time")
 
+    @staticmethod
+    def _system_text(request) -> str:
+        return "\n".join(
+            message.content
+            for message in request.messages
+            if message.role == "system"
+        )
+
     async def _client(self, provider):
         app = create_app(
             settings=AppSettings(
                 database_path=self.database_path,
-                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=True,
@@ -308,14 +329,9 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
             source_conversation_id="conv_seed",
             source_turn_id="turn_seed",
         )
-        conversation_id = (await create_bound_conversation(client))["id"]
-        created = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": "request-1"},
-            json={"content": "帮我看看"},
-        )
-        await self._wait_for_terminal(client, created.json()["turnId"])
-        system_content = provider.requests[0].messages[0].content
+        conversation_id, run_id = await self._run_turn(client, "帮我看看")
+        await wait_for_run_terminal(container, run_id)
+        system_content = self._system_text(provider.requests[0])
         self.assertIn(f"artifact:{snapshot.artifact.id}", system_content)
         self.assertIn("《发布计划》", system_content)
         self.assertNotIn("功能冻结", system_content)
@@ -336,15 +352,9 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
         provider = TextProvider([[UPDATED_CONTENT], [update_extraction_json(artifact_id)]])
         client, app = await self._client(provider)
 
-        conversation_id = (await create_bound_conversation(client))["id"]
-        created = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": "request-1"},
-            json={"content": "补充验收标准"},
-        )
-        turn_id = created.json()["turnId"]
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
+        conversation_id, run_id = await self._run_turn(client, "补充验收标准")
+        status = await wait_for_run_terminal(container, run_id)
+        self.assertEqual(RunStatus.COMPLETED, status)
 
         items = await self._wait_for_proposals(client, conversation_id, 1)
         self.assertEqual(artifact_id, items[0]["targetArtifactId"])
@@ -369,7 +379,7 @@ class ChatContinueGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ArtifactVersionOperation.CHAT_CONTINUE, version.operation)
         self.assertEqual(UPDATED_CONTENT.strip(), version.content)
         self.assertEqual(conversation_id, version.source_conversation_id)
-        self.assertEqual(turn_id, version.source_turn_id)
+        self.assertEqual(run_id, version.source_turn_id)
 
     async def test_accept_after_target_deleted_conflicts(self) -> None:
         provider = TextProvider([["占位回复"]])

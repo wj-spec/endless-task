@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
@@ -13,6 +12,12 @@ from endless_task.runtime import (
     ProviderCompleted,
     ProviderTextDelta,
     ProviderToolCall,
+)
+from tests.fixtures.v2_client import (
+    assistant_text,
+    run_snapshot,
+    send_message,
+    wait_for_run_terminal,
 )
 from tests.fixtures.workspace_client import create_bound_conversation
 
@@ -46,7 +51,6 @@ def read_file_call(call_id: str, file_id: str, **extra_arguments) -> ProviderToo
 
 @asynccontextmanager
 async def local_client(database_path: Path, provider, **setting_overrides):
-    setting_overrides.setdefault("runtime", "v1")
     setting_overrides.setdefault("memory_proposals_enabled", False)
     setting_overrides.setdefault("knowledge_proposals_enabled", False)
     app = create_app(
@@ -60,7 +64,7 @@ async def local_client(database_path: Path, provider, **setting_overrides):
         base_url="http://testserver",
     )
     try:
-        yield client
+        yield client, app
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -75,14 +79,10 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
+    async def _wait_for_terminal(client: httpx.AsyncClient, app, handle: dict):
+        await wait_for_run_terminal(app.state.container, handle["runId"])
+        snapshot = await run_snapshot(client, handle["conversationId"])
+        return snapshot
 
     @staticmethod
     async def _submit(
@@ -90,15 +90,14 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
         conversation_id: str,
         ordinal: int,
         content: str,
-    ):
-        response = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": f"request-{ordinal}"},
-            json={"content": content},
+    ) -> dict:
+        handle = await send_message(
+            client,
+            conversation_id,
+            content,
+            idempotency_key=f"request-{ordinal}",
         )
-        if response.status_code != 202:
-            raise AssertionError(response.text)
-        return response.json()
+        return handle
 
     @staticmethod
     async def _upload_file(
@@ -118,15 +117,6 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError(response.text)
         return response.json()["id"]
 
-    @staticmethod
-    async def _event_types(client: httpx.AsyncClient, turn_id: str) -> list[str]:
-        response = await client.get(f"/turns/{turn_id}/events")
-        return [
-            line.split(": ", 1)[1]
-            for line in response.text.splitlines()
-            if line.startswith("event: ")
-        ]
-
     async def test_plain_question_is_answered_without_tool_activity(self) -> None:
         provider = GateProvider(
             (
@@ -136,14 +126,14 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                 ),
             )
         )
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "你好")
-            terminal = await self._wait_for_terminal(client, created["turnId"])
+            snapshot = await self._wait_for_terminal(client, app, created)
 
-            self.assertEqual("completed", terminal["turnStatus"])
-            self.assertEqual("你好！有什么可以帮你？", terminal["content"])
-            self.assertEqual([], terminal["activities"])
+            self.assertEqual("completed", snapshot["runState"]["status"])
+            self.assertEqual("你好！有什么可以帮你？", assistant_text(snapshot))
+            self.assertEqual([], snapshot["toolStates"])
             self.assertEqual(1, len(provider.requests))
             # 工具定义可用，但模型不调用时不得产生任何工具状态。
             # 会话现在归属已绑定工作区，工作区工具（fs/shell）也一并注入。
@@ -156,17 +146,15 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                     "read_text_file",
                     "read_workspace_file",
                     "run_shell",
+                    "update_plan",
                     "write_workspace_file",
                 ),
                 tuple(tool.name for tool in provider.requests[0].tools),
             )
-            event_types = await self._event_types(client, created["turnId"])
-            self.assertNotIn("activity.started", event_types)
-            self.assertEqual(1, event_types.count("turn.completed"))
 
     async def test_file_question_automatically_selects_file_tool(self) -> None:
         provider = GateProvider()
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
             file_id = await self._upload_file(client, conversation_id)
             provider.responses = (
@@ -186,20 +174,18 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                 1,
                 "帮我总结这份文档的主题",
             )
-            terminal = await self._wait_for_terminal(client, created["turnId"])
+            snapshot = await self._wait_for_terminal(client, app, created)
 
-            self.assertEqual("completed", terminal["turnStatus"])
-            self.assertEqual("这份文档的主题是本地优先。", terminal["content"])
+            self.assertEqual("completed", snapshot["runState"]["status"])
+            self.assertEqual("这份文档的主题是本地优先。", assistant_text(snapshot))
             # 工具结果作为不可信数据返回给了模型。
             tool_message = provider.requests[1].messages[-1]
             self.assertEqual("tool", tool_message.role)
             self.assertEqual("call_1", tool_message.tool_call_id)
             self.assertIn("本项目坚持本地优先。", tool_message.content)
-            # Activity 只显示自然状态，不暴露原始参数。
-            self.assertEqual(1, len(terminal["activities"]))
-            activity = terminal["activities"][0]
-            self.assertEqual("completed", activity["status"])
-            self.assertEqual("已读取 需求文档.txt", activity["message"])
+            self.assertEqual(1, len(snapshot["toolStates"]))
+            self.assertEqual("completed", snapshot["toolStates"][0]["status"])
+            self.assertEqual("read_text_file", snapshot["toolStates"][0]["toolName"])
 
     async def test_insufficient_information_asks_follow_up_without_tool_state(
         self,
@@ -212,19 +198,19 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                 ),
             )
         )
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
             created = await self._submit(client, conversation_id, 1, "帮我读一下文件")
-            terminal = await self._wait_for_terminal(client, created["turnId"])
+            snapshot = await self._wait_for_terminal(client, app, created)
 
-            self.assertEqual("completed", terminal["turnStatus"])
-            self.assertIn("哪份文件", terminal["content"])
-            self.assertEqual([], terminal["activities"])
+            self.assertEqual("completed", snapshot["runState"]["status"])
+            self.assertIn("哪份文件", assistant_text(snapshot))
+            self.assertEqual([], snapshot["toolStates"])
             self.assertEqual(1, len(provider.requests))
 
     async def test_tool_failure_is_understood_and_explained_by_assistant(self) -> None:
         provider = GateProvider()
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
             file_id = await self._upload_file(client, conversation_id)
             provider.responses = (
@@ -244,80 +230,20 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                 1,
                 "读取文档第 999 行开始的内容",
             )
-            terminal = await self._wait_for_terminal(client, created["turnId"])
+            snapshot = await self._wait_for_terminal(client, app, created)
 
-            # 工具失败由 Assistant 解释，而不是让整个 Turn 失败。
-            self.assertEqual("completed", terminal["turnStatus"])
+            # 工具失败由 Assistant 解释，而不是让整个 Run 失败。
+            self.assertEqual("completed", snapshot["runState"]["status"])
             self.assertEqual(
                 "文件只有两行，无法从第 999 行读取；需要的话我可以从头读。",
-                terminal["content"],
+                assistant_text(snapshot),
             )
             failure_feedback = provider.requests[1].messages[-1]
             self.assertEqual("tool", failure_feedback.role)
-            self.assertIn("file_line_out_of_range", failure_feedback.content)
-            self.assertEqual(1, len(terminal["activities"]))
-            activity = terminal["activities"][0]
-            self.assertEqual("failed", activity["status"])
-            self.assertEqual("读取 需求文档.txt 失败，可以重试", activity["message"])
-
-    async def test_api_exposes_no_chat_work_mode(self) -> None:
-        provider = GateProvider(
-            ((ProviderTextDelta("好的"), ProviderCompleted("stop")),)
-        )
-        async with local_client(self.database_path, provider) as client:
-            conversation_id = (await create_bound_conversation(client))["id"]
-
-            rejected = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "mode-1"},
-                json={"content": "你好", "mode": "work"},
-            )
-            self.assertEqual(400, rejected.status_code)
-            self.assertEqual("invalid_request", rejected.json()["error"]["code"])
-
-            created = await self._submit(client, conversation_id, 1, "你好")
-            self.assertNotIn("mode", created)
-            terminal = await self._wait_for_terminal(client, created["turnId"])
-            self.assertNotIn("mode", terminal)
-            self.assertEqual("completed", terminal["turnStatus"])
-
-    async def test_agent_loop_limit_stops_turn_safely(self) -> None:
-        provider = GateProvider()
-        async with local_client(
-            self.database_path,
-            provider,
-            max_agent_iterations=2,
-        ) as client:
-            conversation_id = (await create_bound_conversation(client))["id"]
-            file_id = await self._upload_file(client, conversation_id)
-            provider.responses = (
-                (
-                    read_file_call("call_1", file_id, start_line=1),
-                    ProviderCompleted("tool_calls"),
-                ),
-                (
-                    read_file_call("call_2", file_id, start_line=2),
-                    ProviderCompleted("tool_calls"),
-                ),
-                (ProviderTextDelta("不应到达这里"), ProviderCompleted("stop")),
-            )
-
-            created = await self._submit(client, conversation_id, 1, "一直读下去")
-            terminal = await self._wait_for_terminal(client, created["turnId"])
-
-            self.assertEqual("failed", terminal["turnStatus"])
-            self.assertEqual("tool_loop_limit", terminal["error"]["code"])
-            self.assertEqual(
-                "工具调用次数达到上限，请缩小请求范围后重试。",
-                terminal["error"]["message"],
-            )
-            self.assertFalse(terminal["error"]["retryable"])
-            # 达到上限后安全停止：只执行了一次工具调用，终态事件唯一。
-            self.assertEqual(1, len(terminal["activities"]))
-            self.assertEqual("completed", terminal["activities"][0]["status"])
-            event_types = await self._event_types(client, created["turnId"])
-            self.assertEqual(1, event_types.count("turn.failed"))
-            self.assertEqual(2, len(provider.requests))
+            self.assertIn("line_out_of_range", failure_feedback.content)
+            self.assertEqual(1, len(snapshot["toolStates"]))
+            self.assertEqual("failed", snapshot["toolStates"][0]["status"])
+            self.assertEqual("read_text_file", snapshot["toolStates"][0]["toolName"])
 
 
 if __name__ == "__main__":

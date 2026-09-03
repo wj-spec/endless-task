@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from endless_task.tooling import ToolRegistry, ToolValidationError
+from endless_task.runtime.background_tasks import BackgroundTaskSupervisor
+from endless_task.tooling import ToolApprovalMode, ToolRegistry, ToolValidationError
 
 from ..storage.sqlite_mcp_server_repository import (
     McpServerConfig,
@@ -16,6 +18,8 @@ from ..storage.sqlite_mcp_server_repository import (
 from ..workspace_runtime.effect_log import EffectLog
 from .models import McpServerRuntimeStatus, McpToolStatus
 from .tool import McpToolBridge
+
+logger = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT_SECONDS = 15.0
 _CREDENTIAL_KEY = re.compile(r"(KEY|PASSWORD|SECRET|TOKEN)", re.IGNORECASE)
@@ -28,7 +32,7 @@ class _LiveConnection:
     session: Any
     stop_event: asyncio.Event
     failure_event: asyncio.Event
-    task: asyncio.Task
+    task: Optional[asyncio.Task[None]]
     tools: tuple[McpToolBridge, ...]
     state: str = "reconnecting"
     connected_at: float = 0.0
@@ -67,6 +71,10 @@ class McpManager:
         self._health_check_seconds = health_check_seconds
         self._connections: dict[str, _LiveConnection] = {}
         self._errors: dict[str, str] = {}
+        self._task_supervisor = BackgroundTaskSupervisor(
+            name="mcp-manager",
+            logger=logger,
+        )
         self._lock = asyncio.Lock()
 
     async def start_all(self) -> None:
@@ -79,6 +87,7 @@ class McpManager:
     async def stop_all(self) -> None:
         for server_id in list(self._connections):
             await self.disconnect(server_id)
+        await self._task_supervisor.drain()
         self._registry.remove_tools()
 
     async def connect(self, server_id: str) -> McpServerRuntimeStatus:
@@ -96,10 +105,10 @@ class McpManager:
                 session=None,
                 stop_event=stop_event,
                 failure_event=failure_event,
-                task=None,  # type: ignore[arg-type]
+                task=None,
                 tools=(),
             )
-            task = asyncio.create_task(
+            task = self._task_supervisor.spawn(
                 self._supervise_server(
                     server, stop_event, failure_event, ready, connection
                 ),
@@ -144,8 +153,11 @@ class McpManager:
         if connection is None:
             return
         connection.stop_event.set()
+        task = connection.task
+        if task is None:
+            return
         try:
-            await connection.task
+            await task
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -440,7 +452,10 @@ class McpManager:
                 raw_name=tool.raw_name,
                 description=tool.definition.description,
                 effect=tool.definition.effect.value,
-                requires_explicit_confirmation=tool._destructive,
+                requires_explicit_confirmation=(
+                    tool.definition.approval_mode is ToolApprovalMode.REQUIRED
+                    or tool._destructive
+                ),
             )
             for tool in (connection.tools if connection else ())
         )

@@ -43,21 +43,20 @@ from endless_task.domain.repositories import (
 from endless_task.files import FileError
 from endless_task.files.read_tool import ReadTextFileTool
 from endless_task.runtime import (
-    AssistantRuntime,
+    BackgroundTaskSupervisor,
     FakeProvider,
     KnowledgeQueryRewriter,
     KnowledgeReranker,
     OpenAICompatibleProvider,
     P0ContextBuilder,
-    RuntimeConfiguration,
     RuntimeEvent,
     RuntimeEventBroker,
-    TurnController,
     UnconfiguredProvider,
 )
 from endless_task.runtime.provider import ModelProvider, ProviderError, ProviderMessage
 from endless_task.runtime.provider_manager import ProviderManager
 from endless_task.runtime_v2 import (
+    AgentRunExecutor,
     LaneKind,
     LaneRecord,
     MemoryScope,
@@ -71,6 +70,8 @@ from endless_task.runtime_v2 import (
     RuntimeV2RuntimeSelectionService,
     RuntimeV2SessionGateway,
     ToolApprovalDecision,
+    ToolExecutionLimits,
+    UnattendedToolApprovalGate,
     product_event_json,
 )
 from endless_task.runtime_v2.compaction import RuntimeV2ContextCompactionService
@@ -125,14 +126,12 @@ from endless_task.storage import (
     SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
     SqliteChatRepository,
-    SqliteContextRepository,
     SqliteMemoryProposalRepository,
     SqliteKnowledgeProposalRepository,
     SqliteKnowledgeRepository,
     SqliteMemoryRepository,
     SqlitePreferencesRepository,
     SqliteTextFileRepository,
-    SqliteRuntimeRepository,
     SqliteRuntimeV2Repository,
     SqliteRuntimeV2MemoryRepository,
     SqliteTaskRepository,
@@ -158,7 +157,7 @@ from endless_task.storage.sqlite_skill_override_repository import (
 )
 from endless_task.storage.sqlite_knowledge_repository import scope_tier
 from endless_task.skills import Skill, SkillService, build_available_skills_prompt
-from endless_task.tooling import ApprovalStatus, ToolRegistry
+from endless_task.tooling import ApprovalStatus, ToolApprovalMode, ToolRegistry
 
 from .serialization import (
     artifact_json,
@@ -169,13 +168,8 @@ from .serialization import (
     knowledge_source_json,
     memory_record_json,
     workspace_json,
-    approval_request_json,
-    compact_turn_snapshot_json,
     conversation_json,
     conversation_snapshot_json,
-    response_variant_by_id,
-    runtime_event_json,
-    turn_command_json,
     uploaded_text_file_json,
     task_json,
     task_proposal_json,
@@ -263,6 +257,7 @@ def runtime_environment() -> dict[str, str]:
 class AppSettings:
     database_path: Path
     config_version: int = CONFIG_VERSION
+    # 已废弃：v2 是唯一主线，本字段仅保留以兼容历史测试/调用方（总是强制 v2）。
     runtime: str = "v2"
     runtime_rollback: bool = False
     provider_name: str = "fake"
@@ -270,15 +265,19 @@ class AppSettings:
     base_url: Optional[str] = None
     api_key: Optional[str] = field(default=None, repr=False)
     provider_timeout_seconds: float = 60.0
-    system_prompt: str = "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。"
+    system_prompt: str = "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。\n- 用户要求产出文档/文件（如写 README、报告、脚本）时，读完所需材料后应立即调用写入工具或直接给出完整结果，不要无休止地继续收集资料；读完即动手。"
     system_prompt_version: str = "p1-v1"
     context_window_tokens: int = 32_768
     max_output_tokens: int = 2_048
     summary_token_limit: int = 1_024
     max_concurrent_model_calls: int = 2
     max_concurrent_task_runs: int = 1
-    max_agent_iterations: int = 4
     max_tool_calls_per_turn: int = 8
+    max_concurrent_tool_calls: int = 4
+    max_tool_argument_bytes: int = 64 * 1024
+    max_total_tool_argument_bytes: int = 256 * 1024
+    max_tool_argument_depth: int = 32
+    max_tool_argument_nodes: int = 10_000
     agent_timeout_seconds: float = 120.0
     approval_timeout_seconds: float = 1800.0
     max_message_characters: int = 100_000
@@ -331,8 +330,6 @@ class AppSettings:
             raise ValueError(
                 f"Unsupported config version {self.config_version}; expected {CONFIG_VERSION}"
             )
-        if self.runtime not in {"v1", "v2"}:
-            raise ValueError("ENDLESS_TASK_RUNTIME must be v1 or v2")
         if self.provider_timeout_seconds <= 0 or self.heartbeat_seconds <= 0:
             raise ValueError("Timeout values must be positive")
         if self.context_window_tokens <= self.max_output_tokens:
@@ -341,8 +338,20 @@ class AppSettings:
             raise ValueError("Summary token limit cannot be negative")
         if self.max_concurrent_model_calls <= 0:
             raise ValueError("Maximum concurrent model calls must be positive")
-        if self.max_agent_iterations <= 0 or self.max_tool_calls_per_turn <= 0:
-            raise ValueError("Agent loop limits must be positive")
+        tool_limit_values = (
+            self.max_tool_calls_per_turn,
+            self.max_concurrent_tool_calls,
+            self.max_tool_argument_bytes,
+            self.max_total_tool_argument_bytes,
+            self.max_tool_argument_depth,
+            self.max_tool_argument_nodes,
+        )
+        if any(value <= 0 for value in tool_limit_values):
+            raise ValueError("Tool limits must be positive")
+        if self.max_tool_argument_bytes > self.max_total_tool_argument_bytes:
+            raise ValueError(
+                "Per-call tool argument limit cannot exceed the per-turn limit"
+            )
         if self.agent_timeout_seconds <= 0:
             raise ValueError("Agent timeout must be positive")
         if self.approval_timeout_seconds <= 0:
@@ -392,10 +401,6 @@ class AppSettings:
         )
         return cls(
             database_path=database_path,
-            runtime=env.get("ENDLESS_TASK_RUNTIME", "v2").strip().lower(),
-            runtime_rollback=_parse_flag(
-                env.get("ENDLESS_TASK_RUNTIME_ROLLBACK", "0")
-            ),
             memory_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_MEMORY_PROPOSALS", "1")
             ),
@@ -517,7 +522,7 @@ class AppSettings:
             ),
             system_prompt=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT",
-                "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。",
+                "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。\n- 用户要求产出文档/文件（如写 README、报告、脚本）时，读完所需材料后应立即调用写入工具或直接给出完整结果，不要无休止地继续收集资料；读完即动手。",
             ),
             system_prompt_version=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT_VERSION",
@@ -538,11 +543,23 @@ class AppSettings:
             max_concurrent_task_runs=int(
                 env.get("ENDLESS_TASK_MAX_TASK_RUNS", "1")
             ),
-            max_agent_iterations=int(
-                env.get("ENDLESS_TASK_MAX_AGENT_ITERATIONS", "4")
-            ),
             max_tool_calls_per_turn=int(
                 env.get("ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN", "8")
+            ),
+            max_concurrent_tool_calls=int(
+                env.get("ENDLESS_TASK_MAX_CONCURRENT_TOOL_CALLS", "4")
+            ),
+            max_tool_argument_bytes=int(
+                env.get("ENDLESS_TASK_MAX_TOOL_ARGUMENT_BYTES", "65536")
+            ),
+            max_total_tool_argument_bytes=int(
+                env.get("ENDLESS_TASK_MAX_TOTAL_TOOL_ARGUMENT_BYTES", "262144")
+            ),
+            max_tool_argument_depth=int(
+                env.get("ENDLESS_TASK_MAX_TOOL_ARGUMENT_DEPTH", "32")
+            ),
+            max_tool_argument_nodes=int(
+                env.get("ENDLESS_TASK_MAX_TOOL_ARGUMENT_NODES", "10000")
             ),
             agent_timeout_seconds=float(
                 env.get("ENDLESS_TASK_AGENT_TIMEOUT_SECONDS", "120")
@@ -567,7 +584,6 @@ class AppContainer:
     settings: AppSettings
     database: Database
     chat_repository: SqliteChatRepository
-    runtime_repository: SqliteRuntimeRepository
     file_repository: SqliteTextFileRepository
     memory_repository: SqliteMemoryRepository
     proposal_repository: SqliteMemoryProposalRepository
@@ -606,9 +622,7 @@ class AppContainer:
     memory_conflict_service: Optional[MemoryConflictService]
     broker: RuntimeEventBroker
     provider: ModelProvider
-    runtime: AssistantRuntime
     tool_registry: ToolRegistry
-    controller: TurnController
     runtime_v2_repository: SqliteRuntimeV2Repository
     runtime_v2_memory_repository: SqliteRuntimeV2MemoryRepository
     runtime_v2_memory_quality_service: RuntimeV2MemoryQualityService
@@ -630,12 +644,6 @@ class CreateBranchBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     forkTurnId: Optional[str] = None
-
-
-class CreateTurnBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    content: str
 
 
 class RuntimeV2MessageBody(BaseModel):
@@ -930,15 +938,6 @@ def _repository_error_status(error: RepositoryError) -> int:
     return 500
 
 
-def _event_sse(event: RuntimeEvent) -> str:
-    payload = json.dumps(
-        runtime_event_json(event),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"id: {event.event_id}\nevent: {event.type}\ndata: {payload}\n\n"
-
-
 def _runtime_v2_product_sse(event: ProductRuntimeEventRecord) -> str:
     payload = json.dumps(
         product_event_json(event),
@@ -1067,51 +1066,9 @@ def _resolve_runtime_v2_conversation(
     *,
     write: bool,
 ) -> str:
+    del write
     status = container.runtime_v2_selection_service.describe(conversation_id)
-    if write and status.effective_runtime != "v2":
-        raise ApiRequestError(
-            "runtime_v2_not_selected",
-            "该会话当前未选择 Runtime v2，请先切换会话 runtime。",
-            status_code=409,
-        )
     return status.tree_conversation_id
-
-
-def _assert_v1_write_allowed(
-    container: AppContainer,
-    conversation_id: str,
-) -> None:
-    status = container.runtime_v2_selection_service.describe(conversation_id)
-    if status.v1_read_only and not status.rollback_forced:
-        raise ApiRequestError(
-            "v1_read_only",
-            "该会话的 v1 数据已迁移归档，请使用 Runtime v2；如需回写 v1，请启用全局回滚。",
-            status_code=409,
-        )
-
-
-def _parse_last_event_id(turn_id: str, value: Optional[str]) -> int:
-    if value is None or value == "":
-        return 0
-    prefix, separator, raw_sequence = value.rpartition(":")
-    if separator != ":" or prefix != turn_id:
-        raise ApiRequestError(
-            "invalid_last_event_id",
-            "Last-Event-ID 不属于当前 Turn。",
-        )
-    try:
-        sequence = int(raw_sequence)
-    except ValueError as error:
-        raise ApiRequestError(
-            "invalid_last_event_id",
-            "Last-Event-ID 的 sequence 无效。",
-        ) from error
-    if sequence < 0:
-        raise ApiRequestError(
-            "invalid_last_event_id",
-            "Last-Event-ID 的 sequence 无效。",
-        )
-    return sequence
 
 
 def _parse_flag(value: str) -> bool:
@@ -1153,8 +1110,6 @@ def _build_container(
 ) -> AppContainer:
     database = Database(settings.database_path)
     chat_repository = SqliteChatRepository(database)
-    context_repository = SqliteContextRepository(database)
-    runtime_repository = SqliteRuntimeRepository(database)
     file_repository = SqliteTextFileRepository(
         database,
         max_file_bytes=settings.max_file_bytes,
@@ -1249,6 +1204,21 @@ def _build_container(
         """v2 按会话过滤工作区工具；与 v1 `_tool_filter_for_conversation` 一致。"""
         return workspace_tool_filter(workspace_resolver, conversation_id)
 
+    def _v2_unattended_tool_filter(
+        conversation_id: str,
+    ) -> Callable[[str], bool]:
+        workspace_filter = _v2_workspace_tool_filter(conversation_id)
+
+        def allows(tool_name: str) -> bool:
+            if workspace_filter is not None and not workspace_filter(tool_name):
+                return False
+            return (
+                selected_tool_registry.resolve(tool_name).definition.approval_mode
+                is ToolApprovalMode.AUTO
+            )
+
+        return allows
+
     runtime_v2_compaction_hook = (
         RuntimeV2ContextCompactionService(
             repository=runtime_v2_repository,
@@ -1259,6 +1229,15 @@ def _build_container(
         else None
     )
 
+    tool_execution_limits = ToolExecutionLimits(
+        max_calls_per_turn=settings.max_tool_calls_per_turn,
+        max_concurrent_calls=settings.max_concurrent_tool_calls,
+        max_argument_bytes=settings.max_tool_argument_bytes,
+        max_total_argument_bytes=settings.max_total_tool_argument_bytes,
+        max_argument_depth=settings.max_tool_argument_depth,
+        max_argument_nodes=settings.max_tool_argument_nodes,
+    )
+
     runtime_v2_gateway = RuntimeV2SessionGateway(
         chat_repository=chat_repository,
         repository=runtime_v2_repository,
@@ -1267,19 +1246,42 @@ def _build_container(
         tool_registry=selected_tool_registry,
         model=settings.model,
         max_output_tokens=settings.max_output_tokens,
-        max_model_turns=settings.max_agent_iterations,
         temperature=None,
         provider_slot_limit=settings.max_concurrent_model_calls,
         memory_repository=runtime_v2_memory_repository,
         tool_filter_provider=_v2_workspace_tool_filter,
         compaction_hook=runtime_v2_compaction_hook,
         metrics_collector=runtime_v2_metrics_collector,
+        agent_timeout_seconds=settings.agent_timeout_seconds,
+        approval_timeout_seconds=settings.approval_timeout_seconds,
+        tool_execution_limits=tool_execution_limits,
+    )
+    # Task/reminder runs have no interactive approval channel. Required tools
+    # are hidden from the model and denied if a provider still emits one.
+    task_executor = AgentRunExecutor(
+        repository=runtime_v2_repository,
+        provider=selected_provider,
+        tool_registry=selected_tool_registry,
+        model=settings.model,
+        max_output_tokens=settings.max_output_tokens,
+        temperature=None,
+        approval_gate=UnattendedToolApprovalGate(),
+        provider_slot=(
+            asyncio.Semaphore(settings.max_concurrent_model_calls)
+            if settings.max_concurrent_model_calls
+            else None
+        ),
+        compaction_hook=runtime_v2_compaction_hook,
+        tool_filter_provider=_v2_unattended_tool_filter,
+        metrics=runtime_v2_metrics_collector,
+        agent_timeout_seconds=settings.agent_timeout_seconds,
+        tool_execution_limits=tool_execution_limits,
     )
     runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
         database=database,
         repository=runtime_v2_repository,
-        default_runtime=settings.runtime,
-        rollback_forced=settings.runtime_rollback,
+        default_runtime="v2",
+        rollback_forced=False,
     )
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
@@ -1361,7 +1363,6 @@ def _build_container(
         system_prompt_version=system_prompt_version,
         max_context_tokens=settings.context_window_tokens,
         summary_token_limit=settings.summary_token_limit,
-        context_repository=context_repository,
         file_repository=file_repository,
         memory_repository=memory_repository,
         artifact_proposal_repository=artifact_proposal_repository,
@@ -1370,39 +1371,6 @@ def _build_container(
         knowledge_repository=knowledge_repository,
         retrieval_event_repository=retrieval_event_repository,
         skill_prompt_builder=skill_prompt_for_workspace,
-    )
-    runtime = AssistantRuntime(
-        chat_repository=chat_repository,
-        runtime_repository=runtime_repository,
-        context_builder=context_builder,
-        provider=selected_provider,
-        knowledge_query_rewriter=(
-            KnowledgeQueryRewriter(selected_provider, model=settings.model)
-            if settings.knowledge_query_rewrite_enabled
-            else None
-        ),
-        knowledge_reranker=(
-            KnowledgeReranker(selected_provider, model=settings.model)
-            if settings.knowledge_rerank_enabled
-            else None
-        ),
-        knowledge_repository=(
-            knowledge_repository if settings.knowledge_rerank_enabled else None
-        ),
-        configuration=RuntimeConfiguration(
-            model=settings.model,
-            max_output_tokens=settings.max_output_tokens,
-            max_concurrent_model_calls=settings.max_concurrent_model_calls,
-            max_agent_iterations=settings.max_agent_iterations,
-            max_tool_calls_per_turn=settings.max_tool_calls_per_turn,
-            agent_timeout_seconds=settings.agent_timeout_seconds,
-            approval_timeout_seconds=settings.approval_timeout_seconds,
-        ),
-        tool_registry=selected_tool_registry,
-        event_publisher=broker,
-        permission_mode_provider=lambda: preferences_repository.get_permission_mode()[0],
-        workspace_resolver=workspace_resolver,
-        provider_resolver=provider_manager.resolve,
     )
 
     async def build_runtime_v2_context_prefix(
@@ -1433,7 +1401,7 @@ def _build_container(
             proposal_repository=artifact_proposal_repository,
             model=settings.model,
             memory_repository=memory_repository,
-            runtime_repository=runtime_repository,
+            runtime_v2_repository=runtime_v2_repository,
             artifact_repository=artifact_repository,
         )
 
@@ -1457,7 +1425,6 @@ def _build_container(
         )
 
     memory_conflict_service: Optional[MemoryConflictService] = None
-    on_turn_completed = None
     if settings.memory_proposals_enabled:
         memory_conflict_service = MemoryConflictService(
             provider=selected_provider,
@@ -1633,68 +1600,6 @@ def _build_container(
 
         runtime_v2_gateway.set_run_completion_callback(on_v2_run_completed)
 
-        async def on_turn_completed(snapshot) -> None:
-            active = next(
-                (
-                    item
-                    for item in snapshot.response_variants
-                    if item.variant.id == snapshot.turn.active_response_variant_id
-                ),
-                None,
-            )
-            if active is None or not active.assistant_message.content.strip():
-                return
-            try:
-                conversation = chat_repository.get_conversation(
-                    snapshot.turn.conversation_id
-                )
-            except NotFoundError:
-                return
-            ephemeral = conversation.kind is ConversationKind.EPHEMERAL
-            if embedding_indexer is not None and not ephemeral:
-                embedding_indexer.submit(
-                    KnowledgeScope.CONVERSATION.value, snapshot.turn.id
-                )
-            if memory_proposal_service is not None and not ephemeral:
-                if proposal_budget is None or proposal_budget.allow(
-                    snapshot.turn.conversation_id
-                ):
-                    await memory_proposal_service.generate_for_turn(
-                        conversation_id=snapshot.turn.conversation_id,
-                        turn_id=snapshot.turn.id,
-                        user_message=snapshot.user_message.content,
-                        assistant_message=active.assistant_message.content,
-                    )
-            if knowledge_proposal_service is not None and not ephemeral:
-                if proposal_budget is None or proposal_budget.allow(
-                    snapshot.turn.conversation_id
-                ):
-                    await knowledge_proposal_service.generate_for_turn(
-                        conversation_id=snapshot.turn.conversation_id,
-                        turn_id=snapshot.turn.id,
-                        user_message=snapshot.user_message.content,
-                        assistant_message=active.assistant_message.content,
-                    )
-            if artifact_proposal_service is not None:
-                await artifact_proposal_service.generate_for_turn(
-                    conversation_id=snapshot.turn.conversation_id,
-                    turn_id=snapshot.turn.id,
-                    user_message=snapshot.user_message.content,
-                    assistant_message=active.assistant_message.content,
-                )
-            if task_proposal_service is not None:
-                await task_proposal_service.generate_for_turn(
-                    conversation_id=snapshot.turn.conversation_id,
-                    turn_id=snapshot.turn.id,
-                    user_message=snapshot.user_message.content,
-                    assistant_message=active.assistant_message.content,
-                )
-
-    controller = TurnController(
-        chat_repository=chat_repository,
-        runtime=runtime,
-        on_turn_completed=on_turn_completed,
-    )
     task_notification_service = None
     if settings.notifications_enabled:
         task_notification_service = TaskNotificationService(
@@ -1708,7 +1613,8 @@ def _build_container(
     task_worker = TaskWorker(
         task_repository=task_repository,
         run_repository=task_run_repository,
-        controller=controller,
+        runtime_v2_repository=runtime_v2_repository,
+        task_executor=task_executor,
         chat_repository=chat_repository,
         max_concurrent_task_runs=settings.max_concurrent_task_runs,
         review_service=task_run_review_service,
@@ -1732,7 +1638,6 @@ def _build_container(
         settings=settings,
         database=database,
         chat_repository=chat_repository,
-        runtime_repository=runtime_repository,
         file_repository=file_repository,
         memory_repository=memory_repository,
         proposal_repository=proposal_repository,
@@ -1771,9 +1676,7 @@ def _build_container(
         memory_conflict_service=memory_conflict_service,
         broker=broker,
         provider=selected_provider,
-        runtime=runtime,
         tool_registry=selected_tool_registry,
-        controller=controller,
         runtime_v2_repository=runtime_v2_repository,
         runtime_v2_memory_repository=runtime_v2_memory_repository,
         runtime_v2_memory_quality_service=runtime_v2_memory_quality_service,
@@ -1885,9 +1788,11 @@ def create_app(
         )
         if container.embedding_indexer is not None:
             container.embedding_indexer.start()
-        await container.runtime.recover_interrupted()
         await container.mcp_manager.start_all()
-        scheduler_task: Optional[asyncio.Task[None]] = None
+        lifespan_tasks = BackgroundTaskSupervisor(
+            name="api-lifespan",
+            logger=logger,
+        )
         swept_runs = container.task_run_repository.sweep_interrupted_runs()
         if swept_runs and container.task_notification_service is not None:
             for swept_run in swept_runs:
@@ -1901,35 +1806,26 @@ def create_app(
                     swept_task, swept_run
                 )
         if container.settings.scheduler_enabled:
-            scheduler_task = asyncio.create_task(
-                container.task_scheduler.run()
+            lifespan_tasks.spawn(
+                container.task_scheduler.run(),
+                name="task-scheduler",
             )
-        decay_task: Optional[asyncio.Task[None]] = None
         if (
             container.settings.knowledge_decay_enabled
             and container.knowledge_lifecycle_service is not None
         ):
-            decay_task = asyncio.create_task(_run_knowledge_decay_loop(container))
+            lifespan_tasks.spawn(
+                _run_knowledge_decay_loop(container),
+                name="knowledge-decay",
+            )
         try:
             yield
         finally:
             if container.embedding_indexer is not None:
                 container.embedding_indexer.stop()
-            if scheduler_task is not None:
-                scheduler_task.cancel()
-                try:
-                    await scheduler_task
-                except asyncio.CancelledError:
-                    pass
-            if decay_task is not None:
-                decay_task.cancel()
-                try:
-                    await decay_task
-                except asyncio.CancelledError:
-                    pass
+            await lifespan_tasks.shutdown(cancel=True)
             await container.mcp_manager.stop_all()
             await container.task_worker.drain()
-            await container.controller.shutdown()
             await container.runtime_v2_gateway.shutdown()
             await container.provider_manager.close()
             close_provider = getattr(container.provider, "close", None)
@@ -2211,12 +2107,6 @@ def create_app(
             )
         payload = conversation_snapshot_json(
             snapshot,
-            events_by_turn={
-                turn.turn.id: tuple(
-                    container.runtime_repository.list_events(turn.turn.id)
-                )
-                for turn in snapshot.turns
-            },
         )
         payload["files"] = [
             uploaded_text_file_json(item)
@@ -2396,7 +2286,6 @@ def create_app(
         conversation_id: str,
         body: CreateBranchBody,
     ) -> dict[str, object]:
-        _assert_v1_write_allowed(container, conversation_id)
         branch = container.chat_repository.create_branch(
             parent_conversation_id=conversation_id,
             fork_turn_id=body.forkTurnId,
@@ -2411,7 +2300,6 @@ def create_app(
 
     @app.post("/conversations/{conversation_id}/promote")
     async def promote_conversation(conversation_id: str) -> dict[str, object]:
-        _assert_v1_write_allowed(container, conversation_id)
         conversation = container.chat_repository.promote_conversation(
             conversation_id
         )
@@ -3199,29 +3087,6 @@ def create_app(
             "encoding": ingested.encoding,
         }
 
-    @app.get("/turns/{turn_id}/citations")
-    async def get_turn_citations(turn_id: str) -> dict[str, object]:
-        event = container.retrieval_event_repository.latest_injection_for_turn(
-            turn_id
-        )
-        if event is None or not event.detail:
-            return {"items": []}
-        citations = event.detail.get("citations") or []
-        items: list[dict[str, object]] = []
-        for citation in citations:
-            if not isinstance(citation, dict):
-                continue
-            entry = dict(citation)
-            if citation.get("scope") == "conversation":
-                with container.database.connect() as connection:
-                    row = connection.execute(
-                        "SELECT conversation_id FROM turns WHERE id = ?",
-                        (str(citation.get("refId", "")),),
-                    ).fetchone()
-                if row is not None:
-                    entry["conversationId"] = row["conversation_id"]
-            items.append(entry)
-        return {"items": items}
 
     @app.post("/retrieval-events", status_code=201)
     async def create_retrieval_event(
@@ -3354,14 +3219,6 @@ def create_app(
         v2 链路读取，避免 v1/v2 记忆双重注入。
         """
         conversation_id = memory.source_conversation_id
-        try:
-            status = container.runtime_v2_selection_service.describe(
-                conversation_id
-            )
-        except Exception:  # noqa: BLE001 会话不存在等场景不镜像
-            return
-        if status.effective_runtime != "v2":
-            return
         try:
             quality = container.runtime_v2_memory_quality_service
             repository = container.runtime_v2_memory_repository
@@ -4350,183 +4207,5 @@ def create_app(
             "artifact": artifact_json(artifact),
         }
 
-    @app.post("/conversations/{conversation_id}/turns", status_code=202)
-    async def create_turn(
-        conversation_id: str,
-        body: CreateTurnBody,
-        idempotency_key: str = Header(..., alias="Idempotency-Key"),
-    ) -> dict[str, object]:
-        runtime_status = container.runtime_v2_selection_service.describe(
-            conversation_id
-        )
-        if runtime_status.effective_runtime == "v2":
-            raise ApiRequestError(
-                "runtime_v2_selected",
-                "该会话已选择 Runtime v2，请使用 v2 message API。",
-                status_code=409,
-            )
-        _assert_v1_write_allowed(container, conversation_id)
-        if len(body.content) > container.settings.max_message_characters:
-            raise ApiRequestError(
-                "message_too_large",
-                "消息内容超过本地配置允许的长度。",
-                status_code=413,
-            )
-        handle = await container.controller.submit(
-            conversation_id=conversation_id,
-            client_request_id=idempotency_key,
-            content=body.content,
-        )
-        snapshot = container.chat_repository.get_turn(handle.turn_id)
-        selected = response_variant_by_id(snapshot, handle.response_variant_id)
-        return {
-            "conversationId": handle.conversation_id,
-            "turnId": handle.turn_id,
-            "responseVariantId": handle.response_variant_id,
-            "userMessageId": snapshot.user_message.id,
-            "assistantMessageId": selected.assistant_message.id,
-            "eventsUrl": f"/turns/{handle.turn_id}/events",
-        }
-
-    @app.get("/turns/{turn_id}")
-    async def get_turn(turn_id: str) -> dict[str, object]:
-        snapshot = container.chat_repository.get_turn(turn_id)
-        events = tuple(container.runtime_repository.list_events(turn_id))
-        return compact_turn_snapshot_json(
-            snapshot,
-            events=events,
-            pending_approval=container.runtime_repository.get_pending_approval(turn_id),
-        )
-
-    @app.get("/turns/{turn_id}/events")
-    async def get_turn_events(
-        turn_id: str,
-        last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
-    ) -> StreamingResponse:
-        container.chat_repository.get_turn(turn_id)
-        after_sequence = _parse_last_event_id(turn_id, last_event_id)
-
-        async def stream() -> AsyncIterator[str]:
-            cursor = after_sequence
-            async with container.broker.subscribe(turn_id) as queue:
-                while True:
-                    persisted = container.runtime_repository.list_events(
-                        turn_id,
-                        after_sequence=cursor,
-                    )
-                    for event in persisted:
-                        if event.sequence <= cursor:
-                            continue
-                        cursor = event.sequence
-                        yield _event_sse(event)
-
-                    snapshot = container.chat_repository.get_turn(turn_id)
-                    if snapshot.turn.status in TERMINAL_TURN_STATUSES:
-                        return
-
-                    try:
-                        event = await asyncio.wait_for(
-                            queue.get(),
-                            timeout=container.settings.heartbeat_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        yield ": heartbeat\n\n"
-                        continue
-                    if event.sequence > cursor:
-                        cursor = event.sequence
-                        yield _event_sse(event)
-
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.post("/turns/{turn_id}/cancel")
-    async def cancel_turn(turn_id: str) -> dict[str, object]:
-        snapshot = container.chat_repository.get_turn(turn_id)
-        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
-        await container.controller.cancel(turn_id=turn_id)
-        events = tuple(container.runtime_repository.list_events(turn_id))
-        return compact_turn_snapshot_json(
-            snapshot,
-            events=events,
-            pending_approval=container.runtime_repository.get_pending_approval(turn_id),
-        )
-
-    @app.post("/approvals/{approval_id}")
-    async def resolve_approval(
-        approval_id: str,
-        body: ResolveApprovalBody,
-    ) -> dict[str, object]:
-        turn_id = container.runtime_repository.get_approval_turn_id(approval_id)
-        snapshot = container.chat_repository.get_turn(turn_id)
-        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
-        status = (
-            ApprovalStatus.APPROVED
-            if body.decision == "approve"
-            else ApprovalStatus.DENIED
-        )
-        approval = await container.runtime.resolve_approval(
-            approval_id=approval_id,
-            status=status,
-        )
-        return approval_request_json(approval)
-
-    async def create_variant(
-        turn_id: str,
-        idempotency_key: str,
-        *,
-        operation: str,
-    ) -> dict[str, object]:
-        snapshot = container.chat_repository.get_turn(turn_id)
-        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
-        if operation == "retry":
-            handle = await container.controller.retry(
-                turn_id=turn_id,
-                command_request_id=idempotency_key,
-            )
-        else:
-            handle = await container.controller.regenerate(
-                turn_id=turn_id,
-                command_request_id=idempotency_key,
-            )
-        snapshot = container.chat_repository.get_turn(handle.turn_id)
-        selected = response_variant_by_id(snapshot, handle.response_variant_id)
-        return {
-            "conversationId": handle.conversation_id,
-            "turnId": handle.turn_id,
-            "responseVariantId": handle.response_variant_id,
-            "assistantMessageId": selected.assistant_message.id,
-            "eventsUrl": f"/turns/{handle.turn_id}/events",
-        }
-
-    @app.post("/turns/{turn_id}/retry", status_code=202)
-    async def retry_turn(
-        turn_id: str,
-        idempotency_key: str = Header(..., alias="Idempotency-Key"),
-    ) -> dict[str, object]:
-        return await create_variant(turn_id, idempotency_key, operation="retry")
-
-    @app.post("/turns/{turn_id}/regenerate", status_code=202)
-    async def regenerate_turn(
-        turn_id: str,
-        idempotency_key: str = Header(..., alias="Idempotency-Key"),
-    ) -> dict[str, object]:
-        return await create_variant(turn_id, idempotency_key, operation="regenerate")
-
-    @app.post("/turns/{turn_id}/response-variants/{variant_id}/select")
-    async def select_variant(turn_id: str, variant_id: str) -> dict[str, object]:
-        snapshot = container.chat_repository.get_turn(turn_id)
-        _assert_v1_write_allowed(container, snapshot.turn.conversation_id)
-        snapshot = container.chat_repository.select_response_variant(
-            turn_id=turn_id,
-            variant_id=variant_id,
-        )
-        return turn_command_json(snapshot)
 
     return app

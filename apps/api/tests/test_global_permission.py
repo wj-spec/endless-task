@@ -24,6 +24,11 @@ from endless_task.tooling import (
     ToolRegistry,
     ToolResult,
 )
+from tests.fixtures.v2_client import (
+    run_snapshot,
+    send_message,
+    wait_for_run_terminal,
+)
 from tests.fixtures.workspace_client import create_bound_conversation
 
 
@@ -159,7 +164,6 @@ class PermissionSettingsApiTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / "api.db",
-                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
             ),
@@ -250,7 +254,7 @@ class PermissionCoverageRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self,
         local_tool: LocalWriteTool,
         external_tool: ExternalActionTool,
-    ) -> httpx.AsyncClient:
+    ) -> tuple[httpx.AsyncClient, object]:
         registry = ToolRegistry()
         registry.register(local_tool)
         registry.register(external_tool)
@@ -258,7 +262,6 @@ class PermissionCoverageRuntimeTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / f"api-{suffix}.db",
-                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
             ),
@@ -272,92 +275,97 @@ class PermissionCoverageRuntimeTest(unittest.IsolatedAsyncioTestCase):
             base_url="http://testserver",
         )
         self._clients.append((client, lifespan))
-        return client
-
-    @staticmethod
-    async def _wait_for_terminal(
-        client: httpx.AsyncClient,
-        turn_id: str,
-    ) -> dict[str, object]:
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            if response.json()["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return response.json()
-            await asyncio.sleep(0.01)
-        raise AssertionError("Turn did not reach a terminal state")
+        return client, app
 
     @staticmethod
     async def _wait_for_approval(
-        client: httpx.AsyncClient,
-        turn_id: str,
+        client: httpx.AsyncClient, conversation_id: str
     ) -> dict[str, object]:
         for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            approval = response.json().get("pendingApproval")
-            if approval:
-                return approval
+            snapshot = await run_snapshot(client, conversation_id)
+            approvals = snapshot.get("pendingApprovals") or ()
+            if approvals:
+                return approvals[0]
             await asyncio.sleep(0.01)
         raise AssertionError("Turn did not request approval")
 
-    async def _start_turn(self, client: httpx.AsyncClient) -> str:
+    async def _resolve_all_approvals(self, client: httpx.AsyncClient, conversation_id: str) -> None:
+        for _ in range(200):
+            snapshot = await run_snapshot(client, conversation_id)
+            approvals = snapshot.get("pendingApprovals") or ()
+            if not approvals:
+                return
+            for approval in approvals:
+                await client.post(
+                    f"/api/v2/approvals/{approval['id']}",
+                    json={"decision": "approve"},
+                )
+            await asyncio.sleep(0.01)
+        raise AssertionError("Approvals never resolved")
+
+    async def _start_turn(self, client: httpx.AsyncClient, app) -> tuple[str, str]:
         conversation_id = (await create_bound_conversation(client))["id"]
-        created = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": "request-1"},
-            json={"content": "请执行两个工具"},
+        handle = await send_message(
+            client,
+            conversation_id,
+            "请执行两个工具",
+            idempotency_key="request-1",
         )
-        return created.json()["turnId"]
+        return conversation_id, handle["runId"]
 
     async def test_default_mode_still_waits_for_approval(self) -> None:
         local_tool = LocalWriteTool()
         external_tool = ExternalActionTool()
-        client = await self._client(local_tool, external_tool)
-        turn_id = await self._start_turn(client)
-        approval = await self._wait_for_approval(client, turn_id)
-        self.assertEqual("pending", approval["status"])
+        client, app = await self._client(local_tool, external_tool)
+        conversation_id, run_id = await self._start_turn(client, app)
+        approval = await self._wait_for_approval(client, conversation_id)
+        self.assertIn(
+            approval["summary"],
+            ("允许保存这条本地笔记吗？", "允许向外部服务发送消息吗？"),
+        )
         self.assertEqual([], local_tool.calls)
         self.assertEqual([], external_tool.calls)
+        await self._resolve_all_approvals(client, conversation_id)
+        await wait_for_run_terminal(app.state.container, run_id)
+        self.assertEqual(1, len(local_tool.calls))
+        self.assertEqual(1, len(external_tool.calls))
 
-    async def test_trust_local_writes_auto_runs_local_but_not_external(self) -> None:
+    async def test_trust_local_writes_still_requests_approval(self) -> None:
+        # v2 无权限模式自动批准：REQUIRED 工具（含本地写）始终请求确认。
         local_tool = LocalWriteTool()
         external_tool = ExternalActionTool()
-        client = await self._client(local_tool, external_tool)
+        client, app = await self._client(local_tool, external_tool)
         escalated = await client.post(
             "/settings/permissions",
             json={"mode": "trust_local_writes", "acknowledge": True},
         )
         self.assertEqual(200, escalated.status_code)
 
-        turn_id = await self._start_turn(client)
-        approval = await self._wait_for_approval(client, turn_id)
-        self.assertIn("外部服务", approval["summary"])
-        self.assertEqual(1, len(local_tool.calls))
+        conversation_id, run_id = await self._start_turn(client, app)
+        await self._wait_for_approval(client, conversation_id)
+        self.assertEqual([], local_tool.calls)
         self.assertEqual([], external_tool.calls)
-
-        resolved = await client.post(
-            f"/approvals/{approval['id']}",
-            json={"decision": "approve"},
-        )
-        self.assertEqual(200, resolved.status_code)
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertEqual("两个工具都已处理。", result["content"])
+        await self._resolve_all_approvals(client, conversation_id)
+        await wait_for_run_terminal(app.state.container, run_id)
+        self.assertEqual(1, len(local_tool.calls))
         self.assertEqual(1, len(external_tool.calls))
 
-    async def test_trust_all_auto_runs_both_effects(self) -> None:
+    async def test_trust_all_still_requests_approval(self) -> None:
         local_tool = LocalWriteTool()
         external_tool = ExternalActionTool()
-        client = await self._client(local_tool, external_tool)
+        client, app = await self._client(local_tool, external_tool)
         escalated = await client.post(
             "/settings/permissions",
             json={"mode": "trust_all", "acknowledge": True},
         )
         self.assertEqual(200, escalated.status_code)
 
-        turn_id = await self._start_turn(client)
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertEqual("两个工具都已处理。", result["content"])
+        conversation_id, run_id = await self._start_turn(client, app)
+        await self._wait_for_approval(client, conversation_id)
+        self.assertEqual([], local_tool.calls)
+        self.assertEqual([], external_tool.calls)
+        await self._resolve_all_approvals(client, conversation_id)
+        await wait_for_run_terminal(app.state.container, run_id)
         self.assertEqual(1, len(local_tool.calls))
         self.assertEqual(1, len(external_tool.calls))
 

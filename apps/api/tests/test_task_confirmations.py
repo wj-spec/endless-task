@@ -13,11 +13,13 @@ from endless_task.api import AppSettings, create_app
 from endless_task.api.serialization import task_json, task_proposal_json
 from endless_task.domain.repositories import InvalidStateError, NotFoundError
 from endless_task.runtime import ProviderCompleted, ProviderTextDelta
+from endless_task.runtime_v2 import RunStatus
 from endless_task.storage import (
     Database,
     SqliteTaskProposalRepository,
     SqliteTaskRepository,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 PERIODIC_USER = "以后每周一上午九点帮我总结上周的项目进展"
@@ -66,7 +68,6 @@ async def local_client(
     app = create_app(
             settings=AppSettings(
                 database_path=database_path,
-                runtime="v1",
                 memory_proposals_enabled=False,
             knowledge_proposals_enabled=False,
             artifact_proposals_enabled=False,
@@ -160,16 +161,6 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
 
-    @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
-
     async def _wait_for_task_proposals(self, client, conversation_id, count):
         for _ in range(200):
             response = await client.get(
@@ -181,18 +172,27 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.005)
         raise AssertionError("Task proposals did not appear in time")
 
+    async def _run_turn(self, client: httpx.AsyncClient, content: str):
+        conversation_id = (await create_bound_conversation(client))["id"]
+        handle = await send_message(
+            client, conversation_id, content, idempotency_key="request-1"
+        )
+        return conversation_id, handle["runId"]
+
+    @staticmethod
+    def _system_text(request) -> str:
+        return "\n".join(
+            message.content
+            for message in request.messages
+            if message.role == "system"
+        )
+
     async def test_end_to_end_proposal_to_task(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER], [TASK_EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await create_bound_conversation(client))["id"]
-            created = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": PERIODIC_USER},
-            )
-            turn_id = created.json()["turnId"]
-            result = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual("completed", result["turnStatus"])
+            conversation_id, run_id = await self._run_turn(client, PERIODIC_USER)
+            status = await wait_for_run_terminal(app.state.container, run_id)
+            self.assertEqual(RunStatus.COMPLETED, status)
 
             items = await self._wait_for_task_proposals(
                 client, conversation_id, 1
@@ -231,13 +231,8 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_reject_via_api_writes_no_task(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER], [TASK_EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await create_bound_conversation(client))["id"]
-            created = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": PERIODIC_USER},
-            )
-            await self._wait_for_terminal(client, created.json()["turnId"])
+            conversation_id, run_id = await self._run_turn(client, PERIODIC_USER)
+            await wait_for_run_terminal(app.state.container, run_id)
             items = await self._wait_for_task_proposals(
                 client, conversation_id, 1
             )
@@ -258,13 +253,8 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(404, missing.status_code)
 
-            conversation_id = (await create_bound_conversation(client))["id"]
-            created = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": PERIODIC_USER},
-            )
-            await self._wait_for_terminal(client, created.json()["turnId"])
+            conversation_id, run_id = await self._run_turn(client, PERIODIC_USER)
+            await wait_for_run_terminal(app.state.container, run_id)
             items = await self._wait_for_task_proposals(
                 client, conversation_id, 1
             )
@@ -282,30 +272,20 @@ class TaskConfirmationGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_confirmation_clause_follows_flag(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id = (await create_bound_conversation(client))["id"]
-            created = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "你好"},
-            )
-            await self._wait_for_terminal(client, created.json()["turnId"])
-        system_content = provider.requests[0].messages[0].content
+            conversation_id, run_id = await self._run_turn(client, "你好")
+            await wait_for_run_terminal(app.state.container, run_id)
+        system_content = self._system_text(provider.requests[0])
         self.assertIn("以用户在提案卡片上的确认为准", system_content)
 
         provider_off = TextProvider([[PERIODIC_ANSWER]])
         async with local_client(
             self.database_path, provider_off, task_proposals_enabled=False
         ) as (client, app):
-            conversation_id = (await create_bound_conversation(client))["id"]
-            created = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "你好"},
-            )
-            await self._wait_for_terminal(client, created.json()["turnId"])
+            conversation_id, run_id = await self._run_turn(client, "你好")
+            await wait_for_run_terminal(app.state.container, run_id)
         self.assertNotIn(
             "以用户在提案卡片上的确认为准",
-            provider_off.requests[0].messages[0].content,
+            self._system_text(provider_off.requests[0]),
         )
 
 

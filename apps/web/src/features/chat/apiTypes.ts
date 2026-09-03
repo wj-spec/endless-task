@@ -262,71 +262,6 @@ export type ActivitySnapshot = {
   updatedAt: string;
 };
 
-export type RuntimeEvent = {
-  version: 1;
-  eventId: string;
-  sequence: number;
-  type:
-    | "turn.started"
-    | "message.started"
-    | "message.delta"
-    | "message.completed"
-    | "approval.requested"
-    | "approval.resolved"
-    | "activity.started"
-    | "activity.completed"
-    | "activity.failed"
-    | "activity.cancelled"
-    | "turn.completed"
-    | "turn.failed"
-    | "turn.cancelled";
-  conversationId: string;
-  turnId: string;
-  responseVariantId?: string;
-  messageId?: string;
-  occurredAt: string;
-  data: {
-    delta?: string;
-    content?: string;
-    finishReason?: string;
-    partialContent?: string;
-    error?: RuntimeErrorDetail;
-    approvalId?: string;
-    toolCallId?: string;
-    summary?: string;
-    reason?: string;
-    status?: ApprovalStatus | ActivityStatus;
-    createdAt?: string;
-    resolvedAt?: string;
-    metadata?: Record<string, unknown>;
-    activityId?: string;
-    message?: string;
-  };
-};
-
-export type TurnCommandResponse = {
-  conversationId: string;
-  turnId: string;
-  responseVariantId: string;
-  userMessageId?: string;
-  assistantMessageId: string;
-  eventsUrl: string;
-};
-
-export type CompactTurnSnapshot = {
-  conversationId: string;
-  turnId: string;
-  turnStatus: TurnStatus;
-  activeResponseVariantId: string;
-  responseVariantStatus: ResponseVariantStatus;
-  assistantMessageId: string;
-  content: string;
-  lastSequence: number;
-  error?: RuntimeErrorDetail;
-  pendingApproval?: ApprovalRequest;
-  activities: ActivitySnapshot[];
-};
-
 export type HealthSnapshot = {
   status: string;
   provider: string;
@@ -403,7 +338,6 @@ export type RuntimeV2ConversationRuntimeStatus = {
   defaultRuntime: "v1" | "v2";
   rollbackForced: boolean;
   overrideRuntime: "v1" | "v2" | null;
-  effectiveRuntime: "v1" | "v2";
   canUseV2: boolean;
   requiresMigration: boolean;
   v1ReadOnly: boolean;
@@ -462,6 +396,11 @@ export type RuntimeV2Entry = {
     errorCode?: string | null;
     trustLevel?: string;
     reference?: unknown;
+    /** 工具执行 id / 模型工具调用 id，用于在前端可靠地把 调用参数 与 结果 关联起来。 */
+    callId?: string | null;
+    toolExecutionId?: string | null;
+    /** 工具返回的结构化内容（如 run_shell 的 exitCode/stdout，read 的行号等），用于类型化展示。 */
+    structuredContent?: unknown;
   };
 };
 
@@ -472,6 +411,11 @@ export type RuntimeV2ToolState = {
   callId: string;
   toolName: string;
   status: string;
+  errorCode: string | null;
+  safeMessage: string | null;
+  retryable: boolean | null;
+  correlationId: string | null;
+  errorDetails: Record<string, unknown> | null;
   resultEntryId: string | null;
 };
 
@@ -583,7 +527,6 @@ export type RuntimeV2LaneCreateResponse = {
   lane: RuntimeV2Lane;
   sourceLane: RuntimeV2Lane;
   baseEntryId: string;
-  eventsUrl: string;
 };
 
 export type RuntimeV2LaneUpdateResponse = {
@@ -640,7 +583,6 @@ export type RuntimeV2RegenerateResponse = {
   laneId: string;
   triggerEntryId: string;
   siblingGroupId: string;
-  eventsUrl: string;
 };
 
 export type RuntimeV2RunSelectResponse = {
@@ -733,6 +675,14 @@ export type RuntimeV2ProductEvent = {
     decision?: string;
     errorCode?: string | null;
     safeMessage?: string | null;
+    retryable?: boolean | null;
+    correlationId?: string | null;
+    errorDetails?: Record<string, unknown> | null;
+    resultEntryId?: string | null;
+    callId?: string | null;
+    toolName?: string;
+    arguments?: unknown;
+    content?: string;
     [key: string]: unknown;
   };
 };
@@ -742,7 +692,6 @@ export type RuntimeV2MessageResponse = {
   laneId: string;
   runId: string;
   userMessageId: string;
-  eventsUrl: string;
 };
 
 export type RuntimeV2RecoveryResponse = {

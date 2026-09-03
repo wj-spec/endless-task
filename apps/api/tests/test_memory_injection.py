@@ -19,8 +19,9 @@ from endless_task.storage import (
     SqliteMemoryRepository,
 )
 
-from test_sqlite_chat_repository import SequenceClock, SequenceIdFactory
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
+from tests.test_sqlite_chat_repository import SequenceClock, SequenceIdFactory
 
 
 class TextProvider:
@@ -40,7 +41,15 @@ class TextProvider:
 
 @asynccontextmanager
 async def local_client(database_path: Path, provider):
-    app = create_app(settings=AppSettings(database_path=database_path, runtime="v1", knowledge_proposals_enabled=False), provider=provider)
+    app = create_app(
+        settings=AppSettings(
+            database_path=database_path,
+            knowledge_proposals_enabled=False,
+            proposal_quiet_start="",
+            proposal_quiet_end="",
+        ),
+        provider=provider,
+    )
     lifespan = app.router.lifespan_context(app)
     await lifespan.__aenter__()
     client = httpx.AsyncClient(
@@ -48,7 +57,7 @@ async def local_client(database_path: Path, provider):
         base_url="http://testserver",
     )
     try:
-        yield client
+        yield client, app
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -156,13 +165,8 @@ class MemoryInjectionGateTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     @staticmethod
-    async def _wait_for_terminal(client, turn_id: str):
-        for _ in range(200):
-            payload = (await client.get(f"/turns/{turn_id}")).json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
+    async def _wait_for_terminal(container, run_id: str):
+        await wait_for_run_terminal(container, run_id)
 
     async def test_confirmed_memory_reaches_next_turn_system_message(self) -> None:
         extraction = json.dumps(
@@ -178,15 +182,16 @@ class MemoryInjectionGateTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider(["好的。", extraction, "我会记住你的偏好。"])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "请记住我喜欢本地优先。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "请记住我喜欢本地优先。",
+                idempotency_key="request-1",
             )
-            self.assertEqual(response.status_code, 202)
-            await self._wait_for_terminal(client, response.json()["turnId"])
+            await self._wait_for_terminal(container, handle["runId"])
 
             proposals = []
             for _ in range(200):
@@ -205,20 +210,24 @@ class MemoryInjectionGateTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(response.status_code, 200)
 
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-2"},
-                json={"content": "帮我选一个技术方向。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "帮我选一个技术方向。",
+                idempotency_key="request-2",
             )
-            self.assertEqual(response.status_code, 202)
-            await self._wait_for_terminal(client, response.json()["turnId"])
+            await self._wait_for_terminal(container, handle["runId"])
 
         second_turn_request = provider.requests[2]
-        system = second_turn_request.messages[0]
-        self.assertEqual(system.role, "system")
-        self.assertIn("- (preference) 用户偏好本地优先的方案。", system.content)
+        system_contents = "".join(
+            (message.content or "") for message in second_turn_request.messages
+        )
+        self.assertIn("[user_global] 用户偏好本地优先的方案。", system_contents)
         first_turn_request = provider.requests[0]
-        self.assertNotIn("长期记忆", first_turn_request.messages[0].content)
+        first_contents = "".join(
+            (message.content or "") for message in first_turn_request.messages
+        )
+        self.assertNotIn("用户偏好本地优先的方案。", first_contents)
 
 
 if __name__ == "__main__":

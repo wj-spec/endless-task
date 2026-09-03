@@ -229,7 +229,6 @@ class AgentRunExecutorCompactionTest(CompactionTestBase):
             tool_registry=ToolRegistry(),
             model="compaction-model",
             max_output_tokens=128,
-            max_model_turns=4,
             compaction_hook=service,
         )
 

@@ -7,8 +7,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from endless_task.proposals.budget import ProposalBudget
 from endless_task.storage import Database
+from endless_task.proposals.budget import ProposalBudget
 
 TZ = timezone(timedelta(hours=8))
 
@@ -139,6 +139,7 @@ class BudgetWiringTest(unittest.IsolatedAsyncioTestCase):
 
         from endless_task.api import AppSettings, create_app
         from endless_task.runtime import ProviderCompleted, ProviderTextDelta
+        from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 
         class RecordingProvider:
             name = "recording"
@@ -155,7 +156,6 @@ class BudgetWiringTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=self.database_path,
-                runtime="v1",
                 artifact_proposals_enabled=False,
                 task_proposals_enabled=False,
                 proposal_daily_budget=0,  # 预算归零：记忆/知识提取全部静默跳过
@@ -169,19 +169,15 @@ class BudgetWiringTest(unittest.IsolatedAsyncioTestCase):
             base_url="http://testserver",
         )
         try:
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "budget-1"},
-                json={"content": "记住，我喜欢喝绿茶，以后都按这个来。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "记住，我喜欢喝绿茶，以后都按这个来。",
+                idempotency_key="budget-1",
             )
-            turn_id = response.json()["turnId"]
-            for _ in range(60):
-                snapshot = (await client.get(f"/turns/{turn_id}")).json()
-                if snapshot["turnStatus"] in {"completed", "failed"}:
-                    break
-                await asyncio.sleep(0.2)
-            self.assertEqual(snapshot["turnStatus"], "completed")
+            await wait_for_run_terminal(container, handle["runId"])
             # 预算归零：不应触发任何记忆/知识提取调用（主回合回答调用除外）。
             extraction_calls = [
                 request

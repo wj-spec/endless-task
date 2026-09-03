@@ -19,6 +19,7 @@ from endless_task.storage import (
     SqliteMemoryProposalRepository,
     SqliteMemoryRepository,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 
@@ -42,7 +43,15 @@ class TextProvider:
 
 @asynccontextmanager
 async def local_client(database_path: Path, provider):
-    app = create_app(settings=AppSettings(database_path=database_path, runtime="v1", knowledge_proposals_enabled=False), provider=provider)
+    app = create_app(
+        settings=AppSettings(
+            database_path=database_path,
+            knowledge_proposals_enabled=False,
+            proposal_quiet_start="",
+            proposal_quiet_end="",
+        ),
+        provider=provider,
+    )
     lifespan = app.router.lifespan_context(app)
     await lifespan.__aenter__()
     client = httpx.AsyncClient(
@@ -50,7 +59,7 @@ async def local_client(database_path: Path, provider):
         base_url="http://testserver",
     )
     try:
-        yield client
+        yield client, app
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -170,13 +179,8 @@ class MemoryLifecycleGateTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     @staticmethod
-    async def _wait_for_terminal(client, turn_id: str):
-        for _ in range(200):
-            payload = (await client.get(f"/turns/{turn_id}")).json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
+    async def _wait_for_terminal(container, run_id: str):
+        await wait_for_run_terminal(container, run_id)
 
     async def test_superseded_memory_is_excluded_from_injection(self) -> None:
         database = Database(self.database_path)
@@ -198,15 +202,16 @@ class MemoryLifecycleGateTest(unittest.IsolatedAsyncioTestCase):
         )
         conflict = json.dumps({"superseded": [seeded.id]})
         provider = TextProvider(["好的。", extraction, conflict, "好的，按杭州来。"])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "我搬到杭州了，记住。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "我搬到杭州了，记住。",
+                idempotency_key="request-1",
             )
-            self.assertEqual(response.status_code, 202)
-            await self._wait_for_terminal(client, response.json()["turnId"])
+            await self._wait_for_terminal(container, handle["runId"])
 
             items = (
                 await client.get(
@@ -227,17 +232,19 @@ class MemoryLifecycleGateTest(unittest.IsolatedAsyncioTestCase):
             statuses = {item["id"]: item["status"] for item in response.json()["items"]}
             self.assertEqual(statuses[seeded.id], "expired")
 
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-2"},
-                json={"content": "我住哪儿？"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "我住哪儿？",
+                idempotency_key="request-2",
             )
-            self.assertEqual(response.status_code, 202)
-            await self._wait_for_terminal(client, response.json()["turnId"])
+            await self._wait_for_terminal(container, handle["runId"])
 
-        system = provider.requests[3].messages[0]
-        self.assertIn("- (fact) 用户住在杭州。", system.content)
-        self.assertNotIn("用户住在上海", system.content)
+        system = "".join(
+            (message.content or "") for message in provider.requests[3].messages
+        )
+        self.assertIn("[user_global] 用户住在杭州。", system)
+        self.assertNotIn("用户住在上海", system)
 
 
 if __name__ == "__main__":

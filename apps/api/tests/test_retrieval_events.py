@@ -160,39 +160,6 @@ class RetrievalEventApiTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(rejected.status_code, 400)
 
-    async def test_turn_citations_resolved_from_injection(self):
-        async with local_client(self.database_path) as client:
-            database = Database(self.database_path)
-            database.initialize()
-            repo = SqliteRetrievalEventRepository(database)
-            repo.record(
-                RetrievalEventKind.INJECTION,
-                "咖啡机怎么清洗",
-                turn_id="turn_9",
-                hit_counts={"source": 1},
-                detail={
-                    "citations": [
-                        {
-                            "label": "K1",
-                            "scope": "source",
-                            "refId": "ks_1",
-                            "title": "清洗规范",
-                            "snippet": "奶管清洗",
-                        }
-                    ]
-                },
-            )
-            response = await client.get("/turns/turn_9/citations")
-            items = response.json()["items"]
-            self.assertEqual(len(items), 1)
-            self.assertEqual(items[0]["label"], "K1")
-            self.assertEqual(items[0]["title"], "清洗规范")
-
-    async def test_turn_citations_empty_when_no_injection(self):
-        async with local_client(self.database_path) as client:
-            response = await client.get("/turns/turn_missing/citations")
-            self.assertEqual(response.json()["items"], [])
-
 
 if __name__ == "__main__":
     unittest.main()

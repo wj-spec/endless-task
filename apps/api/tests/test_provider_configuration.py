@@ -88,6 +88,28 @@ class ProviderConfigurationTest(unittest.TestCase):
             self.assertEqual("deepseek", settings.provider_name)
             self.assertEqual("custom-key", settings.api_key)
 
+    def test_tool_execution_limits_are_loaded_from_environment(self) -> None:
+        with isolated_cwd(), patch.dict(
+            os.environ,
+            {
+                "ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN": "6",
+                "ENDLESS_TASK_MAX_CONCURRENT_TOOL_CALLS": "3",
+                "ENDLESS_TASK_MAX_TOOL_ARGUMENT_BYTES": "1024",
+                "ENDLESS_TASK_MAX_TOTAL_TOOL_ARGUMENT_BYTES": "4096",
+                "ENDLESS_TASK_MAX_TOOL_ARGUMENT_DEPTH": "12",
+                "ENDLESS_TASK_MAX_TOOL_ARGUMENT_NODES": "500",
+            },
+            clear=True,
+        ):
+            settings = AppSettings.from_environment()
+
+        self.assertEqual(6, settings.max_tool_calls_per_turn)
+        self.assertEqual(3, settings.max_concurrent_tool_calls)
+        self.assertEqual(1024, settings.max_tool_argument_bytes)
+        self.assertEqual(4096, settings.max_total_tool_argument_bytes)
+        self.assertEqual(12, settings.max_tool_argument_depth)
+        self.assertEqual(500, settings.max_tool_argument_nodes)
+
     def test_fake_is_default_and_needs_no_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = AppSettings(database_path=Path(directory) / "app.db")

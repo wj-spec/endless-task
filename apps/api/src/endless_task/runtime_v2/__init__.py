@@ -43,7 +43,9 @@ from .execution import (
     ToolApprovalDecision,
     ToolApprovalGate,
     ToolExecutionCoordinator,
+    ToolExecutionLimits,
     ToolExecutionOutcome,
+    UnattendedToolApprovalGate,
     WaitingToolApprovalGate,
 )
 from .gateway import (
@@ -129,7 +131,9 @@ __all__ = [
     "ToolApprovalDecision",
     "ToolApprovalGate",
     "ToolExecutionCoordinator",
+    "ToolExecutionLimits",
     "ToolExecutionOutcome",
+    "UnattendedToolApprovalGate",
     "WaitingToolApprovalGate",
     "AgentRuntimeCapabilities",
     "AgentSessionConnection",

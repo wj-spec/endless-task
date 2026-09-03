@@ -33,6 +33,7 @@ from endless_task.storage import (
     SqliteKnowledgeProposalRepository,
     SqliteKnowledgeRepository,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 
@@ -62,11 +63,12 @@ async def local_client(database_path: Path, provider):
     app = create_app(
             settings=AppSettings(
                 database_path=database_path,
-                runtime="v1",
                 memory_proposals_enabled=False,
-            artifact_proposals_enabled=False,
-            task_proposals_enabled=False,
-        ),
+                artifact_proposals_enabled=False,
+                task_proposals_enabled=False,
+                proposal_quiet_start="",
+                proposal_quiet_end="",
+            ),
         provider=provider,
     )
     lifespan = app.router.lifespan_context(app)
@@ -76,7 +78,7 @@ async def local_client(database_path: Path, provider):
         base_url="http://testserver",
     )
     try:
-        yield client
+        yield client, app
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -336,14 +338,8 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
+    async def _wait_for_terminal(container, run_id: str):
+        await wait_for_run_terminal(container, run_id)
 
     @staticmethod
     async def _wait_for_proposals(client, conversation_id: str, count: int):
@@ -357,17 +353,18 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.005)
         raise AssertionError("Proposals did not appear in time")
 
-    async def _complete_turn(self, client, conversation_id: str, key: str, content: str):
-        response = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": key},
-            json={"content": content},
+    async def _complete_turn(
+        self, client, container, conversation_id: str, key: str, content: str
+    ):
+        handle = await send_message(
+            client,
+            conversation_id,
+            content,
+            idempotency_key=key,
         )
-        self.assertEqual(response.status_code, 202)
-        turn_id = response.json()["turnId"]
-        payload = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual(payload["turnStatus"], "completed")
-        return turn_id
+        run_id = handle["runId"]
+        await self._wait_for_terminal(container, run_id)
+        return run_id
 
     async def test_completed_turn_generates_proposal_and_resolve_flow(self) -> None:
         extraction = json.dumps(
@@ -384,16 +381,17 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            turn_id = await self._complete_turn(
-                client, conversation["id"], "request-1", "咖啡机用完必须清洗奶管，记一下。"
+            run_id = await self._complete_turn(
+                client, container, conversation["id"], "request-1", "咖啡机用完必须清洗奶管，记一下。"
             )
 
             items = await self._wait_for_proposals(client, conversation["id"], 1)
             self.assertEqual(items[0]["type"], "add_source")
             self.assertEqual(items[0]["status"], "pending")
-            self.assertEqual(items[0]["turnId"], turn_id)
+            self.assertEqual(items[0]["turnId"], run_id)
 
             pending = (await client.get("/proposals/pending")).json()["items"]
             self.assertTrue(
@@ -426,9 +424,10 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            await self._complete_turn(client, conversation["id"], "request-1", "聊聊。")
+            await self._complete_turn(client, container, conversation["id"], "request-1", "聊聊。")
             items = await self._wait_for_proposals(client, conversation["id"], 1)
             response = await client.post(
                 f"/knowledge-proposals/{items[0]['id']}/resolve",
@@ -439,40 +438,12 @@ class KnowledgeProposalGateTest(unittest.IsolatedAsyncioTestCase):
             listed = (await client.get("/knowledge-sources?status=active")).json()
             self.assertEqual(listed["items"], [])
 
-    async def test_ephemeral_conversation_skips_extraction(self) -> None:
-        extraction = json.dumps(
-            {
-                "proposals": [
-                    {"type": "add_source", "title": "T", "content": "C", "reason": "r"}
-                ]
-            },
-            ensure_ascii=False,
-        )
-        provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction, "好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", extraction])
-        async with local_client(self.database_path, provider) as client:
-            conversation = await create_bound_conversation(client)
-            turn_id = await self._complete_turn(
-                client, conversation["id"], "request-1", "聊聊。"
-            )
-            branch = (
-                await client.post(
-                    f"/conversations/{conversation['id']}/branches",
-                    json={"forkTurnId": turn_id},
-                )
-            ).json()["conversation"]
-            self.assertEqual(branch["kind"], "ephemeral")
-            await self._complete_turn(client, branch["id"], "request-2", "开小差。")
-            await asyncio.sleep(0.05)
-            response = await client.get(
-                f"/conversations/{branch['id']}/knowledge-proposals"
-            )
-            self.assertEqual(response.json()["items"], [])
-
     async def test_extraction_failure_does_not_affect_turn(self) -> None:
         provider = TextProvider(["好的，我已经完整了解这条规范的具体内容，也明白了它背后的原因，之后遇到相关问题时我会参考它来回答你。", "不应到达"], fail_from_index=1)
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            await self._complete_turn(client, conversation["id"], "request-1", "聊聊。")
+            await self._complete_turn(client, container, conversation["id"], "request-1", "聊聊。")
             await asyncio.sleep(0.05)
             response = await client.get(
                 f"/conversations/{conversation['id']}/knowledge-proposals"

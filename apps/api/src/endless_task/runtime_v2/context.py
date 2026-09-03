@@ -140,7 +140,9 @@ class ContextProjection:
         if entry.type is TranscriptEntryType.CONTEXT_SUMMARY:
             return ProviderMessage(role="system", content=self._content(entry))
         if entry.type is TranscriptEntryType.PLAN:
-            return ProviderMessage(role="system", content=self._content(entry))
+            from .plan_tool import render_plan
+
+            return ProviderMessage(role="system", content=render_plan(entry.payload))
         if entry.type is TranscriptEntryType.SYSTEM_NOTICE:
             return ProviderMessage(role="system", content=self._content(entry))
         if entry.type is TranscriptEntryType.TOOL_RESULT:

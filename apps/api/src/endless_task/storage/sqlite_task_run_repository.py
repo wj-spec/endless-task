@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Callable, Optional, Sequence
 
 from endless_task.domain.models import (
@@ -10,6 +11,7 @@ from endless_task.domain.models import (
     TaskRunTrigger,
 )
 from endless_task.domain.repositories import (
+    ConflictError,
     InvalidStateError,
     NotFoundError,
     ValidationError,
@@ -59,31 +61,61 @@ class SqliteTaskRunRepository:
         conversation_id: str,
         attempt: int = 1,
     ) -> TaskRun:
+        return self.claim_run(
+            task_id=task_id,
+            trigger=trigger,
+            conversation_id=conversation_id,
+            attempt=attempt,
+        )
+
+    def claim_run(
+        self,
+        *,
+        task_id: str,
+        trigger: TaskRunTrigger,
+        conversation_id: str,
+        attempt: int = 1,
+    ) -> TaskRun:
         if not task_id.strip() or not conversation_id.strip():
             raise ValidationError("Task run task and conversation are required.")
         if attempt < 1:
             raise ValidationError("Task run attempt must be positive.")
         now = self._clock()
         run_id = self._id_factory("taskrun")
-        with self._database.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO task_runs (
-                    id, task_id, trigger, status, conversation_id,
-                    started_at, attempt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    task_id.strip(),
-                    trigger.value,
-                    TaskRunStatus.RUNNING.value,
-                    conversation_id.strip(),
-                    now,
-                    attempt,
-                ),
-            )
-        return self.get_run(run_id)
+        try:
+            with self._database.transaction() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO task_runs (
+                        id, task_id, trigger, status, conversation_id,
+                        started_at, attempt
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        task_id.strip(),
+                        trigger.value,
+                        TaskRunStatus.RUNNING.value,
+                        conversation_id.strip(),
+                        now,
+                        attempt,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM task_runs WHERE id = ?", (run_id,)
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise self._constraint_error(error) from error
+        if row is None:
+            raise NotFoundError(f"Task run not found: {run_id}")
+        return task_run_from_row(row)
+
+    @staticmethod
+    def _constraint_error(error: sqlite3.IntegrityError) -> InvalidStateError | ConflictError:
+        message = str(error)
+        if "task_runs.task_id" in message:
+            return InvalidStateError("This task is already running.")
+        return ConflictError(message)
 
     def get_run(self, run_id: str) -> TaskRun:
         with self._database.connect() as connection:

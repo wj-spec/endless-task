@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from typing import AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Sequence
 
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.runtime.fake_provider import FakeProvider
@@ -24,16 +24,18 @@ from endless_task.runtime_v2 import (
     ModelTurnStatus,
     RunStatus,
     RuntimeV2ReplayService,
-    SafetyStopPolicy,
     StaticToolApprovalGate,
     ToolApprovalDecision,
+    ToolExecutionLimits,
     ToolExecutionStatus,
     TranscriptEntryType,
+    UnattendedToolApprovalGate,
 )
 from endless_task.storage import Database, SqliteChatRepository, SqliteRuntimeV2Repository
 from endless_task.tooling import (
     ToolApprovalMode,
     ToolCall,
+    ToolCallError,
     ToolDefinition,
     ToolEffect,
     ToolError,
@@ -83,12 +85,36 @@ class PausedProvider:
         cancellation_token.raise_if_cancelled()
 
 
+class RepeatingReadProvider:
+    """无限生成只读工具调用的 Provider，用于验证墙钟 watchdog 兜底。"""
+
+    name = "repeating"
+
+    def __init__(self) -> None:
+        self.requests: list[ProviderRequest] = []
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        cancellation_token: CancellationToken,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.requests.append(request)
+        yield ProviderToolCall(
+            id=f"call_{len(self.requests)}",
+            name="read_file",
+            arguments={"path": "a.txt"},
+        )
+        yield ProviderCompleted(finish_reason="tool_calls")
+        cancellation_token.raise_if_cancelled()
+
+
 class FakeTool:
     def __init__(
         self,
         name: str = "read_file",
         *,
         content: str = "file content",
+        structured_content: Any = None,
         delay: float = 0.0,
         effect: ToolEffect = ToolEffect.READ_ONLY,
         approval_mode: ToolApprovalMode = ToolApprovalMode.AUTO,
@@ -107,18 +133,30 @@ class FakeTool:
             timeout_seconds=2.0,
         )
         self.content = content
+        self.structured_content = structured_content
         self.delay = delay
         self.calls: list[ToolCall] = []
         self.started_at: list[float] = []
         self.finished_at: list[float] = []
+        self.active_calls = 0
+        self.max_active_calls = 0
 
     async def execute(self, call: ToolCall, cancellation_token: CancellationToken):
         del cancellation_token
         self.calls.append(call)
         self.started_at.append(asyncio.get_running_loop().time())
-        await asyncio.sleep(self.delay)
-        self.finished_at.append(asyncio.get_running_loop().time())
-        return ToolResult(tool_call_id=call.id, content=self.content)
+        self.active_calls += 1
+        self.max_active_calls = max(self.max_active_calls, self.active_calls)
+        try:
+            await asyncio.sleep(self.delay)
+            return ToolResult(
+                tool_call_id=call.id,
+                content=self.content,
+                structured_content=self.structured_content,
+            )
+        finally:
+            self.active_calls -= 1
+            self.finished_at.append(asyncio.get_running_loop().time())
 
     def requires_explicit_confirmation(self, call: ToolCall) -> bool:
         del call
@@ -161,18 +199,60 @@ class PausedTool(FakeTool):
         cancellation_token.raise_if_cancelled()
 
 
-class FailingTool(FakeTool):
-    def __init__(self) -> None:
-        super().__init__("failing_read")
+class CancellationDuringPreparationTool(FakeTool):
+    def __init__(self, token: CancellationToken) -> None:
+        super().__init__("cancel_during_prepare")
+        self._token = token
+
+    def requires_explicit_confirmation(self, call: ToolCall) -> bool:
+        del call
+        self._token.cancel()
+        return False
+
+
+class NormalizedFailureTool:
+    def __init__(self, name: str, *, return_failure: bool) -> None:
+        self.definition = ToolDefinition(
+            name=name,
+            description="Return a normalized failure",
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            max_output_characters=4,
+        )
+        self.return_failure = return_failure
 
     async def execute(self, call: ToolCall, cancellation_token: CancellationToken):
-        del cancellation_token
-        self.calls.append(call)
-        raise ToolError(
-            "tool_failed",
-            "模拟工具失败。",
+        cancellation_token.raise_if_cancelled()
+        failure = ToolCallError(
+            code="temporary_unavailable",
+            safe_message="工具暂时不可用。",
             retryable=True,
+            correlation_id="corr_tool_failure",
+            path="$.path",
+            keyword="available",
+            expected=True,
         )
+        if self.return_failure:
+            return ToolResult.failed(tool_call_id=call.id, error=failure)
+        raise ToolError(
+            failure.code,
+            failure.safe_message,
+            retryable=failure.retryable,
+            correlation_id=failure.correlation_id,
+            path=failure.path,
+            keyword=failure.keyword,
+            expected=failure.expected,
+        )
+
+
+class UnexpectedFailureTool(FakeTool):
+    async def execute(self, call: ToolCall, cancellation_token: CancellationToken):
+        del call, cancellation_token
+        raise RuntimeError("internal database password: do-not-leak")
 
 
 class StaticCompactionHook:
@@ -246,7 +326,9 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
                 ),
             ]
         )
-        tool = FakeTool()
+        tool = FakeTool(
+            structured_content=["alpha", {"count": 2}, None]
+        )
         registry = ToolRegistry()
         registry.register(tool)
         executor = AgentRunExecutor(
@@ -286,6 +368,10 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             tuple(entry.type for entry in entries),
         )
         self.assertEqual(trigger.id, entries[1].parent_id)
+        self.assertEqual(
+            ["alpha", {"count": 2}, None],
+            entries[2].payload["structuredContent"],
+        )
         self.assertEqual(result.assistant_entry_id, entries[-1].id)
         self.assertEqual(run.id, entries[-1].source_run_id)
         self.assertEqual(
@@ -365,29 +451,31 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
         self.assertEqual(RunStatus.COMPLETED, replay.derived_status)
         self.assertEqual((), replay.warnings)
 
-    def test_max_model_turns_safety_stop_persists_terminal_state(self) -> None:
-        _, lane, _, run = self._create_run()
+    def test_read_only_exploration_continues_without_no_deliverable_stop(self) -> None:
+        # 与 pi 对齐：v2 不再设「只读不交付」「连续空回」「重复调用」等计数式安全停止。
+        # 模型连续只读探索即便远超旧的无交付阈值（旧实现默认 6 轮即停），也应由模型自行
+        # 收敛、在产出最终回答时交付，而不是被安全策略截停。这里用 6 轮只读 + 1 轮最终文本。
+        _, _, _, run = self._create_run()
         provider = ScriptedProvider(
             [
                 (
                     ProviderToolCall(
-                        id="call_1",
-                        name="read_file",
-                        arguments={"path": "one.txt"},
+                        id=f"call_{index}",
+                        name="read_text_file",
+                        arguments={"path": f"{index}.txt"},
                     ),
                     ProviderCompleted(finish_reason="tool_calls"),
-                ),
+                )
+                for index in range(1, 7)
+            ]
+            + [
                 (
-                    ProviderToolCall(
-                        id="call_2",
-                        name="read_file",
-                        arguments={"path": "two.txt"},
-                    ),
-                    ProviderCompleted(finish_reason="tool_calls"),
-                ),
+                    ProviderTextDelta("收集完毕，以下为结论。"),
+                    ProviderCompleted(finish_reason="stop"),
+                )
             ]
         )
-        tool = FakeTool()
+        tool = FakeTool(name="read_text_file")
         registry = ToolRegistry()
         registry.register(tool)
         executor = AgentRunExecutor(
@@ -395,18 +483,292 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             provider=provider,
             tool_registry=registry,
             model="scripted-model",
-            max_model_turns=2,
         )
 
         result = asyncio.run(
             executor.execute(run.id, cancellation_token=CancellationToken())
         )
 
-        self.assertEqual(RunStatus.FAILED, result.status)
-        self.assertEqual("max_model_turns", self.repository.get_run(run.id).error_code)
-        self.assertEqual(2, len(result.model_turn_ids))
-        self.assertEqual(2, len(provider.requests))
-        self.assertEqual(5, len(self.repository.list_entries(lane.id)))
+        # 未被旧的无交付阈值（6 轮）截停，模型收敛后正常完成。
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual(7, len(result.model_turn_ids))
+        self.assertEqual(7, len(provider.requests))
+        self.assertEqual("收集完毕，以下为结论。", result.content)
+        self.assertIsNone(self.repository.get_run(run.id).error_code)
+
+    def test_malformed_tool_arguments_are_recovered_not_fatal(self) -> None:
+        # 健壮性：模型返回的工具参数不是有效 JSON 时，不再把整个 run 判为致命错误
+        # （旧行为：回答失败 invalid_tool_arguments）。改为记录一次失败的工具调用并把
+        # 错误反馈给模型，run 继续，模型在下一轮修正后可正常交付。
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_bad",
+                        name="read_text_file",
+                        arguments={},
+                        parse_error="模型返回的工具参数不是有效 JSON。",
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("我修正了参数，以下是内容。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        tool = FakeTool(name="read_text_file")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        # run 没有被判失败，而是继续走到模型交付。
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual("我修正了参数，以下是内容。", result.content)
+        self.assertIsNone(self.repository.get_run(run.id).error_code)
+        # 出错的那次工具调用被记录为 failed，并把错误反馈给了模型。
+        tool_executions = self.repository.list_tool_executions(
+            result.model_turn_ids[0]
+        )
+        self.assertEqual(1, len(tool_executions))
+        self.assertEqual(ToolExecutionStatus.FAILED, tool_executions[0].status)
+        self.assertEqual("invalid_tool_arguments", tool_executions[0].error_code)
+        self.assertIn(
+            "不是有效 JSON",
+            (tool_executions[0].safe_message or ""),
+        )
+
+    def test_returned_and_raised_failures_share_persisted_contract(self) -> None:
+        for return_failure in (False, True):
+            with self.subTest(return_failure=return_failure):
+                _, lane, _, run = self._create_run()
+                provider = ScriptedProvider(
+                    [
+                        (
+                            ProviderToolCall(
+                                id=f"call_failure_{return_failure}",
+                                name="normalized_failure",
+                                arguments={"path": "a.txt"},
+                            ),
+                            ProviderCompleted(finish_reason="tool_calls"),
+                        ),
+                        (
+                            ProviderTextDelta("已处理失败。"),
+                            ProviderCompleted(finish_reason="stop"),
+                        ),
+                    ]
+                )
+                registry = ToolRegistry()
+                registry.register(
+                    NormalizedFailureTool(
+                        "normalized_failure",
+                        return_failure=return_failure,
+                    )
+                )
+                executor = AgentRunExecutor(
+                    repository=self.repository,
+                    provider=provider,
+                    tool_registry=registry,
+                    model="scripted-model",
+                )
+
+                result = asyncio.run(
+                    executor.execute(
+                        run.id,
+                        cancellation_token=CancellationToken(),
+                    )
+                )
+
+                self.assertEqual(RunStatus.COMPLETED, result.status)
+                execution = self.repository.list_tool_executions(
+                    result.model_turn_ids[0]
+                )[0]
+                self.assertEqual(ToolExecutionStatus.FAILED, execution.status)
+                self.assertEqual("temporary_unavailable", execution.error_code)
+                self.assertEqual("工具暂时不可用。", execution.safe_message)
+                self.assertTrue(execution.retryable)
+                self.assertEqual("corr_tool_failure", execution.correlation_id)
+                self.assertEqual(
+                    {
+                        "path": "$.path",
+                        "keyword": "available",
+                        "expected": True,
+                    },
+                    execution.error_details,
+                )
+
+                result_entry = next(
+                    entry
+                    for entry in self.repository.list_entries(lane.id)
+                    if entry.id == execution.result_entry_id
+                )
+                self.assertEqual(True, result_entry.payload["retryable"])
+                self.assertEqual(
+                    "corr_tool_failure",
+                    result_entry.payload["correlationId"],
+                )
+                self.assertEqual(execution.error_details, result_entry.payload["errorDetails"])
+
+                failed_event = next(
+                    event
+                    for event in self.repository.list_runtime_events(run.id)
+                    if event.event_type == "tool_execution_failed"
+                )
+                self.assertEqual(True, failed_event.payload["retryable"])
+                self.assertEqual(
+                    "corr_tool_failure",
+                    failed_event.payload["correlationId"],
+                )
+                model_feedback = provider.requests[1].messages[-1].content
+                self.assertIn("temporary_unavailable", model_feedback)
+                self.assertIn("$.path", model_feedback)
+                self.assertIn("调整参数后重试", model_feedback)
+                self.assertGreater(len(model_feedback), 4)
+
+    def test_schema_failure_preserves_actionable_validation_details(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_invalid_schema",
+                        name="read_file",
+                        arguments={"path": 42},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("已修正参数。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        execution = self.repository.list_tool_executions(
+            result.model_turn_ids[0]
+        )[0]
+        self.assertEqual("invalid_tool_arguments", execution.error_code)
+        self.assertTrue(execution.retryable)
+        self.assertEqual(
+            {"path": "$.path", "keyword": "type", "expected": "string"},
+            execution.error_details,
+        )
+        model_feedback = provider.requests[1].messages[-1].content
+        self.assertIn("$.path", model_feedback)
+        self.assertIn("规则：type", model_feedback)
+        self.assertIn('期望："string"', model_feedback)
+
+    def test_unexpected_tool_exception_is_safely_redacted(self) -> None:
+        _, lane, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_crash",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("已安全处理。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        registry = ToolRegistry()
+        registry.register(UnexpectedFailureTool())
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+        )
+
+        with self.assertLogs("endless_task.runtime_v2.execution", level="ERROR"):
+            result = asyncio.run(
+                executor.execute(run.id, cancellation_token=CancellationToken())
+            )
+
+        execution = self.repository.list_tool_executions(
+            result.model_turn_ids[0]
+        )[0]
+        self.assertEqual("tool_execution_failed", execution.error_code)
+        self.assertEqual("工具执行出现内部错误。", execution.safe_message)
+        self.assertFalse(execution.retryable)
+        self.assertEqual(run.correlation_id, execution.correlation_id)
+        persisted = str(self.repository.list_entries(lane.id))
+        events = str(self.repository.list_runtime_events(run.id))
+        model_feedback = provider.requests[1].messages[-1].content
+        for exposed in (persisted, events, model_feedback):
+            self.assertNotIn("do-not-leak", exposed)
+            self.assertNotIn("database password", exposed)
+
+    def test_agent_loop_runs_until_model_delivers_final_answer(self) -> None:
+        # 连续有工具动作的轮次应继续执行，直到模型交付最终文本。
+        _, lane, _, run = self._create_run()
+        responses = [
+            (
+                ProviderToolCall(
+                    id=f"call_{index}",
+                    name="write_file",
+                    arguments={"path": f"{index}.txt"},
+                ),
+                ProviderCompleted(finish_reason="tool_calls"),
+            )
+            for index in range(1, 5)
+        ]
+        # 最后一个模型回合：无工具调用 → 交付最终文本 → 完成。
+        responses.append(
+            (
+                ProviderTextDelta("已完成。"),
+                ProviderCompleted(finish_reason="stop"),
+            )
+        )
+        provider = ScriptedProvider(responses)
+        # 注意：FakeTool 的 schema 只接受 path 参数，故写调用用 path。
+        tool = FakeTool(name="write_file", effect=ToolEffect.LOCAL_WRITE, approval_mode=ToolApprovalMode.REQUIRED)
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            approval_gate=StaticToolApprovalGate(ToolApprovalDecision.APPROVE),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        # 走完 5 个模型回合（4 个工具轮次 + 1 个最终文本轮次）。
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual(5, len(result.model_turn_ids))
+        self.assertEqual(5, len(provider.requests))
+        self.assertEqual("已完成。", result.content)
 
     def test_parallel_tool_batch_preserves_source_order(self) -> None:
         _, lane, _, run = self._create_run()
@@ -464,6 +826,168 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
         self.assertEqual(("slow result", "fast result"), tuple(
             entry.payload["content"] for entry in tool_results
         ))
+
+    def test_tool_batch_at_call_limit_respects_concurrency_limit(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                tuple(
+                    [
+                        ProviderToolCall(
+                            id=f"call_{index}",
+                            name="limited_read",
+                            arguments={"path": f"{index}.txt"},
+                        )
+                        for index in range(4)
+                    ]
+                    + [ProviderCompleted(finish_reason="tool_calls")]
+                ),
+                (
+                    ProviderTextDelta("批次已完成。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        tool = FakeTool("limited_read", delay=0.02)
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            tool_execution_limits=ToolExecutionLimits(
+                max_calls_per_turn=4,
+                max_concurrent_calls=2,
+            ),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual(4, len(tool.calls))
+        self.assertEqual(2, tool.max_active_calls)
+
+    def test_tool_batch_over_call_limit_stops_before_persistence(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                tuple(
+                    [
+                        ProviderToolCall(
+                            id=f"call_{index}",
+                            name="limited_read",
+                            arguments={"path": f"{index}.txt"},
+                        )
+                        for index in range(3)
+                    ]
+                    + [ProviderCompleted(finish_reason="tool_calls")]
+                )
+            ]
+        )
+        tool = FakeTool("limited_read")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            tool_execution_limits=ToolExecutionLimits(max_calls_per_turn=2),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual("tool_call_limit_exceeded", result.run.error_code)
+        self.assertEqual(0, len(tool.calls))
+        self.assertEqual(
+            (),
+            self.repository.list_tool_executions(result.model_turn_ids[0]),
+        )
+
+    def test_oversized_tool_arguments_stop_before_persistence(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_large",
+                        name="limited_read",
+                        arguments={"path": "x" * 100},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                )
+            ]
+        )
+        tool = FakeTool("limited_read")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            tool_execution_limits=ToolExecutionLimits(
+                max_argument_bytes=32,
+                max_total_argument_bytes=32,
+            ),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual("tool_argument_limit_exceeded", result.run.error_code)
+        self.assertEqual(
+            (),
+            self.repository.list_tool_executions(result.model_turn_ids[0]),
+        )
+
+    def test_deeply_nested_tool_arguments_stop_before_persistence(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_deep",
+                        name="limited_read",
+                        arguments={"path": {"a": {"b": "value"}}},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                )
+            ]
+        )
+        tool = FakeTool("limited_read")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            tool_execution_limits=ToolExecutionLimits(
+                max_argument_bytes=1_000,
+                max_total_argument_bytes=1_000,
+                max_argument_depth=3,
+            ),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual("tool_argument_limit_exceeded", result.run.error_code)
+        self.assertEqual(
+            (),
+            self.repository.list_tool_executions(result.model_turn_ids[0]),
+        )
 
     def test_side_effect_tool_waits_for_approval(self) -> None:
         _, _, _, run = self._create_run()
@@ -550,6 +1074,52 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             self.repository.list_tool_executions(result.model_turn_ids[0])[0].status,
         )
 
+    def test_unattended_gate_denies_required_tool_without_executing_it(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_write",
+                        name="write_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("该操作需要人工批准，未执行。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        tool = FakeTool(
+            "write_file",
+            effect=ToolEffect.LOCAL_WRITE,
+            approval_mode=ToolApprovalMode.REQUIRED,
+        )
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            approval_gate=UnattendedToolApprovalGate(),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual([], tool.calls)
+        execution = self.repository.list_tool_executions(
+            result.model_turn_ids[0]
+        )[0]
+        self.assertEqual(ToolExecutionStatus.REJECTED, execution.status)
+        self.assertEqual("approval_denied", execution.error_code)
+        self.assertIn("未授权", provider.requests[1].messages[-1].content)
+
     def test_steering_is_injected_at_next_model_turn(self) -> None:
         _, _, _, run = self._create_run()
         provider = ScriptedProvider(
@@ -634,47 +1204,6 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
         self.assertIn("run_cancel_requested", event_types)
         self.assertIn("run_cancelled", event_types)
 
-    def test_duplicate_tool_signature_safety_stop(self) -> None:
-        _, _, _, run = self._create_run()
-        repeated_call = ProviderToolCall(
-            id="call_1",
-            name="read_file",
-            arguments={"path": "a.txt"},
-        )
-        provider = ScriptedProvider(
-            [
-                (
-                    repeated_call,
-                    ProviderCompleted(finish_reason="tool_calls", input_tokens=10, output_tokens=2),
-                ),
-                (
-                    repeated_call,
-                    ProviderCompleted(finish_reason="tool_calls", input_tokens=12, output_tokens=2),
-                ),
-            ]
-        )
-        tool = FakeTool()
-        registry = ToolRegistry()
-        registry.register(tool)
-        executor = AgentRunExecutor(
-            repository=self.repository,
-            provider=provider,
-            tool_registry=registry,
-            model="scripted-model",
-        )
-
-        result = asyncio.run(
-            executor.execute(run.id, cancellation_token=CancellationToken())
-        )
-
-        self.assertEqual(RunStatus.FAILED, result.status)
-        self.assertEqual("duplicate_tool_signature", result.run.error_code)
-        event_types = tuple(
-            event.event_type
-            for event in self.repository.list_runtime_events(run.id)
-        )
-        self.assertIn("safety_stop", event_types)
-
     def test_cancellation_during_tool_execution_persists_terminal_tool_state(self) -> None:
         _, _, _, run = self._create_run()
         provider = ScriptedProvider(
@@ -684,6 +1213,11 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
                         id="call_paused",
                         name="paused_read",
                         arguments={"path": "a.txt"},
+                    ),
+                    ProviderToolCall(
+                        id="call_queued",
+                        name="paused_read",
+                        arguments={"path": "b.txt"},
                     ),
                     ProviderCompleted(finish_reason="tool_calls", input_tokens=10, output_tokens=2),
                 ),
@@ -697,6 +1231,7 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             provider=provider,
             tool_registry=registry,
             model="scripted-model",
+            tool_execution_limits=ToolExecutionLimits(max_concurrent_calls=1),
         )
         token = CancellationToken()
 
@@ -712,59 +1247,50 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             ModelTurnStatus.CANCELLED,
             self.repository.get_model_turn(result.model_turn_ids[0]).status,
         )
-        tool_execution = self.repository.list_tool_executions(
+        tool_executions = self.repository.list_tool_executions(
             result.model_turn_ids[0]
-        )[0]
-        self.assertEqual(ToolExecutionStatus.CANCELLED, tool_execution.status)
-        self.assertIsNotNone(tool_execution.result_entry_id)
+        )
+        self.assertEqual(2, len(tool_executions))
+        self.assertEqual(
+            (ToolExecutionStatus.CANCELLED, ToolExecutionStatus.CANCELLED),
+            tuple(execution.status for execution in tool_executions),
+        )
+        self.assertTrue(
+            all(execution.result_entry_id is not None for execution in tool_executions)
+        )
         replay = RuntimeV2ReplayService(self.repository).replay_run(run.id)
         self.assertEqual(RunStatus.CANCELLED, replay.derived_status)
         self.assertEqual(ModelTurnStatus.CANCELLED, replay.model_turns[0].derived_status)
         self.assertEqual(
-            ToolExecutionStatus.CANCELLED,
-            replay.model_turns[0].tool_executions[0].derived_status,
+            (ToolExecutionStatus.CANCELLED, ToolExecutionStatus.CANCELLED),
+            tuple(
+                execution.derived_status
+                for execution in replay.model_turns[0].tool_executions
+            ),
         )
         self.assertEqual((), replay.warnings)
 
-    def test_no_progress_safety_stop(self) -> None:
+    def test_cancellation_during_tool_batch_preparation_persists_terminal_tool_state(self) -> None:
         _, _, _, run = self._create_run()
-        provider = ScriptedProvider(
-            [
-                (ProviderCompleted(finish_reason="stop"),),
-                (ProviderCompleted(finish_reason="stop"),),
-            ]
-        )
-        executor = AgentRunExecutor(
-            repository=self.repository,
-            provider=provider,
-            tool_registry=ToolRegistry(),
-            model="scripted-model",
-            safety_policy=SafetyStopPolicy(max_consecutive_empty_model_turns=2),
-        )
-
-        result = asyncio.run(
-            executor.execute(run.id, cancellation_token=CancellationToken())
-        )
-
-        self.assertEqual(RunStatus.FAILED, result.status)
-        self.assertEqual("no_progress", result.run.error_code)
-
-    def test_consecutive_tool_failures_safety_stop(self) -> None:
-        _, _, _, run = self._create_run()
+        token = CancellationToken()
         provider = ScriptedProvider(
             [
                 (
                     ProviderToolCall(
-                        id=f"call_{index}",
-                        name="failing_read",
-                        arguments={"path": f"{index}.txt"},
+                        id="call_first",
+                        name="cancel_during_prepare",
+                        arguments={"path": "a.txt"},
                     ),
-                    ProviderCompleted(finish_reason="tool_calls", input_tokens=10, output_tokens=2),
-                )
-                for index in range(1, 4)
+                    ProviderToolCall(
+                        id="call_second",
+                        name="cancel_during_prepare",
+                        arguments={"path": "b.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
             ]
         )
-        tool = FailingTool()
+        tool = CancellationDuringPreparationTool(token)
         registry = ToolRegistry()
         registry.register(tool)
         executor = AgentRunExecutor(
@@ -774,13 +1300,68 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             model="scripted-model",
         )
 
+        result = asyncio.run(executor.execute(run.id, cancellation_token=token))
+
+        self.assertEqual(RunStatus.CANCELLED, result.status)
+        self.assertEqual(0, len(tool.calls))
+        tool_executions = self.repository.list_tool_executions(
+            result.model_turn_ids[0]
+        )
+        self.assertEqual(2, len(tool_executions))
+        self.assertEqual(
+            (ToolExecutionStatus.CANCELLED, ToolExecutionStatus.CANCELLED),
+            tuple(execution.status for execution in tool_executions),
+        )
+        self.assertTrue(
+            all(execution.result_entry_id is not None for execution in tool_executions)
+        )
+
+    def test_wallclock_watchdog_stops_in_flight_provider(self) -> None:
+        _, _, _, run = self._create_run()
+        provider = PausedProvider()
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=ToolRegistry(),
+            model="paused-model",
+            agent_timeout_seconds=0.02,
+        )
+
         result = asyncio.run(
             executor.execute(run.id, cancellation_token=CancellationToken())
         )
 
         self.assertEqual(RunStatus.FAILED, result.status)
-        self.assertEqual("consecutive_tool_failures", result.run.error_code)
-        self.assertEqual(3, len(tool.calls))
+        self.assertEqual("agent_timeout", result.run.error_code)
+        self.assertEqual(
+            ModelTurnStatus.CANCELLED,
+            self.repository.get_model_turn(result.model_turn_ids[0]).status,
+        )
+
+    def test_wallclock_watchdog_stops_hung_loop(self) -> None:
+        # 与 pi 对齐后仅保留墙钟 watchdog（防「承诺永不返回」的极端卡死），
+        # 不再有任何计数式分数停止。模型一旦陷入无限只读循环，watchdog 兜底停止。
+        _, _, _, run = self._create_run()
+        provider = RepeatingReadProvider()
+        tool = FakeTool(name="read_file")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            agent_timeout_seconds=0.05,
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual("agent_timeout", result.run.error_code)
+        # watchdog 兜底停止：确实跑了几轮，但被墙钟上限截断而非模型收敛。
+        self.assertGreater(len(provider.requests), 0)
 
     def test_provider_error_terminates_run_with_safe_error(self) -> None:
         _, _, _, run = self._create_run()

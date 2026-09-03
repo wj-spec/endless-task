@@ -18,11 +18,13 @@ from endless_task.runtime import (
     ProviderError,
     ProviderTextDelta,
 )
+from endless_task.runtime_v2 import RunStatus
 from endless_task.storage import (
     Database,
     SqliteMemoryProposalRepository,
     SqliteMemoryRepository,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 
@@ -49,7 +51,15 @@ class TextProvider:
 
 @asynccontextmanager
 async def local_client(database_path: Path, provider):
-    app = create_app(settings=AppSettings(database_path=database_path, runtime="v1", knowledge_proposals_enabled=False), provider=provider)
+    app = create_app(
+        settings=AppSettings(
+            database_path=database_path,
+            knowledge_proposals_enabled=False,
+            proposal_quiet_start="",
+            proposal_quiet_end="",
+        ),
+        provider=provider,
+    )
     lifespan = app.router.lifespan_context(app)
     await lifespan.__aenter__()
     client = httpx.AsyncClient(
@@ -57,7 +67,7 @@ async def local_client(database_path: Path, provider):
         base_url="http://testserver",
     )
     try:
-        yield client
+        yield client, app
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -355,14 +365,8 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
+    async def _wait_for_terminal(container, run_id: str):
+        return await wait_for_run_terminal(container, run_id)
 
     async def _wait_for_proposals(self, client, conversation_id: str, count: int):
         for _ in range(200):
@@ -389,22 +393,23 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider(["好的，我了解你的偏好了。", extraction])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "请记住我喜欢本地优先的方案。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "请记住我喜欢本地优先的方案。",
+                idempotency_key="request-1",
             )
-            self.assertEqual(response.status_code, 202)
-            turn_id = response.json()["turnId"]
-            payload = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual(payload["turnStatus"], "completed")
+            run_id = handle["runId"]
+            status = await self._wait_for_terminal(container, run_id)
+            self.assertIs(status, RunStatus.COMPLETED)
 
             items = await self._wait_for_proposals(client, conversation["id"], 1)
             self.assertEqual(items[0]["content"], "用户偏好本地优先的方案。")
             self.assertEqual(items[0]["status"], "pending")
-            self.assertEqual(items[0]["turnId"], turn_id)
+            self.assertEqual(items[0]["turnId"], run_id)
 
             self.assertEqual(len(provider.requests), 2)
             extraction_request = provider.requests[1]
@@ -421,18 +426,17 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
         provider = TextProvider(
             ["好的。", "不应到达"], fail_from_index=1
         )
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "记住我喜欢猫。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "记住我喜欢猫。",
+                idempotency_key="request-1",
             )
-            self.assertEqual(response.status_code, 202)
-            payload = await self._wait_for_terminal(
-                client, response.json()["turnId"]
-            )
-            self.assertEqual(payload["turnStatus"], "completed")
+            status = await self._wait_for_terminal(container, handle["runId"])
+            self.assertIs(status, RunStatus.COMPLETED)
 
             await asyncio.sleep(0.05)
             response = await client.get(
@@ -455,15 +459,16 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider(["好的。", extraction])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "请记住我喜欢本地优先的方案。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "请记住我喜欢本地优先的方案。",
+                idempotency_key="request-1",
             )
-            self.assertEqual(response.status_code, 202)
-            await self._wait_for_terminal(client, response.json()["turnId"])
+            await self._wait_for_terminal(container, handle["runId"])
             items = await self._wait_for_proposals(client, conversation["id"], 1)
             proposal_id = items[0]["id"]
 
@@ -506,15 +511,16 @@ class MemoryProposalGateTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider(["好的。", extraction])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
+            container = app.state.container
             conversation = await create_bound_conversation(client)
-            response = await client.post(
-                f"/conversations/{conversation['id']}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "我在上海工作。"},
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "我在上海工作。",
+                idempotency_key="request-1",
             )
-            self.assertEqual(response.status_code, 202)
-            await self._wait_for_terminal(client, response.json()["turnId"])
+            await self._wait_for_terminal(container, handle["runId"])
             items = await self._wait_for_proposals(client, conversation["id"], 1)
 
             response = await client.post(

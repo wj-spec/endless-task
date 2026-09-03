@@ -107,7 +107,7 @@ class ReadSkillFileTool:
         token.raise_if_cancelled()
         roots = self._skill_root_provider(call.conversation_id)
         resolved = resolve_external_read_path(
-            roots, str(call.arguments["path"])
+            roots, call.require_argument("path", str)
         )
         if not resolved.canonical.exists():
             raise ToolError("path_not_found", f"技能文件不存在。", retryable=False)
@@ -122,8 +122,8 @@ class ReadSkillFileTool:
             )
         text = _decode_utf8(raw)
         lines = text.splitlines() or [""]
-        start_line = int(call.arguments.get("start_line", 1))
-        line_count = int(call.arguments.get("line_count", 120))
+        start_line = call.optional_argument("start_line", int, 1)
+        line_count = call.optional_argument("line_count", int, 120)
         if start_line > len(lines):
             raise ToolError(
                 "file_line_out_of_range",
@@ -191,7 +191,7 @@ class ReadWorkspaceFileTool:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
         resolved = resolve_read_path_with_variants(
-            binding.root, str(call.arguments["path"])
+            binding.root, call.require_argument("path", str)
         )
         if not resolved.canonical.exists():
             raise ToolError(
@@ -214,8 +214,8 @@ class ReadWorkspaceFileTool:
             )
         text = _decode_utf8(raw)
         lines = text.splitlines() or [""]
-        start_line = int(call.arguments.get("start_line", 1))
-        line_count = int(call.arguments.get("line_count", 120))
+        start_line = call.optional_argument("start_line", int, 1)
+        line_count = call.optional_argument("line_count", int, 120)
         if start_line > len(lines):
             raise ToolError(
                 "file_line_out_of_range",
@@ -248,7 +248,7 @@ class WriteWorkspaceFileTool:
         name="write_workspace_file",
         description=(
             "在工作区根内写入或覆盖一个 UTF-8 文本文件。path 为相对工作区根的路径；"
-            "会创建缺失的父目录。此操作需要用户确认。"
+            "会创建缺失的父目录。"
         ),
         input_schema={
             "type": "object",
@@ -260,7 +260,7 @@ class WriteWorkspaceFileTool:
             "additionalProperties": False,
         },
         effect=ToolEffect.LOCAL_WRITE,
-        approval_mode=ToolApprovalMode.REQUIRED,
+        approval_mode=ToolApprovalMode.AUTO,
         timeout_seconds=15.0,
         max_output_characters=4_000,
     )
@@ -287,7 +287,7 @@ class WriteWorkspaceFileTool:
         return False
 
     def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
-        target = str(call.arguments.get("path") or "?")
+        target = call.require_argument("path", str)
         return ToolApprovalPrompt(
             summary="允许写入工作区文件吗？",
             reason=(
@@ -300,8 +300,8 @@ class WriteWorkspaceFileTool:
     async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
-        path = str(call.arguments["path"])
-        content = str(call.arguments["content"])
+        path = call.require_argument("path", str)
+        content = call.require_argument("content", str)
         if len(content.encode("utf-8")) > self._max_write_bytes:
             raise ToolError(
                 "write_too_large",
@@ -372,7 +372,7 @@ class ListWorkspaceDirTool:
     async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
-        raw_path = str(call.arguments.get("path") or ".")
+        raw_path = call.optional_argument("path", str, ".")
         resolved = resolve_workspace_path(binding.root, raw_path)
         if not resolved.canonical.exists():
             raise ToolError(
@@ -451,7 +451,7 @@ class DeleteWorkspaceFileTool:
         return True
 
     def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
-        target = str(call.arguments.get("path") or "?")
+        target = call.require_argument("path", str)
         return ToolApprovalPrompt(
             summary="允许执行 delete_workspace_file 吗？（不可恢复）",
             reason=(
@@ -464,7 +464,10 @@ class DeleteWorkspaceFileTool:
     async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
-        resolved = resolve_workspace_path(binding.root, str(call.arguments["path"]))
+        resolved = resolve_workspace_path(
+            binding.root,
+            call.require_argument("path", str),
+        )
         if not resolved.canonical.exists():
             raise ToolError(
                 "path_not_found",

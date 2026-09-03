@@ -9,6 +9,12 @@ import httpx
 
 from endless_task.api import AppSettings, create_app
 from endless_task.runtime import FakeProvider
+from tests.fixtures.v2_client import (
+    assistant_text,
+    run_snapshot,
+    send_message,
+    wait_for_run_terminal,
+)
 from tests.fixtures.workspace_client import create_bound_conversation
 
 
@@ -53,7 +59,6 @@ class CapabilitiesApiTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=root / "api.db",
-                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -125,7 +130,6 @@ class CapabilitiesApiTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=root / "api.db",
-                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -139,21 +143,19 @@ class CapabilitiesApiTest(unittest.IsolatedAsyncioTestCase):
                     base_url="http://testserver",
                 ) as client:
                     conversation = await create_bound_conversation(client)
-                    created = await client.post(
-                        f"/conversations/{conversation['id']}/turns",
-                        headers={"Idempotency-Key": "broken-skill"},
-                        json={"content": "你好"},
+                    container = app.state.container
+                    handle = await send_message(
+                        client,
+                        conversation["id"],
+                        "你好",
+                        idempotency_key="broken-skill",
                     )
-                    turn_id = created.json()["turnId"]
-                    for _ in range(200):
-                        detail = (await client.get(f"/turns/{turn_id}")).json()
-                        if detail["turnStatus"] in {"completed", "failed"}:
-                            break
-                        await asyncio.sleep(0.01)
-                    self.assertEqual("completed", detail["turnStatus"])
+                    await wait_for_run_terminal(container, handle["runId"])
+                    snapshot = await run_snapshot(client, conversation["id"])
+                    content = assistant_text(snapshot)
                     self.assertNotIn(
                         "broken",
-                        detail["content"],
+                        content,
                     )
             finally:
                 await lifespan.__aexit__(None, None, None)

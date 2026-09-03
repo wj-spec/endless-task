@@ -35,7 +35,7 @@ class ReadArtifactTool:
 
     async def execute(self, call: ToolCall, cancellation_token: CancellationToken):
         cancellation_token.raise_if_cancelled()
-        artifact_id = str(call.arguments["artifact_id"]).strip()
+        artifact_id = call.require_argument("artifact_id", str).strip()
         try:
             artifact = self._repository.get_artifact(artifact_id)
         except RepositoryError as error:

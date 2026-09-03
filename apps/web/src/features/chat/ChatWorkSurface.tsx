@@ -9,6 +9,7 @@ import type {
   ResponseVariantSnapshot,
   RuntimeV2Lane,
   RuntimeV2RecoveryReport,
+  RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
   TurnStatus,
   Workspace,
@@ -16,8 +17,8 @@ import type {
 import { chatApi } from "./api";
 import type { RuntimeConnectionPhase } from "./runtimeController";
 import { CitationCard } from "./CitationCard";
-import { RuntimeTracePanel } from "./RuntimeTracePanel";
-import { buildRuntimeToolTrace } from "./runtimeTrace";
+import { RuntimeTracePanel, RuntimeToolCard } from "./RuntimeTracePanel";
+import { buildRuntimeToolTrace, buildRunTimeline } from "./runtimeTrace";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { KnowledgeProposalCard } from "../proposals/KnowledgeProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
@@ -44,6 +45,7 @@ type ChatWorkSurfaceProps = {
   pendingAction: string | null;
   providers: ProviderProfile[];
   runtimeConnectionPhase?: RuntimeConnectionPhase;
+  runtimeEvents?: RuntimeV2ProductEvent[];
   runtimeSnapshot?: RuntimeV2Snapshot | null;
   onArchive: () => void;
   onCancel: () => void;
@@ -198,6 +200,7 @@ export function ChatWorkSurface({
   pendingAction,
   providers,
   runtimeConnectionPhase = "idle",
+  runtimeEvents = [],
   runtimeSnapshot = null,
   onArchive,
   onCancel,
@@ -272,15 +275,7 @@ export function ChatWorkSurface({
       return;
     }
     setOpenCitation({ turnId, label });
-    let items = citationsByTurn[turnId];
-    if (!items) {
-      try {
-        items = await chatApi.getTurnCitations(turnId);
-      } catch {
-        items = [];
-      }
-      setCitationsByTurn((current) => ({ ...current, [turnId]: items ?? [] }));
-    }
+    const items = citationsByTurn[turnId] ?? [];
     const citation = items.find((item) => item.label === label);
     if (citation) {
       void chatApi
@@ -638,9 +633,21 @@ export function ChatWorkSurface({
               ? live.content
               : persistedVariant.assistantMessage.content;
             const status = useLive ? live.status : turnSnapshot.turn.status;
+            // 兜底：run 已进入终态时，不让「正在回答」徽章因快照/事件同步滞后而卡住。
+            const runState = runtimeSnapshot?.runState;
+            const terminalRunStatus = runState
+              ? runState.status === "completed"
+                ? "completed"
+                : runState.status === "failed"
+                  ? "failed"
+                  : runState.status === "cancelled"
+                    ? "cancelled"
+                    : null
+              : null;
+            const finalStatus = terminalRunStatus ?? status;
             const pendingApproval = useLive ? live.pendingApproval : undefined;
             const statusPresentation = turnStatusPresentation(
-              status,
+              finalStatus,
               Boolean(pendingApproval),
             );
             const turnError = useLive ? live.error : undefined;
@@ -651,6 +658,10 @@ export function ChatWorkSurface({
             const selectedIndex = turnSnapshot.responseVariants.findIndex(
               (item) => item.variant.id === persistedVariant.variant.id,
             );
+            // 按时间流交错（文本片段 + 工具卡）。仅最新、且能拿到该 run 事件序列且出现工具时启用。
+            const timeline = isLatest
+              ? buildRunTimeline(runtimeEvents, runtimeTools, turnSnapshot.turn.id)
+              : null;
 
             const dividerHere =
               hasInheritedTurns &&
@@ -674,7 +685,23 @@ export function ChatWorkSurface({
                     ∞
                   </div>
                   <div className="assistant-content">
-                    {content ? (
+                    {timeline ? (
+                      <div
+                        className="turn-timeline"
+                        aria-label="执行时间流"
+                        aria-live={status === "created" || status === "running" ? "polite" : undefined}
+                      >
+                        {timeline.map((item) =>
+                          item.kind === "text" ? (
+                            <p className="timeline-text" key={item.id}>
+                              {item.text}
+                            </p>
+                          ) : (
+                            <RuntimeToolCard key={item.id} tool={item.tool} />
+                          ),
+                        )}
+                      </div>
+                    ) : content ? (
                       <CollapsibleMessage
                         content={content}
                         forceExpand={search.forceExpandTurnIds.has(
@@ -698,9 +725,9 @@ export function ChatWorkSurface({
                         onJump={jumpCitation}
                       />
                     ) : null}
-                    {activeSnapshot && isLatest ? (
+                    {!timeline && activeSnapshot && isLatest ? (
                       <RuntimeTracePanel tools={runtimeTools} />
-                    ) : activities.length ? (
+                    ) : !timeline && activities.length ? (
                       <div className="activity-list" aria-label="操作状态">
                         {activities.map((activity) => (
                           <div
@@ -970,6 +997,7 @@ export function ChatWorkSurface({
         onRemoveFile={onRemoveFile}
         onSend={onSend}
         onUploadFile={onUploadFile}
+        steerable={currentLaneHasActiveRun}
       />
 
       {confirmingClose ? (

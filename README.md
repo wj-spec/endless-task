@@ -33,7 +33,7 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 
 - 完整状态机（`pending → running → completed / cancelled / failed`），终端状态不可逆。
 - 事件日志（Event Journal）+ `Last-Event-ID` 断线重连恢复，重放幂等、不重新产生副作用。
-- 审批链路（approval gate）：写 / 危险工具必须用户确认后才执行，只读工具自动执行。
+- 审批链路（approval gate）：写入已绑定工作区自动执行（与 pi 对齐）；越出工作区的危险/外部动作（外壳、网络、删除等）仍须用户确认后才执行，只读工具自动执行。
 - 崩溃恢复：任务租约过期重新入队 + 消费端幂等键，保证不丢不重。
 - 并发控制用版本号 + CAS 原子写，而非时间戳。
 
@@ -67,7 +67,7 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 
 | 主界面 | 会话分支 / 临时探索 | 评估报告 |
 |---|---|---|
-| ![主界面](docs/images/screenshot-main.png) | ![会话分支](docs/images/screenshot-branch.png) | ![评估报告](docs/images/screenshot-eval.png) |
+| ![主界面](.images/screenshot-main.png) | ![会话分支](docs/images/screenshot-branch.png) | ![评估报告](docs/images/screenshot-eval.png) |
 
 > 图片待补充 —— 当前可以本地运行后自行截图，或用 `endless-task eval report` 导出评估报告截图。
 
@@ -122,7 +122,7 @@ flowchart TD
 
 - **Chat-first**：聊天是唯一入口，工具和任务是内部能力，不暴露 Chat / Work 双模式。
 - **Local-first**：会话、事件、文件、记忆、成果和任务状态默认保存在本地 SQLite。
-- **User-controlled**：只读工具自动执行；写入、长期行为和敏感操作必须经过用户确认。
+- **User-controlled**：只读工具自动执行；写入已绑定工作区自动执行（与 pi 对齐），越出工作区的敏感/外部动作仍须用户确认。
 - **Runtime-first**：先保证状态机、持久化、恢复、幂等、取消和边界清晰，再扩展能力。
 
 ---
@@ -232,15 +232,8 @@ uv run endless-task eval export --batch BATCH --format jsonl
 uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
 ```
 
-确定性指标：`completion`（未完成/无输出=blocker）、`tool_correctness`、`approval_gate`（已知写/执行工具未审批=blocker）、`robustness`（Replay 状态冲突）、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`（复用 `SafetyStopPolicy` 检测重复签名/连续失败）。设计见 [`docs/v2/evaluation-layer-design.md`](docs/v2/evaluation-layer-design.md)。
+确定性指标：`completion`（未完成/无输出=blocker）、`tool_correctness`、`approval_gate`（外部动作未审批=blocker；写入已绑定工作区自动执行）、`robustness`（Replay 状态冲突）、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`（评估层内联检测重复签名/连续失败，作 QA 诊断）。设计见 [`docs/v2/evaluation-layer-design.md`](docs/v2/evaluation-layer-design.md)。
 
-### 演示主链路
-
-1. 普通聊天与 SSE 流式回复，刷新后从事件日志恢复。
-2. 上传文本文件，Assistant 自动选择只读工具，并展示自然 Activity。
-3. 生成 Memory 提案，用户确认后跨会话注入。
-4. 从对话生成 Artifact，查看版本、来源并导出。
-5. 用自然语言创建周期 Task 或一次性提醒，展示确认、调度、失败恢复和结果通知。
 
 ### 重点测试资产
 

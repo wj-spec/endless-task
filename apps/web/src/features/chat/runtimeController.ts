@@ -156,11 +156,70 @@ const applyRuntimeEvent = (
     event.data.status &&
     (!event.laneId || snapshot.activeLaneId === event.laneId)
   ) {
-    next.toolStates = next.toolStates.map((tool) =>
-      tool.id === event.data.toolExecutionId
-        ? { ...tool, status: String(event.data.status) }
-        : tool,
-    );
+    const toolId = String(event.data.toolExecutionId);
+    const exists = next.toolStates.some((tool) => tool.id === toolId);
+    next.toolStates = exists
+      ? next.toolStates.map((tool) =>
+          tool.id === toolId
+            ? {
+                ...tool,
+                modelTurnId:
+                  event.data.modelTurnId === undefined
+                    ? tool.modelTurnId
+                    : String(event.data.modelTurnId),
+                callId:
+                  event.data.callId === undefined
+                    ? tool.callId
+                    : String(event.data.callId ?? ""),
+                toolName:
+                  event.data.toolName === undefined
+                    ? tool.toolName
+                    : String(event.data.toolName),
+                status: String(event.data.status),
+                errorCode:
+                  event.data.errorCode === undefined
+                    ? tool.errorCode
+                    : event.data.errorCode,
+                safeMessage:
+                  event.data.safeMessage === undefined
+                    ? tool.safeMessage
+                    : event.data.safeMessage,
+                retryable:
+                  event.data.retryable === undefined
+                    ? tool.retryable
+                    : event.data.retryable,
+                correlationId:
+                  event.data.correlationId === undefined
+                    ? tool.correlationId
+                    : event.data.correlationId,
+                errorDetails:
+                  event.data.errorDetails === undefined
+                    ? tool.errorDetails
+                    : event.data.errorDetails,
+                resultEntryId:
+                  event.data.resultEntryId === undefined
+                    ? tool.resultEntryId
+                    : event.data.resultEntryId,
+              }
+            : tool,
+        )
+      : [
+          ...next.toolStates,
+          {
+            id: toolId,
+            runId: event.runId ?? "",
+            modelTurnId: String(event.data.modelTurnId ?? ""),
+            callId: String(event.data.callId ?? ""),
+            toolName: String(event.data.toolName ?? "工具"),
+            status: String(event.data.status),
+            errorCode: event.data.errorCode ?? null,
+            safeMessage: event.data.safeMessage ?? null,
+            retryable: event.data.retryable ?? null,
+            correlationId: event.data.correlationId ?? null,
+            errorDetails: event.data.errorDetails ?? null,
+            resultEntryId: event.data.resultEntryId ?? null,
+          },
+        ];
   }
 
   if (
@@ -284,6 +343,7 @@ export function useConversationRuntimeController() {
   const stateRef = useRef(state);
   const streamsRef = useRef(new Map<string, AbortController>());
   const targetsRef = useRef(new Map<string, RuntimeTarget>());
+  const refreshTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
     stateRef.current = state;
@@ -313,6 +373,24 @@ export function useConversationRuntimeController() {
       return snapshots.find((snapshot) => snapshot.runningRunId) ?? snapshots[0];
     },
     [loadSnapshot],
+  );
+
+  // Coalesced live refresh: while a run is active the server pushes product
+  // events (run/tool/message) but not full snapshots, so the ordered tool
+  // surface (entries + toolStates) would otherwise stay stale/empty until the
+  // stream closes. Refresh the authoritative snapshot shortly after each
+  // live-progress event so the tool trace renders as tools start/complete.
+  const scheduleRefresh = useCallback(
+    (conversationId: string) => {
+      const existing = refreshTimersRef.current.get(conversationId);
+      if (existing) clearTimeout(existing);
+      const timer = globalThis.setTimeout(() => {
+        refreshTimersRef.current.delete(conversationId);
+        void refreshConversationTargets(conversationId);
+      }, 220);
+      refreshTimersRef.current.set(conversationId, timer);
+    },
+    [refreshConversationTargets],
   );
 
   const followConversation = useCallback(
@@ -361,6 +439,14 @@ export function useConversationRuntimeController() {
                   if (controller.signal.aborted || event.eventSeq <= cursor) return;
                   cursor = event.eventSeq;
                   dispatch({ type: "event_received", event });
+                  const live = event.type.startsWith("tool_execution.") ||
+                    event.type === "run.started" ||
+                    event.type === "run.status_changed" ||
+                    event.type === "run.finished" ||
+                    event.type === "run.failed" ||
+                    event.type === "run.cancelled" ||
+                    event.type === "message.updated";
+                  if (live) scheduleRefresh(conversationId);
                 },
               });
 
@@ -394,7 +480,7 @@ export function useConversationRuntimeController() {
         }
       })();
     },
-    [refreshConversationTargets],
+    [refreshConversationTargets, scheduleRefresh],
   );
 
   const stopConversation = useCallback((conversationId: string) => {

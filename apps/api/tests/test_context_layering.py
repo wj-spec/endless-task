@@ -10,7 +10,6 @@ from endless_task.runtime.provider import ProviderMessage
 from endless_task.storage import (
     Database,
     SqliteChatRepository,
-    SqliteContextRepository,
     SqliteMemoryRepository,
 )
 
@@ -57,9 +56,6 @@ class SystemLayeringTest(unittest.TestCase):
         self.chat_repository = SqliteChatRepository(
             self.database, clock=self.clock, id_factory=self.ids
         )
-        self.context_repository = SqliteContextRepository(
-            self.database, clock=self.clock, id_factory=self.ids
-        )
         self.memory_repository = SqliteMemoryRepository(
             self.database, clock=self.clock, id_factory=self.ids
         )
@@ -84,7 +80,6 @@ class SystemLayeringTest(unittest.TestCase):
             system_prompt="SYSTEM",
             system_prompt_version="test-v1",
             max_context_tokens=10_000,
-            context_repository=self.context_repository,
             memory_repository=self.memory_repository,
             token_estimator=self.estimator,
             skill_prompt_builder=skill_prompt_builder,
@@ -195,18 +190,6 @@ class SystemLayeringTest(unittest.TestCase):
             self.assertIn(message.content, single)
         self.assertIn("用户偏好简洁回答。", single)
         self.assertIn("<available_skills>", single)
-
-    def test_build_keeps_single_system_message_for_v1(self) -> None:
-        conversation = self._conversation_with_memory()
-        current = self._new_turn(conversation.id)
-        built = self._builder().build(
-            current.turn.id,
-            response_variant_id=current.turn.active_response_variant_id,
-            reserved_output_tokens=20,
-        )
-        self.assertEqual("system", built.messages[0].role)
-        self.assertIn("用户偏好简洁回答。", built.messages[0].content)
-        self.assertEqual("user", built.messages[-1].role)
 
 
 if __name__ == "__main__":

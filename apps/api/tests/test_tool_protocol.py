@@ -9,6 +9,7 @@ from endless_task.tooling import (
     ToolApprovalPrompt,
     ToolActivityCopy,
     ToolCall,
+    ToolCallError,
     ToolCallStatus,
     ToolDefinition,
     ToolEffect,
@@ -17,6 +18,7 @@ from endless_task.tooling import (
     ToolResult,
     ToolValidationError,
 )
+from endless_task.tooling.schema import ToolSchemaError, validate_tool_arguments
 
 
 class StubTool:
@@ -50,7 +52,18 @@ class ToolProtocolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("object", definition.input_schema["type"])
 
     def test_write_and_external_actions_require_approval(self) -> None:
-        for effect in (ToolEffect.LOCAL_WRITE, ToolEffect.EXTERNAL_ACTION):
+        # 与 pi 对齐：LOCAL_WRITE（写入已绑定工作区）可自动执行，不再强制确认。
+        # EXTERNAL_ACTION（外壳/网络/删除等越出工作区副作用）仍需显式确认。
+        auto_write = ToolDefinition(
+            name="auto_write",
+            description="写入绑定工作区文件。",
+            input_schema={"type": "object"},
+            effect=ToolEffect.LOCAL_WRITE,
+            approval_mode=ToolApprovalMode.AUTO,
+        )
+        self.assertEqual(ToolApprovalMode.AUTO, auto_write.approval_mode)
+
+        for effect in (ToolEffect.EXTERNAL_ACTION,):
             with self.assertRaises(ToolValidationError) as raised:
                 ToolDefinition(
                     name="unsafe_action",
@@ -69,6 +82,44 @@ class ToolProtocolTest(unittest.IsolatedAsyncioTestCase):
                 approval_mode=ToolApprovalMode.REQUIRED,
             )
             self.assertEqual(ToolApprovalMode.REQUIRED, approved.approval_mode)
+
+    def test_definition_accepts_draft_2020_12_schema_keywords(self) -> None:
+        schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {
+                "non_empty_path": {
+                    "type": "string",
+                    "minLength": 1,
+                }
+            },
+            "type": "object",
+            "properties": {
+                "path": {"$ref": "#/$defs/non_empty_path"},
+                "mode": {"oneOf": [{"const": "quick"}, {"const": "full"}]},
+            },
+            "required": ["path", "mode"],
+            "additionalProperties": False,
+        }
+
+        definition = ToolDefinition(
+            name="advanced_schema",
+            description="接受标准 JSON Schema 关键字。",
+            input_schema=schema,
+        )
+        validate_tool_arguments(
+            definition.input_schema,
+            {"path": "notes.txt", "mode": "quick"},
+        )
+
+        with self.assertRaises(ToolSchemaError) as raised:
+            validate_tool_arguments(
+                definition.input_schema,
+                {"path": "", "mode": "quick"},
+            )
+        self.assertTrue(str(raised.exception).startswith("$."))
+        self.assertEqual("$.path", raised.exception.path)
+        self.assertEqual("minLength", raised.exception.keyword)
+        self.assertEqual(1, raised.exception.expected)
 
     def test_definition_rejects_invalid_name_schema_and_limits(self) -> None:
         invalid_cases = (
@@ -105,6 +156,58 @@ class ToolProtocolTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(TypeError):
             call.arguments["file_id"] = "changed"
+
+    def test_tool_call_exposes_typed_arguments_without_coercion(self) -> None:
+        call = ToolCall(
+            id="tool_call_1",
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            response_variant_id="variant_1",
+            tool_name="read_uploaded_file",
+            arguments={"file_id": "file_1", "start_line": 3},
+            status=ToolCallStatus.CREATED,
+            created_at="2026-08-22T00:00:00.000Z",
+        )
+
+        self.assertEqual("file_1", call.require_argument("file_id", str))
+        self.assertEqual(3, call.optional_argument("start_line", int, 1))
+        self.assertEqual(120, call.optional_argument("line_count", int, 120))
+        with self.assertRaises(ToolValidationError):
+            call.require_argument("missing", str)
+        with self.assertRaises(ToolValidationError):
+            call.require_argument("start_line", str)
+
+    def test_tool_result_accepts_any_json_structured_content(self) -> None:
+        values = (
+            {"ok": True, "nested": [1, None]},
+            ["first", 2, False],
+            "plain text",
+            42,
+            3.5,
+            True,
+            None,
+        )
+
+        for value in values:
+            with self.subTest(value=value):
+                result = ToolResult(
+                    tool_call_id="tool_call_1",
+                    content="ok",
+                    structured_content=value,
+                )
+                if isinstance(value, dict):
+                    self.assertEqual(value, dict(result.structured_content))
+                else:
+                    self.assertEqual(value, result.structured_content)
+
+        for invalid in ({"not-json"}, float("nan"), {1: "non-text key"}):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ToolValidationError):
+                    ToolResult(
+                        tool_call_id="tool_call_1",
+                        content="ok",
+                        structured_content=invalid,
+                    )
 
     def test_approval_request_never_requires_raw_arguments(self) -> None:
         request = ApprovalRequest(
@@ -186,12 +289,44 @@ class ToolProtocolTest(unittest.IsolatedAsyncioTestCase):
             "找不到已授权的文件。",
             retryable=False,
             correlation_id="corr_1",
+            path="$.file_id",
+            keyword="required",
+            expected=["file_id"],
         )
 
         self.assertEqual("file_not_found", error.code)
         self.assertEqual("找不到已授权的文件。", str(error))
         self.assertFalse(error.retryable)
+        self.assertEqual("corr_1", error.correlation_id)
+        self.assertEqual(
+            {
+                "path": "$.file_id",
+                "keyword": "required",
+                "expected": ["file_id"],
+            },
+            dict(error.failure.details),
+        )
         self.assertFalse(hasattr(error, "raw_error"))
+
+    def test_tool_result_can_return_normalized_failure(self) -> None:
+        failure = ToolCallError(
+            code="temporary_unavailable",
+            safe_message="工具暂时不可用。",
+            retryable=True,
+            correlation_id="corr_tool_1",
+        )
+
+        result = ToolResult.failed(tool_call_id="call_1", error=failure)
+
+        self.assertIs(failure, result.error)
+        self.assertEqual("工具暂时不可用。", result.content)
+        with self.assertRaises(ToolValidationError):
+            ToolResult(
+                tool_call_id="call_1",
+                content="invalid",
+                error=failure,
+                terminate=True,
+            )
 
 
 if __name__ == "__main__":

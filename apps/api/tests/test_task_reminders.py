@@ -24,6 +24,7 @@ from endless_task.storage import (
     Database,
     SqliteReminderRepository,
 )
+from tests.fixtures.v2_client import run_snapshot, send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = (
@@ -53,7 +54,6 @@ async def local_client(database_path: Path, provider):
     app = create_app(
             settings=AppSettings(
                 database_path=database_path,
-                runtime="v1",
                 memory_proposals_enabled=False,
             artifact_proposals_enabled=False,
             scheduler_tick_seconds=0.05,
@@ -67,7 +67,7 @@ async def local_client(database_path: Path, provider):
         base_url="http://testserver",
     )
     try:
-        yield client
+        yield client, app
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -126,15 +126,15 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         provider = TextProvider([[RUN_ANSWER], [extraction]])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
-            response = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "req-rem-1"},
-                json={"content": "明天下午三点提醒我整理这份文档"},
+            handle = await send_message(
+                client,
+                conversation_id,
+                "明天下午三点提醒我整理这份文档",
+                idempotency_key="req-rem-1",
             )
-            self.assertEqual(202, response.status_code)
-            turn_id = response.json()["turnId"]
+            await wait_for_run_terminal(app.state.container, handle["runId"])
             for _ in range(400):
                 proposals = (
                     await client.get(
@@ -161,7 +161,6 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("pending", reminders[0]["status"])
             tasks = (await client.get("/tasks")).json()["items"]
             self.assertEqual([], tasks)
-            del turn_id
 
     async def test_due_reminder_fires_once_and_notifies(self) -> None:
         database = Database(self.database_path)
@@ -179,7 +178,7 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
         provider = TextProvider(
             [[RUN_ANSWER], ['{"awaiting_user": false, "note": null}']]
         )
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
             # 源会话需存在：用 API 重建同 id 不可行，改为新建提醒指向真实会话。
             reminders.cancel_reminder(reminder.id)
@@ -204,11 +203,15 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             items = (await client.get(f"/tasks/{reminder.id}/runs")).json()["items"]
             self.assertEqual(1, len(items))
 
-            snapshot = (
-                await client.get(f"/conversations/{conversation_id}")
-            ).json()
+            snapshot = await run_snapshot(client, conversation_id)
+            user_messages = [
+                entry["data"]["content"]
+                for entry in snapshot["entries"]
+                if entry.get("actor") == "user"
+                and isinstance(entry.get("data", {}).get("content"), str)
+            ]
             self.assertTrue(
-                snapshot["turns"][0]["userMessage"]["content"].startswith("【提醒】")
+                any(msg.startswith("【提醒】") for msg in user_messages)
             )
 
             listing = (await client.get("/reminders")).json()["items"]
@@ -225,7 +228,7 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
         due = ReminderDue(at=future_local.strftime("%Y-%m-%dT%H:%M"))
         reminders = SqliteReminderRepository(database)
         provider = TextProvider([[RUN_ANSWER]])
-        async with local_client(self.database_path, provider) as client:
+        async with local_client(self.database_path, provider) as (client, app):
             conversation_id = (await create_bound_conversation(client))["id"]
             reminder = reminders.create_reminder(
                 title="发结果",

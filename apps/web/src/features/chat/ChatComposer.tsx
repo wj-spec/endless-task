@@ -17,6 +17,7 @@ type ChatComposerProps = {
   providers: ProviderProfile[];
   runningLaneLabel: string;
   sideMode: "temporary_conversation" | "branch_lane" | null;
+  steerable: boolean;
   variant: "main" | "side";
   onCancel: () => void;
   onDraftChange: (value: string) => void;
@@ -41,6 +42,7 @@ export function ChatComposer({
   providers,
   runningLaneLabel,
   sideMode,
+  steerable,
   variant,
   onCancel,
   onDraftChange,
@@ -148,7 +150,7 @@ export function ChatComposer({
           <textarea
             aria-label="给 Endless 发送消息"
             ref={composerRef}
-            disabled={composerDisabled || isGenerating}
+            disabled={composerDisabled || (isGenerating && !steerable)}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={(event) => {
               if (
@@ -165,13 +167,15 @@ export function ChatComposer({
                 ? "恢复对话后继续"
                 : otherLaneRunning
                   ? `${runningLaneLabel}正在运行，请先查看或停止`
-                  : providerUnavailable
-                    ? "请先配置模型服务"
-                    : variant === "side"
-                      ? sideMode === "branch_lane"
-                        ? "在此分支中继续对话"
-                        : "在临时对话中发送消息"
-                      : "给 Endless 发送消息"
+                  : steerable
+                    ? "正在给 Endless 发送指令（可打断并纠偏当前运行）…"
+                    : providerUnavailable
+                      ? "请先配置模型服务"
+                      : variant === "side"
+                        ? sideMode === "branch_lane"
+                          ? "在此分支中继续对话"
+                          : "在临时对话中发送消息"
+                        : "给 Endless 发送消息"
             }
             rows={1}
             value={draft}
@@ -270,15 +274,28 @@ export function ChatComposer({
             </select>
           </div>
           {isGenerating ? (
-            <button
-              aria-label="停止生成"
-              className="send-button stop-button"
-              disabled={pendingAction === "cancel"}
-              onClick={onCancel}
-              type="button"
-            >
-              <span aria-hidden="true" />
-            </button>
+            <>
+              {steerable ? (
+                <button
+                  aria-label="发送指令（打断并纠偏）"
+                  className="send-button"
+                  disabled={composerDisabled || !draft.trim()}
+                  onClick={onSend}
+                  type="button"
+                >
+                  <SendIcon size={20} />
+                </button>
+              ) : null}
+              <button
+                aria-label="停止生成"
+                className="send-button stop-button"
+                disabled={pendingAction === "cancel"}
+                onClick={onCancel}
+                type="button"
+              >
+                <span aria-hidden="true" />
+              </button>
+            </>
           ) : (
             <button
               aria-label="发送消息"

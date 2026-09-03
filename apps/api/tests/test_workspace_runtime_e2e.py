@@ -15,6 +15,11 @@ from endless_task.runtime import (
     ProviderTextDelta,
     ProviderToolCall,
 )
+from tests.fixtures.v2_client import (
+    run_snapshot,
+    send_message,
+    wait_for_run_terminal,
+)
 
 
 class ScriptedToolProvider:
@@ -53,20 +58,23 @@ class ScriptedToolProvider:
 class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
+        self._clients: list[tuple[httpx.AsyncClient, object]] = []
         self._client_count = 0
 
-    def tearDown(self) -> None:
+    async def asyncTearDown(self) -> None:
+        for client, lifespan in reversed(self._clients):
+            await client.aclose()
+            await lifespan.__aexit__(None, None, None)
         self._temporary_directory.cleanup()
 
     async def _client(
         self, provider
-    ) -> tuple[httpx.AsyncClient, str]:
+    ) -> tuple[httpx.AsyncClient, object, str]:
         self._client_count += 1
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name)
                 / f"e2e-{self._client_count}.db",
-                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=False,
@@ -76,13 +84,12 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
         )
         lifespan = app.router.lifespan_context(app)
         await lifespan.__aenter__()
-        self.addAsyncCleanup(lifespan.__aexit__, None, None, None)
         client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
         )
-        self.addAsyncCleanup(client.aclose)
-        return client, str(Path(self._temporary_directory.name) / "ws")
+        self._clients.append((client, lifespan))
+        return client, app, str(Path(self._temporary_directory.name) / "ws")
 
     async def _bound_conversation(
         self, client: httpx.AsyncClient, root: str
@@ -100,39 +107,18 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     async def _wait_for_approval(
-        client: httpx.AsyncClient, turn_id: str
+        client: httpx.AsyncClient, conversation_id: str
     ) -> dict[str, object]:
         for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            approval = response.json().get("pendingApproval")
-            if approval:
-                return approval
+            snapshot = await run_snapshot(client, conversation_id)
+            approvals = snapshot.get("pendingApprovals") or ()
+            if approvals:
+                return approvals[0]
             await asyncio.sleep(0.01)
         raise AssertionError("Turn did not request approval")
 
-    @staticmethod
-    async def _wait_for_terminal(
-        client: httpx.AsyncClient, turn_id: str
-    ) -> dict[str, object]:
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            if response.json()["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return response.json()
-            await asyncio.sleep(0.01)
-        raise AssertionError("Turn did not reach a terminal state")
-
-    async def _start_turn(
-        self, client: httpx.AsyncClient, conversation_id: str, key: str
-    ) -> str:
-        created = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": key},
-            json={"content": "开始"},
-        )
-        return created.json()["turnId"]
-
     async def test_delete_always_confirms_even_under_trust_all(self) -> None:
-        client, root = await self._client(
+        client, app, root = await self._client(
             ScriptedToolProvider(
                 tool_name="delete_workspace_file",
                 arguments={"path": "tmp.txt"},
@@ -146,19 +132,20 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
             json={"mode": "trust_all", "acknowledge": True},
         )
         self.assertEqual(200, escalated.status_code)
-        turn_id = await self._start_turn(client, conversation_id, "k-delete")
-        approval = await self._wait_for_approval(client, turn_id)
-        self.assertEqual("pending", approval["status"])
+        handle = await send_message(
+            client, conversation_id, "开始", idempotency_key="k-delete"
+        )
+        approval = await self._wait_for_approval(client, conversation_id)
         self.assertIn("delete_workspace_file", approval["summary"])
         resolved = await client.post(
-            f"/approvals/{approval['id']}", json={"decision": "approve"}
+            f"/api/v2/approvals/{approval['id']}", json={"decision": "approve"}
         )
         self.assertEqual(200, resolved.status_code)
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
+        await wait_for_run_terminal(app.state.container, handle["runId"])
 
-    async def test_dangerous_shell_confirms_but_plain_shell_auto_runs(self) -> None:
-        client, root = await self._client(
+    async def test_shell_commands_request_approval_and_resolve(self) -> None:
+        # v2 对 run_shell（REQUIRED）统一请求确认；危险与安全命令都先确认再执行。
+        client, app, root = await self._client(
             ScriptedToolProvider(
                 tool_name="run_shell",
                 arguments={"command": "rm -rf build"},
@@ -172,11 +159,16 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
             json={"mode": "trust_all", "acknowledge": True},
         )
         self.assertEqual(200, escalated.status_code)
-        turn_id = await self._start_turn(client, conversation_id, "k-rm")
-        approval = await self._wait_for_approval(client, turn_id)
+        handle = await send_message(client, conversation_id, "开始", idempotency_key="k-rm")
+        approval = await self._wait_for_approval(client, conversation_id)
         self.assertIn("run_shell", approval["summary"])
+        resolved = await client.post(
+            f"/api/v2/approvals/{approval['id']}", json={"decision": "approve"}
+        )
+        self.assertEqual(200, resolved.status_code)
+        await wait_for_run_terminal(app.state.container, handle["runId"])
 
-        plain_client, plain_root = await self._client(
+        plain_client, plain_app, plain_root = await self._client(
             ScriptedToolProvider(
                 tool_name="run_shell",
                 arguments={"command": "ls -la"},
@@ -189,9 +181,17 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
             "/settings/permissions",
             json={"mode": "trust_all", "acknowledge": True},
         )
-        plain_turn = await self._start_turn(plain_client, plain_conv, "k-ls")
-        plain_result = await self._wait_for_terminal(plain_client, plain_turn)
-        self.assertEqual("completed", plain_result["turnStatus"])
+        plain_handle = await send_message(
+            plain_client, plain_conv, "开始", idempotency_key="k-ls"
+        )
+        plain_approval = await self._wait_for_approval(plain_client, plain_conv)
+        self.assertIn("run_shell", plain_approval["summary"])
+        plain_resolved = await plain_client.post(
+            f"/api/v2/approvals/{plain_approval['id']}",
+            json={"decision": "approve"},
+        )
+        self.assertEqual(200, plain_resolved.status_code)
+        await wait_for_run_terminal(plain_app.state.container, plain_handle["runId"])
 
     async def test_create_conversation_without_workspace_is_rejected(self) -> None:
         # 必选绑定设定：无工作区会话不再存在，创建即 409。
@@ -200,7 +200,7 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
             arguments={"path": "README.md"},
             follow_up="好的。",
         )
-        client, _ = await self._client(provider)
+        client, _, _ = await self._client(provider)
         rejected = await client.post("/conversations", json={})
         self.assertEqual(409, rejected.status_code)
         self.assertEqual("workspace_required", rejected.json()["error"]["code"])
@@ -212,7 +212,7 @@ class WorkspaceRuntimeE2ETest(unittest.IsolatedAsyncioTestCase):
             arguments={},
             follow_up="好的。",
         )
-        client, _ = await self._client(provider)
+        client, _, _ = await self._client(provider)
         created = await client.post("/workspaces", json={"name": "未绑定区"})
         workspace_id = created.json()["workspace"]["id"]
         rejected = await client.post(

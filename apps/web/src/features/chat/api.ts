@@ -1,8 +1,6 @@
 import type { KnowledgeProposal,
-  CompactTurnSnapshot,
   CapabilitySnapshot,
   PendingProposal,
-  ApprovalRequest,
   ArtifactDetailSnapshot,
   ArtifactProposal,
   ArtifactRecordSummary,
@@ -16,10 +14,8 @@ import type { KnowledgeProposal,
   ProviderProfileInput,
   MemoryProposal,
   KnowledgeSource,
-  KnowledgeCitation,
   MemoryRecord,
   PermissionSettings,
-  RuntimeEvent,
   RuntimeV2MessageResponse,
   RuntimeV2ConversationRuntimeStatus,
   RuntimeV2GlobalRuntimeStatus,
@@ -45,7 +41,6 @@ import type { KnowledgeProposal,
   RuntimeV2RunSelectResponse,
   RuntimeV2RunVariantListResponse,
   RuntimeV2Snapshot,
-  TurnCommandResponse,
   UploadedTextFile,
   BrowseItem,
   EffectLogEntry,
@@ -345,34 +340,6 @@ export const chatApi = {
       `/conversations/${conversationId}/promote`,
       { method: "POST" },
     ),
-  createTurn: (conversationId: string, content: string, idempotencyKey: string) =>
-    request<TurnCommandResponse>(`/conversations/${conversationId}/turns`, {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ content }),
-    }),
-  getTurn: (turnId: string) => request<CompactTurnSnapshot>(`/turns/${turnId}`),
-  cancelTurn: (turnId: string) =>
-    request<CompactTurnSnapshot>(`/turns/${turnId}/cancel`, { method: "POST" }),
-  retryTurn: (turnId: string, idempotencyKey: string) =>
-    request<TurnCommandResponse>(`/turns/${turnId}/retry`, {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-    }),
-  regenerateTurn: (turnId: string, idempotencyKey: string) =>
-    request<TurnCommandResponse>(`/turns/${turnId}/regenerate`, {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-    }),
-  selectVariant: (turnId: string, variantId: string) =>
-    request<TurnCommandResponse>(`/turns/${turnId}/response-variants/${variantId}/select`, {
-      method: "POST",
-    }),
-  resolveApproval: (approvalId: string, decision: "approve" | "deny") =>
-    request<ApprovalRequest>(`/approvals/${approvalId}`, {
-      method: "POST",
-      body: JSON.stringify({ decision }),
-    }),
   getRuntimeV2Snapshot: (conversationId: string, laneId?: string | null) => {
     const params = new URLSearchParams();
     if (laneId) params.set("lane_id", laneId);
@@ -736,12 +703,6 @@ export const chatApi = {
       encoding: string;
     };
   },
-  getTurnCitations: async (turnId: string) => {
-    const response = await request<{ items: KnowledgeCitation[] }>(
-      `/turns/${turnId}/citations`,
-    );
-    return response.items;
-  },
   recordCitationClick: (body: {
     label: string;
     scope: string;
@@ -841,50 +802,6 @@ export async function downloadArtifactExport(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(objectUrl);
-}
-
-export async function streamTurnEvents(options: {
-  turnId: string;
-  afterSequence: number;
-  signal: AbortSignal;
-  onEvent: (event: RuntimeEvent) => void;
-}): Promise<void> {
-  const headers: Record<string, string> = { Accept: "text/event-stream" };
-  if (options.afterSequence > 0) {
-    headers["Last-Event-ID"] = `${options.turnId}:${options.afterSequence}`;
-  }
-  const response = await fetch(url(`/turns/${options.turnId}/events`), {
-    headers,
-    signal: options.signal,
-  });
-  if (!response.ok) {
-    throw await responseError(response);
-  }
-  if (!response.body) {
-    throw new Error("浏览器无法读取流式响应。");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const data = frame
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
-      if (data) options.onEvent(JSON.parse(data) as RuntimeEvent);
-      boundary = buffer.indexOf("\n\n");
-    }
-    if (done) return;
-  }
 }
 
 export async function fetchRuntimeV2Metrics(): Promise<RuntimeV2Metrics> {

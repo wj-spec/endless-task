@@ -17,12 +17,14 @@ from endless_task.domain.task_schedule import (
     parse_task_schedule,
 )
 from endless_task.runtime import ProviderCompleted, ProviderError, ProviderTextDelta
+from endless_task.runtime_v2 import RunStatus
 from endless_task.storage import (
     Database,
     SqliteTaskProposalRepository,
     SqliteTaskRepository,
 )
 from endless_task.tasks import TaskProposalService
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 PERIODIC_USER = "以后每周一上午九点帮我总结上周的项目进展"
@@ -74,7 +76,6 @@ async def local_client(
     app = create_app(
             settings=AppSettings(
                 database_path=database_path,
-                runtime="v1",
                 memory_proposals_enabled=False,
             knowledge_proposals_enabled=False,
             artifact_proposals_enabled=False,
@@ -437,16 +438,6 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
 
-    @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
-
     async def _wait_for_task_proposals(self, client, conversation_id, count):
         for _ in range(200):
             response = await client.get(
@@ -458,24 +449,42 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.005)
         raise AssertionError("Task proposals did not appear in time")
 
-    @staticmethod
-    async def _run_turn(client: httpx.AsyncClient, content: str) -> tuple:
+    async def _run_turn(self, client: httpx.AsyncClient, content: str) -> tuple:
         conversation_id = (await create_bound_conversation(client))["id"]
-        created = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": "request-1"},
-            json={"content": content},
+        handle = await send_message(
+            client, conversation_id, content, idempotency_key="request-1"
         )
-        return conversation_id, created.json()["turnId"]
+        return conversation_id, handle["runId"]
+
+    @staticmethod
+    async def _drain_post_run(app) -> None:
+        gateway = app.state.container.runtime_v2_gateway
+        for _ in range(40):
+            await asyncio.sleep(0.005)
+            if gateway._post_run_tasks:
+                break
+        for _ in range(400):
+            if not gateway._post_run_tasks:
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("Post-run tasks did not drain in time")
+
+    @staticmethod
+    def _system_text(request) -> str:
+        return "\n".join(
+            message.content
+            for message in request.messages
+            if message.role == "system"
+        )
 
     async def test_end_to_end_periodic_proposal_and_list_route(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER], [TASK_EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(
+            conversation_id, run_id = await self._run_turn(
                 client, PERIODIC_USER
             )
-            result = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual("completed", result["turnStatus"])
+            status = await wait_for_run_terminal(app.state.container, run_id)
+            self.assertEqual(RunStatus.COMPLETED, status)
 
             items = await self._wait_for_task_proposals(
                 client, conversation_id, 1
@@ -486,17 +495,18 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("pending", proposal["status"])
             self.assertEqual(WEEKLY_SCHEDULE, proposal["schedule"])
             self.assertEqual(conversation_id, proposal["conversationId"])
-            self.assertEqual(turn_id, proposal["turnId"])
+            self.assertEqual(run_id, proposal["turnId"])
             self.assertIsNone(proposal["resolvedTaskId"])
 
     async def test_provider_failure_keeps_turn_completed(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER]], fail_from_index=1)
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(
+            conversation_id, run_id = await self._run_turn(
                 client, PERIODIC_USER
             )
-            result = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual("completed", result["turnStatus"])
+            status = await wait_for_run_terminal(app.state.container, run_id)
+            self.assertEqual(RunStatus.COMPLETED, status)
+            await self._drain_post_run(app)
             response = await client.get(
                 f"/conversations/{conversation_id}/task-proposals"
             )
@@ -505,9 +515,9 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_system_prompt_clause_follows_flag(self) -> None:
         provider = TextProvider([[PERIODIC_ANSWER]])
         async with local_client(self.database_path, provider) as (client, app):
-            _, turn_id = await self._run_turn(client, PERIODIC_USER)
-            await self._wait_for_terminal(client, turn_id)
-        system_content = provider.requests[0].messages[0].content
+            _, run_id = await self._run_turn(client, PERIODIC_USER)
+            await wait_for_run_terminal(app.state.container, run_id)
+        system_content = self._system_text(provider.requests[0])
         self.assertIn("确认后才生效", system_content)
         self.assertIn("用户提出一次性定时事项时", system_content)
         self.assertNotIn("一次性定时安排能力尚未就绪", system_content)
@@ -516,9 +526,9 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
         async with local_client(
             self.database_path, provider_off, task_proposals_enabled=False
         ) as (client, app):
-            _, turn_id = await self._run_turn(client, PERIODIC_USER)
-            await self._wait_for_terminal(client, turn_id)
-        system_content = provider_off.requests[0].messages[0].content
+            _, run_id = await self._run_turn(client, PERIODIC_USER)
+            await wait_for_run_terminal(app.state.container, run_id)
+        system_content = self._system_text(provider_off.requests[0])
         self.assertNotIn("确认后才生效", system_content)
 
     async def test_task_list_in_context(self) -> None:
@@ -535,10 +545,10 @@ class TaskProposalGateTest(unittest.IsolatedAsyncioTestCase):
 
         provider = TextProvider([[PERIODIC_ANSWER]])
         async with local_client(self.database_path, provider) as (client, app):
-            _, turn_id = await self._run_turn(client, "你好")
-            await self._wait_for_terminal(client, turn_id)
+            _, run_id = await self._run_turn(client, "你好")
+            await wait_for_run_terminal(app.state.container, run_id)
 
-        system_content = provider.requests[0].messages[0].content
+        system_content = self._system_text(provider.requests[0])
         self.assertIn("用户已确认的安排", system_content)
         self.assertIn("《每周进展总结》", system_content)
         self.assertIn("每周一 09:00", system_content)

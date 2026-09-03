@@ -285,6 +285,7 @@ export function App() {
         pendingAction={chat.pendingAction}
         providers={chat.providers}
         runtimeConnectionPhase={chat.activeRuntimeConnection?.phase}
+        runtimeEvents={chat.activeRuntimeEvents}
         runtimeSnapshot={chat.activeRuntimeSnapshot}
         branchLanes={
           chat.activeConversationId

@@ -145,9 +145,23 @@ class EvalPhaseATest(unittest.TestCase):
         )
         self.assertFalse(evaluation.score_card.has_blocker)
 
-    def test_write_tool_without_approval_is_blocker(self) -> None:
+    def test_write_tool_without_approval_not_blocker_auto(self) -> None:
+        # 与 pi 对齐：写入已绑定工作区自动执行，无需逐次确认，因此不作为 approval_gate blocker。
         _, _, _, run, _ = self._seed_run(
             tools=[("write_workspace_file", {"path": "b.txt"}, ToolExecutionStatus.COMPLETED)]
+        )
+        evaluation = self.service.evaluate_run(run)
+        self.assertEqual(EvalVerdict.PASS, evaluation.verdict)
+        self.assertEqual(
+            EvalSeverity.INFO,
+            evaluation.score_card.metric("approval_gate").severity,
+        )
+        self.assertFalse(evaluation.score_card.has_blocker)
+
+    def test_external_action_without_approval_is_blocker(self) -> None:
+        # 越出工作区的破坏性/外部动作（删除）仍未确认执行 → approval_gate BLOCKER。
+        _, _, _, run, _ = self._seed_run(
+            tools=[("delete_workspace_file", {"path": "b.txt"}, ToolExecutionStatus.COMPLETED)]
         )
         evaluation = self.service.evaluate_run(run)
         self.assertEqual(EvalVerdict.FAIL, evaluation.verdict)
@@ -217,9 +231,9 @@ class EvalPhaseATest(unittest.TestCase):
         _, baseline_agg, _ = self.service.evaluate_batch(
             EvalHarvestSpec(require_tools=True),
         )
-        # Second batch uses an ungated write tool -> approval_gate regression.
+        # Second batch uses an ungated external-action (delete) tool -> approval_gate regression.
         self._seed_run(assistant=False, tools=[
-            ("write_workspace_file", {"path": "b.txt"}, ToolExecutionStatus.COMPLETED)
+            ("delete_workspace_file", {"path": "b.txt"}, ToolExecutionStatus.COMPLETED)
         ])
         _, candidate_agg, _ = self.service.evaluate_batch(
             EvalHarvestSpec(require_tools=True),

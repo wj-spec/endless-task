@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from endless_task.runtime import (
     CancellationManager,
@@ -37,6 +39,25 @@ class StubStream:
         self.closed = True
 
 
+class FailingStream:
+    def __init__(self, *, error: Exception, chunks=()) -> None:
+        self._chunks = iter(chunks)
+        self._error = error
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise self._error
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class BlockingStream:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -64,6 +85,18 @@ class StubCompletions:
         if self.error is not None:
             raise self.error
         return self.stream
+
+
+class SequencedCompletions(StubCompletions):
+    def __init__(self, streams) -> None:
+        super().__init__()
+        self._streams = list(streams)
+
+    async def create(self, **arguments):
+        self.calls.append(arguments)
+        if not self._streams:
+            raise AssertionError("No scripted stream remains")
+        return self._streams.pop(0)
 
 
 class BlockingCompletions(StubCompletions):
@@ -197,6 +230,27 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("network_error", raised.exception.code)
         self.assertTrue(raised.exception.retryable)
 
+    async def test_sdk_client_uses_bounded_retries_by_default(self) -> None:
+        captured: dict[str, object] = {}
+
+        class CapturingAsyncOpenAI:
+            def __init__(self, **options) -> None:
+                captured.update(options)
+
+        with patch.dict(
+            sys.modules,
+            {"openai": SimpleNamespace(AsyncOpenAI=CapturingAsyncOpenAI)},
+        ):
+            OpenAICompatibleProvider(
+                name="deepseek",
+                api_key="secret",
+                base_url="https://api.deepseek.com",
+            )
+
+        self.assertEqual(2, captured["max_retries"])
+        self.assertEqual("secret", captured["api_key"])
+        self.assertEqual("https://api.deepseek.com", captured["base_url"])
+
     async def test_stream_maps_chunks_finish_reason_and_usage(self) -> None:
         usage = SimpleNamespace(prompt_tokens=12, completion_tokens=3)
         stream = StubStream(
@@ -234,6 +288,58 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"include_usage": True}, completions.calls[0]["stream_options"])
         self.assertEqual(0.3, completions.calls[0]["temperature"])
 
+    async def test_stream_retries_retryable_body_failure_before_first_event(self) -> None:
+        first_stream = FailingStream(error=StubApiError(status_code=500))
+        second_stream = StubStream((chunk("恢复"), chunk(finish_reason="stop")))
+        completions = SequencedCompletions((first_stream, second_stream))
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            client=StubClient(completions),
+            max_retries=1,
+        )
+
+        events = [event async for event in provider.stream(self._request(), await self._token())]
+
+        self.assertEqual(2, len(completions.calls))
+        self.assertTrue(first_stream.closed)
+        self.assertTrue(second_stream.closed)
+        self.assertEqual(
+            ["恢复"],
+            [event.text for event in events if isinstance(event, ProviderTextDelta)],
+        )
+        self.assertIsInstance(events[-1], ProviderCompleted)
+
+    async def test_stream_does_not_retry_after_first_event(self) -> None:
+        first_stream = FailingStream(
+            chunks=(chunk("部分"),),
+            error=StubApiError(status_code=500),
+        )
+        second_stream = StubStream((chunk("不应出现"), chunk(finish_reason="stop")))
+        completions = SequencedCompletions((first_stream, second_stream))
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            client=StubClient(completions),
+            max_retries=1,
+        )
+        events: list[object] = []
+
+        with self.assertRaises(ProviderError) as raised:
+            async for event in provider.stream(self._request(), await self._token()):
+                events.append(event)
+
+        self.assertEqual("provider_unavailable", raised.exception.code)
+        self.assertEqual(1, len(completions.calls))
+        self.assertTrue(first_stream.closed)
+        self.assertFalse(second_stream.closed)
+        self.assertEqual(
+            ["部分"],
+            [event.text for event in events if isinstance(event, ProviderTextDelta)],
+        )
+
     async def test_stream_maps_fragmented_tool_calls_and_followup_messages(self) -> None:
         first_fragment = SimpleNamespace(
             index=0,
@@ -259,6 +365,14 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
             base_url="https://api.deepseek.com",
             client=StubClient(completions),
         )
+        tool_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"file_id": {"type": "string", "minLength": 1}},
+            "type": "object",
+            "properties": {"file_id": {"$ref": "#/$defs/file_id"}},
+            "required": ["file_id"],
+            "additionalProperties": False,
+        }
         request = ProviderRequest(
             request_id="variant-1:2",
             model="deepseek-chat",
@@ -287,7 +401,7 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
                 ProviderToolDefinition(
                     name="read_file",
                     description="读取文件",
-                    input_schema={"type": "object"},
+                    input_schema=tool_schema,
                 ),
             ),
         )
@@ -301,11 +415,60 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("tool_calls", events[-1].finish_reason)
         sent = completions.calls[0]
         self.assertEqual("read_file", sent["tools"][0]["function"]["name"])
+        self.assertEqual(tool_schema, sent["tools"][0]["function"]["parameters"])
         self.assertEqual("prior_call", sent["messages"][2]["tool_call_id"])
         self.assertEqual(
             '{"file_id":"old"}',
             sent["messages"][1]["tool_calls"][0]["function"]["arguments"],
         )
+
+    async def test_stream_preserves_malformed_tool_arguments_as_parse_error(self) -> None:
+        # 健壮性：模型返回不可解析的工具参数时，Provider 不应抛致命错误终止 run，
+        # 而是产出一个带 parse_error 的调用，交由运行时作为可恢复错误反馈给模型。
+        malformed = SimpleNamespace(
+            index=0,
+            id="call_bad",
+            function=SimpleNamespace(
+                name="read_file",
+                arguments='{"file_id": "unterminated',
+            ),
+        )
+        stream = StubStream(
+            (
+                chunk(tool_calls=(malformed,)),
+                chunk(finish_reason="tool_calls"),
+            )
+        )
+        completions = StubCompletions(stream=stream)
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret",
+            base_url="https://api.deepseek.com",
+            client=StubClient(completions),
+        )
+        request = ProviderRequest(
+            request_id="r:1",
+            model="deepseek-chat",
+            messages=(ProviderMessage(role="user", content="读取文件"),),
+            max_output_tokens=512,
+            tools=(
+                ProviderToolDefinition(
+                    name="read_file",
+                    description="读取文件",
+                    input_schema={"type": "object"},
+                ),
+            ),
+        )
+
+        events = [event async for event in provider.stream(request, await self._token())]
+
+        call = next(event for event in events if isinstance(event, ProviderToolCall))
+        self.assertEqual("call_bad", call.id)
+        self.assertEqual("read_file", call.name)
+        self.assertEqual({}, call.arguments)
+        self.assertIsNotNone(call.parse_error)
+        self.assertIn("不是有效 JSON", call.parse_error)
+        self.assertEqual("tool_calls", events[-1].finish_reason)
 
     async def test_close_releases_sdk_client(self) -> None:
         client = StubClient(StubCompletions(stream=StubStream(())))
@@ -343,6 +506,24 @@ class OpenAICompatibleProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(raised.exception.retryable)
         self.assertEqual(1500, raised.exception.retry_after_ms)
         self.assertEqual("provider-request-1", raised.exception.provider_request_id)
+        self.assertNotIn("sensitive", raised.exception.safe_message)
+
+    async def test_conflict_is_retryable_without_upstream_message(self) -> None:
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            api_key="secret-never-logged",
+            base_url="https://api.deepseek.com",
+            client=StubClient(StubCompletions(error=StubApiError(status_code=409))),
+        )
+
+        with self.assertRaises(ProviderError) as raised:
+            _ = [
+                event
+                async for event in provider.stream(self._request(), await self._token())
+            ]
+
+        self.assertEqual("provider_unavailable", raised.exception.code)
+        self.assertTrue(raised.exception.retryable)
         self.assertNotIn("sensitive", raised.exception.safe_message)
 
     async def test_deepseek_resource_finish_reason_is_retryable(self) -> None:

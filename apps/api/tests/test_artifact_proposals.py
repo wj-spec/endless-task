@@ -19,11 +19,13 @@ from endless_task.domain.models import (
 )
 from endless_task.domain.repositories import InvalidStateError, NotFoundError, ValidationError
 from endless_task.runtime import ProviderCompleted, ProviderError, ProviderTextDelta
+from endless_task.runtime_v2 import RunStatus
 from endless_task.storage import (
     Database,
     SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 LONG_ANSWER = (
@@ -82,7 +84,6 @@ async def local_client(database_path: Path, provider, *, artifact_proposals_enab
     app = create_app(
             settings=AppSettings(
                 database_path=database_path,
-                runtime="v1",
                 memory_proposals_enabled=False,
             knowledge_proposals_enabled=False,
             artifact_proposals_enabled=artifact_proposals_enabled,
@@ -260,16 +261,6 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
 
-    @staticmethod
-    async def _wait_for_terminal(client: httpx.AsyncClient, turn_id: str):
-        for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            payload = response.json()
-            if payload["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return payload
-            await asyncio.sleep(0.005)
-        raise AssertionError("Turn did not reach a terminal state")
-
     async def _wait_for_proposals(self, client, conversation_id: str, count: int):
         for _ in range(200):
             response = await client.get(
@@ -281,22 +272,42 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.005)
         raise AssertionError("Proposals did not appear in time")
 
-    @staticmethod
-    async def _run_turn(client: httpx.AsyncClient) -> str:
+    async def _run_turn(self, client: httpx.AsyncClient, content: str):
         conversation_id = (await create_bound_conversation(client))["id"]
-        created = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": "request-1"},
-            json={"content": "帮我整理发布计划"},
+        handle = await send_message(
+            client, conversation_id, content, idempotency_key="request-1"
         )
-        return conversation_id, created.json()["turnId"]
+        return conversation_id, handle["runId"]
+
+    @staticmethod
+    async def _drain_post_run(app) -> None:
+        """Wait for v2 post-run hooks (proposal extraction) to finish."""
+        gateway = app.state.container.runtime_v2_gateway
+        # Give the run-done handler a chance to schedule the post-run task.
+        for _ in range(40):
+            await asyncio.sleep(0.005)
+            if gateway._post_run_tasks:
+                break
+        for _ in range(400):
+            if not gateway._post_run_tasks:
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("Post-run tasks did not drain in time")
+
+    @staticmethod
+    def _system_text(request) -> str:
+        return "\n".join(
+            message.content
+            for message in request.messages
+            if message.role == "system"
+        )
 
     async def test_proposal_generation_does_not_write_artifacts(self) -> None:
         provider = TextProvider([[LONG_ANSWER], [EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(client)
-            result = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual("completed", result["turnStatus"])
+            conversation_id, run_id = await self._run_turn(client, "帮我整理发布计划")
+            status = await wait_for_run_terminal(app.state.container, run_id)
+            self.assertEqual(RunStatus.COMPLETED, status)
 
             items = await self._wait_for_proposals(client, conversation_id, 1)
             self.assertEqual("发布计划", items[0]["title"])
@@ -308,8 +319,8 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_accept_via_api_creates_artifact(self) -> None:
         provider = TextProvider([[LONG_ANSWER], [EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(client)
-            await self._wait_for_terminal(client, turn_id)
+            conversation_id, run_id = await self._run_turn(client, "帮我整理发布计划")
+            await wait_for_run_terminal(app.state.container, run_id)
             items = await self._wait_for_proposals(client, conversation_id, 1)
 
             resolved = await client.post(
@@ -328,13 +339,13 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
             version = container.artifact_repository.get_version(artifacts[0].id, 1)
             self.assertEqual(ArtifactVersionOperation.CREATE, version.operation)
             self.assertEqual(conversation_id, version.source_conversation_id)
-            self.assertEqual(turn_id, version.source_turn_id)
+            self.assertEqual(run_id, version.source_turn_id)
 
     async def test_resolve_twice_conflicts(self) -> None:
         provider = TextProvider([[LONG_ANSWER], [EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(client)
-            await self._wait_for_terminal(client, turn_id)
+            conversation_id, run_id = await self._run_turn(client, "帮我整理发布计划")
+            await wait_for_run_terminal(app.state.container, run_id)
             items = await self._wait_for_proposals(client, conversation_id, 1)
             proposal_id = items[0]["id"]
 
@@ -352,10 +363,10 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_provider_failure_keeps_turn_completed(self) -> None:
         provider = TextProvider([[LONG_ANSWER]], fail_from_index=1)
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(client)
-            result = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual("completed", result["turnStatus"])
-            await app.state.container.controller.drain_hooks()
+            conversation_id, run_id = await self._run_turn(client, "帮我整理发布计划")
+            status = await wait_for_run_terminal(app.state.container, run_id)
+            self.assertEqual(RunStatus.COMPLETED, status)
+            await self._drain_post_run(app)
             response = await client.get(
                 f"/conversations/{conversation_id}/artifact-proposals"
             )
@@ -364,10 +375,10 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_short_answer_skips_extraction(self) -> None:
         provider = TextProvider([["好的，已经记下了。"], [EXTRACTION_JSON]])
         async with local_client(self.database_path, provider) as (client, app):
-            conversation_id, turn_id = await self._run_turn(client)
-            result = await self._wait_for_terminal(client, turn_id)
-            self.assertEqual("completed", result["turnStatus"])
-            await app.state.container.controller.drain_hooks()
+            conversation_id, run_id = await self._run_turn(client, "帮我整理发布计划")
+            status = await wait_for_run_terminal(app.state.container, run_id)
+            self.assertEqual(RunStatus.COMPLETED, status)
+            await self._drain_post_run(app)
             self.assertEqual(1, len(provider.requests))
             response = await client.get(
                 f"/conversations/{conversation_id}/artifact-proposals"
@@ -377,8 +388,8 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_system_prompt_clause_follows_flag(self) -> None:
         provider = TextProvider([["好的。"]])
         async with local_client(self.database_path, provider) as (client, app):
-            _, turn_id = await self._run_turn(client)
-            await self._wait_for_terminal(client, turn_id)
+            _, run_id = await self._run_turn(client, "帮我整理发布计划")
+            await wait_for_run_terminal(app.state.container, run_id)
             system_content = provider.requests[0].messages[0].content
             self.assertEqual("system", provider.requests[0].messages[0].role)
             self.assertIn("保留为文档", system_content)
@@ -388,8 +399,8 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
         async with local_client(
             disabled_path, provider, artifact_proposals_enabled=False
         ) as (client, app):
-            _, turn_id = await self._run_turn(client)
-            await self._wait_for_terminal(client, turn_id)
+            _, run_id = await self._run_turn(client, "帮我整理发布计划")
+            await wait_for_run_terminal(app.state.container, run_id)
             system_content = provider.requests[0].messages[0].content
             self.assertNotIn("保留为文档", system_content)
 
@@ -418,13 +429,13 @@ class ArtifactProposalGateTest(unittest.IsolatedAsyncioTestCase):
                 content="长" * 500,
                 reason="本周工作总结。",
             )
-            created = await client.post(
-                f"/conversations/{conversation_id}/turns",
-                headers={"Idempotency-Key": "request-1"},
-                json={"content": "继续"},
-            )
-            await self._wait_for_terminal(client, created.json()["turnId"])
-            system_content = provider.requests[0].messages[0].content
+            run_id = (
+                await send_message(
+                    client, conversation_id, "继续", idempotency_key="request-1"
+                )
+            )["runId"]
+            await wait_for_run_terminal(container, run_id)
+            system_content = self._system_text(provider.requests[0])
             self.assertIn("《本周总结》", system_content)
             self.assertNotIn("《发布计划》", system_content)
 

@@ -367,6 +367,35 @@
   letter-spacing: 0.02em;
 }
 
+.runtime-tool-status.is-completed {
+  color: var(--success);
+}
+
+.runtime-tool-status.is-failed,
+.runtime-tool-status.is-rejected {
+  color: var(--danger-mid);
+}
+
+.runtime-tool-status.is-running {
+  color: var(--accent);
+}
+
+.runtime-tool-status.is-pending,
+.runtime-tool-status.is-waiting {
+  color: var(--warn-mid);
+}
+
+.runtime-tool-status.is-cancelled {
+  color: var(--faint);
+}
+
+.runtime-tool-head .runtime-tool-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 42%;
+}
+
 .runtime-tool-chevron {
   display: inline-flex;
   color: var(--faint);
@@ -394,6 +423,61 @@
   margin: 0;
   color: var(--danger-deep);
   font-size: var(--fs-2);
+}
+
+.runtime-tool-error-block {
+  margin: 0 0 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--danger-deep) 10%, transparent);
+}
+
+.runtime-tool-terminal {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-tool-exit {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: var(--radius-s);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.runtime-tool-exit.is-ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.runtime-tool-exit.is-err {
+  color: var(--danger-deep);
+  background: color-mix(in srgb, var(--danger-deep) 12%, transparent);
+}
+
+.runtime-tool-terminal-pre {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+/* 按时间流交错展示：文本片段 + 工具卡依次排列 */
+.turn-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-text {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--ink-raise);
+  font-size: var(--fs-3);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.turn-timeline .runtime-tool-card {
+  width: 100%;
 }
 
 .runtime-tool-pre {

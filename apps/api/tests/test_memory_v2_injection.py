@@ -52,14 +52,15 @@ class TextProvider:
 
 
 @asynccontextmanager
-async def local_client(database_path: Path, provider, *, runtime: str = "v2"):
+async def local_client(database_path: Path, provider):
     app = create_app(
         settings=AppSettings(
             database_path=database_path,
-            runtime=runtime,
             knowledge_proposals_enabled=False,
             artifact_proposals_enabled=False,
             task_proposals_enabled=False,
+            proposal_quiet_start="",
+            proposal_quiet_end="",
         ),
         provider=provider,
     )

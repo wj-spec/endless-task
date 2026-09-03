@@ -9,6 +9,7 @@ from typing import Awaitable, Callable, Mapping, Optional, Protocol, Sequence, T
 
 from endless_task.domain.models import Conversation
 from endless_task.domain.repositories import ConflictError, InvalidStateError
+from endless_task.runtime.background_tasks import BackgroundTaskSupervisor
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
 from endless_task.runtime.provider import ModelProvider, ProviderMessage
 from endless_task.tooling import (
@@ -46,6 +47,7 @@ from .execution import (
     RunExecutionResult,
     ToolApprovalDecision,
     ToolApprovalGate,
+    ToolExecutionLimits,
 )
 from .metrics import ApprovalMetric, RuntimeV2MetricsCollector
 from .replay import (
@@ -145,11 +147,15 @@ class GatewayToolApprovalGate(ToolApprovalGate):
         pending_approvals: dict[str, PendingApproval],
         lock: asyncio.Lock,
         metrics: Optional[RuntimeV2MetricsCollector] = None,
+        approval_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._repository = repository
         self._pending_approvals = pending_approvals
         self._lock = lock
         self._metrics = metrics
+        if approval_timeout_seconds is not None and approval_timeout_seconds <= 0:
+            raise ValueError("approval_timeout_seconds must be positive")
+        self._approval_timeout_seconds = approval_timeout_seconds
         self._waiters: dict[str, asyncio.Future[ToolApprovalDecision]] = {}
 
     async def decide(
@@ -208,6 +214,7 @@ class GatewayToolApprovalGate(ToolApprovalGate):
         )
 
         wait_started = asyncio.get_running_loop().time()
+        decision: Optional[ToolApprovalDecision] = None
         try:
             decision = await self._wait_for_decision(
                 approval_id,
@@ -224,28 +231,38 @@ class GatewayToolApprovalGate(ToolApprovalGate):
                         wait_ms=int(
                             (asyncio.get_running_loop().time() - wait_started) * 1000
                         ),
-                        decision=decision.value,
+                        decision=(
+                            decision.value
+                            if decision is not None
+                            else "cancelled"
+                        ),
                     )
                 )
             async with self._lock:
                 self._pending_approvals.pop(approval_id, None)
                 self._waiters.pop(approval_id, None)
 
-        status = (
-            ToolApprovalDecision.APPROVE
-            if decision is ToolApprovalDecision.APPROVE
-            else ToolApprovalDecision.DENY
-        )
-        self._repository.append_runtime_event(
-            run_id=model_turn.run_id,
-            model_turn_id=model_turn.id,
-            event_type="approval_resolved",
-            payload={
-                "approvalId": approval_id,
-                "decision": status.value,
-                "toolExecutionId": execution.id,
-            },
-        )
+        if decision is ToolApprovalDecision.EXPIRE:
+            self._repository.append_runtime_event(
+                run_id=model_turn.run_id,
+                model_turn_id=model_turn.id,
+                event_type="approval_expired",
+                payload={
+                    "approvalId": approval_id,
+                    "toolExecutionId": execution.id,
+                },
+            )
+        else:
+            self._repository.append_runtime_event(
+                run_id=model_turn.run_id,
+                model_turn_id=model_turn.id,
+                event_type="approval_resolved",
+                payload={
+                    "approvalId": approval_id,
+                    "decision": decision.value,
+                    "toolExecutionId": execution.id,
+                },
+            )
         self._repository.transition_run_status(
             model_turn.run_id,
             RunStatus.RUNNING,
@@ -276,17 +293,29 @@ class GatewayToolApprovalGate(ToolApprovalGate):
         del approval_id, execution
         decision_task = asyncio.ensure_future(future)
         cancellation_task = asyncio.ensure_future(cancellation_token.wait())
-        done, pending = await asyncio.wait(
-            (decision_task, cancellation_task),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        if cancellation_task in done:
-            raise RuntimeCancelled()
-        return decision_task.result()
+        tasks = (decision_task, cancellation_task)
+        try:
+            if self._approval_timeout_seconds is None:
+                done, _pending = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            else:
+                async with asyncio.timeout(self._approval_timeout_seconds):
+                    done, _pending = await asyncio.wait(
+                        tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+            if cancellation_task in done:
+                raise RuntimeCancelled()
+            return decision_task.result()
+        except TimeoutError:
+            return ToolApprovalDecision.EXPIRE
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     @staticmethod
     def _approval_prompt(
@@ -461,6 +490,17 @@ class ProductRuntimeEventProjection:
                 "toolExecutionId": _string(payload, "toolExecutionId"),
                 "status": _string(payload, "status"),
                 "resultEntryId": _string(payload, "resultEntryId"),
+                # 实时展示增强：把工具名/调用 id/参数/结果错误随事件下发给前端，
+                # 让运行中的工具卡片不等快照刷新即可显示。
+                "callId": payload.get("callId"),
+                "toolName": _string(payload, "toolName"),
+                "arguments": payload.get("arguments"),
+                "content": _string(payload, "content"),
+                "errorCode": _string(payload, "errorCode"),
+                "safeMessage": _string(payload, "safeMessage"),
+                "retryable": payload.get("retryable"),
+                "correlationId": _string(payload, "correlationId"),
+                "errorDetails": payload.get("errorDetails"),
             }
         if event_type == "tool_progress_update":
             return "tool_execution.progress", {
@@ -482,12 +522,14 @@ class ProductRuntimeEventProjection:
             return "approval.resolved", {
                 "runId": event.run_id,
                 "approvalId": _string(payload, "approvalId"),
+                "toolExecutionId": _string(payload, "toolExecutionId"),
                 "decision": _string(payload, "decision"),
             }
         if event_type == "approval_expired":
             return "approval.expired", {
                 "runId": event.run_id,
                 "approvalId": _string(payload, "approvalId"),
+                "toolExecutionId": _string(payload, "toolExecutionId"),
             }
         if event_type == "compaction_started":
             return "context.compaction_started", {"runId": event.run_id}
@@ -511,7 +553,9 @@ class ProductRuntimeEventProjection:
             return "plan.updated", {
                 "runId": event.run_id,
                 "planEntryId": _string(payload, "planEntryId"),
-                "content": _string(payload, "content"),
+                "title": _string(payload, "title"),
+                "steps": payload.get("steps"),
+                "currentStepIndex": payload.get("currentStepIndex"),
             }
         if event_type == "safety_stop":
             return "run.status_changed", {
@@ -593,7 +637,6 @@ class RuntimeV2SessionGateway:
         tool_registry: ToolRegistry,
         model: str,
         max_output_tokens: int,
-        max_model_turns: int = 24,
         temperature: Optional[float] = None,
         provider_slot_limit: Optional[int] = None,
         memory_repository: Optional[SqliteRuntimeV2MemoryRepository] = None,
@@ -606,6 +649,9 @@ class RuntimeV2SessionGateway:
         ] = None,
         compaction_hook: Optional[ContextCompactionHook] = None,
         metrics_collector: Optional[RuntimeV2MetricsCollector] = None,
+        agent_timeout_seconds: Optional[float] = None,
+        approval_timeout_seconds: Optional[float] = None,
+        tool_execution_limits: Optional[ToolExecutionLimits] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
@@ -617,7 +663,9 @@ class RuntimeV2SessionGateway:
         self._metrics = metrics_collector or RuntimeV2MetricsCollector()
         self._model = model
         self._max_output_tokens = max_output_tokens
-        self._max_model_turns = max_model_turns
+        self._agent_timeout_seconds = agent_timeout_seconds
+        self._approval_timeout_seconds = approval_timeout_seconds
+        self._tool_execution_limits = tool_execution_limits
         self._temperature = temperature
         self._provider_slot = (
             asyncio.Semaphore(provider_slot_limit)
@@ -638,7 +686,14 @@ class RuntimeV2SessionGateway:
         self._run_completion_callback: Optional[
             Callable[[str], Awaitable[None]]
         ] = None
-        self._post_run_tasks: set[asyncio.Task[None]] = set()
+        self._active_run_supervisor = BackgroundTaskSupervisor(
+            name="runtime-v2-runs",
+            logger=logger,
+        )
+        self._post_run_supervisor = BackgroundTaskSupervisor(
+            name="runtime-v2-post-run",
+            logger=logger,
+        )
         self._memory_service = (
             RuntimeV2MemoryService(
                 chat_repository=chat_repository,
@@ -656,6 +711,7 @@ class RuntimeV2SessionGateway:
             pending_approvals=self._pending_approvals,
             lock=self._lock,
             metrics=self._metrics,
+            approval_timeout_seconds=self._approval_timeout_seconds,
         )
         self.driver = AgentSessionDriver(self)
 
@@ -664,6 +720,10 @@ class RuntimeV2SessionGateway:
         callback: Optional[Callable[[str], Awaitable[None]]],
     ) -> None:
         self._run_completion_callback = callback
+
+    @property
+    def _post_run_tasks(self) -> tuple[asyncio.Task[object], ...]:
+        return self._post_run_supervisor.tasks
 
     def set_context_prefix_builder(
         self,
@@ -1183,16 +1243,8 @@ class RuntimeV2SessionGateway:
             active_runs = tuple(self._active_runs.values())
         for active in active_runs:
             await active.executor.request_cancel()
-        if active_runs:
-            await asyncio.gather(
-                *(active.task for active in active_runs),
-                return_exceptions=True,
-            )
-        if self._post_run_tasks:
-            await asyncio.gather(
-                *tuple(self._post_run_tasks),
-                return_exceptions=True,
-            )
+        await self._active_run_supervisor.shutdown(cancel=False)
+        await self._post_run_supervisor.shutdown(cancel=False)
 
     def _find_active_run(self, run_id: str) -> Optional[_ActiveRun]:
         for active in self._active_runs.values():
@@ -1290,7 +1342,6 @@ class RuntimeV2SessionGateway:
             tool_registry=self._tool_registry,
             model=selected_model,
             max_output_tokens=self._max_output_tokens,
-            max_model_turns=self._max_model_turns,
             temperature=self._temperature,
             approval_gate=self._approval_gate,
             provider_slot=self._provider_slot,
@@ -1298,21 +1349,27 @@ class RuntimeV2SessionGateway:
             tool_filter_provider=self._tool_filter_provider,
             compaction_hook=self._compaction_hook,
             metrics=self._metrics,
+            agent_timeout_seconds=self._agent_timeout_seconds,
+            tool_execution_limits=self._tool_execution_limits,
         )
-        task = asyncio.create_task(
+        task = self._active_run_supervisor.spawn(
             executor.execute(
                 run.id,
                 cancellation_token=token,
-            )
+            ),
+            name=f"runtime-v2-run:{run.id}",
+            on_done=(
+                lambda finished, key=conversation_id: self._on_run_done(
+                    key,
+                    finished,
+                )
+            ),
         )
         self._active_runs[conversation_id] = _ActiveRun(
             run_id=run.id,
             task=task,
             executor=executor,
             cancellation_token=token,
-        )
-        task.add_done_callback(
-            lambda finished, key=conversation_id: self._on_run_done(key, finished)
         )
         return run
 
@@ -1322,23 +1379,19 @@ class RuntimeV2SessionGateway:
             self._active_runs.pop(conversation_id, None)
         if task.cancelled():
             return
-        error = task.exception()
-        if error is not None:
-            logger.error(
-                "Runtime v2 gateway task failed",
-                exc_info=(type(error), error, error.__traceback__),
-                extra={"conversation_id": conversation_id},
-            )
+        try:
+            result = task.result()
+        except Exception:
             return
-        result = task.result()
         if (
             isinstance(result, RunExecutionResult)
             and result.status is RunStatus.COMPLETED
             and self._run_completion_callback is not None
         ):
-            post_run_task = asyncio.create_task(self._post_run_completed(result.run.id))
-            self._post_run_tasks.add(post_run_task)
-            post_run_task.add_done_callback(self._post_run_tasks.discard)
+            self._post_run_supervisor.spawn(
+                self._post_run_completed(result.run.id),
+                name=f"runtime-v2-post-run:{result.run.id}",
+            )
 
     async def _post_run_completed(self, run_id: str) -> None:
         callback = self._run_completion_callback
@@ -1388,11 +1441,15 @@ def _entry_json(entry: TranscriptEntryRecord) -> dict[str, object]:
     elif entry.type is TranscriptEntryType.TOOL_CALL:
         data["toolName"] = entry.payload.get("toolName", "")
         data["arguments"] = _bounded_json(entry.payload.get("arguments", {}))
+        data["callId"] = entry.payload.get("callId")
+        data["toolExecutionId"] = entry.display.get("toolExecutionId")
     elif entry.type is TranscriptEntryType.TOOL_RESULT:
         data["toolName"] = entry.payload.get("toolName", "")
         data["content"] = _bounded_text(entry.payload.get("content", ""))
         data["errorCode"] = entry.payload.get("errorCode")
         data["trustLevel"] = "untrusted"
+        data["callId"] = entry.payload.get("callId")
+        data["structuredContent"] = entry.payload.get("structuredContent")
     else:
         data["reference"] = entry.payload
     return {
@@ -1431,6 +1488,11 @@ def _run_state_json(snapshot: ConversationRuntimeSnapshot) -> Optional[dict[str,
                         "callId": tool.record.call_id,
                         "toolName": tool.record.tool_name,
                         "status": tool.record.status.value,
+                        "errorCode": tool.record.error_code,
+                        "safeMessage": tool.record.safe_message,
+                        "retryable": tool.record.retryable,
+                        "correlationId": tool.record.correlation_id,
+                        "errorDetails": tool.record.error_details,
                         "resultEntryId": tool.record.result_entry_id,
                     }
                     for tool in turn.tool_executions
@@ -1454,6 +1516,11 @@ def _tool_states_json(
             "callId": tool.record.call_id,
             "toolName": tool.record.tool_name,
             "status": tool.record.status.value,
+            "errorCode": tool.record.error_code,
+            "safeMessage": tool.record.safe_message,
+            "retryable": tool.record.retryable,
+            "correlationId": tool.record.correlation_id,
+            "errorDetails": tool.record.error_details,
             "resultEntryId": tool.record.result_entry_id,
         }
         for turn in snapshot.active_run.model_turns

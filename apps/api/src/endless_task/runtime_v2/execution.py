@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable, Optional, Protocol, Sequence, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
 
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
 from endless_task.runtime.provider import (
@@ -19,10 +20,16 @@ from endless_task.runtime.provider import (
     ProviderToolDefinition,
 )
 from endless_task.tooling import (
+    ContextualTool,
+    JsonValue,
+    ProgressReportingTool,
     RegisteredTool,
     ToolCall,
+    ToolCallError,
     ToolCallStatus,
     ToolError,
+    ToolExecutionContext,
+    ToolProgressEvent,
     ToolRegistry,
     ToolResult,
     ToolValidationError,
@@ -38,12 +45,7 @@ from .domain import (
     ToolExecutionRecord,
     ToolExecutionStatus,
 )
-from .safety import (
-    SafetyStopError,
-    SafetyStopPolicy,
-    SafetyStopReason,
-    SafetyStopState,
-)
+from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
 
 if TYPE_CHECKING:
@@ -71,10 +73,73 @@ _TERMINAL_TOOL_STATUSES = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class ToolExecutionLimits:
+    max_calls_per_turn: int = 8
+    max_concurrent_calls: int = 4
+    max_argument_bytes: int = 64 * 1024
+    max_total_argument_bytes: int = 256 * 1024
+    max_argument_depth: int = 32
+    max_argument_nodes: int = 10_000
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "max_calls_per_turn",
+            "max_concurrent_calls",
+            "max_argument_bytes",
+            "max_total_argument_bytes",
+            "max_argument_depth",
+            "max_argument_nodes",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer")
+        if self.max_argument_bytes > self.max_total_argument_bytes:
+            raise ValueError(
+                "max_argument_bytes cannot exceed max_total_argument_bytes"
+            )
+
+
+def _json_value_size(value: Any, *, limits: ToolExecutionLimits) -> int:
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > limits.max_argument_nodes:
+            raise SafetyStopError(
+                SafetyStopReason.TOOL_ARGUMENT_LIMIT,
+                "工具参数结构过于复杂，已安全停止。",
+            )
+        if depth > limits.max_argument_depth:
+            raise SafetyStopError(
+                SafetyStopReason.TOOL_ARGUMENT_LIMIT,
+                "工具参数嵌套层级过深，已安全停止。",
+            )
+        if isinstance(current, Mapping):
+            stack.extend((nested, depth + 1) for nested in current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend((nested, depth + 1) for nested in current)
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise SafetyStopError(
+            SafetyStopReason.TOOL_ARGUMENT_LIMIT,
+            "工具参数不是受支持的 JSON 数据，已安全停止。",
+        ) from error
+    return len(encoded)
+
+
 class ToolApprovalDecision(str, Enum):
     WAIT = "wait"
     APPROVE = "approve"
     DENY = "deny"
+    EXPIRE = "expired"
 
 
 class ToolApprovalGate(Protocol):
@@ -131,12 +196,28 @@ class StaticToolApprovalGate:
         return self._decision
 
 
+class UnattendedToolApprovalGate:
+    """Fail closed when no interactive approval channel exists."""
+
+    async def decide(
+        self,
+        execution,
+        tool,
+        call,
+        cancellation_token,
+    ) -> ToolApprovalDecision:
+        del execution, tool, call, cancellation_token
+        return ToolApprovalDecision.DENY
+
+
 @dataclass(frozen=True)
 class ToolExecutionOutcome:
     messages: tuple[ProviderMessage, ...]
     records: tuple[ToolExecutionRecord, ...] = ()
     pending_approval_execution_ids: tuple[str, ...] = ()
     terminal_execution_ids: tuple[str, ...] = ()
+    # 本批是否应提前终止循环：所有成功工具结果都请求 terminate（pi 的 terminate 语义）。
+    terminate: bool = False
 
 
 @dataclass
@@ -145,10 +226,12 @@ class _ToolWorkItem:
     record_id: str
     status: ToolExecutionStatus = ToolExecutionStatus.CREATED
     content: str = ""
-    error_code: Optional[str] = None
-    safe_message: Optional[str] = None
+    structured_content: JsonValue = None
+    error: Optional[ToolCallError] = None
     succeeded: bool = False
     pending: bool = False
+    terminate: bool = False
+    result_recorded: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,11 +254,14 @@ class ToolExecutionCoordinator:
         tool_filter_provider: Optional[
             Callable[[str], Optional[Callable[[str], bool]]]
         ] = None,
+        limits: Optional[ToolExecutionLimits] = None,
     ) -> None:
         self._repository = repository
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate or WaitingToolApprovalGate()
         self._tool_filter_provider = tool_filter_provider
+        self._limits = limits or ToolExecutionLimits()
+        self._execution_slots = asyncio.Semaphore(self._limits.max_concurrent_calls)
 
     def definitions(self, conversation_id: str) -> tuple[ProviderToolDefinition, ...]:
         predicate = (
@@ -193,6 +279,52 @@ class ToolExecutionCoordinator:
             if predicate is None or predicate(definition.name)
         )
 
+    @staticmethod
+    def _model_failure_content(error: ToolCallError) -> str:
+        details: list[str] = []
+        if error.path is not None:
+            details.append(f"位置：{error.path}")
+        if error.keyword is not None:
+            details.append(f"规则：{error.keyword}")
+        if error.expected is not None:
+            expected_value = (
+                dict(error.expected)
+                if isinstance(error.expected, Mapping)
+                else error.expected
+            )
+            expected = json.dumps(
+                expected_value,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            if len(expected) > 512:
+                expected = expected[:511] + "…"
+            details.append(f"期望：{expected}")
+        detail_text = f" {'；'.join(details)}。" if details else ""
+        recovery = (
+            "请根据错误信息调整参数后重试。"
+            if error.retryable
+            else "请不要原样重复同一调用。"
+        )
+        return (
+            f"工具执行失败（{error.code}）：{error.safe_message}"
+            f"{detail_text} {recovery}"
+        )
+
+    @classmethod
+    def _fail_item(
+        cls,
+        item: _ToolWorkItem,
+        error: ToolCallError,
+        *,
+        status: ToolExecutionStatus = ToolExecutionStatus.FAILED,
+        content: Optional[str] = None,
+    ) -> None:
+        item.status = status
+        item.error = error
+        item.content = content or cls._model_failure_content(error)
+
     async def execute(
         self,
         *,
@@ -201,19 +333,32 @@ class ToolExecutionCoordinator:
         provider_calls: Sequence[ProviderToolCall],
         assistant_content: str,
         cancellation_token: CancellationToken,
-        safety_policy: SafetyStopPolicy,
-        safety_state: SafetyStopState,
     ) -> ToolExecutionOutcome:
+        if len(provider_calls) > self._limits.max_calls_per_turn:
+            raise SafetyStopError(
+                SafetyStopReason.TOOL_CALL_LIMIT,
+                "模型单轮请求的工具数量超过限制，已安全停止。",
+            )
+
+        argument_sizes = [
+            _json_value_size(provider_call.arguments, limits=self._limits)
+            for provider_call in provider_calls
+        ]
+        if any(
+            size > self._limits.max_argument_bytes for size in argument_sizes
+        ) or sum(argument_sizes) > self._limits.max_total_argument_bytes:
+            raise SafetyStopError(
+                SafetyStopReason.TOOL_ARGUMENT_LIMIT,
+                "模型返回的工具参数超过大小限制，已安全停止。",
+            )
+
+        cancellation_token.raise_if_cancelled()
+
         items: list[_ToolWorkItem] = []
         for provider_call in provider_calls:
             record, _entry = self._repository.record_tool_call(
                 model_turn_id=model_turn.id,
                 call_id=provider_call.id,
-                tool_name=provider_call.name,
-                arguments=provider_call.arguments,
-            )
-            safety_policy.register_tool_signature(
-                safety_state,
                 tool_name=provider_call.name,
                 arguments=provider_call.arguments,
             )
@@ -224,93 +369,59 @@ class ToolExecutionCoordinator:
                 )
             )
 
-        prepared_items: list[_PreparedToolExecution] = []
-        for item in items:
-            self._repository.transition_tool_execution_status(
-                item.record_id,
-                ToolExecutionStatus.VALIDATING,
-                event_type="tool_execution_status_changed",
-                payload={
-                    "toolExecutionId": item.record_id,
-                    "status": ToolExecutionStatus.VALIDATING.value,
-                },
-            )
-            cancellation_token.raise_if_cancelled()
-            try:
-                tool = self._resolve_tool(item.provider_call.name)
-                call = self._tool_call(item, run, model_turn)
-                self._validate_arguments(tool, item.provider_call.arguments)
-                force_confirm = False
-                confirmation_judge = getattr(
-                    tool, "requires_explicit_confirmation", None
-                )
-                if callable(confirmation_judge):
-                    try:
-                        force_confirm = bool(confirmation_judge(call))
-                    except Exception:  # 判定失败按需确认处理（安全默认）
-                        force_confirm = True
-                needs_approval = (
-                    tool.definition.approval_mode.value == "required"
-                    or force_confirm
-                )
-            except ToolValidationError as error:
-                item.status = ToolExecutionStatus.FAILED
-                item.error_code = error.code
-                item.safe_message = "模型请求了当前不可用的工具。"
-                item.content = (
-                    f"工具调用无效（{error.code}）：{item.safe_message} "
-                    "不要原样重复同一调用；可以调整参数后重试。"
-                )
-                continue
-            prepared_items.append(
-                _PreparedToolExecution(
-                    item=item,
-                    tool=tool,
-                    call=call,
-                    needs_approval=needs_approval,
-                )
-            )
-
-        work_tasks = [
-            asyncio.create_task(
-                self._execute_prepared_item(
-                    run=run,
-                    model_turn=model_turn,
-                    prepared=prepared_item,
-                    cancellation_token=cancellation_token,
-                )
-            )
-            for prepared_item in prepared_items
-        ]
         try:
-            await asyncio.gather(*work_tasks)
-        except RuntimeCancelled:
-            for task in work_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*work_tasks, return_exceptions=True)
-            for item in items:
-                if item.pending:
-                    continue
-                if item.status not in _TERMINAL_TOOL_STATUSES:
-                    item.status = ToolExecutionStatus.CANCELLED
-                    item.error_code = "cancelled"
-                    item.safe_message = "工具执行已被取消。"
-                    item.content = "工具执行已被用户取消。"
-                self._repository.record_tool_result(
-                    item.record_id,
-                    status=item.status,
-                    content=item.content,
-                    event_type=self._result_event(item.status),
-                    error_code=item.error_code,
-                    safe_message=item.safe_message,
+            prepared_items = self._prepare_tool_batch(
+                run=run,
+                model_turn=model_turn,
+                items=items,
+                cancellation_token=cancellation_token,
+            )
+            async with asyncio.TaskGroup() as task_group:
+                for prepared_item in prepared_items:
+                    task_group.create_task(
+                        self._execute_prepared_item(
+                            run=run,
+                            model_turn=model_turn,
+                            prepared=prepared_item,
+                            cancellation_token=cancellation_token,
+                        )
+                    )
+        except BaseException as error:
+            if self._is_runtime_cancellation(error):
+                self._record_interrupted_items(
+                    items,
+                    error=ToolCallError(
+                        code="cancelled",
+                        safe_message="工具执行已被取消。",
+                        retryable=False,
+                    ),
+                    status=ToolExecutionStatus.CANCELLED,
+                    content="工具执行已被用户取消。",
                 )
-            raise
-        except BaseException:
-            for task in work_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*work_tasks, return_exceptions=True)
+                raise RuntimeCancelled() from error
+            if self._contains_asyncio_cancellation(error):
+                self._record_interrupted_items(
+                    items,
+                    error=ToolCallError(
+                        code="cancelled",
+                        safe_message="工具执行已被取消。",
+                        retryable=False,
+                    ),
+                    status=ToolExecutionStatus.CANCELLED,
+                    content="工具执行已被取消。",
+                )
+                raise
+            self._record_interrupted_items(
+                items,
+                error=ToolCallError(
+                    code="tool_batch_failed",
+                    safe_message="工具批次执行出现内部错误。",
+                    retryable=False,
+                    correlation_id=run.correlation_id,
+                ),
+                status=ToolExecutionStatus.FAILED,
+                content="工具批次执行出现内部错误。",
+            )
             raise
 
         terminal_ids: list[str] = []
@@ -333,14 +444,11 @@ class ToolExecutionCoordinator:
                 status=item.status,
                 content=item.content,
                 event_type=event_type,
-                error_code=item.error_code,
-                safe_message=item.safe_message,
+                error=item.error,
+                structured_content=item.structured_content,
             )
+            item.result_recorded = True
             terminal_ids.append(record.id)
-            safety_policy.register_tool_result(
-                safety_state,
-                succeeded=item.succeeded,
-            )
             result_messages.append(
                 ProviderMessage(
                     role="tool",
@@ -350,6 +458,12 @@ class ToolExecutionCoordinator:
                 )
             )
 
+        terminal_items = [item for item in items if not item.pending]
+        # terminate 语义（pi shouldTerminateToolBatch）：
+        # 存在已终结工具结果，且全部请求 terminate → 提前终止循环。
+        request_terminate = bool(terminal_items) and all(
+            item.terminate for item in terminal_items
+        )
         return ToolExecutionOutcome(
             messages=tuple(result_messages),
             records=tuple(
@@ -358,7 +472,142 @@ class ToolExecutionCoordinator:
             ),
             pending_approval_execution_ids=tuple(pending_ids),
             terminal_execution_ids=tuple(terminal_ids),
+            terminate=request_terminate,
         )
+
+    def _prepare_tool_batch(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        items: Sequence[_ToolWorkItem],
+        cancellation_token: CancellationToken,
+    ) -> list[_PreparedToolExecution]:
+        prepared_items: list[_PreparedToolExecution] = []
+        for item in items:
+            self._repository.transition_tool_execution_status(
+                item.record_id,
+                ToolExecutionStatus.VALIDATING,
+                event_type="tool_execution_status_changed",
+                payload={
+                    "toolExecutionId": item.record_id,
+                    "status": ToolExecutionStatus.VALIDATING.value,
+                    "callId": item.provider_call.id,
+                    "toolName": item.provider_call.name,
+                    "arguments": item.provider_call.arguments,
+                },
+            )
+            cancellation_token.raise_if_cancelled()
+            try:
+                if item.provider_call.parse_error:
+                    self._fail_item(
+                        item,
+                        ToolCallError(
+                            code="invalid_tool_arguments",
+                            safe_message=item.provider_call.parse_error,
+                            retryable=True,
+                            path="$",
+                            keyword="json",
+                            expected="JSON object",
+                        ),
+                    )
+                    continue
+                tool = self._resolve_tool(item.provider_call.name)
+                call = self._tool_call(item, run, model_turn)
+                self._validate_arguments(tool, item.provider_call.arguments)
+                force_confirm = False
+                confirmation_judge = getattr(
+                    tool, "requires_explicit_confirmation", None
+                )
+                if callable(confirmation_judge):
+                    try:
+                        force_confirm = bool(confirmation_judge(call))
+                    except Exception:
+                        force_confirm = True
+                needs_approval = (
+                    tool.definition.approval_mode.value == "required"
+                    or force_confirm
+                )
+            except ToolValidationError as error:
+                self._fail_item(
+                    item,
+                    ToolCallError(
+                        code=error.code,
+                        safe_message="模型提供的工具调用或参数不符合要求。",
+                        retryable=error.retryable,
+                        path=error.path,
+                        keyword=error.keyword,
+                        expected=error.expected,
+                    ),
+                )
+                continue
+            prepared_items.append(
+                _PreparedToolExecution(
+                    item=item,
+                    tool=tool,
+                    call=call,
+                    needs_approval=needs_approval,
+                )
+            )
+        return prepared_items
+
+    def _record_interrupted_items(
+        self,
+        items: Sequence[_ToolWorkItem],
+        *,
+        error: ToolCallError,
+        status: ToolExecutionStatus,
+        content: str,
+    ) -> None:
+        for item in items:
+            if item.result_recorded:
+                continue
+            current = self._repository.get_tool_execution(item.record_id)
+            if (
+                current.status in _TERMINAL_TOOL_STATUSES
+                or current.result_entry_id is not None
+            ):
+                item.result_recorded = True
+                continue
+            if item.status not in _TERMINAL_TOOL_STATUSES:
+                self._fail_item(
+                    item,
+                    error,
+                    status=status,
+                    content=content,
+                )
+                item.pending = False
+            self._repository.record_tool_result(
+                item.record_id,
+                status=item.status,
+                content=item.content,
+                event_type=self._result_event(item.status),
+                error=item.error,
+                structured_content=item.structured_content,
+            )
+            item.result_recorded = True
+
+    @classmethod
+    def _is_runtime_cancellation(cls, error: BaseException) -> bool:
+        leaf_errors = tuple(cls._leaf_exceptions(error))
+        return bool(leaf_errors) and all(
+            isinstance(leaf, RuntimeCancelled) for leaf in leaf_errors
+        )
+
+    @classmethod
+    def _contains_asyncio_cancellation(cls, error: BaseException) -> bool:
+        return any(
+            isinstance(leaf, asyncio.CancelledError)
+            for leaf in cls._leaf_exceptions(error)
+        )
+
+    @classmethod
+    def _leaf_exceptions(cls, error: BaseException):
+        if isinstance(error, BaseExceptionGroup):
+            for nested in error.exceptions:
+                yield from cls._leaf_exceptions(nested)
+            return
+        yield error
 
     async def _execute_prepared_item(
         self,
@@ -392,15 +641,56 @@ class ToolExecutionCoordinator:
                 item.pending = True
                 return
             if decision is ToolApprovalDecision.DENY:
-                item.status = ToolExecutionStatus.REJECTED
-                item.error_code = "approval_denied"
-                item.safe_message = "用户未授权这项操作。"
-                item.content = (
-                    "用户未授权这项操作。不要重复请求相同操作；"
-                    "请说明未执行，或在无需该操作的情况下继续。"
+                self._fail_item(
+                    item,
+                    ToolCallError(
+                        code="approval_denied",
+                        safe_message="用户未授权这项操作。",
+                        retryable=False,
+                    ),
+                    status=ToolExecutionStatus.REJECTED,
+                    content=(
+                        "用户未授权这项操作。不要重复请求相同操作；"
+                        "请说明未执行，或在无需该操作的情况下继续。"
+                    ),
+                )
+                return
+            if decision is ToolApprovalDecision.EXPIRE:
+                self._fail_item(
+                    item,
+                    ToolCallError(
+                        code="approval_timeout",
+                        safe_message="等待用户授权已超时。",
+                        retryable=False,
+                    ),
+                    status=ToolExecutionStatus.EXPIRED,
+                    content=(
+                        "等待用户授权已超时，本次工具调用未执行。"
+                        "不要原样重复请求相同操作；请说明未执行，或等待用户重新发起。"
+                    ),
                 )
                 return
 
+        async with self._execution_slots:
+            await self._execute_approved_item(
+                run=run,
+                model_turn=model_turn,
+                item=item,
+                tool=tool,
+                call=call,
+                cancellation_token=cancellation_token,
+            )
+
+    async def _execute_approved_item(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        item: _ToolWorkItem,
+        tool: RegisteredTool,
+        call: ToolCall,
+        cancellation_token: CancellationToken,
+    ) -> None:
         self._repository.transition_tool_execution_status(
             item.record_id,
             ToolExecutionStatus.RUNNING,
@@ -418,19 +708,19 @@ class ToolExecutionCoordinator:
                 item=item,
             )
         except RuntimeCancelled:
-            item.status = ToolExecutionStatus.CANCELLED
-            item.error_code = "cancelled"
-            item.safe_message = "工具执行已被取消。"
-            item.content = "工具执行已被用户取消。"
+            self._fail_item(
+                item,
+                ToolCallError(
+                    code="cancelled",
+                    safe_message="工具执行已被取消。",
+                    retryable=False,
+                ),
+                status=ToolExecutionStatus.CANCELLED,
+                content="工具执行已被用户取消。",
+            )
             raise
         except ToolError as error:
-            item.status = ToolExecutionStatus.FAILED
-            item.error_code = error.code
-            item.safe_message = error.safe_message
-            item.content = (
-                f"工具执行失败（{error.code}）：{error.safe_message} "
-                "不要原样重复同一调用；可以调整参数后重试。"
-            )
+            self._fail_item(item, error.failure)
             return
         except Exception:
             logger.exception(
@@ -440,13 +730,19 @@ class ToolExecutionCoordinator:
                     "tool_execution_id": item.record_id,
                 },
             )
-            item.status = ToolExecutionStatus.FAILED
-            item.error_code = "tool_execution_failed"
-            item.safe_message = "工具执行出现内部错误。"
-            item.content = (
-                "工具执行出现内部错误。不要原样重复同一调用；"
-                "可以调整参数后重试。"
+            self._fail_item(
+                item,
+                ToolCallError(
+                    code="tool_execution_failed",
+                    safe_message="工具执行出现内部错误。",
+                    retryable=False,
+                    correlation_id=run.correlation_id,
+                ),
             )
+            return
+
+        if result.error is not None:
+            self._fail_item(item, result.error)
             return
 
         bounded_result = self._bounded_result(
@@ -455,7 +751,9 @@ class ToolExecutionCoordinator:
         )
         item.status = ToolExecutionStatus.COMPLETED
         item.content = bounded_result.content
+        item.structured_content = bounded_result.structured_content
         item.succeeded = True
+        item.terminate = bounded_result.terminate
 
     def _resolve_tool(self, name: str) -> RegisteredTool:
         return self._tool_registry.resolve(name)
@@ -485,6 +783,10 @@ class ToolExecutionCoordinator:
             raise ToolValidationError(
                 "invalid_tool_arguments",
                 "模型提供的工具参数不符合要求。",
+                retryable=True,
+                path=error.path,
+                keyword=error.keyword,
+                expected=error.expected,
             ) from error
 
     async def _execute_tool_with_progress(
@@ -497,58 +799,90 @@ class ToolExecutionCoordinator:
         cancellation_token: CancellationToken,
         item: _ToolWorkItem,
     ) -> ToolResult:
-        execute_with_progress = getattr(tool, "execute_with_progress", None)
-        if not callable(execute_with_progress):
-            return await self._execute_tool(
-                tool,
+        timeout_seconds = tool.definition.timeout_seconds
+        context = self._tool_execution_context(
+            run=run,
+            model_turn=model_turn,
+            item=item,
+            cancellation_token=cancellation_token,
+            timeout_seconds=timeout_seconds,
+        )
+        if isinstance(tool, ContextualTool):
+            return await self._await_tool_result(
+                tool.execute_with_context(call, context),
                 call,
                 cancellation_token,
-                timeout_seconds=tool.definition.timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
+        if isinstance(tool, ProgressReportingTool):
 
-        def on_progress(*, message: str, percent: Optional[float] = None) -> None:
-            self._repository.append_runtime_event(
-                run_id=run.id,
-                model_turn_id=model_turn.id,
-                event_type="tool_progress_update",
-                payload={
-                    "toolExecutionId": item.record_id,
-                    "message": message,
-                    "percent": percent,
-                },
+            def on_progress(message: str, percent: Optional[float] = None) -> None:
+                self._append_tool_progress_event(
+                    run=run,
+                    model_turn=model_turn,
+                    item=item,
+                    event=ToolProgressEvent(message=message, percent=percent),
+                )
+
+            return await self._await_tool_result(
+                tool.execute_with_progress(
+                    call,
+                    cancellation_token,
+                    on_progress=on_progress,
+                ),
+                call,
+                cancellation_token,
+                timeout_seconds=timeout_seconds,
             )
-
-        execution = asyncio.create_task(
-            execute_with_progress(call, cancellation_token, on_progress=on_progress)
+        return await self._execute_tool(
+            tool,
+            call,
+            cancellation_token,
+            timeout_seconds=timeout_seconds,
         )
-        cancellation = asyncio.create_task(cancellation_token.wait())
-        try:
-            done, _pending = await asyncio.wait(
-                (execution, cancellation),
-                timeout=tool.definition.timeout_seconds,
-                return_when=asyncio.FIRST_COMPLETED,
+
+    def _tool_execution_context(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        item: _ToolWorkItem,
+        cancellation_token: CancellationToken,
+        timeout_seconds: float,
+    ) -> ToolExecutionContext:
+        async def report_progress(event: ToolProgressEvent) -> None:
+            self._append_tool_progress_event(
+                run=run,
+                model_turn=model_turn,
+                item=item,
+                event=event,
             )
-            if cancellation in done:
-                raise RuntimeCancelled()
-            if execution not in done:
-                raise ToolError(
-                    "tool_timeout",
-                    "工具执行超时，可以重试。",
-                    retryable=True,
-                )
-            result = execution.result()
-            if not isinstance(result, ToolResult) or result.tool_call_id != call.id:
-                raise ToolError(
-                    "invalid_tool_result",
-                    "工具返回了无效结果。",
-                    retryable=False,
-                )
-            return result
-        finally:
-            for task in (execution, cancellation):
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(execution, cancellation, return_exceptions=True)
+
+        return ToolExecutionContext(
+            cancellation_token=cancellation_token,
+            deadline_monotonic=time.monotonic() + timeout_seconds,
+            correlation_id=item.record_id,
+            progress_reporter=report_progress,
+        )
+
+    def _append_tool_progress_event(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        item: _ToolWorkItem,
+        event: ToolProgressEvent,
+    ) -> None:
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            model_turn_id=model_turn.id,
+            event_type="tool_progress_update",
+            payload={
+                "toolExecutionId": item.record_id,
+                "message": event.message,
+                "percent": event.percent,
+            },
+        )
 
     @staticmethod
     async def _execute_tool(
@@ -558,7 +892,22 @@ class ToolExecutionCoordinator:
         *,
         timeout_seconds: float,
     ) -> ToolResult:
-        execution = asyncio.create_task(tool.execute(call, cancellation_token))
+        return await ToolExecutionCoordinator._await_tool_result(
+            tool.execute(call, cancellation_token),
+            call,
+            cancellation_token,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @staticmethod
+    async def _await_tool_result(
+        awaitable: Awaitable[ToolResult],
+        call: ToolCall,
+        cancellation_token: CancellationToken,
+        *,
+        timeout_seconds: float,
+    ) -> ToolResult:
+        execution = asyncio.ensure_future(awaitable)
         cancellation = asyncio.create_task(cancellation_token.wait())
         try:
             done, _pending = await asyncio.wait(
@@ -597,6 +946,8 @@ class ToolExecutionCoordinator:
             content=result.content[:max_characters],
             structured_content=result.structured_content,
             is_truncated=True,
+            terminate=result.terminate,
+            error=result.error,
         )
 
     @staticmethod
@@ -624,6 +975,8 @@ class ModelTurnOutcome:
     messages: tuple[ProviderMessage, ...]
     tool_calls: tuple[ProviderToolCall, ...]
     pending_approval_execution_ids: tuple[str, ...]
+    # 本批工具结果请求提前终止循环（pi terminate 语义）。
+    terminate: bool = False
 
 
 class ModelTurnRunner:
@@ -655,8 +1008,6 @@ class ModelTurnRunner:
         run: RunRecord,
         messages: Sequence[ProviderMessage],
         cancellation_token: CancellationToken,
-        safety_policy: SafetyStopPolicy,
-        safety_state: SafetyStopState,
         on_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> ModelTurnOutcome:
         model_turn = self._repository.start_model_turn(
@@ -742,6 +1093,13 @@ class ModelTurnRunner:
                 event_type="model_turn_cancelled",
             )
             raise
+        except asyncio.CancelledError:
+            self._repository.transition_model_turn_status(
+                model_turn.id,
+                _MODEL_TURN_CANCELLED_STATUS,
+                event_type="model_turn_cancelled",
+            )
+            raise
         except BaseException as error:
             error_code = "provider_failed"
             safe_message = "模型执行失败。"
@@ -800,10 +1158,15 @@ class ModelTurnRunner:
                     provider_calls=tuple(provider_calls),
                     assistant_content=content,
                     cancellation_token=cancellation_token,
-                    safety_policy=safety_policy,
-                    safety_state=safety_state,
                 )
             except RuntimeCancelled:
+                self._repository.transition_model_turn_status(
+                    model_turn.id,
+                    _MODEL_TURN_CANCELLED_STATUS,
+                    event_type="model_turn_cancelled",
+                )
+                raise
+            except asyncio.CancelledError:
                 self._repository.transition_model_turn_status(
                     model_turn.id,
                     _MODEL_TURN_CANCELLED_STATUS,
@@ -864,6 +1227,7 @@ class ModelTurnRunner:
                 messages=tool_outcome.messages,
                 tool_calls=tuple(provider_calls),
                 pending_approval_execution_ids=(),
+                terminate=tool_outcome.terminate,
             )
 
         self._repository.transition_model_turn_status(
@@ -958,30 +1322,27 @@ class AgentRunExecutor:
         tool_registry: ToolRegistry,
         model: str,
         max_output_tokens: int = 8192,
-        max_model_turns: int = 24,
         temperature: Optional[float] = None,
         approval_gate: Optional[ToolApprovalGate] = None,
-        safety_policy: Optional[SafetyStopPolicy] = None,
         provider_slot: Optional[asyncio.Semaphore] = None,
         compaction_hook: Optional[ContextCompactionHook] = None,
         context_prefix_messages: Sequence[ProviderMessage] = (),
         tool_filter_provider: Optional[
             Callable[[str], Optional[Callable[[str], bool]]]
         ] = None,
+        tool_execution_limits: Optional[ToolExecutionLimits] = None,
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
+        agent_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
         self._tool_registry = tool_registry
         self._model = model
         self._max_output_tokens = max_output_tokens
-        if max_model_turns <= 0:
-            raise ValueError("max_model_turns must be positive")
-        self._max_model_turns = max_model_turns
         self._temperature = temperature
-        self._safety_policy = safety_policy or SafetyStopPolicy()
         self._provider_slot = provider_slot
         self._compaction_hook = compaction_hook
+        self._agent_timeout_seconds = agent_timeout_seconds
         self._context_prefix_messages = tuple(context_prefix_messages)
         self._metrics = metrics
         self._run_compacted = False
@@ -990,6 +1351,7 @@ class AgentRunExecutor:
             tool_registry=tool_registry,
             approval_gate=approval_gate,
             tool_filter_provider=tool_filter_provider,
+            limits=tool_execution_limits,
         )
         self._model_turn_runner = ModelTurnRunner(
             repository=repository,
@@ -1026,7 +1388,6 @@ class AgentRunExecutor:
             self._context_prefix_messages
         )
         provider_messages.extend(projection.messages)
-        safety_state = SafetyStopState()
         run = self._repository.start_run(run.id)
         cancellation_token.raise_if_cancelled()
 
@@ -1038,21 +1399,37 @@ class AgentRunExecutor:
 
         try:
             while True:
-                if len(model_turn_ids) >= self._max_model_turns:
-                    raise SafetyStopError(
-                        SafetyStopReason.MAX_MODEL_TURNS,
-                        "Run 达到本地模型轮次上限，已安全停止。",
+                remaining_timeout: Optional[float] = None
+                if self._agent_timeout_seconds is not None:
+                    elapsed = time.monotonic() - run_started
+                    remaining_timeout = self._agent_timeout_seconds - elapsed
+                    if remaining_timeout <= 0:
+                        raise SafetyStopError(
+                            SafetyStopReason.AGENT_TIMEOUT,
+                            "助手运行超时，已安全停止。",
+                        )
+
+                async def run_next_model_turn() -> ModelTurnOutcome:
+                    provider_messages.extend(await self._drain_steering_messages(run))
+                    await self._maybe_compact_context(run, provider_messages)
+                    return await self._model_turn_runner.run(
+                        run=run,
+                        messages=provider_messages,
+                        cancellation_token=cancellation_token,
+                        on_text_delta=on_text_delta,
                     )
-                provider_messages.extend(await self._drain_steering_messages(run))
-                await self._maybe_compact_context(run, provider_messages)
-                outcome = await self._model_turn_runner.run(
-                    run=run,
-                    messages=provider_messages,
-                    cancellation_token=cancellation_token,
-                    safety_policy=self._safety_policy,
-                    safety_state=safety_state,
-                    on_text_delta=on_text_delta,
-                )
+
+                try:
+                    if remaining_timeout is None:
+                        outcome = await run_next_model_turn()
+                    else:
+                        async with asyncio.timeout(remaining_timeout):
+                            outcome = await run_next_model_turn()
+                except TimeoutError as error:
+                    raise SafetyStopError(
+                        SafetyStopReason.AGENT_TIMEOUT,
+                        "助手运行超时，已安全停止。",
+                    ) from error
                 model_turn_ids.append(outcome.model_turn_id)
                 content_parts.append(outcome.content)
                 input_tokens += outcome.input_tokens or 0
@@ -1070,12 +1447,27 @@ class AgentRunExecutor:
                     )
 
                 provider_messages.extend(outcome.messages)
-                self._safety_policy.register_model_turn(
-                    safety_state,
-                    content=outcome.content,
-                    tool_call_count=len(outcome.tool_calls),
-                )
-                if not outcome.tool_calls and outcome.content.strip():
+                delivered = not outcome.tool_calls and bool(outcome.content.strip())
+                # 工具级「提前终止」：本批所有工具结果都请求 terminate → 停循环。
+                if outcome.tool_calls and outcome.terminate:
+                    final_run, assistant_entry = self._repository.finalize_run(
+                        run.id,
+                        content="".join(content_parts),
+                        finish_reason=outcome.finish_reason,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
+                    return self._result(
+                        RunStatus.COMPLETED,
+                        final_run,
+                        "".join(content_parts),
+                        input_tokens,
+                        output_tokens,
+                        tuple(model_turn_ids),
+                        (),
+                        assistant_entry_id=assistant_entry.id,
+                    )
+                if delivered:
                     final_run, assistant_entry = self._repository.finalize_run(
                         run.id,
                         content="".join(content_parts),

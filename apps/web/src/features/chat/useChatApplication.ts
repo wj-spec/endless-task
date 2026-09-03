@@ -2,11 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiClientError,
   chatApi,
-  streamTurnEvents,
 } from "./api";
 import type {
   CapabilitySnapshot,
-  CompactTurnSnapshot,
   ActivityStatus,
   Conversation,
   ConversationSnapshot,
@@ -19,10 +17,8 @@ import type {
   RuntimeV2Lane,
   RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
-  RuntimeEvent,
   Message,
   TurnStatus,
-  TurnCommandResponse,
   Workspace,
 } from "./apiTypes";
 import {
@@ -85,17 +81,6 @@ const readableError = (error: unknown) => {
   if (error instanceof Error && error.name === "AbortError") return "";
   return "无法连接本地服务，请确认 API 已启动。";
 };
-
-const liveFromSnapshot = (snapshot: CompactTurnSnapshot): LiveTurn => ({
-  turnId: snapshot.turnId,
-  responseVariantId: snapshot.activeResponseVariantId,
-  status: snapshot.turnStatus,
-  content: snapshot.content,
-  lastSequence: snapshot.lastSequence,
-  error: snapshot.error,
-  pendingApproval: snapshot.pendingApproval,
-  activities: snapshot.activities,
-});
 
 const runtimeStatusToTurnStatus = (status: string): TurnStatus =>
   status === "completed" ||
@@ -583,147 +568,6 @@ export function useChatApplication() {
     applyRuntimeProductEvent(event);
   }, [applyRuntimeProductEvent, runtimeController.latestEvent]);
 
-  const applyEvent = useCallback((event: RuntimeEvent) => {
-    setLiveTurns((current) => {
-      const previous = current[event.turnId];
-      if (previous && event.sequence <= previous.lastSequence) return current;
-      const variantChanged =
-        event.responseVariantId && event.responseVariantId !== previous?.responseVariantId;
-      const next: LiveTurn = {
-        turnId: event.turnId,
-        responseVariantId:
-          event.responseVariantId ?? previous?.responseVariantId ?? "",
-        status: previous?.status ?? "created",
-        content: variantChanged ? "" : (previous?.content ?? ""),
-        lastSequence: event.sequence,
-        error: variantChanged ? undefined : previous?.error,
-        pendingApproval: variantChanged ? undefined : previous?.pendingApproval,
-        activities: variantChanged ? [] : (previous?.activities ?? []),
-      };
-
-      if (event.type === "turn.started") next.status = "running";
-      if (event.type === "message.started") next.content = "";
-      if (event.type === "message.delta") next.content += event.data.delta ?? "";
-      if (event.type === "message.completed") next.content = event.data.content ?? next.content;
-      if (
-        event.type === "approval.requested" &&
-        event.data.approvalId &&
-        event.data.toolCallId &&
-        event.data.summary &&
-        event.data.reason
-      ) {
-        next.pendingApproval = {
-          id: event.data.approvalId,
-          toolCallId: event.data.toolCallId,
-          summary: event.data.summary,
-          reason: event.data.reason,
-          status: "pending",
-          createdAt: event.data.createdAt ?? event.occurredAt,
-          resolvedAt: null,
-          metadata: event.data.metadata ?? {},
-        };
-      }
-      if (
-        event.type === "approval.resolved" &&
-        next.pendingApproval?.id === event.data.approvalId
-      ) {
-        next.pendingApproval = undefined;
-      }
-      if (
-        event.type.startsWith("activity.") &&
-        event.data.activityId &&
-        event.data.status &&
-        event.data.message
-      ) {
-        const previousActivity = next.activities.find(
-          (item) => item.id === event.data.activityId,
-        );
-        const updatedActivity = {
-          id: event.data.activityId,
-          status: event.data.status as ActivityStatus,
-          message: event.data.message,
-          startedAt: previousActivity?.startedAt ?? event.occurredAt,
-          updatedAt: event.occurredAt,
-        };
-        next.activities = previousActivity
-          ? next.activities.map((item) =>
-              item.id === updatedActivity.id ? updatedActivity : item,
-            )
-          : [...next.activities, updatedActivity];
-      }
-      if (event.type === "turn.completed") {
-        next.status = "completed";
-        next.pendingApproval = undefined;
-      }
-      if (event.type === "turn.failed") {
-        next.status = "failed";
-        next.content = event.data.partialContent ?? next.content;
-        next.error = event.data.error;
-        next.pendingApproval = undefined;
-      }
-      if (event.type === "turn.cancelled") {
-        next.status = "cancelled";
-        next.content = event.data.partialContent ?? next.content;
-        next.pendingApproval = undefined;
-      }
-      return { ...current, [event.turnId]: next };
-    });
-  }, []);
-
-  const followTurn = useCallback(
-    (turnId: string, conversationId: string, initialSequence: number) => {
-      if (streams.current.has(turnId)) return;
-      const controller = new AbortController();
-      streams.current.set(turnId, controller);
-
-      void (async () => {
-        let cursor = initialSequence;
-        try {
-          while (!controller.signal.aborted) {
-            try {
-              await streamTurnEvents({
-                turnId,
-                afterSequence: cursor,
-                signal: controller.signal,
-                onEvent: (event) => {
-                  cursor = Math.max(cursor, event.sequence);
-                  applyEvent(event);
-                },
-              });
-              const compact = await chatApi.getTurn(turnId);
-              cursor = Math.max(cursor, compact.lastSequence);
-              setLiveTurns((current) => ({
-                ...current,
-                [turnId]: liveFromSnapshot(compact),
-              }));
-              if (terminalStatuses.has(compact.turnStatus)) break;
-            } catch (streamError) {
-              if (controller.signal.aborted) return;
-              setError(readableError(streamError));
-            }
-            await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
-          }
-        } finally {
-          streams.current.delete(turnId);
-          if (!controller.signal.aborted) {
-            try {
-              const snapshot = await chatApi.getConversation(conversationId);
-              setSnapshots((current) => ({ ...current, [conversationId]: snapshot }));
-              setConversations((current) =>
-                current.map((item) =>
-                  item.id === conversationId ? snapshot.conversation : item,
-                ),
-              );
-            } catch (refreshError) {
-              setError(readableError(refreshError));
-            }
-          }
-        }
-      })();
-    },
-    [applyEvent],
-  );
-
   const hydrateActiveTurn = useCallback(
     async (
       legacy: ConversationSnapshot,
@@ -739,57 +583,44 @@ export function useChatApplication() {
         [legacy.conversation.id]: runtimeStatus,
       }));
 
-      if (runtimeStatus.effectiveRuntime === "v2") {
-        const laneList = await chatApi.listRuntimeV2Lanes(legacy.conversation.id);
-        if (!isCurrent()) return;
-        const mainLane =
-          laneList.items.find((item: RuntimeV2Lane) => item.isMain) ??
-          laneList.items.find(
-            (item: RuntimeV2Lane) => item.id === laneList.activeLaneId,
-          ) ??
-          null;
-        if (mainLane) {
-          setMainLaneIds((current) => ({
-            ...current,
-            [legacy.conversation.id]: mainLane.id,
-          }));
-          setViewLaneIds((current) => ({
-            ...current,
-            [legacy.conversation.id]: mainLane.id,
-          }));
-        }
-        setLaneTrees((current) => ({
-          ...current,
-          [legacy.conversation.id]: laneList.items,
-        }));
-        const runtime = await runtimeController.loadSnapshot({
-          conversationId: legacy.conversation.id,
-          laneId: mainLane?.id ?? null,
-        });
-        if (!isCurrent()) return;
-        applyRuntimeSnapshot(legacy, runtime, target);
-        if (runtime.runningRunId) {
-          followRuntimeConversation(
-            legacy.conversation.id,
-            runtime.lastEventSeq,
-            mainLane?.id,
-            target,
-          );
-        }
-        return;
-      }
-
-      const latest = legacy.turns.at(-1);
-      if (!latest || !["created", "running"].includes(latest.turn.status)) return;
-      const compact = await chatApi.getTurn(latest.turn.id);
+      const laneList = await chatApi.listRuntimeV2Lanes(legacy.conversation.id);
       if (!isCurrent()) return;
-      setLiveTurns((current) => ({
+      const mainLane =
+        laneList.items.find((item: RuntimeV2Lane) => item.isMain) ??
+        laneList.items.find(
+          (item: RuntimeV2Lane) => item.id === laneList.activeLaneId,
+        ) ??
+        null;
+      if (mainLane) {
+        setMainLaneIds((current) => ({
+          ...current,
+          [legacy.conversation.id]: mainLane.id,
+        }));
+        setViewLaneIds((current) => ({
+          ...current,
+          [legacy.conversation.id]: mainLane.id,
+        }));
+      }
+      setLaneTrees((current) => ({
         ...current,
-        [latest.turn.id]: liveFromSnapshot(compact),
+        [legacy.conversation.id]: laneList.items,
       }));
-      followTurn(latest.turn.id, legacy.conversation.id, compact.lastSequence);
+      const runtime = await runtimeController.loadSnapshot({
+        conversationId: legacy.conversation.id,
+        laneId: mainLane?.id ?? null,
+      });
+      if (!isCurrent()) return;
+      applyRuntimeSnapshot(legacy, runtime, target);
+      if (runtime.runningRunId) {
+        followRuntimeConversation(
+          legacy.conversation.id,
+          runtime.lastEventSeq,
+          mainLane?.id,
+          target,
+        );
+      }
     },
-    [applyRuntimeSnapshot, followRuntimeConversation, followTurn],
+    [applyRuntimeSnapshot, followRuntimeConversation],
   );
 
   const loadConversation = useCallback(
@@ -1204,6 +1035,15 @@ export function useChatApplication() {
     ? (runtimeController.connections[sideConversationId] ?? null)
     : null;
 
+  // 当前激活 lane 是否正在运行：若是，composer 输入将作为「运行中 steer」注入，
+  // 而不是开启新一轮对话（对齐 harness 的 steer/inject 交互）。
+  const activeRuntimeRunId = activeRuntimeSnapshot?.runningRunId ?? null;
+  const activeRunRunning = Boolean(
+    activeRuntimeRunId &&
+      activeRuntimeSnapshot?.runningLaneId === activeRuntimeLaneId,
+  );
+  const activeRunningRunId = activeRunRunning ? activeRuntimeRunId : null;
+
   const sendRuntimeV2Message = async (
     conversationId: string,
     content: string,
@@ -1242,49 +1082,36 @@ export function useChatApplication() {
     return result;
   };
 
-  const runCommand = async (
-    action: string,
-    operation: () => Promise<TurnCommandResponse>,
-    target: { conversationId: string; laneId: string | null } | null = null,
-  ) => {
-    setCommandFeedback(target, action, null);
-    try {
-      const result = await operation();
-      const compact = await chatApi.getTurn(result.turnId);
-      setLiveTurns((current) => ({
-        ...current,
-        [result.turnId]: liveFromSnapshot(compact),
-      }));
-      const snapshot = await chatApi.getConversation(result.conversationId);
-      setSnapshots((current) => ({ ...current, [result.conversationId]: snapshot }));
-      followTurn(result.turnId, result.conversationId, compact.lastSequence);
-      setCommandFeedback(target, null, null);
-    } catch (commandError) {
-      setCommandFeedback(target, null, readableError(commandError));
-    }
-  };
-
   const send = async () => {
     const content = draft.trim();
-    if (!content || !activeConversationId || isGenerating) return;
+    if (!content || !activeConversationId) return;
+    // 运行中且在当前 lane：把这条消息作为 steer 注入，允许打断/纠偏当前 Agent。
+    if (activeRunRunning && activeRunningRunId) {
+      const retainedDraft = draft;
+      setDraft("");
+      setCommandFeedback(primaryCommandTarget, "send", null);
+      try {
+        const result = await chatApi.steerRuntimeV2Run(
+          activeRunningRunId,
+          content,
+        );
+        setCommandFeedback(primaryCommandTarget, null, result.accepted ? null : "已提示，但运行未接受该指令");
+      } catch (steerError) {
+        setDraft(retainedDraft);
+        setCommandFeedback(primaryCommandTarget, null, readableError(steerError));
+      }
+      return;
+    }
     const retainedDraft = draft;
+    if (isGenerating) return;
     setDraft("");
     setCommandFeedback(primaryCommandTarget, "send", null);
     try {
-      if (runtimeStatuses[activeConversationId]?.effectiveRuntime === "v2") {
-        await sendRuntimeV2Message(
-          activeConversationId,
-          content,
-          viewLaneIds[activeConversationId] ?? mainLaneIds[activeConversationId],
-        );
-      } else {
-        await runCommand(
-          "send",
-          () => chatApi.createTurn(activeConversationId, content, requestId()),
-          primaryCommandTarget,
-        );
-        return;
-      }
+      await sendRuntimeV2Message(
+        activeConversationId,
+        content,
+        viewLaneIds[activeConversationId] ?? mainLaneIds[activeConversationId],
+      );
       setCommandFeedback(primaryCommandTarget, null, null);
     } catch (sendError) {
       setDraft(retainedDraft);
@@ -1299,23 +1126,14 @@ export function useChatApplication() {
     setSideDraft("");
     setCommandFeedback(sideCommandTarget, "send", null);
     try {
-      if (runtimeStatuses[sideConversationId]?.effectiveRuntime === "v2") {
-        await sendRuntimeV2Message(
-          sideConversationId,
-          content,
-          sideLane?.conversationId === sideConversationId
-            ? sideLane.laneId
-            : mainLaneIds[sideConversationId],
-          sideLane?.conversationId === sideConversationId ? "side" : "main",
-        );
-      } else {
-        await runCommand(
-          "send",
-          () => chatApi.createTurn(sideConversationId, content, requestId()),
-          sideCommandTarget,
-        );
-        return;
-      }
+      await sendRuntimeV2Message(
+        sideConversationId,
+        content,
+        sideLane?.conversationId === sideConversationId
+          ? sideLane.laneId
+          : mainLaneIds[sideConversationId],
+        sideLane?.conversationId === sideConversationId ? "side" : "main",
+      );
       setCommandFeedback(sideCommandTarget, null, null);
     } catch (sendError) {
       setSideDraft(retainedDraft);
@@ -1409,54 +1227,45 @@ export function useChatApplication() {
     setPendingAction("temporary-conversation");
     setError(null);
     try {
-      if (runtimeStatuses[activeConversationId]?.effectiveRuntime === "v2") {
-        const created = await chatApi.createRuntimeV2TemporaryConversation(
-          activeConversationId,
-          {},
-        );
-        const temporaryConversationId = created.conversation.id;
-        const [legacy, runtime, runtimeStatus] = await Promise.all([
-          chatApi.getConversation(temporaryConversationId),
-          runtimeController.loadSnapshot({
-            conversationId: temporaryConversationId,
-            laneId: created.lane.id,
-          }),
-          chatApi.getRuntimeV2ConversationRuntimeStatus(
-            temporaryConversationId,
-          ),
-        ]);
-        setRuntimeStatuses((current) => ({
-          ...current,
-          [temporaryConversationId]: runtimeStatus,
-        }));
-        setMainLaneIds((current) => ({
-          ...current,
-          [temporaryConversationId]: created.lane.id,
-        }));
-        setViewLaneIds((current) => ({
-          ...current,
-          [temporaryConversationId]: created.lane.id,
-        }));
-        setLaneTrees((current) => ({
-          ...current,
-          [temporaryConversationId]: [created.lane],
-        }));
-        setSideLane({
+      const created = await chatApi.createRuntimeV2TemporaryConversation(
+        activeConversationId,
+        {},
+      );
+      const temporaryConversationId = created.conversation.id;
+      const [legacy, runtime, runtimeStatus] = await Promise.all([
+        chatApi.getConversation(temporaryConversationId),
+        runtimeController.loadSnapshot({
           conversationId: temporaryConversationId,
           laneId: created.lane.id,
-          mode: "temporary_conversation",
-        });
-        setSideConversationId(temporaryConversationId);
-        setSideDraft("");
-        applyRuntimeSnapshot(legacy, runtime, "side");
-        return;
-      }
-      const { conversation } = await chatApi.createBranch(activeConversationId);
-      setConversations((current) => [
-        conversation,
-        ...current.filter((item) => item.id !== conversation.id),
+        }),
+        chatApi.getRuntimeV2ConversationRuntimeStatus(
+          temporaryConversationId,
+        ),
       ]);
-      await openSideConversation(conversation.id);
+      setRuntimeStatuses((current) => ({
+        ...current,
+        [temporaryConversationId]: runtimeStatus,
+      }));
+      setMainLaneIds((current) => ({
+        ...current,
+        [temporaryConversationId]: created.lane.id,
+      }));
+      setViewLaneIds((current) => ({
+        ...current,
+        [temporaryConversationId]: created.lane.id,
+      }));
+      setLaneTrees((current) => ({
+        ...current,
+        [temporaryConversationId]: [created.lane],
+      }));
+      setSideLane({
+        conversationId: temporaryConversationId,
+        laneId: created.lane.id,
+        mode: "temporary_conversation",
+      });
+      setSideConversationId(temporaryConversationId);
+      setSideDraft("");
+      applyRuntimeSnapshot(legacy, runtime, "side");
     } catch (branchError) {
       setError(readableError(branchError));
     } finally {
@@ -1696,37 +1505,37 @@ export function useChatApplication() {
     setCommandFeedback(feedbackTarget, "promote", null);
     try {
       if (
-        runtimeStatuses[targetId]?.effectiveRuntime === "v2" &&
-        sideLane?.conversationId === targetId
+        sideLane?.conversationId === targetId &&
+        sideLane.mode === "temporary_conversation"
       ) {
-        if (sideLane.mode === "temporary_conversation") {
-          const promoted =
-            await chatApi.promoteRuntimeV2TemporaryConversation(targetId);
-          dismissSideConversation();
-          try {
-            const items = await chatApi.listConversations(
-              statusFilter,
-              undefined,
-              workspaceId,
-            );
-            setConversations(items);
-          } catch {
-            setConversations((current) =>
-              statusFilter === "active"
-                ? [
-                    promoted.conversation,
-                    ...current.filter(
-                      (item) => item.id !== promoted.conversation.id,
-                    ),
-                  ]
-                : current.filter(
+        const promoted =
+          await chatApi.promoteRuntimeV2TemporaryConversation(targetId);
+        dismissSideConversation();
+        try {
+          const items = await chatApi.listConversations(
+            statusFilter,
+            undefined,
+            workspaceId,
+          );
+          setConversations(items);
+        } catch {
+          setConversations((current) =>
+            statusFilter === "active"
+              ? [
+                  promoted.conversation,
+                  ...current.filter(
                     (item) => item.id !== promoted.conversation.id,
                   ),
-            );
-          }
-          return;
+                ]
+              : current.filter(
+                  (item) => item.id !== promoted.conversation.id,
+                ),
+          );
         }
+        return;
+      }
 
+      if (sideLane?.conversationId === targetId) {
         const promoted = await chatApi.promoteRuntimeV2Lane(sideLane.laneId);
         setMainLaneIds((current) => ({
           ...current,
@@ -1737,14 +1546,24 @@ export function useChatApplication() {
         await loadConversation(targetId);
         return;
       }
-      const { conversation } = await chatApi.promoteConversation(targetId);
+
+      const promoted =
+        await chatApi.promoteRuntimeV2TemporaryConversation(targetId);
       setConversations((current) =>
-        current.map((item) => (item.id === conversation.id ? conversation : item)),
+        current.map((item) =>
+          item.id === promoted.conversation.id ? promoted.conversation : item,
+        ),
       );
       setSnapshots((current) => {
-        const snapshot = current[conversation.id];
+        const snapshot = current[promoted.conversation.id];
         return snapshot
-          ? { ...current, [conversation.id]: { ...snapshot, conversation } }
+          ? {
+              ...current,
+              [promoted.conversation.id]: {
+                ...snapshot,
+                conversation: promoted.conversation,
+              },
+            }
           : current;
       });
       if (targetId === sideConversationId) {
@@ -1760,10 +1579,14 @@ export function useChatApplication() {
           setConversations((current) =>
             statusFilter === "active"
               ? [
-                  conversation,
-                  ...current.filter((item) => item.id !== conversation.id),
+                  promoted.conversation,
+                  ...current.filter(
+                    (item) => item.id !== promoted.conversation.id,
+                  ),
                 ]
-              : current.filter((item) => item.id !== conversation.id),
+              : current.filter(
+                  (item) => item.id !== promoted.conversation.id,
+                ),
           );
         }
       }
@@ -1897,15 +1720,7 @@ export function useChatApplication() {
     }
     setCommandFeedback(feedbackTarget, "cancel", null);
     try {
-      if (runtimeStatuses[targetId]?.effectiveRuntime === "v2") {
-        await chatApi.cancelRuntimeV2Run(targetTurn.turn.id);
-      } else {
-        const compact = await chatApi.cancelTurn(targetTurn.turn.id);
-        setLiveTurns((current) => ({
-          ...current,
-          [compact.turnId]: liveFromSnapshot(compact),
-        }));
-      }
+      await chatApi.cancelRuntimeV2Run(targetTurn.turn.id);
       setCommandFeedback(feedbackTarget, null, null);
     } catch (cancelError) {
       setCommandFeedback(feedbackTarget, null, readableError(cancelError));
@@ -1950,19 +1765,7 @@ export function useChatApplication() {
       surface === "side" ? sideCommandTarget : primaryCommandTarget;
     setCommandFeedback(feedbackTarget, `approval:${approvalId}`, null);
     try {
-      const conversationId = Object.entries(runtimeStatuses).find(
-        ([id]) =>
-          snapshots[id]?.turns.some((turn) => turn.turn.id === turnId) ||
-          (sideLane?.conversationId === id &&
-            sideSnapshots[sideLane.laneId]?.turns.some(
-              (turn) => turn.turn.id === turnId,
-            )),
-      )?.[0];
-      if (conversationId && runtimeStatuses[conversationId]?.effectiveRuntime === "v2") {
-        await chatApi.resolveRuntimeV2Approval(approvalId, decision);
-      } else {
-        await chatApi.resolveApproval(approvalId, decision);
-      }
+      await chatApi.resolveRuntimeV2Approval(approvalId, decision);
       setLiveTurns((current) => {
         const live = current[turnId];
         if (!live || live.pendingApproval?.id !== approvalId) return current;
@@ -2074,26 +1877,12 @@ export function useChatApplication() {
   ) => {
     const targetId = conversationId ?? activeConversationId;
     const isSide = surface === "side";
-    if (runtimeStatuses[targetId ?? ""]?.effectiveRuntime === "v2") {
-      const laneId = isSide
-        ? sideLane?.laneId
-        : targetId
-          ? (viewLaneIds[targetId] ?? mainLaneIds[targetId])
-          : undefined;
-      await runRuntimeV2Command(
-        "retry",
-        targetId!,
-        turnId,
-        laneId,
-        surface,
-      );
-      return;
-    }
-    await runCommand(
-      "retry",
-      () => chatApi.retryTurn(turnId, requestId()),
-      isSide ? sideCommandTarget : primaryCommandTarget,
-    );
+    const laneId = isSide
+      ? sideLane?.laneId
+      : targetId
+        ? (viewLaneIds[targetId] ?? mainLaneIds[targetId])
+        : undefined;
+    await runRuntimeV2Command("retry", targetId!, turnId, laneId, surface);
   };
 
   const regenerate = async (
@@ -2103,26 +1892,12 @@ export function useChatApplication() {
   ) => {
     const targetId = conversationId ?? activeConversationId;
     const isSide = surface === "side";
-    if (runtimeStatuses[targetId ?? ""]?.effectiveRuntime === "v2") {
-      const laneId = isSide
-        ? sideLane?.laneId
-        : targetId
-          ? (viewLaneIds[targetId] ?? mainLaneIds[targetId])
-          : undefined;
-      await runRuntimeV2Command(
-        "regenerate",
-        targetId!,
-        turnId,
-        laneId,
-        surface,
-      );
-      return;
-    }
-    await runCommand(
-      "regenerate",
-      () => chatApi.regenerateTurn(turnId, requestId()),
-      isSide ? sideCommandTarget : primaryCommandTarget,
-    );
+    const laneId = isSide
+      ? sideLane?.laneId
+      : targetId
+        ? (viewLaneIds[targetId] ?? mainLaneIds[targetId])
+        : undefined;
+    await runRuntimeV2Command("regenerate", targetId!, turnId, laneId, surface);
   };
 
   const selectVariant = async (
@@ -2137,28 +1912,16 @@ export function useChatApplication() {
     const feedbackTarget = isSide ? sideCommandTarget : primaryCommandTarget;
     setCommandFeedback(feedbackTarget, "select", null);
     try {
-      if (runtimeStatuses[targetId]?.effectiveRuntime === "v2") {
-        await chatApi.selectRuntimeV2RunVariant(variantId);
-        const laneId = isSide
-          ? sideLane?.laneId
-          : (viewLaneIds[targetId] ?? mainLaneIds[targetId]);
-        const runtime = await runtimeController.loadSnapshot({
-          conversationId: targetId,
-          laneId: laneId ?? null,
-        });
-        const legacy = await chatApi.getConversation(targetId);
-        applyRuntimeSnapshot(
-          legacy,
-          runtime,
-          isSide ? "side" : "main",
-        );
-      } else {
-        await chatApi.selectVariant(turnId, variantId);
-        const snapshot = await chatApi.getConversation(targetId);
-        setSnapshots((current) => ({ ...current, [targetId]: snapshot }));
-        const compact = await chatApi.getTurn(turnId);
-        setLiveTurns((current) => ({ ...current, [turnId]: liveFromSnapshot(compact) }));
-      }
+      await chatApi.selectRuntimeV2RunVariant(variantId);
+      const laneId = isSide
+        ? sideLane?.laneId
+        : (viewLaneIds[targetId] ?? mainLaneIds[targetId]);
+      const runtime = await runtimeController.loadSnapshot({
+        conversationId: targetId,
+        laneId: laneId ?? null,
+      });
+      const legacy = await chatApi.getConversation(targetId);
+      applyRuntimeSnapshot(legacy, runtime, isSide ? "side" : "main");
       setCommandFeedback(feedbackTarget, null, null);
     } catch (selectionError) {
       setCommandFeedback(feedbackTarget, null, readableError(selectionError));
@@ -2251,6 +2014,7 @@ export function useChatApplication() {
     sideError: sideCommandState?.error ?? null,
     health,
     isGenerating,
+    activeRunRunning,
     liveTurns,
     loading,
     newConversation,

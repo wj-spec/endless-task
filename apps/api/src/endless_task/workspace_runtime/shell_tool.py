@@ -82,10 +82,10 @@ class RunShellTool:
         )
 
     def requires_explicit_confirmation(self, call: ToolCall) -> bool:
-        return is_dangerous(str(call.arguments.get("command") or ""))
+        return is_dangerous(call.require_argument("command", str))
 
     def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
-        command = str(call.arguments.get("command") or "?")
+        command = call.require_argument("command", str)
         dangerous = is_dangerous(command)
         return ToolApprovalPrompt(
             summary=(
@@ -107,7 +107,7 @@ class RunShellTool:
     async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
-        command = str(call.arguments["command"])
+        command = call.require_argument("command", str)
         result: ShellResult = await run_shell_command(
             command=command,
             cwd=binding.root,
@@ -115,7 +115,7 @@ class RunShellTool:
             no_change_timeout_seconds=self._no_change_timeout_seconds,
             max_output_bytes=self._max_output_bytes,
         )
-        return await self._finish(call, result, command, binding)
+        return await self._finish(call, result, command, binding, token)
 
     async def execute_with_progress(
         self,
@@ -127,7 +127,7 @@ class RunShellTool:
         """长命令执行中按间隔上报进度(可选能力,协调器检测到即启用)。"""
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
-        command = str(call.arguments["command"])
+        command = call.require_argument("command", str)
         result: ShellResult = await run_shell_command(
             command=command,
             cwd=binding.root,
@@ -136,7 +136,7 @@ class RunShellTool:
             max_output_bytes=self._max_output_bytes,
             on_progress=on_progress,
         )
-        return await self._finish(call, result, command, binding)
+        return await self._finish(call, result, command, binding, token)
 
     async def _finish(
         self,
@@ -144,6 +144,7 @@ class RunShellTool:
         result: ShellResult,
         command: str,
         binding,
+        token: CancellationToken,
     ) -> ToolResult:
         combined = result.stdout
         if result.stderr:

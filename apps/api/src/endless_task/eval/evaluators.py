@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Optional, Protocol, Sequence
 
 from endless_task.runtime_v2 import (
     CrashRecoveryClassification,
     RunStatus,
-    SafetyStopError,
-    SafetyStopPolicy,
-    SafetyStopReason,
-    SafetyStopState,
     ToolExecutionStatus,
 )
 from endless_task.runtime_v2.replay import (
@@ -25,14 +22,18 @@ from endless_task.runtime_v2.domain import (
 from .models import EvalMetric, EvalSeverity, EvalUnit, ScoreCard
 
 
-# Built-in read-only / write tools registered by the built-in tooling. Unknown
-# tools (e.g. MCP) are treated conservatively: they produce a warning rather than
-# being classified as read-only.
+# Built-in read-only tools (auto-executed). Unknown tools (e.g. MCP) are treated
+# conservatively: they produce a warning rather than being classified as read-only.
 DEFAULT_READ_ONLY_TOOLS = frozenset(
     {"read_skill_file", "read_workspace_file", "list_workspace_dir", "read_text_file"}
 )
+# 已知「自动执行」的写入工具（与 pi 对齐，写入已绑定工作区无需逐次确认）。
+# 评估时视作已知工具，不再当作 unknown-effect 触发 warning。
+DEFAULT_AUTO_WRITE_TOOLS = frozenset({"write_workspace_file"})
+# Tools that still REQUIRE explicit approval (destructive / external action outside the
+# bound workspace). delete_workspace_file / run_shell 仍须确认。
 DEFAULT_WRITE_TOOLS = frozenset(
-    {"write_workspace_file", "delete_workspace_file", "run_shell"}
+    {"delete_workspace_file", "run_shell"}
 )
 
 
@@ -42,8 +43,8 @@ class RunEvaluationContext:
     replay: RunReplayResult
     crash: Optional[CrashRecoveryReport] = None
     read_only_tools: frozenset[str] = DEFAULT_READ_ONLY_TOOLS
+    auto_write_tools: frozenset[str] = DEFAULT_AUTO_WRITE_TOOLS
     write_tools: frozenset[str] = DEFAULT_WRITE_TOOLS
-    safety_policy: SafetyStopPolicy = field(default_factory=SafetyStopPolicy)
 
 
 class Evaluator(Protocol):
@@ -150,7 +151,10 @@ class ApprovalGateEvaluator:
                 continue
             if item.tool_name in context.write_tools:
                 write_ungated.append(item)
-            elif item.tool_name not in context.read_only_tools:
+            elif (
+                item.tool_name not in context.read_only_tools
+                and item.tool_name not in context.auto_write_tools
+            ):
                 unknown_ungated.append(item)
 
         passed = not write_ungated
@@ -252,33 +256,60 @@ class EfficiencyEvaluator:
 
 
 class LoopDetectorEvaluator:
+    """对已录制 Run 的 QA 诊断：检测是否出现病态循环。
+
+    注意：这只是评估/CI 层的质量信号，**不约束运行时循环**。运行时（v2）已与 pi 对齐，
+    不再以任何计数条件截停；模型负责自行收敛。此处仅对「录制结果」做诊断打分，用于
+    baseline/candidate 回归对比，因此保留独立的重复签名/连续失败/空回检测，但内联实现，
+    不再依赖运行时的 SafetyStop 类。
+    """
+
     key = "loop_detected"
 
+    # 诊断阈值（仅评估用，与运行时无关）。
+    MAX_CONSECUTIVE_TOOL_FAILURES = 3
+    MAX_CONSECUTIVE_EMPTY_MODEL_TURNS = 2
+
     def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
-        state = SafetyStopState()
-        policy = context.safety_policy
-        loop_reason: Optional[SafetyStopReason] = None
-        try:
-            for turn in context.replay.model_turns:
-                tool_calls = len(turn.tool_executions)
-                for execution in turn.tool_executions:
-                    record = execution.record
-                    policy.register_tool_signature(
-                        state,
-                        tool_name=record.tool_name,
-                        arguments=record.arguments if isinstance(record.arguments, dict) else {},
-                    )
-                    policy.register_tool_result(
-                        state,
-                        succeeded=execution.derived_status is ToolExecutionStatus.COMPLETED,
-                    )
-                policy.register_model_turn(
-                    state,
-                    content=turn.partial_content,
-                    tool_call_count=tool_calls,
+        seen_signatures: set[tuple[str, str]] = set()
+        consecutive_failed = 0
+        consecutive_empty = 0
+        loop_reason: Optional[str] = None
+        for turn in context.replay.model_turns:
+            tool_calls = len(turn.tool_executions)
+            for execution in turn.tool_executions:
+                record = execution.record
+                arguments = (
+                    record.arguments if isinstance(record.arguments, dict) else {}
                 )
-        except SafetyStopError as error:
-            loop_reason = error.reason
+                canonical = json.dumps(
+                    dict(arguments),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                signature = (record.tool_name, canonical)
+                if signature in seen_signatures:
+                    loop_reason = "duplicate_tool_signature"
+                    break
+                seen_signatures.add(signature)
+                if execution.derived_status is ToolExecutionStatus.COMPLETED:
+                    consecutive_failed = 0
+                else:
+                    consecutive_failed += 1
+                    if consecutive_failed >= self.MAX_CONSECUTIVE_TOOL_FAILURES:
+                        loop_reason = "consecutive_tool_failures"
+                        break
+            if loop_reason is not None:
+                break
+            if turn.partial_content.strip() or tool_calls:
+                consecutive_empty = 0
+            else:
+                consecutive_empty += 1
+                if consecutive_empty >= self.MAX_CONSECUTIVE_EMPTY_MODEL_TURNS:
+                    loop_reason = "empty_model_turns"
+                    break
 
         passed = loop_reason is None
         yield EvalMetric(
@@ -287,7 +318,7 @@ class LoopDetectorEvaluator:
             unit=EvalUnit.BOOL,
             severity=EvalSeverity.BLOCKER if loop_reason is not None else EvalSeverity.INFO,
             source="deterministic",
-            notes=f"reason={loop_reason.value if loop_reason else 'none'}",
+            notes=f"reason={loop_reason or 'none'}",
         )
 
 

@@ -16,6 +16,14 @@ from .provider import (
 )
 
 
+_DEFAULT_MAX_RETRIES = 2
+_PRE_EVENT_RETRYABLE_ERROR_CODES = frozenset(
+    {"network_error", "provider_unavailable", "rate_limited", "request_timeout"}
+)
+_BASE_STREAM_RETRY_DELAY_SECONDS = 0.05
+_MAX_STREAM_RETRY_DELAY_SECONDS = 1.0
+
+
 class OpenAICompatibleProvider:
     """Adapts an OpenAI-compatible Chat Completions stream to Runtime events."""
 
@@ -26,6 +34,7 @@ class OpenAICompatibleProvider:
         api_key: str,
         base_url: Optional[str],
         timeout_seconds: float = 60.0,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
         client: Any = None,
     ) -> None:
         if not name.strip():
@@ -34,15 +43,18 @@ class OpenAICompatibleProvider:
             raise ValueError("Provider API key cannot be empty")
         if timeout_seconds <= 0:
             raise ValueError("Provider timeout must be positive")
+        if max_retries < 0:
+            raise ValueError("Provider retry count cannot be negative")
 
         self.name = name.strip()
+        self._max_retries = max_retries
         if client is None:
             from openai import AsyncOpenAI
 
             options: dict[str, Any] = {
                 "api_key": api_key,
                 "timeout": timeout_seconds,
-                "max_retries": 0,
+                "max_retries": max_retries,
             }
             if base_url:
                 options["base_url"] = base_url
@@ -109,90 +121,137 @@ class OpenAICompatibleProvider:
         if request.temperature is not None:
             arguments["temperature"] = request.temperature
 
-        stream: Any = None
-        try:
-            stream = await self._await_or_cancel(
-                self._client.chat.completions.create(**arguments),
-                cancellation_token,
-            )
-            iterator = stream.__aiter__()
-            finish_reason: Optional[str] = None
-            input_tokens: Optional[int] = None
-            output_tokens: Optional[int] = None
-            tool_call_fragments: dict[int, dict[str, str]] = {}
-
-            while True:
-                try:
-                    chunk = await self._next_or_cancel(iterator, cancellation_token)
-                except StopAsyncIteration:
-                    break
-
-                usage = getattr(chunk, "usage", None)
-                if usage is not None:
-                    input_tokens = getattr(usage, "prompt_tokens", input_tokens)
-                    output_tokens = getattr(usage, "completion_tokens", output_tokens)
-
-                choices = getattr(chunk, "choices", None) or ()
-                for choice in choices:
-                    delta = getattr(choice, "delta", None)
-                    content = getattr(delta, "content", None) if delta is not None else None
-                    if isinstance(content, str) and content:
-                        yield ProviderTextDelta(content)
-                    raw_tool_calls = (
-                        getattr(delta, "tool_calls", None) if delta is not None else None
-                    ) or ()
-                    for position, raw_tool_call in enumerate(raw_tool_calls):
-                        index = getattr(raw_tool_call, "index", position)
-                        if not isinstance(index, int) or index < 0:
-                            raise ProviderError(
-                                "invalid_provider_response",
-                                "模型返回了无效的工具调用。",
-                                retryable=False,
-                            )
-                        fragments = tool_call_fragments.setdefault(
-                            index,
-                            {"id": "", "name": "", "arguments": ""},
-                        )
-                        call_id = getattr(raw_tool_call, "id", None)
-                        if isinstance(call_id, str):
-                            fragments["id"] += call_id
-                        function = getattr(raw_tool_call, "function", None)
-                        name = getattr(function, "name", None)
-                        if isinstance(name, str):
-                            fragments["name"] += name
-                        raw_arguments = getattr(function, "arguments", None)
-                        if isinstance(raw_arguments, str):
-                            fragments["arguments"] += raw_arguments
-                    candidate = getattr(choice, "finish_reason", None)
-                    if candidate is not None:
-                        finish_reason = str(candidate)
-
-            if finish_reason == "insufficient_system_resource":
-                raise ProviderError(
-                    "provider_unavailable",
-                    "模型服务暂时不可用，可以稍后重试。",
-                    retryable=True,
+        attempt = 0
+        while True:
+            stream: Any = None
+            stream_created = False
+            emitted_event = False
+            retryable_stream_error = False
+            provider_error: Optional[ProviderError] = None
+            try:
+                stream = await self._await_or_cancel(
+                    self._client.chat.completions.create(**arguments),
+                    cancellation_token,
                 )
-            if finish_reason not in {"stop", "length", "content_filter", "tool_calls"}:
+                stream_created = True
+                iterator = stream.__aiter__()
+                finish_reason: Optional[str] = None
+                input_tokens: Optional[int] = None
+                output_tokens: Optional[int] = None
+                tool_call_fragments: dict[int, dict[str, str]] = {}
+
+                while True:
+                    try:
+                        chunk = await self._next_or_cancel(
+                            iterator,
+                            cancellation_token,
+                        )
+                    except StopAsyncIteration:
+                        break
+
+                    usage = getattr(chunk, "usage", None)
+                    if usage is not None:
+                        input_tokens = getattr(usage, "prompt_tokens", input_tokens)
+                        output_tokens = getattr(
+                            usage,
+                            "completion_tokens",
+                            output_tokens,
+                        )
+
+                    choices = getattr(chunk, "choices", None) or ()
+                    for choice in choices:
+                        delta = getattr(choice, "delta", None)
+                        content = (
+                            getattr(delta, "content", None)
+                            if delta is not None
+                            else None
+                        )
+                        if isinstance(content, str) and content:
+                            emitted_event = True
+                            yield ProviderTextDelta(content)
+                        raw_tool_calls = (
+                            getattr(delta, "tool_calls", None)
+                            if delta is not None
+                            else None
+                        ) or ()
+                        for position, raw_tool_call in enumerate(raw_tool_calls):
+                            index = getattr(raw_tool_call, "index", position)
+                            if not isinstance(index, int) or index < 0:
+                                raise ProviderError(
+                                    "invalid_provider_response",
+                                    "模型返回了无效的工具调用。",
+                                    retryable=False,
+                                )
+                            fragments = tool_call_fragments.setdefault(
+                                index,
+                                {"id": "", "name": "", "arguments": ""},
+                            )
+                            call_id = getattr(raw_tool_call, "id", None)
+                            if isinstance(call_id, str):
+                                fragments["id"] += call_id
+                            function = getattr(raw_tool_call, "function", None)
+                            name = getattr(function, "name", None)
+                            if isinstance(name, str):
+                                fragments["name"] += name
+                            raw_arguments = getattr(function, "arguments", None)
+                            if isinstance(raw_arguments, str):
+                                fragments["arguments"] += raw_arguments
+                        candidate = getattr(choice, "finish_reason", None)
+                        if candidate is not None:
+                            finish_reason = str(candidate)
+
+                if finish_reason == "insufficient_system_resource":
+                    raise ProviderError(
+                        "provider_unavailable",
+                        "模型服务暂时不可用，可以稍后重试。",
+                        retryable=True,
+                    )
+                if finish_reason not in {
+                    "stop",
+                    "length",
+                    "content_filter",
+                    "tool_calls",
+                }:
+                    raise ProviderError(
+                        "unsupported_provider_event",
+                        "模型返回了当前版本无法处理的结束状态。",
+                        retryable=False,
+                    )
+                for provider_tool_call in self._parse_tool_calls(
+                    tool_call_fragments
+                ):
+                    emitted_event = True
+                    yield provider_tool_call
+                emitted_event = True
+                yield ProviderCompleted(
+                    finish_reason=finish_reason,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+                return
+            except (RuntimeCancelled, asyncio.CancelledError, ProviderError):
+                raise
+            except Exception as error:
+                provider_error = self._normalize_error(error)
+                retryable_stream_error = stream_created
+            finally:
+                if stream is not None:
+                    await self._close_stream(stream)
+
+            if provider_error is None:
                 raise ProviderError(
-                    "unsupported_provider_event",
-                    "模型返回了当前版本无法处理的结束状态。",
+                    "provider_error",
+                    "模型服务返回错误，可以重试。",
                     retryable=False,
                 )
-            for provider_tool_call in self._parse_tool_calls(tool_call_fragments):
-                yield provider_tool_call
-            yield ProviderCompleted(
-                finish_reason=finish_reason,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
-        except (RuntimeCancelled, asyncio.CancelledError, ProviderError):
-            raise
-        except Exception as error:
-            raise self._normalize_error(error) from error
-        finally:
-            if stream is not None:
-                await self._close_stream(stream)
+            if not (
+                retryable_stream_error
+                and not emitted_event
+                and self._should_retry_pre_event_stream_error(provider_error, attempt)
+            ):
+                raise provider_error
+            await self._sleep_before_retry(provider_error, attempt, cancellation_token)
+            attempt += 1
 
     @staticmethod
     def _message_json(message) -> dict[str, Any]:
@@ -242,17 +301,25 @@ class OpenAICompatibleProvider:
             try:
                 arguments = json.loads(fragments["arguments"] or "{}")
             except (TypeError, ValueError) as error:
-                raise ProviderError(
-                    "invalid_tool_arguments",
-                    "模型返回的工具参数不是有效 JSON。",
-                    retryable=False,
-                ) from error
-            if not isinstance(arguments, dict):
-                raise ProviderError(
-                    "invalid_tool_arguments",
-                    "模型返回的工具参数必须是 JSON 对象。",
-                    retryable=False,
+                calls.append(
+                    ProviderToolCall(
+                        id=fragments["id"],
+                        name=fragments["name"],
+                        arguments={},
+                        parse_error="模型返回的工具参数不是有效 JSON。",
+                    )
                 )
+                continue
+            if not isinstance(arguments, dict):
+                calls.append(
+                    ProviderToolCall(
+                        id=fragments["id"],
+                        name=fragments["name"],
+                        arguments={},
+                        parse_error="模型返回的工具参数必须是 JSON 对象。",
+                    )
+                )
+                continue
             calls.append(
                 ProviderToolCall(
                     id=fragments["id"],
@@ -296,6 +363,40 @@ class OpenAICompatibleProvider:
         if inspect.isawaitable(result):
             await result
 
+    def _should_retry_pre_event_stream_error(
+        self,
+        error: ProviderError,
+        attempt: int,
+    ) -> bool:
+        return (
+            attempt < self._max_retries
+            and error.retryable
+            and error.code in _PRE_EVENT_RETRYABLE_ERROR_CODES
+        )
+
+    async def _sleep_before_retry(
+        self,
+        error: ProviderError,
+        attempt: int,
+        token: CancellationToken,
+    ) -> None:
+        delay = self._retry_delay_seconds(error, attempt)
+        if delay <= 0:
+            return
+        await self._await_or_cancel(asyncio.sleep(delay), token)
+
+    @staticmethod
+    def _retry_delay_seconds(error: ProviderError, attempt: int) -> float:
+        if error.retry_after_ms is not None:
+            return min(
+                max(error.retry_after_ms / 1000, 0),
+                _MAX_STREAM_RETRY_DELAY_SECONDS,
+            )
+        return min(
+            _BASE_STREAM_RETRY_DELAY_SECONDS * (2**attempt),
+            _MAX_STREAM_RETRY_DELAY_SECONDS,
+        )
+
     @classmethod
     def _normalize_error(cls, error: Exception) -> ProviderError:
         status_code = getattr(error, "status_code", None)
@@ -316,6 +417,14 @@ class OpenAICompatibleProvider:
                 "permission_denied",
                 "当前密钥没有访问该模型的权限。",
                 retryable=False,
+                provider_request_id=provider_request_id,
+            )
+        if status_code == 409:
+            return ProviderError(
+                "provider_unavailable",
+                "模型服务正忙，可以稍后重试。",
+                retryable=True,
+                retry_after_ms=retry_after_ms,
                 provider_request_id=provider_request_id,
             )
         if status_code == 429:

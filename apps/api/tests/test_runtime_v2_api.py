@@ -138,15 +138,10 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         *,
         provider=None,
         tool_registry=None,
-        runtime: Optional[str] = None,
-        runtime_rollback: bool = False,
-        max_agent_iterations: int = 4,
     ):
         selected_provider = provider or FakeProvider(chunks=("你好", "世界"))
         settings = {
             "database_path": Path(self._temporary_directory.name) / "api.db",
-            "runtime_rollback": runtime_rollback,
-            "max_agent_iterations": max_agent_iterations,
             "memory_proposals_enabled": False,
             "knowledge_proposals_enabled": False,
             "artifact_proposals_enabled": False,
@@ -156,8 +151,6 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
             "task_run_review_enabled": False,
             "heartbeat_seconds": 0.05,
         }
-        if runtime is not None:
-            settings["runtime"] = runtime
         app = create_app(
             settings=AppSettings(**settings),
             provider=selected_provider,
@@ -174,20 +167,20 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         return client, app
 
     async def test_runtime_v2_selection_api(self) -> None:
-        client, app = await self._client(runtime="v1")
+        client, app = await self._client()
         container = app.state.container
         conversation = container.chat_repository.create_conversation()
 
         global_status = await client.get("/api/v2/runtime")
         self.assertEqual(200, global_status.status_code)
-        self.assertEqual("v1", global_status.json()["defaultRuntime"])
+        self.assertEqual("v2", global_status.json()["defaultRuntime"])
         self.assertFalse(global_status.json()["rollbackForced"])
 
         initial = await client.get(
             f"/api/v2/conversations/{conversation.id}/runtime"
         )
         self.assertEqual(200, initial.status_code)
-        self.assertEqual("v1", initial.json()["effectiveRuntime"])
+        self.assertEqual("v2", initial.json()["effectiveRuntime"])
         self.assertTrue(initial.json()["canUseV2"])
 
         selected = await client.post(
@@ -198,13 +191,18 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("v2", selected.json()["effectiveRuntime"])
         self.assertEqual("conversation_override", selected.json()["reason"])
 
-        v1_turn = await client.post(
-            f"/conversations/{conversation.id}/turns",
+        message = await client.post(
+            f"/api/v2/conversations/{conversation.id}/messages",
             headers={"Idempotency-Key": "runtime-selection"},
-            json={"content": "v1 path"},
+            json={"content": "v2 path"},
         )
-        self.assertEqual(409, v1_turn.status_code)
-        self.assertEqual("runtime_v2_selected", v1_turn.json()["error"]["code"])
+        self.assertEqual(202, message.status_code)
+        await _wait_until(
+            lambda: container.runtime_v2_repository.get_run(
+                message.json()["runId"]
+            ).status
+            is RunStatus.COMPLETED
+        )
 
     async def test_runtime_v2_is_default_for_new_conversation(self) -> None:
         client, app = await self._client()
@@ -245,77 +243,8 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([], next_snapshot.json()["turns"])
 
-    async def test_runtime_v2_write_rejects_conversation_still_on_v1(self) -> None:
-        client, app = await self._client(runtime="v1")
-        container = app.state.container
-        conversation = container.chat_repository.create_conversation()
-
-        response = await client.post(
-            f"/api/v2/conversations/{conversation.id}/messages",
-            headers={"Idempotency-Key": "runtime-v1-rejected"},
-            json={"content": "v2 path"},
-        )
-        self.assertEqual(409, response.status_code)
-        self.assertEqual(
-            "runtime_v2_not_selected",
-            response.json()["error"]["code"],
-        )
-
-        capabilities = await client.get("/capabilities")
-        self.assertEqual(200, capabilities.status_code)
-        self.assertEqual("v1", capabilities.json()["runtime"]["defaultRuntime"])
-
-    async def test_migrated_v1_runtime_write_paths_are_frozen(self) -> None:
-        client, app = await self._client(runtime="v1")
-        container = app.state.container
-        conversation = container.chat_repository.create_conversation()
-        handle = container.chat_repository.create_turn(
-            conversation_id=conversation.id,
-            client_request_id="legacy-request",
-            content="旧会话",
-        )
-        snapshot = container.chat_repository.get_turn(handle.turn.id)
-        variant_id = snapshot.response_variants[0].variant.id
-        RuntimeV2MigrationService(container.database).migrate()
-
-        endpoints = (
-            (
-                "POST",
-                f"/conversations/{conversation.id}/turns",
-                {"content": "新 v1 消息"},
-            ),
-            ("POST", f"/turns/{handle.turn.id}/cancel", None),
-            (
-                "POST",
-                f"/turns/{handle.turn.id}/retry",
-                None,
-            ),
-            (
-                "POST",
-                f"/turns/{handle.turn.id}/response-variants/{variant_id}/select",
-                None,
-            ),
-            ("POST", f"/conversations/{conversation.id}/branches", {}),
-            ("POST", f"/conversations/{conversation.id}/promote", None),
-        )
-        for method, url, payload in endpoints:
-            response = await client.request(
-                method,
-                url,
-                json=payload,
-                headers={"Idempotency-Key": "frozen-v1"},
-            )
-            self.assertEqual(409, response.status_code)
-            self.assertEqual("v1_read_only", response.json()["error"]["code"])
-
-        override = await client.post(
-            f"/api/v2/conversations/{conversation.id}/runtime",
-            json={"runtime": "v1"},
-        )
-        self.assertEqual(409, override.status_code)
-
     async def test_runtime_v2_selection_rejects_unmigrated_history(self) -> None:
-        client, app = await self._client(runtime="v2")
+        client, app = await self._client()
         container = app.state.container
         conversation = container.chat_repository.create_conversation()
         container.chat_repository.create_turn(
@@ -329,79 +258,6 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
             json={"runtime": "v2"},
         )
         self.assertEqual(409, response.status_code)
-
-    async def test_rollback_rehearsal_blocks_v2_until_reconciliation(self) -> None:
-        rollback_provider = FakeProvider(chunks=("迁移前回答", "回滚期回答"))
-        rollback_client, rollback_app = await self._client(
-            provider=rollback_provider,
-            runtime="v1",
-            runtime_rollback=True,
-        )
-        container = rollback_app.state.container
-        conversation = await create_bound_conversation(rollback_client)
-
-        first_turn = await rollback_client.post(
-            f"/conversations/{conversation['id']}/turns",
-            headers={"Idempotency-Key": "rollback-before-migration"},
-            json={"content": "迁移前消息"},
-        )
-        self.assertEqual(202, first_turn.status_code)
-        first_handle = first_turn.json()
-        await _wait_until(
-            lambda: container.chat_repository.get_turn(
-                first_handle["turnId"]
-            ).turn.status.value
-            == "completed"
-        )
-
-        RuntimeV2MigrationService(container.database).migrate()
-        second_turn = await rollback_client.post(
-            f"/conversations/{conversation['id']}/turns",
-            headers={"Idempotency-Key": "rollback-after-migration"},
-            json={"content": "回滚期消息"},
-        )
-        self.assertEqual(202, second_turn.status_code)
-        second_handle = second_turn.json()
-        await _wait_until(
-            lambda: container.chat_repository.get_turn(
-                second_handle["turnId"]
-            ).turn.status.value
-            == "completed"
-        )
-
-        client, _ = await self._client(runtime="v2")
-        global_status = await client.get("/api/v2/runtime")
-        self.assertEqual(1, global_status.json()["rollbackReconciliationCount"])
-
-        conversation_status = await client.get(
-            f"/api/v2/conversations/{conversation['id']}/runtime"
-        )
-        self.assertEqual(200, conversation_status.status_code)
-        body = conversation_status.json()
-        self.assertFalse(body["canUseV2"])
-        self.assertTrue(body["rollbackReconciliationRequired"])
-        self.assertEqual("rollback_reconciliation_required", body["reason"])
-
-        v2_write = await client.post(
-            f"/api/v2/conversations/{conversation['id']}/messages",
-            headers={"Idempotency-Key": "rollback-v2-rejected"},
-            json={"content": "v2 消息"},
-        )
-        self.assertEqual(409, v2_write.status_code)
-        v1_write = await client.post(
-            f"/conversations/{conversation['id']}/turns",
-            headers={"Idempotency-Key": "post-rollback-v1"},
-            json={"content": "v1 消息"},
-        )
-        self.assertEqual(409, v1_write.status_code)
-        self.assertEqual("v1_read_only", v1_write.json()["error"]["code"])
-
-        audit = RuntimeV2MigrationService(container.database).audit()
-        self.assertFalse(audit.passed)
-        self.assertIn(
-            "rollback_reconciliation_required_count=1",
-            audit.errors,
-        )
 
     async def test_message_snapshot_and_sse_stream_recover_without_duplicate_delta(
         self,
@@ -501,7 +357,6 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         client, app = await self._client(
             provider=provider,
             tool_registry=registry,
-            max_agent_iterations=5,
         )
         container = app.state.container
         conversation = container.chat_repository.create_conversation()

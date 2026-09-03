@@ -16,6 +16,7 @@ from endless_task.tooling import (
     ToolEffect,
     ToolError,
     ToolResult,
+    JsonValue,
 )
 
 from .naming import public_tool_name
@@ -73,7 +74,10 @@ class McpToolBridge:
 
     def requires_explicit_confirmation(self, call: ToolCall) -> bool:
         del call
-        return self._destructive
+        return (
+            self.definition.approval_mode is ToolApprovalMode.REQUIRED
+            or self._destructive
+        )
 
     def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
         try:
@@ -161,10 +165,7 @@ class McpToolBridge:
                 f"MCP 工具 {self.public_name} 返回错误：{content[:1000]}",
                 retryable=True,
             )
-        structured: Optional[Mapping[str, Any]] = None
-        structured_value = getattr(result, "structuredContent", None)
-        if isinstance(structured_value, Mapping):
-            structured = structured_value
+        structured: JsonValue = getattr(result, "structuredContent", None)
         self._log_call(call)
         return ToolResult(
             tool_call_id=call.id,

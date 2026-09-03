@@ -105,12 +105,20 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             "051_runtime_v2_memory_update.sql",
             self.database.applied_migrations(),
         )
+        self.assertIn(
+            "052_runtime_v2_tool_error_contract.sql",
+            self.database.applied_migrations(),
+        )
+        self.assertIn(
+            "053_task_run_atomic_claim.sql",
+            self.database.applied_migrations(),
+        )
         self.database.initialize()
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(51, row["count"])
+        self.assertEqual(53, row["count"])
 
     def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
         conversation = self.chat_repository.create_conversation()

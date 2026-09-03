@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -15,9 +16,9 @@ from endless_task.domain.models import (
     MemoryKind,
     MemoryRecord,
     MemoryStatus,
-    ToolCallJournal,
 )
 from endless_task.domain.repositories import NotFoundError
+from endless_task.runtime_v2.domain import ToolExecutionStatus
 from endless_task.runtime import FakeProvider, ProviderCompleted, ProviderTextDelta
 from endless_task.storage import (
     Database,
@@ -74,12 +75,27 @@ class TextProvider:
         yield ProviderCompleted()
 
 
-class StubRuntimeRepository:
-    def __init__(self, calls=()) -> None:
-        self._calls = tuple(calls)
+@dataclass
+class _StubToolExecution:
+    tool_name: str
+    status: ToolExecutionStatus
+    arguments: dict
 
-    def list_tool_calls(self, turn_id: str):
-        return self._calls
+
+@dataclass
+class _StubModelTurn:
+    id: str
+
+
+class StubRuntimeRepository:
+    def __init__(self, executions=()) -> None:
+        self._executions = tuple(executions)
+
+    def list_model_turns(self, run_id: str):
+        return (_StubModelTurn(id=run_id),)
+
+    def list_tool_executions(self, turn_id: str):
+        return self._executions
 
 
 class StubMemoryRepository:
@@ -114,12 +130,12 @@ def memory_record(memory_id: str, *, status=MemoryStatus.ACTIVE) -> MemoryRecord
     )
 
 
-def journal_call(call_id: str, file_id: str, *, status: str = "completed") -> ToolCallJournal:
-    return ToolCallJournal(
-        id=call_id,
+def journal_execution(call_id: str, file_id: str, *, status: str = "completed") -> _StubToolExecution:
+    del call_id  # v2 execution 模型不使用测试 call id
+    return _StubToolExecution(
         tool_name="read_text_file",
+        status=ToolExecutionStatus(status),
         arguments={"file_id": file_id},
-        status=status,
     )
 
 
@@ -164,32 +180,31 @@ class ProvenanceGenerationTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
 
-    def _service(self, provider, *, memory_repository=None, runtime_repository=None):
+    def _service(self, provider, *, memory_repository=None, runtime_v2_repository=None):
         return ArtifactProposalService(
             provider=provider,
             proposal_repository=self.proposals,
             model="test-model",
             memory_repository=memory_repository,
-            runtime_repository=runtime_repository,
+            runtime_v2_repository=runtime_v2_repository,
         )
 
     async def test_file_labels_from_completed_reads(self) -> None:
         runtime = StubRuntimeRepository(
             (
-                journal_call("call_1", "file_aaa"),
-                journal_call("call_2", "file_bbb", status="failed"),
-                journal_call("call_3", "file_aaa"),
-                journal_call("call_4", "file_ccc", status="cancelled"),
-                ToolCallJournal(
-                    id="call_5",
+                journal_execution("call_1", "file_aaa"),
+                journal_execution("call_2", "file_bbb", status="failed"),
+                journal_execution("call_3", "file_aaa"),
+                journal_execution("call_4", "file_ccc", status="cancelled"),
+                _StubToolExecution(
                     tool_name="write_note",
+                    status=ToolExecutionStatus.COMPLETED,
                     arguments={"file_id": "file_ddd"},
-                    status="completed",
                 ),
             )
         )
         provider = TextProvider([extraction_json()])
-        service = self._service(provider, runtime_repository=runtime)
+        service = self._service(provider, runtime_v2_repository=runtime)
         created = await service.generate_for_turn(
             conversation_id="conv_1",
             turn_id="turn_1",
@@ -236,14 +251,14 @@ class ProvenanceGenerationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_label_order_and_cap(self) -> None:
         calls = tuple(
-            journal_call(f"call_{index:02d}", f"file_{index:02d}")
+            journal_execution(f"call_{index:02d}", f"file_{index:02d}")
             for index in range(25)
         )
         runtime = StubRuntimeRepository(calls)
         memories = StubMemoryRepository((memory_record("mem_active"),))
         provider = TextProvider([extraction_json(labels=["memory:mem_active"])])
         service = self._service(
-            provider, memory_repository=memories, runtime_repository=runtime
+            provider, memory_repository=memories, runtime_v2_repository=runtime
         )
         created = await service.generate_for_turn(
             conversation_id="conv_1",
@@ -258,14 +273,14 @@ class ProvenanceGenerationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(labels), len(set(labels)))
 
         mixed_runtime = StubRuntimeRepository(
-            (journal_call("call_1", "file_only"),)
+            (journal_execution("call_1", "file_only"),)
         )
         second_content = DOC_CONTENT + "\n\n## 附录\n第二轮整理的补充说明。"
         provider = TextProvider(
             [extraction_json(labels=["memory:mem_active"], content=second_content)]
         )
         service = self._service(
-            provider, memory_repository=memories, runtime_repository=mixed_runtime
+            provider, memory_repository=memories, runtime_v2_repository=mixed_runtime
         )
         created = await service.generate_for_turn(
             conversation_id="conv_2",

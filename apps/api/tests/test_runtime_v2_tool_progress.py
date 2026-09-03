@@ -26,6 +26,8 @@ from endless_task.tooling import (
     ToolCallStatus,
     ToolDefinition,
     ToolEffect,
+    ToolExecutionContext,
+    ToolProgressEvent,
     ToolRegistry,
     ToolResult,
 )
@@ -83,10 +85,45 @@ class ProgressTool:
         on_progress,
     ) -> ToolResult:
         del token
-        on_progress(message="任务开始", percent=0.0)
+        on_progress("任务开始", 0.0)
         on_progress(message="任务进行中", percent=0.5)
         self.progress_calls.append(("executed", call.arguments.get("task")))
         return ToolResult(tool_call_id=call.id, content="done")
+
+
+class ContextTool:
+    """实现 execute_with_context 的示例工具。"""
+
+    definition = ToolDefinition(
+        name="context_tool",
+        description="use execution context",
+        input_schema={
+            "type": "object",
+            "properties": {"task": {"type": "string"}},
+            "required": ["task"],
+            "additionalProperties": False,
+        },
+        effect=ToolEffect.READ_ONLY,
+        approval_mode=ToolApprovalMode.AUTO,
+        timeout_seconds=5.0,
+    )
+
+    def __init__(self) -> None:
+        self.contexts: list[ToolExecutionContext] = []
+
+    async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
+        raise AssertionError("context tools should not use the legacy execute path")
+
+    async def execute_with_context(
+        self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        self.contexts.append(context)
+        context.raise_if_cancelled()
+        await context.report_progress(ToolProgressEvent("上下文任务开始", 0.25))
+        await context.report_progress("上下文任务完成")
+        return ToolResult(tool_call_id=call.id, content="context done")
 
 
 class PlainTool:
@@ -149,7 +186,6 @@ class ToolProgressExecutionTest(ToolProgressTestBase):
             tool_registry=registry,
             model="progress-model",
             max_output_tokens=256,
-            max_model_turns=4,
         )
         result = asyncio.run(
             executor.execute(
@@ -175,6 +211,55 @@ class ToolProgressExecutionTest(ToolProgressTestBase):
         )
         product_types = [event.event_type for event in projection]
         self.assertIn("tool_execution.progress", product_types)
+
+    def test_contextual_tool_receives_execution_context(self) -> None:
+        conversation, submission = self._start_run()
+        tool = ContextTool()
+        registry = ToolRegistry()
+        registry.register(tool)
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderToolCall(
+                        id="call_context",
+                        name="context_tool",
+                        arguments={"task": "上下文任务"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("完成"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="progress-model",
+            max_output_tokens=256,
+        )
+        result = asyncio.run(
+            executor.execute(
+                submission.run.id,
+                cancellation_token=CancellationToken(),
+            )
+        )
+        self.assertEqual(result.status, RunStatus.COMPLETED)
+        self.assertEqual(len(tool.contexts), 1)
+        context = tool.contexts[0]
+        self.assertIsNotNone(context.deadline_monotonic)
+        self.assertIsNotNone(context.correlation_id)
+
+        events = self.repository.list_runtime_events(submission.run.id)
+        progress_events = [
+            event for event in events if event.event_type == "tool_progress_update"
+        ]
+        self.assertEqual(len(progress_events), 2)
+        messages = {event.payload.get("message") for event in progress_events}
+        self.assertIn("上下文任务开始", messages)
+        self.assertIn("上下文任务完成", messages)
 
     def test_plain_tool_without_progress_still_executes(self) -> None:
         conversation, submission = self._start_run()
@@ -202,7 +287,6 @@ class ToolProgressExecutionTest(ToolProgressTestBase):
             tool_registry=registry,
             model="progress-model",
             max_output_tokens=256,
-            max_model_turns=4,
         )
         result = asyncio.run(
             executor.execute(

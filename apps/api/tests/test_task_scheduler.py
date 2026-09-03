@@ -13,6 +13,7 @@ import httpx
 from endless_task.api import AppSettings, create_app
 from endless_task.runtime import ProviderCompleted, ProviderError, ProviderTextDelta
 from endless_task.storage import Database, SqliteTaskRepository
+from tests.fixtures.v2_client import run_snapshot
 from tests.fixtures.workspace_client import create_bound_conversation
 
 RUN_ANSWER = (
@@ -133,11 +134,16 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, len(items))
             self.assertEqual("completed", items[0]["status"])
 
-            snapshot = (
-                await client.get(f"/conversations/{conversation_id}")
-            ).json()
-            user_content = snapshot["turns"][0]["userMessage"]["content"]
-            self.assertTrue(user_content.startswith("【到点执行】"))
+            snapshot = await run_snapshot(client, conversation_id)
+            user_messages = [
+                entry["data"]["content"]
+                for entry in snapshot["entries"]
+                if entry.get("actor") == "user"
+                and isinstance(entry.get("data", {}).get("content"), str)
+            ]
+            self.assertTrue(
+                any(msg.startswith("【到点执行】") for msg in user_messages)
+            )
 
     async def test_not_due_task_does_not_run(self) -> None:
         provider = TextProvider([[RUN_ANSWER]])

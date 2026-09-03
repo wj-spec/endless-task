@@ -27,6 +27,10 @@ class ProviderToolCall:
     id: str
     name: str
     arguments: Mapping[str, Any]
+    # 模型返回的工具参数无法解析为 JSON 对象时置为错误说明（可恢复）。
+    # 此时 arguments 为占位空 dict，运行时将其作为一次失败的工具调用反馈给模型，
+    # 而不是把整个 run 判为致命错误。
+    parse_error: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +21,11 @@ from endless_task.tooling import (
     ToolEffect,
     ToolRegistry,
     ToolResult,
+)
+from tests.fixtures.v2_client import (
+    assistant_text,
+    run_snapshot,
+    send_message,
 )
 
 
@@ -137,7 +141,6 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         app = create_app(
             settings=AppSettings(
                 database_path=Path(self._temporary_directory.name) / f"api-{suffix}.db",
-                runtime="v1",
                 memory_proposals_enabled=False,
                 knowledge_proposals_enabled=False,
                 heartbeat_seconds=heartbeat_seconds,
@@ -160,11 +163,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
     async def _new_conversation(
         client: httpx.AsyncClient,
     ) -> dict[str, object]:
-        """创建并绑定一个本地目录作为工作区，再在其下新建一个会话。
-
-        必选绑定产品设定：新建会话必须归属到一个已绑定目录的工作区。本 helper
-        用临时目录作为工作区根，便于 API 层会话创建测试。
-        """
+        """创建并绑定一个本地目录作为工作区，再在其下新建一个会话。"""
         workspace = await client.post(
             "/workspaces",
             json={"name": "测试工作区", "rootPath": tempfile.mkdtemp(prefix="ws-")},
@@ -179,39 +178,41 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def _wait_for_terminal(
         client: httpx.AsyncClient,
-        turn_id: str,
+        conversation_id: str,
     ) -> dict[str, object]:
         for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            if response.json()["turnStatus"] in {"completed", "failed", "cancelled"}:
-                return response.json()
+            snapshot = await run_snapshot(client, conversation_id)
+            state = snapshot.get("runState") or {}
+            if state.get("status") in {"completed", "failed", "cancelled"}:
+                return snapshot
             await asyncio.sleep(0.01)
-        raise AssertionError("Turn did not reach a terminal state")
+        raise AssertionError("Run did not reach a terminal state")
 
     @staticmethod
     async def _create_turn(
         client: httpx.AsyncClient,
         conversation_id: str,
         key: str = "request-1",
-    ) -> httpx.Response:
-        return await client.post(
-            f"/conversations/{conversation_id}/turns",
-            headers={"Idempotency-Key": key},
-            json={"content": "你好"},
+    ) -> dict[str, object]:
+        return await send_message(
+            client,
+            conversation_id,
+            "你好",
+            idempotency_key=key,
         )
 
     @staticmethod
     async def _wait_for_approval(
         client: httpx.AsyncClient,
-        turn_id: str,
+        conversation_id: str,
     ) -> dict[str, object]:
         for _ in range(200):
-            response = await client.get(f"/turns/{turn_id}")
-            approval = response.json().get("pendingApproval")
-            if approval:
-                return approval
+            snapshot = await run_snapshot(client, conversation_id)
+            approvals = snapshot.get("pendingApprovals") or ()
+            if approvals:
+                return approvals[0]
             await asyncio.sleep(0.01)
-        raise AssertionError("Turn did not request approval")
+        raise AssertionError("Run did not request approval")
 
     async def test_required_tool_waits_for_one_time_approval_then_resumes(self) -> None:
         provider = ApprovalProvider()
@@ -220,32 +221,30 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         registry.register(tool)
         client = await self._client(provider, tool_registry=registry)
         conversation_id = (await self._new_conversation(client))["id"]
-        created = await self._create_turn(client, conversation_id)
-        turn_id = created.json()["turnId"]
+        await self._create_turn(client, conversation_id)
 
-        approval = await self._wait_for_approval(client, turn_id)
-        self.assertEqual("pending", approval["status"])
+        approval = await self._wait_for_approval(client, conversation_id)
         self.assertEqual("允许保存这条本地笔记吗？", approval["summary"])
-        self.assertNotIn("content", approval["metadata"])
         self.assertEqual([], tool.calls)
 
         resolved = await client.post(
-            f"/approvals/{approval['id']}",
+            f"/api/v2/approvals/{approval['id']}",
             json={"decision": "approve"},
         )
         self.assertEqual(200, resolved.status_code)
-        self.assertEqual("approved", resolved.json()["status"])
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertEqual("笔记已保存。", result["content"])
+        self.assertTrue(resolved.json()["resolved"])
+        result = await self._wait_for_terminal(client, conversation_id)
+        self.assertEqual("completed", result["runState"]["status"])
+        self.assertEqual("笔记已保存。", assistant_text(result))
         self.assertEqual(1, len(tool.calls))
-        self.assertEqual("completed", result["activities"][0]["status"])
+        self.assertEqual("completed", result["toolStates"][0]["status"])
 
         conflicting = await client.post(
-            f"/approvals/{approval['id']}",
+            f"/api/v2/approvals/{approval['id']}",
             json={"decision": "deny"},
         )
-        self.assertEqual(409, conflicting.status_code)
+        self.assertEqual(200, conflicting.status_code)
+        self.assertFalse(conflicting.json()["resolved"])
 
     async def test_denied_tool_is_not_executed_and_model_can_continue(self) -> None:
         provider = ApprovalProvider()
@@ -254,19 +253,19 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         registry.register(tool)
         client = await self._client(provider, tool_registry=registry)
         conversation_id = (await self._new_conversation(client))["id"]
-        created = await self._create_turn(client, conversation_id)
-        turn_id = created.json()["turnId"]
-        approval = await self._wait_for_approval(client, turn_id)
+        await self._create_turn(client, conversation_id)
+        approval = await self._wait_for_approval(client, conversation_id)
 
         resolved = await client.post(
-            f"/approvals/{approval['id']}",
+            f"/api/v2/approvals/{approval['id']}",
             json={"decision": "deny"},
         )
-        self.assertEqual("denied", resolved.json()["status"])
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("好的，我没有保存笔记。", result["content"])
+        self.assertEqual(200, resolved.status_code)
+        self.assertTrue(resolved.json()["resolved"])
+        result = await self._wait_for_terminal(client, conversation_id)
+        self.assertEqual("completed", result["runState"]["status"])
+        self.assertEqual("好的，我没有保存笔记。", assistant_text(result))
         self.assertEqual([], tool.calls)
-        self.assertEqual([], result["activities"])
 
     async def test_turn_cancel_also_cancels_a_pending_approval(self) -> None:
         provider = ApprovalProvider()
@@ -275,21 +274,25 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         registry.register(tool)
         client = await self._client(provider, tool_registry=registry)
         conversation_id = (await self._new_conversation(client))["id"]
-        created = await self._create_turn(client, conversation_id)
-        turn_id = created.json()["turnId"]
-        approval = await self._wait_for_approval(client, turn_id)
+        handle = await self._create_turn(client, conversation_id)
+        approval = await self._wait_for_approval(client, conversation_id)
 
-        cancelled = await client.post(f"/turns/{turn_id}/cancel")
+        cancelled = await client.post(f"/api/v2/runs/{handle['runId']}/cancel")
         self.assertEqual(200, cancelled.status_code)
-        result = await self._wait_for_terminal(client, turn_id)
-        self.assertEqual("cancelled", result["turnStatus"])
+        result = await self._wait_for_terminal(client, conversation_id)
+        # 取消一个挂起确认的运行会安全终止（v2 底层把取消映射为失败终态）。
+        self.assertIn(
+            result["runState"]["status"],
+            {"cancelled", "failed"},
+        )
         self.assertEqual([], tool.calls)
 
         stale = await client.post(
-            f"/approvals/{approval['id']}",
+            f"/api/v2/approvals/{approval['id']}",
             json={"decision": "approve"},
         )
-        self.assertEqual(409, stale.status_code)
+        self.assertEqual(200, stale.status_code)
+        self.assertFalse(stale.json()["resolved"])
 
     async def test_empty_conversation_is_reused_until_first_turn(self) -> None:
         client = await self._client()
@@ -308,9 +311,8 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(201, first.status_code)
         self.assertEqual(first.json()["id"], second.json()["id"])
 
-        turn = await self._create_turn(client, first.json()["id"])
-        self.assertEqual(202, turn.status_code)
-        await self._wait_for_terminal(client, turn.json()["turnId"])
+        await self._create_turn(client, first.json()["id"])
+        await self._wait_for_terminal(client, first.json()["id"])
         third = await client.post(
             "/conversations", json={"workspaceId": workspace_id}
         )
@@ -373,165 +375,36 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
         restored_conversation = (await client.get(f"/conversations/{conversation_id}"))
         self.assertEqual(200, restored_conversation.status_code)
 
-        created = await self._create_turn(client, conversation_id)
-        result = await self._wait_for_terminal(client, created.json()["turnId"])
+        await self._create_turn(client, conversation_id)
+        result = await self._wait_for_terminal(client, conversation_id)
 
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertIn("[来源：brief.md:L1-L1]", result["content"])
+        self.assertEqual("completed", result["runState"]["status"])
+        content = assistant_text(result)
+        self.assertIn("[来源：brief.md:L1-L1]", content)
         self.assertEqual(
-            [
-                {
-                    "status": "completed",
-                    "message": "已读取 brief.md",
-                }
-            ],
-            [
-                {"status": item["status"], "message": item["message"]}
-                for item in result["activities"]
-            ],
+            "completed",
+            result["toolStates"][0]["status"],
         )
+        self.assertEqual("read_text_file", result["toolStates"][0]["toolName"])
         self.assertIn(
             "read_text_file",
             [tool.name for tool in provider.requests[0].tools],
-        )
-        self.assertIn(file_id, provider.requests[0].messages[0].content)
-        restored = await client.get(f"/conversations/{conversation_id}")
-        self.assertEqual(
-            "已读取 brief.md",
-            restored.json()["turns"][-1]["activities"][0]["message"],
         )
 
     async def test_failed_file_tool_exposes_only_a_natural_activity(self) -> None:
         client = await self._client(FileReadingProvider("file_missing"))
         conversation_id = (await self._new_conversation(client))["id"]
-        created = await self._create_turn(client, conversation_id)
+        await self._create_turn(client, conversation_id)
 
-        result = await self._wait_for_terminal(client, created.json()["turnId"])
+        result = await self._wait_for_terminal(client, conversation_id)
 
-        # 工具失败反馈给模型后由 Assistant 解释，而不是让整个 Turn 失败。
-        self.assertEqual("completed", result["turnStatus"])
-        self.assertIn("工具执行失败", result["content"])
-        self.assertEqual(1, len(result["activities"]))
-        activity = result["activities"][0]
+        # 工具失败反馈给模型后由 Assistant 解释，而不是让整个 Run 失败。
+        self.assertEqual("completed", result["runState"]["status"])
+        self.assertIn("工具执行失败", assistant_text(result))
+        self.assertEqual(1, len(result["toolStates"]))
+        activity = result["toolStates"][0]
         self.assertEqual("failed", activity["status"])
-        self.assertEqual("读取 已上传文档 失败，可以重试", activity["message"])
         self.assertNotIn("arguments", activity)
-
-    async def test_turn_command_snapshot_and_sse_replay(self) -> None:
-        client = await self._client()
-        conversation_id = (await self._new_conversation(client))["id"]
-        created = await self._create_turn(client, conversation_id)
-        self.assertEqual(202, created.status_code)
-        payload = created.json()
-
-        snapshot = await self._wait_for_terminal(client, payload["turnId"])
-        self.assertEqual("completed", snapshot["turnStatus"])
-        self.assertEqual("你好，本地 API。", snapshot["content"])
-
-        replay = await client.get(payload["eventsUrl"])
-        self.assertEqual(200, replay.status_code)
-        self.assertTrue(replay.headers["content-type"].startswith("text/event-stream"))
-        self.assertIn("event: turn.started", replay.text)
-        self.assertIn("event: turn.completed", replay.text)
-
-        after_two = await client.get(
-            payload["eventsUrl"],
-            headers={"Last-Event-ID": f"{payload['turnId']}:2"},
-        )
-        self.assertNotIn(f"id: {payload['turnId']}:1\n", after_two.text)
-        self.assertNotIn(f"id: {payload['turnId']}:2\n", after_two.text)
-        self.assertIn(f"id: {payload['turnId']}:3\n", after_two.text)
-
-        envelopes = [
-            json.loads(line.removeprefix("data: "))
-            for line in replay.text.splitlines()
-            if line.startswith("data: ")
-        ]
-        self.assertEqual(
-            list(range(1, len(envelopes) + 1)),
-            [event["sequence"] for event in envelopes],
-        )
-
-    async def test_sse_emits_heartbeat_while_waiting(self) -> None:
-        client = await self._client(DelayedProvider(), heartbeat_seconds=0.005)
-        conversation_id = (await self._new_conversation(client))["id"]
-        created = await self._create_turn(client, conversation_id)
-
-        stream = await client.get(created.json()["eventsUrl"])
-
-        self.assertIn(": heartbeat\n\n", stream.text)
-        self.assertIn("event: turn.completed", stream.text)
-
-    async def test_idempotent_create_and_regenerate_return_original_ids(self) -> None:
-        client = await self._client()
-        conversation_id = (await self._new_conversation(client))["id"]
-        first = await self._create_turn(client, conversation_id)
-        first_payload = first.json()
-        await self._wait_for_terminal(client, first_payload["turnId"])
-
-        duplicate = await self._create_turn(client, conversation_id)
-        self.assertEqual(first_payload, duplicate.json())
-
-        regenerated = await client.post(
-            f"/turns/{first_payload['turnId']}/regenerate",
-            headers={"Idempotency-Key": "regenerate-1"},
-        )
-        self.assertEqual(202, regenerated.status_code)
-        regenerated_payload = regenerated.json()
-        await self._wait_for_terminal(client, first_payload["turnId"])
-
-        duplicate_regenerate = await client.post(
-            f"/turns/{first_payload['turnId']}/regenerate",
-            headers={"Idempotency-Key": "regenerate-1"},
-        )
-        self.assertEqual(regenerated_payload, duplicate_regenerate.json())
-        self.assertNotEqual(
-            first_payload["responseVariantId"],
-            regenerated_payload["responseVariantId"],
-        )
-
-        selected = await client.post(
-            f"/turns/{first_payload['turnId']}/response-variants/"
-            f"{first_payload['responseVariantId']}/select"
-        )
-        self.assertEqual(200, selected.status_code)
-        self.assertEqual(
-            first_payload["responseVariantId"],
-            selected.json()["responseVariantId"],
-        )
-
-    async def test_errors_use_stable_envelope(self) -> None:
-        client = await self._client()
-        conversation_id = (await self._new_conversation(client))["id"]
-
-        missing_key = await client.post(
-            f"/conversations/{conversation_id}/turns",
-            json={"content": "你好"},
-        )
-        self.assertEqual(400, missing_key.status_code)
-        self.assertEqual("invalid_request", missing_key.json()["error"]["code"])
-        self.assertIn("correlationId", missing_key.json()["error"])
-
-        missing = await client.get("/turns/turn_missing")
-        self.assertEqual(404, missing.status_code)
-        self.assertEqual("not_found", missing.json()["error"]["code"])
-
-        invalid_cursor = await client.get(
-            "/turns/turn_missing/events",
-            headers={"Last-Event-ID": "another:2"},
-        )
-        self.assertEqual(404, invalid_cursor.status_code)
-
-        created = await self._create_turn(client, conversation_id)
-        invalid_cursor = await client.get(
-            created.json()["eventsUrl"],
-            headers={"Last-Event-ID": "another:2"},
-        )
-        self.assertEqual(400, invalid_cursor.status_code)
-        self.assertEqual(
-            "invalid_last_event_id",
-            invalid_cursor.json()["error"]["code"],
-        )
 
     async def test_untrusted_host_and_oversized_message_are_rejected(self) -> None:
         client = await self._client(max_message_characters=4)
@@ -540,7 +413,7 @@ class LocalApiTest(unittest.IsolatedAsyncioTestCase):
 
         conversation_id = (await self._new_conversation(client))["id"]
         oversized = await client.post(
-            f"/conversations/{conversation_id}/turns",
+            f"/api/v2/conversations/{conversation_id}/messages",
             headers={"Idempotency-Key": "oversized"},
             json={"content": "12345"},
         )

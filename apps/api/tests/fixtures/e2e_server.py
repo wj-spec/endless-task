@@ -185,7 +185,6 @@ tool_registry.register(approval_tool)
 app = create_app(
     settings=AppSettings(
         database_path=database_path,
-        runtime="v2",
         provider_name="fake",
         model="e2e-model",
         heartbeat_seconds=0.1,

@@ -49,8 +49,6 @@ _EXTRACTION_SYSTEM_PROMPT = (
 )
 
 DEFAULT_PROPOSAL_REASON = "回答较长且值得保留为独立文档"
-READ_TEXT_FILE_TOOL = "read_text_file"
-COMPLETED_STATUS = "completed"
 MEMORY_LIST_CAP = 20
 MEMORY_PROMPT_SNIPPET_CHARS = 200
 ARTIFACT_LIST_CAP = 10
@@ -73,7 +71,7 @@ class ArtifactProposalService:
         proposal_repository: SqliteArtifactProposalRepository,
         model: str,
         memory_repository=None,
-        runtime_repository=None,
+        runtime_v2_repository=None,
         artifact_repository=None,
         min_assistant_chars: int = 400,
         max_output_tokens: int = 8_000,
@@ -84,7 +82,7 @@ class ArtifactProposalService:
         self._proposal_repository = proposal_repository
         self._model = model
         self._memory_repository = memory_repository
-        self._runtime_repository = runtime_repository
+        self._runtime_v2_repository = runtime_v2_repository
         self._artifact_repository = artifact_repository
         self._min_assistant_chars = min_assistant_chars
         self._max_output_tokens = max_output_tokens
@@ -247,19 +245,35 @@ class ArtifactProposalService:
             ordered.append(label)
         return tuple(ordered[:MAX_SOURCE_LABELS])
 
-    def _file_labels_for_turn(self, turn_id: str) -> list[str]:
-        if self._runtime_repository is None:
+    def _file_labels_for_turn(self, run_id: str) -> list[str]:
+        if self._runtime_v2_repository is None:
             return []
+        from endless_task.runtime_v2.domain import ToolExecutionStatus
+
         labels: list[str] = []
-        for call in self._runtime_repository.list_tool_calls(turn_id):
-            if call.tool_name != READ_TEXT_FILE_TOOL:
+        try:
+            turns = self._runtime_v2_repository.list_model_turns(run_id)
+        except Exception:  # noqa: BLE001 - run_id 不是 v2 run 时返回空
+            return []
+        for turn in turns:
+            try:
+                executions = self._runtime_v2_repository.list_tool_executions(
+                    turn.id
+                )
+            except Exception:  # noqa: BLE001 - 工具执行记录缺失不影响标签
                 continue
-            if call.status != COMPLETED_STATUS:
-                continue
-            file_id = call.arguments.get("file_id")
-            if not isinstance(file_id, str) or not file_id.strip():
-                continue
-            labels.append(format_file_label(file_id.strip()))
+            for execution in executions:
+                if execution.tool_name not in (
+                    "read_text_file",
+                    "read_workspace_file",
+                ):
+                    continue
+                if execution.status != ToolExecutionStatus.COMPLETED:
+                    continue
+                file_id = execution.arguments.get("file_id")
+                if not isinstance(file_id, str) or not file_id.strip():
+                    continue
+                labels.append(format_file_label(file_id.strip()))
         return labels
 
     def _validated_memory_labels(self, model_labels) -> list[str]:

@@ -215,6 +215,18 @@ class FsToolsTest(unittest.TestCase):
             asyncio.run(tool.execute(_call(self.conversation.id, path="README.md"), _token()))
         self.assertEqual("workspace_not_bound", ctx.exception.code)
 
+    def test_run_shell_tool_returns_result_and_receipt(self) -> None:
+        tool = RunShellTool(self.resolver, self.effect_log)
+        result = asyncio.run(
+            tool.execute(
+                _call(self.conversation.id, command="printf shell-ok"),
+                _token(),
+            )
+        )
+        self.assertEqual("shell-ok", result.content)
+        self.assertEqual(0, result.structured_content["exitCode"])
+        self.assertEqual("shell", result.structured_content["effect"]["kind"])
+
 
 class ShellRunnerTest(unittest.TestCase):
     def test_echo(self) -> None:

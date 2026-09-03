@@ -130,12 +130,22 @@ class McpServerRepositoryTest(unittest.TestCase):
             )
 
 
+_DEFAULT_STRUCTURED_CONTENT = object()
+
+
 class FakeMcpSession:
+    def __init__(self, structured_content: Any = _DEFAULT_STRUCTURED_CONTENT) -> None:
+        self.structured_content = (
+            {"ok": True}
+            if structured_content is _DEFAULT_STRUCTURED_CONTENT
+            else structured_content
+        )
+
     async def call_tool(self, name: str, arguments: dict[str, Any], **_: Any):
         del arguments
         return SimpleNamespace(
             content=[SimpleNamespace(type="text", text=f"hello {name}")],
-            structuredContent={"ok": True},
+            structuredContent=self.structured_content,
             isError=False,
         )
 
@@ -166,17 +176,79 @@ class McpToolBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ToolEffect.READ_ONLY, bridge.definition.effect)
         self.assertEqual(ToolApprovalMode.AUTO, bridge.definition.approval_mode)
 
-    def test_external_and_destructive_policy_is_conservative(self) -> None:
-        bridge = self._bridge(read_only=False, destructive=True)
-        self.assertEqual(ToolEffect.EXTERNAL_ACTION, bridge.definition.effect)
-        self.assertEqual(ToolApprovalMode.REQUIRED, bridge.definition.approval_mode)
-        self.assertTrue(bridge.requires_explicit_confirmation(_tool_call(text="x")))
+    def test_definition_accepts_standard_mcp_schema_features(self) -> None:
+        bridge = self._bridge(
+            input_schema={
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$defs": {"text": {"type": "string", "minLength": 1}},
+                "type": "object",
+                "properties": {
+                    "text": {"$ref": "#/$defs/text"},
+                    "format": {
+                        "anyOf": [
+                            {"const": "plain"},
+                            {"const": "markdown"},
+                        ]
+                    },
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            }
+        )
+
+        self.assertIn("$defs", bridge.definition.input_schema)
+        self.assertIn(
+            "anyOf",
+            bridge.definition.input_schema["properties"]["format"],
+        )
+
+    def test_non_read_only_tools_always_require_confirmation(self) -> None:
+        for destructive in (False, True):
+            with self.subTest(destructive=destructive):
+                bridge = self._bridge(
+                    read_only=False,
+                    destructive=destructive,
+                )
+                self.assertEqual(
+                    ToolEffect.EXTERNAL_ACTION,
+                    bridge.definition.effect,
+                )
+                self.assertEqual(
+                    ToolApprovalMode.REQUIRED,
+                    bridge.definition.approval_mode,
+                )
+                self.assertTrue(
+                    bridge.requires_explicit_confirmation(_tool_call(text="x"))
+                )
 
     async def test_execute_projects_text_and_structured_content(self) -> None:
         bridge = self._bridge()
         result = await bridge.execute(_tool_call(text="x"), CancellationToken())
         self.assertIn("hello echo", result.content)
         self.assertEqual({"ok": True}, dict(result.structured_content or {}))
+    async def test_execute_preserves_every_json_structured_content_type(self) -> None:
+        values = (
+            {"ok": True},
+            ["first", 2],
+            "plain text",
+            42,
+            3.5,
+            False,
+            None,
+        )
+
+        for value in values:
+            with self.subTest(value=value):
+                bridge = self._bridge(
+                    session_provider=lambda server_name, value=value: FakeMcpSession(
+                        value
+                    )
+                )
+                result = await bridge.execute(
+                    _tool_call(text="x"),
+                    CancellationToken(),
+                )
+                self.assertEqual(value, result.structured_content)
 
 
 class DynamicToolRegistryTest(unittest.TestCase):

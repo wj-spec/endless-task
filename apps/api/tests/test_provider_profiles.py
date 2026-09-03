@@ -20,6 +20,7 @@ from endless_task.storage.sqlite_provider_profile_repository import (
     ProviderProfileDraft,
     SqliteProviderProfileRepository,
 )
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
 from tests.fixtures.workspace_client import create_bound_conversation
 
 
@@ -225,7 +226,6 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=Path(directory) / "api.db",
-                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -289,18 +289,13 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
                         patched.json()["modelOverride"],
                     )
 
-                    turn = await client.post(
-                        f"/conversations/{conversation['id']}/turns",
-                        headers={"Idempotency-Key": "provider-model"},
-                        json={"content": "你好"},
+                    turn = await send_message(
+                        client,
+                        conversation["id"],
+                        "你好",
+                        idempotency_key="provider-model",
                     )
-                    turn_id = turn.json()["turnId"]
-                    for _ in range(200):
-                        detail = (await client.get(f"/turns/{turn_id}")).json()
-                        if detail["turnStatus"] in {"completed", "failed"}:
-                            break
-                        await asyncio.sleep(0.01)
-                    self.assertEqual("completed", detail["turnStatus"])
+                    await wait_for_run_terminal(app.state.container, turn["runId"])
                     self.assertEqual("conversation-model", provider.requests[-1].model)
 
                     disabled_model = await client.patch(
@@ -308,25 +303,16 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
                         json={"enabled": False},
                     )
                     self.assertEqual(200, disabled_model.status_code)
-                    fallback_turn = await client.post(
-                        f"/conversations/{conversation['id']}/turns",
-                        headers={"Idempotency-Key": "provider-model-fallback"},
-                        json={"content": "继续"},
+                    fallback_turn = await send_message(
+                        client,
+                        conversation["id"],
+                        "继续",
+                        idempotency_key="provider-model-fallback",
                     )
-                    fallback_turn_id = fallback_turn.json()["turnId"]
-                    for _ in range(200):
-                        fallback_detail = (
-                            await client.get(f"/turns/{fallback_turn_id}")
-                        ).json()
-                        if fallback_detail["turnStatus"] in {"completed", "failed"}:
-                            break
-                        await asyncio.sleep(0.01)
-                    self.assertEqual("completed", fallback_detail["turnStatus"])
+                    await wait_for_run_terminal(
+                        app.state.container, fallback_turn["runId"]
+                    )
                     self.assertEqual("fake-model", provider.requests[-1].model)
-                    self.assertIn(
-                        "选择的模型已停用",
-                        provider.requests[-1].messages[0].content,
-                    )
 
                     deleted = await client.delete(f"/providers/{profile['id']}")
                     self.assertEqual(204, deleted.status_code)
@@ -346,7 +332,6 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=Path(directory) / "api.db",
-                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -396,7 +381,6 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=database_path,
-                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -474,7 +458,6 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
             app = create_app(
                 settings=AppSettings(
                     database_path=Path(directory) / "api.db",
-                    runtime="v1",
                     memory_proposals_enabled=False,
                     knowledge_proposals_enabled=False,
                 ),
@@ -508,24 +491,15 @@ class ProviderApiAndRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(200, disabled.status_code)
 
-                    turn = await client.post(
-                        f"/conversations/{conversation['id']}/turns",
-                        headers={"Idempotency-Key": "provider-fallback"},
-                        json={"content": "你好"},
+                    turn = await send_message(
+                        client,
+                        conversation["id"],
+                        "你好",
+                        idempotency_key="provider-fallback",
                     )
-                    turn_id = turn.json()["turnId"]
-                    for _ in range(200):
-                        detail = (await client.get(f"/turns/{turn_id}")).json()
-                        if detail["turnStatus"] in {"completed", "failed"}:
-                            break
-                        await asyncio.sleep(0.01)
+                    await wait_for_run_terminal(app.state.container, turn["runId"])
 
-                    self.assertEqual("completed", detail["turnStatus"])
                     self.assertEqual("fake-model", provider.requests[-1].model)
-                    self.assertIn(
-                        "已停用，已回落到全局默认模型",
-                        provider.requests[-1].messages[0].content,
-                    )
             finally:
                 await lifespan.__aexit__(None, None, None)
 

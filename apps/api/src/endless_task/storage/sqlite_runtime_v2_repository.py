@@ -10,6 +10,7 @@ from typing import Any, Optional, Sequence
 
 from endless_task.domain.models import ConversationKind
 from endless_task.domain.repositories import ConflictError, InvalidStateError, NotFoundError
+from endless_task.tooling import JsonValue, ToolCallError
 
 from endless_task.runtime_v2.domain import (
     Actor,
@@ -81,6 +82,17 @@ def _new_id(prefix: str) -> str:
 
 def _dump(value: Mapping[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _jsonable(value: Any) -> Any:
+    """把 mappingproxy / tuple / 嵌套映射递归转成可 JSON 序列化的普通结构。"""
+    if isinstance(value, Mapping):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def _load(value: str) -> dict[str, Any]:
@@ -1769,7 +1781,9 @@ class SqliteRuntimeV2Repository:
                     """
                     UPDATE v2_tool_executions
                     SET status = ?, started_at = COALESCE(started_at, ?),
-                        finished_at = ?, error_code = ?, safe_message = ?
+                        finished_at = ?, error_code = ?, safe_message = ?,
+                        retryable = 0, error_correlation_id = ?,
+                        error_details_json = ?
                     WHERE id = ?
                     """,
                     (
@@ -1778,6 +1792,8 @@ class SqliteRuntimeV2Repository:
                         now,
                         error_code,
                         "中断后无法确认工具结果；请检查实际副作用后重试。",
+                        run["correlation_id"],
+                        _dump({"reason": "interrupted"}),
                         tool["id"],
                     ),
                 )
@@ -1791,6 +1807,9 @@ class SqliteRuntimeV2Repository:
                         "status": ToolExecutionStatus.FAILED.value,
                         "errorCode": error_code,
                         "safeMessage": "中断后无法确认工具结果；请检查实际副作用后重试。",
+                        "retryable": False,
+                        "correlationId": run["correlation_id"],
+                        "errorDetails": {"reason": "interrupted"},
                     },
                     correlation_id=run["correlation_id"],
                     occurred_at=now,
@@ -2502,12 +2521,22 @@ class SqliteRuntimeV2Repository:
         status: ToolExecutionStatus,
         content: str,
         event_type: str,
-        error_code: Optional[str] = None,
-        safe_message: Optional[str] = None,
+        error: Optional[ToolCallError] = None,
         correlation_id: Optional[str] = None,
+        structured_content: JsonValue = None,
     ) -> tuple[ToolExecutionRecord, TranscriptEntryRecord]:
         entry_id = self._id_factory("entry")
         now = self._clock()
+        error_code = error.code if error is not None else None
+        safe_message = error.safe_message if error is not None else None
+        retryable = error.retryable if error is not None else None
+        error_correlation_id = (
+            error.correlation_id if error is not None else None
+        )
+        error_details = (
+            _jsonable(dict(error.details)) if error is not None else None
+        )
+        error_details_json = _dump(error_details) if error_details is not None else None
 
         def operation(
             connection: sqlite3.Connection,
@@ -2523,6 +2552,11 @@ class SqliteRuntimeV2Repository:
                 raise InvalidStateError("Terminal tool execution status cannot change")
             turn = self._get_model_turn_row(connection, current["model_turn_id"])
             run = self._get_run_row(connection, turn["run_id"])
+            persisted_error_correlation_id = (
+                error_correlation_id or run["correlation_id"]
+                if error is not None
+                else None
+            )
             parent_entry = self._latest_run_entry_row(connection, run["id"])
             parent_id = (
                 parent_entry["id"]
@@ -2540,6 +2574,11 @@ class SqliteRuntimeV2Repository:
                 "toolName": current["tool_name"],
                 "content": content,
                 "errorCode": error_code,
+                "safeMessage": safe_message,
+                "retryable": retryable,
+                "correlationId": persisted_error_correlation_id,
+                "errorDetails": error_details,
+                "structuredContent": _jsonable(structured_content),
             }
             context_policy = {
                 "include_in_llm": True,
@@ -2593,7 +2632,8 @@ class SqliteRuntimeV2Repository:
                 """
                 UPDATE v2_tool_executions
                 SET status = ?, finished_at = ?, error_code = ?,
-                    safe_message = ?, result_entry_id = ?
+                    safe_message = ?, retryable = ?, error_correlation_id = ?,
+                    error_details_json = ?, result_entry_id = ?
                 WHERE id = ?
                 """,
                 (
@@ -2601,6 +2641,9 @@ class SqliteRuntimeV2Repository:
                     finished_at,
                     error_code,
                     safe_message,
+                    None if retryable is None else int(retryable),
+                    persisted_error_correlation_id,
+                    error_details_json,
                     entry_id,
                     execution_id,
                 ),
@@ -2610,7 +2653,17 @@ class SqliteRuntimeV2Repository:
                 run_id=run["id"],
                 model_turn_id=current["model_turn_id"],
                 event_type=event_type,
-                payload={"toolExecutionId": execution_id, "resultEntryId": entry_id},
+                payload={
+                    "toolExecutionId": execution_id,
+                    "resultEntryId": entry_id,
+                    "status": status.value,
+                    "content": content,
+                    "errorCode": error_code,
+                    "safeMessage": safe_message,
+                    "retryable": retryable,
+                    "correlationId": persisted_error_correlation_id,
+                    "errorDetails": error_details,
+                },
                 correlation_id=correlation_id or run["correlation_id"],
                 occurred_at=now,
             )
@@ -3369,6 +3422,15 @@ class SqliteRuntimeV2Repository:
             finished_at=row["finished_at"],
             error_code=row["error_code"],
             safe_message=row["safe_message"],
+            retryable=(
+                None if row["retryable"] is None else bool(row["retryable"])
+            ),
+            correlation_id=row["error_correlation_id"],
+            error_details=(
+                _load(row["error_details_json"])
+                if row["error_details_json"] is not None
+                else None
+            ),
             result_entry_id=row["result_entry_id"],
         )
 
