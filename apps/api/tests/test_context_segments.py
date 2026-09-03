@@ -127,6 +127,7 @@ class ShadowObserverIntegrationTest(unittest.IsolatedAsyncioTestCase):
             tool_registry=ToolRegistry(),
             model="scripted-model",
             context_shadow_observer=reports.append,
+            context_window_tokens=32768,
         )
         result = await executor.execute(
             run.id,
@@ -136,7 +137,59 @@ class ShadowObserverIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(reports))
         self.assertGreaterEqual(reports[0].included_count, 1)
         self.assertGreater(reports[0].estimated_tokens, 0)
+        self.assertTrue(reports[0].has_plan)
+        self.assertEqual(64, len(reports[0].fingerprint or ""))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanShadowUnitTest(unittest.TestCase):
+    def test_plan_shadow_without_budget_reports_estimate_only(self) -> None:
+        from endless_task.runtime_v2.context_segments import build_plan_shadow
+
+        report = build_plan_shadow(
+            (entry("u1", TranscriptEntryType.USER_MESSAGE, seq=1),)
+        )
+        self.assertFalse(report.has_plan)
+        self.assertGreater(report.estimated_tokens, 0)
+
+    def test_plan_shadow_with_budget_runs_retention_and_planning(self) -> None:
+        from endless_task.context_engine import ContextBudget
+        from endless_task.runtime_v2.context_segments import build_plan_shadow
+
+        entries = (
+            entry("user_1", TranscriptEntryType.USER_MESSAGE, seq=1, content="hi"),
+            entry("tool_1", TranscriptEntryType.TOOL_RESULT, seq=2, content="x" * 200),
+            entry("tool_2", TranscriptEntryType.TOOL_RESULT, seq=3, content="y" * 200),
+            entry("tool_3", TranscriptEntryType.TOOL_RESULT, seq=4, content="z" * 200),
+        )
+        budget = ContextBudget(
+            window_tokens=100,
+            reserved_output_tokens=10,
+            safety_margin_tokens=0,
+        )
+        report = build_plan_shadow(entries, budget=budget, max_kept_results=1)
+        self.assertTrue(report.has_plan)
+        self.assertEqual(64, len(report.fingerprint or ""))
+        # with max_kept_results=1 only the newest of three tool results survives
+        self.assertEqual(2, report.pruned_count)
+        self.assertIn(ContextSegmentKind.CURRENT_USER, {s.kind for s in report.segments})
+
+    def test_oversized_tool_result_spills(self) -> None:
+        from endless_task.context_engine import ContextBudget
+        from endless_task.runtime_v2.context_segments import build_plan_shadow
+
+        entries = (
+            entry("user_1", TranscriptEntryType.USER_MESSAGE, seq=1, content="hi"),
+            entry("tool_1", TranscriptEntryType.TOOL_RESULT, seq=2, content="z" * 400),
+        )
+        budget = ContextBudget(
+            window_tokens=100,
+            reserved_output_tokens=10,
+            safety_margin_tokens=0,
+        )
+        report = build_plan_shadow(entries, budget=budget, max_kept_results=5)
+        self.assertEqual(1, report.spilled_count)
+        self.assertFalse(any(s.kind is ContextSegmentKind.TOOL_RESULT for s in report.segments))

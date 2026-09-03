@@ -1605,6 +1605,7 @@ class AgentRunExecutor:
         provider_retry_observer: Optional[object] = None,
         no_progress_observer: Optional[object] = None,
         context_shadow_observer: Optional[object] = None,
+        context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._repository = repository
@@ -1623,6 +1624,7 @@ class AgentRunExecutor:
         self._provider_retry_observer = provider_retry_observer
         self._no_progress_observer = no_progress_observer
         self._context_shadow_observer = context_shadow_observer
+        self._context_window_tokens = context_window_tokens
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1666,9 +1668,21 @@ class AgentRunExecutor:
         entries = self._repository.list_entry_context_entries(run.trigger_entry_id)
         projection = self._context_projection.project(entries)
         if self._context_shadow_observer is not None:
-            from .context_segments import build_context_shadow
+            from endless_task.context_engine import ContextBudget
 
-            self._context_shadow_observer(build_context_shadow(entries))
+            from .context_segments import build_plan_shadow
+
+            budget = None
+            if (
+                self._context_window_tokens is not None
+                and self._context_window_tokens > self._max_output_tokens
+            ):
+                budget = ContextBudget(
+                    window_tokens=self._context_window_tokens,
+                    reserved_output_tokens=self._max_output_tokens,
+                    safety_margin_tokens=0,
+                )
+            self._context_shadow_observer(build_plan_shadow(entries, budget=budget))
         provider_messages: list[ProviderMessage] = list(
             self._context_prefix_messages
         )

@@ -1369,6 +1369,7 @@ def _build_container(
             else None
         ),
         v2_pipeline_enabled=settings.tool_platform_v2_enabled,
+        context_window_tokens=settings.context_window_tokens,
         compaction_hook=runtime_v2_compaction_hook,
         metrics_collector=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
@@ -1398,6 +1399,7 @@ def _build_container(
             else None
         ),
         v2_pipeline_enabled=settings.tool_platform_v2_enabled,
+        context_window_tokens=settings.context_window_tokens,
         metrics=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
