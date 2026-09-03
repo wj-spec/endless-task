@@ -208,3 +208,33 @@ class ToolPlatformV2CapabilitiesTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(_parse_strict_flag("off", name="F"))
         with self.assertRaises(ValueError):
             _parse_strict_flag("maybe", name="F")
+
+
+class ContextEngineV2CapabilitiesTest(unittest.IsolatedAsyncioTestCase):
+    async def _flag(self, *, enabled: bool) -> bool:
+        with tempfile.TemporaryDirectory() as directory:
+            app = create_app(
+                settings=AppSettings(
+                    database_path=Path(directory) / "api.db",
+                    memory_proposals_enabled=False,
+                    knowledge_proposals_enabled=False,
+                    context_engine_v2_enabled=enabled,
+                ),
+                provider=FakeProvider(chunks=("ok",)),
+            )
+            lifespan = app.router.lifespan_context(app)
+            await lifespan.__aenter__()
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver",
+                ) as client:
+                    response = await client.get("/capabilities")
+                    self.assertEqual(200, response.status_code)
+                    return response.json()["contextEngineV2"]["enabled"]
+            finally:
+                await lifespan.__aexit__(None, None, None)
+
+    async def test_default_off_and_echo(self) -> None:
+        self.assertFalse(await self._flag(enabled=False))
+        self.assertTrue(await self._flag(enabled=True))

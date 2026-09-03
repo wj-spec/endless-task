@@ -7,7 +7,11 @@ import unittest
 from pathlib import Path
 
 from endless_task.context_engine import ContextSegmentKind
-from endless_task.runtime.provider import ProviderCompleted, ProviderTextDelta
+from endless_task.runtime.provider import (
+    ProviderCompleted,
+    ProviderTextDelta,
+    ProviderToolCall,
+)
 from endless_task.runtime_v2 import Actor, TranscriptEntryStatus, TranscriptEntryType
 from endless_task.runtime_v2.context_segments import build_context_shadow
 from endless_task.runtime_v2.domain import TranscriptEntryRecord
@@ -192,4 +196,112 @@ class PlanShadowUnitTest(unittest.TestCase):
         )
         report = build_plan_shadow(entries, budget=budget, max_kept_results=5)
         self.assertEqual(1, report.spilled_count)
+        self.assertIn("tool_1", report.excluded_source_ids)
         self.assertFalse(any(s.kind is ContextSegmentKind.TOOL_RESULT for s in report.segments))
+
+
+class StageCCutoverIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    """Flag-on (context_engine_v2_enabled) filters entries by the v2 plan."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        from endless_task.storage import Database, SqliteChatRepository, SqliteRuntimeV2Repository
+
+        self.database = Database(Path(self._tmp.name) / "runtime.db")
+        self.database.initialize()
+        self.chat_repository = SqliteChatRepository(self.database)
+        self.repository = SqliteRuntimeV2Repository(self.database)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def _run(
+        self, *, v2_enabled: bool, window: int, content: str, max_output: int = 8192
+    ):
+        from endless_task.runtime.cancellation import CancellationToken
+        from endless_task.runtime_v2 import AgentRunExecutor, RunStatus
+        from endless_task.tooling import ToolRegistry
+
+        from tests.test_runtime_v2_execution import FakeTool, ScriptedProvider
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "请读取并继续。"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        tool_calls = [
+            ProviderToolCall(
+                id=f"call_{index}",
+                name="read_file",
+                arguments={"path": f"{index}.txt"},
+            )
+            for index in range(1)
+        ]
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderTextDelta("读取。"),
+                    *tuple(tool_calls),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                ),
+                (
+                    ProviderTextDelta("完成。"),
+                    ProviderCompleted(finish_reason="stop"),
+                ),
+            ]
+        )
+        tool = FakeTool(content=content)
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            max_output_tokens=max_output,
+            context_engine_v2_enabled=v2_enabled,
+            context_window_tokens=window,
+        )
+        result = await executor.execute(
+            run.id,
+            cancellation_token=CancellationToken(),
+        )
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        return provider, tool
+
+    async def test_under_budget_flag_on_matches_flag_off(self) -> None:
+        provider_off, _ = await self._run(
+            v2_enabled=False, window=32768, content="small content"
+        )
+        provider_on, _ = await self._run(
+            v2_enabled=True, window=32768, content="small content"
+        )
+        self.assertEqual(
+            [m.content for m in provider_off.requests[-1].messages],
+            [m.content for m in provider_on.requests[-1].messages],
+        )
+
+    async def test_current_run_tool_feedback_is_kept_legacy_when_enabled(self) -> None:
+        # Stage C only applies the v2 plan to the INITIAL context (history);
+        # the current run's tool feedback is an active paired result and must
+        # keep reaching the model (active-pair rule), even when oversized.
+        provider_on, _ = await self._run(
+            v2_enabled=True, window=200, content="x" * 3000, max_output=40
+        )
+        last = provider_on.requests[-1].messages
+        tool_messages = [m for m in last if getattr(m, "role", None) == "tool"]
+        self.assertEqual(1, len(tool_messages))
+        user_text = "".join(
+            m.content for m in last if getattr(m, "role", None) == "user"
+        )
+        self.assertIn("请读取并继续", user_text)

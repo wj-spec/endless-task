@@ -290,6 +290,8 @@ class AppSettings:
     context_compaction_enabled: bool = True
     # Agent Platform v2 tool path; default on after AP-107 flip. Illegal env values fail startup.
     tool_platform_v2_enabled: bool = True
+    # M2 context engine v2 cutover; default off (shadow/parity only).
+    context_engine_v2_enabled: bool = False
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -418,6 +420,10 @@ class AppSettings:
             tool_platform_v2_enabled=_parse_strict_flag(
                 env.get("ENDLESS_TASK_TOOL_PLATFORM_V2", "1"),
                 name="ENDLESS_TASK_TOOL_PLATFORM_V2",
+            ),
+            context_engine_v2_enabled=_parse_strict_flag(
+                env.get("ENDLESS_TASK_CONTEXT_ENGINE_V2", "0"),
+                name="ENDLESS_TASK_CONTEXT_ENGINE_V2",
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -1369,6 +1375,7 @@ def _build_container(
             else None
         ),
         v2_pipeline_enabled=settings.tool_platform_v2_enabled,
+        context_engine_v2_enabled=settings.context_engine_v2_enabled,
         context_window_tokens=settings.context_window_tokens,
         compaction_hook=runtime_v2_compaction_hook,
         metrics_collector=runtime_v2_metrics_collector,
@@ -1399,6 +1406,7 @@ def _build_container(
             else None
         ),
         v2_pipeline_enabled=settings.tool_platform_v2_enabled,
+        context_engine_v2_enabled=settings.context_engine_v2_enabled,
         context_window_tokens=settings.context_window_tokens,
         metrics=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
@@ -2164,6 +2172,9 @@ def create_app(
                     if container.settings.tool_platform_v2_enabled
                     else None
                 ),
+            },
+            "contextEngineV2": {
+                "enabled": container.settings.context_engine_v2_enabled,
             },
         }
 

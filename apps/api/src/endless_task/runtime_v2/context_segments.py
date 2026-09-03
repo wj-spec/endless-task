@@ -77,6 +77,7 @@ class ContextPlanShadowReport:
     pruned_count: int = 0
     spilled_count: int = 0
     fingerprint: Optional[str] = None
+    excluded_source_ids: tuple[str, ...] = ()
 
 
 def _entry_text(entry: TranscriptEntryRecord) -> str:
@@ -190,6 +191,16 @@ def build_plan_shadow(
     ) + retention.kept
     plan = plan_context_segments(candidates, budget)
     fingerprint = _segments_fingerprint(plan.included)
+    excluded = [
+        segment.source_ids[0]
+        for segment in plan.omitted
+    ] + [
+        segment.source_ids[0]
+        for segment in retention.pruned
+    ] + [
+        segment.source_ids[0]
+        for segment in retention.spilled
+    ]
     return ContextPlanShadowReport(
         entry_count=base.entry_count,
         included_count=base.included_count,
@@ -202,6 +213,7 @@ def build_plan_shadow(
         pruned_count=len(retention.pruned),
         spilled_count=len(retention.spilled),
         fingerprint=fingerprint,
+        excluded_source_ids=tuple(sorted(set(excluded))),
     )
 
 

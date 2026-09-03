@@ -1599,6 +1599,7 @@ class AgentRunExecutor:
             Callable[[str], tuple[ProviderToolDefinition, ...]]
         ] = None,
         v2_pipeline_enabled: bool = False,
+        context_engine_v2_enabled: bool = False,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
         provider_retry_evaluator: Optional[object] = None,
@@ -1625,6 +1626,7 @@ class AgentRunExecutor:
         self._no_progress_observer = no_progress_observer
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
+        self._context_engine_v2_enabled = context_engine_v2_enabled
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1666,23 +1668,31 @@ class AgentRunExecutor:
         self._run_compacted = False
         run_started = time.monotonic()
         entries = self._repository.list_entry_context_entries(run.trigger_entry_id)
-        projection = self._context_projection.project(entries)
-        if self._context_shadow_observer is not None:
-            from endless_task.context_engine import ContextBudget
+        from endless_task.context_engine import ContextBudget
 
-            from .context_segments import build_plan_shadow
+        from .context_segments import build_plan_shadow
 
-            budget = None
-            if (
-                self._context_window_tokens is not None
-                and self._context_window_tokens > self._max_output_tokens
-            ):
-                budget = ContextBudget(
-                    window_tokens=self._context_window_tokens,
-                    reserved_output_tokens=self._max_output_tokens,
-                    safety_margin_tokens=0,
+        budget = None
+        if (
+            self._context_window_tokens is not None
+            and self._context_window_tokens > self._max_output_tokens
+        ):
+            budget = ContextBudget(
+                window_tokens=self._context_window_tokens,
+                reserved_output_tokens=self._max_output_tokens,
+                safety_margin_tokens=0,
+            )
+        plan_shadow = build_plan_shadow(entries, budget=budget)
+        projection_entries = entries
+        if self._context_engine_v2_enabled and budget is not None:
+            excluded = set(plan_shadow.excluded_source_ids)
+            if excluded:
+                projection_entries = tuple(
+                    entry for entry in entries if entry.id not in excluded
                 )
-            self._context_shadow_observer(build_plan_shadow(entries, budget=budget))
+        projection = self._context_projection.project(projection_entries)
+        if self._context_shadow_observer is not None:
+            self._context_shadow_observer(plan_shadow)
         provider_messages: list[ProviderMessage] = list(
             self._context_prefix_messages
         )
