@@ -897,3 +897,37 @@ def _validated_schema(value: Mapping[str, Any], *, field_name: str) -> Mapping[s
             f"{field_name} must be valid JSON Schema",
         ) from error
     return MappingProxyType(dict(plain))
+
+
+def create_openai_compatible_profile() -> ProviderSchemaProfile:
+    """Built-in provider schema profile calibrated to the production surface.
+
+    AP-105c calibration (2026-09-03):
+
+    - the runtime talks to OpenAI-compatible chat-completions endpoints and
+      passes tool ``parameters`` through as JSON Schema, so the profile keeps
+      the full dialect vocabulary (``supported_keywords=None``) instead of
+      inventing a keyword deny list,
+    - schema gates mirror the production argument limits
+      (``api/app.py AppSettings``: per-call arguments 64 KiB, depth 32) as
+      consistency defaults — schemas are sent to the model once per surface
+      and must stay within the same order of magnitude as the arguments they
+      describe,
+    - description cap 1_024 matches the v1 ``ToolDefinition`` limit.
+
+    ``$ref``/``$defs`` handling by concrete endpoints is intentionally NOT
+    hard-coded here: it must be measured against the actual endpoint family in
+    the AP-107 live-parity harness before any vocabulary restriction ships.
+    """
+    return ProviderSchemaProfile(
+        name="openai_compatible_default",
+        dialect="draft2020-12",
+        supported_keywords=None,
+        max_parameters_bytes=65_536,
+        max_parameters_depth=32,
+        max_description_characters=1_024,
+        degrade_safe_tool_constraints=False,
+    )
+
+
+OPENAI_COMPATIBLE_PROFILE_LIMITS = (65_536, 32, 1_024)

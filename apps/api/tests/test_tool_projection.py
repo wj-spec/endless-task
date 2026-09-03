@@ -496,3 +496,45 @@ class ToolSchemaProjectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenAiCompatibleProfileTest(unittest.TestCase):
+    def test_builtin_profile_is_calibrated_to_production_limits(self) -> None:
+        from endless_task.tool_platform import (
+            OPENAI_COMPATIBLE_PROFILE_LIMITS,
+            create_openai_compatible_profile,
+        )
+
+        profile = create_openai_compatible_profile()
+        self.assertEqual("openai_compatible_default", profile.name)
+        self.assertIsNone(profile.supported_keywords)  # full dialect passthrough
+        self.assertEqual(
+            (65_536, 32, 1_024),
+            (
+                profile.max_parameters_bytes,
+                profile.max_parameters_depth,
+                profile.max_description_characters,
+            ),
+        )
+        self.assertEqual(OPENAI_COMPATIBLE_PROFILE_LIMITS, (65_536, 32, 1_024))
+
+    def test_builtin_profile_rejects_oversized_schema_like_production_caps(self) -> None:
+        from endless_task.tool_platform import create_openai_compatible_profile
+
+        oversized = {
+            "type": "object",
+            "properties": {
+                "value": {"type": "string", "minLength": 1},
+                "padding": {
+                    "type": "string",
+                    "description": "x" * (70_000),
+                },
+            },
+        }
+        tool = fake_tool("oversized_schema", input_schema=oversized)
+        report = project_tool_surface(
+            surface(tool),
+            create_openai_compatible_profile(),
+        )
+        self.assertEqual(["oversized_schema"], list(report.excluded_names))
+        self.assertEqual("schema_too_large", report.excluded[0].code)

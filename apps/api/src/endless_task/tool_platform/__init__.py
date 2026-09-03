@@ -45,7 +45,9 @@ from .catalog import (
 )
 from .projection import (
     DEFAULT_ANNOTATION_KEYWORDS,
+    OPENAI_COMPATIBLE_PROFILE_LIMITS,
     PROJECTION_SCHEMA_VERSION,
+    create_openai_compatible_profile,
     DefaultToolSchemaProjection,
     ProjectedToolSchema,
     ProjectionDecision,
@@ -167,5 +169,7 @@ __all__ = [
     "adapt_legacy_effect",
     "builtin_legacy_tool_policy",
     "capability_grant_for_workspace_binding",
+    "OPENAI_COMPATIBLE_PROFILE_LIMITS",
+    "create_openai_compatible_profile",
     "validate_capability",
 ]
