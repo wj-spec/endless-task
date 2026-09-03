@@ -1,5 +1,6 @@
 """Versioned reliability contracts: retry, budgets and stop policy."""
 
+from .stop_runtime import TurnEvidence, build_turn_signal, evaluate_turn_history
 from .retry_runtime import (
     ProviderRetryConfig,
     ProviderRetryEvaluator,
@@ -49,6 +50,9 @@ __all__ = [
     "ProviderRetryRecord",
     "RETRY_RUNTIME_SCHEMA_VERSION",
     "RetryDecision",
+    "TurnEvidence",
+    "build_turn_signal",
+    "evaluate_turn_history",
     "RetryScope",
     "STOP_PROTOCOL_VERSION",
     "StopLevel",

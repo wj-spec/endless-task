@@ -190,10 +190,10 @@ def evaluate_no_progress(
             detector="empty_history",
             reasons=(),
         )
-    trailing = _trailing_no_progress(signal_tuple)
+    best_run = _longest_no_progress_run(signal_tuple)
     # A single differing signal is not yet a "repeat": no-progress runs need
     # at least two consecutive unchanged states.
-    consecutive = len(trailing) if len(trailing) >= 2 else 0
+    consecutive = len(best_run) if len(best_run) >= 2 else 0
     if consecutive == 0:
         return NoProgressEvaluation(
             level=StopLevel.NONE,
@@ -207,47 +207,59 @@ def evaluate_no_progress(
         level = StopLevel.RESTRICT
     elif consecutive >= profile.remind_after:
         level = StopLevel.REMIND
-    else:  # pragma: no cover - trailing run length >= 1 implies >= remind
+    else:  # pragma: no cover - run length >= 1 implies >= remind
         level = StopLevel.NONE
     return NoProgressEvaluation(
         level=level,
         consecutive=consecutive,
-        detector=_detector(trailing),
-        reasons=_reasons(trailing),
+        detector=_detector(best_run),
+        reasons=_reasons(best_run),
     )
 
 
-def _trailing_no_progress(
+def _longest_no_progress_run(
     signals: tuple[ProgressSignal, ...],
 ) -> tuple[ProgressSignal, ...]:
-    """Longest suffix where every adjacent pair shows no state change."""
-    if not signals:
-        return ()
-    run: list[ProgressSignal] = [signals[-1]]
-    for index in range(len(signals) - 2, -1, -1):
-        if not _no_change(signals[index], signals[index + 1]):
-            break
-        run.append(signals[index])
-    return tuple(reversed(run))
+    """Longest contiguous run where every adjacent pair shows no change."""
+    best_start = 0
+    best_length = 1
+    run_start = 0
+    for index in range(len(signals) - 1):
+        if _no_change(signals[index], signals[index + 1]):
+            length = index + 2 - run_start
+            if length > best_length:
+                best_start = run_start
+                best_length = length
+        else:
+            run_start = index + 1
+    return tuple(signals[best_start : best_start + best_length])
 
 
 def _no_change(previous: ProgressSignal, current: ProgressSignal) -> bool:
-    """Whether moving from ``previous`` to ``current`` shows no progress."""
+    """Whether moving from ``previous`` to ``current`` shows no progress.
+
+    Doc 05 distinguishes the two repeated-call detectors: an identical tool
+    signature + outcome fingerprint counts regardless of context growth
+    (repeated identical calls), while repeated failures only count when the
+    context fingerprint is unchanged.
+    """
     if current.artifact_changes > 0 or current.checkpoint_changes > 0:
         return False
-    if previous.context_fingerprint != current.context_fingerprint:
-        return False
     if current.unresolved_error is not None:
-        return previous.unresolved_error is not None
+        return (
+            previous.unresolved_error is not None
+            and previous.context_fingerprint == current.context_fingerprint
+        )
     if current.tool_signature is not None:
         return (
             previous.tool_signature == current.tool_signature
             and previous.tool_outcome_fingerprint == current.tool_outcome_fingerprint
         )
     # Empty turn without error: no change only if the previous turn was also
-    # empty (no tool, no error).
+    # empty (no tool, no error) with an unchanged context.
     return (
-        previous.tool_signature is None
+        previous.context_fingerprint == current.context_fingerprint
+        and previous.tool_signature is None
         and previous.unresolved_error is None
         and previous.artifact_changes == 0
         and previous.checkpoint_changes == 0

@@ -267,6 +267,58 @@ def _messages_fingerprint(messages) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+
+def _evaluate_no_progress_shadow(*, repository, run_id: str, observer) -> None:
+    """M2 prelude Stage 2: evaluate per-turn evidence (observation only)."""
+    import hashlib
+
+    from endless_task.reliability.stop import StopPolicyProfile, evaluate_no_progress
+    from endless_task.reliability.stop_runtime import TurnEvidence, build_turn_signal
+
+    turns = repository.list_model_turns(run_id)
+    if not turns:
+        return
+    events = repository.list_runtime_events(run_id)
+    fingerprints = [
+        getattr(event, "payload", {}).get("fingerprint")
+        for event in events
+        if getattr(event, "event_type", None) == "context_fingerprint"
+    ]
+    evidences = []
+    for index, turn in enumerate(turns):
+        fingerprint = fingerprints[index] if index < len(fingerprints) else "unavailable"
+        executions = repository.list_tool_executions(turn.id)
+        tool_name = None
+        outcome_fingerprint = None
+        unresolved = None
+        if executions:
+            tool_name = getattr(executions[0], "tool_name", None) or "tool"
+            contents = []
+            for execution in executions:
+                status = getattr(execution, "status", None)
+                status_value = getattr(status, "value", status)
+                error = getattr(execution, "error", None)
+                if error is not None:
+                    unresolved = getattr(error, "code", None) or str(error)
+                    continue
+                if status_value in ("completed", "COMPLETED"):
+                    contents.append(getattr(execution, "content", "") or "")
+            if contents:
+                outcome_fingerprint = hashlib.sha256(
+                    "".join(sorted(contents)).encode("utf-8")
+                ).hexdigest()
+        evidences.append(
+            TurnEvidence(
+                context_fingerprint=str(fingerprint),
+                tool_signature=tool_name,
+                tool_outcome_fingerprint=outcome_fingerprint,
+                unresolved_error=unresolved,
+            )
+        )
+    signals = tuple(build_turn_signal(evidence) for evidence in evidences)
+    evaluation = evaluate_no_progress(signals, StopPolicyProfile())
+    observer(evaluation)
+
 class ToolExecutionCoordinator:
     """Executes one model-turn tool batch while preserving source order."""
 
@@ -1237,9 +1289,18 @@ class ModelTurnRunner:
             tools=self._tool_coordinator.definitions(run.conversation_id),
         )
         if self._metrics is not None:
+            fingerprint = _messages_fingerprint(messages)
             self._metrics.record_prefix_fingerprint(
                 conversation_id=run.conversation_id,
-                fingerprint=_messages_fingerprint(messages),
+                fingerprint=fingerprint,
+            )
+            # Durable per-turn fingerprint event (M2 prelude Stage 2) so the
+            # no-progress shadow evaluation can read it back per run.
+            self._repository.append_runtime_event(
+                run_id=run.id,
+                model_turn_id=model_turn.id,
+                event_type="context_fingerprint",
+                payload={"fingerprint": fingerprint},
             )
 
         try:
@@ -1542,6 +1603,7 @@ class AgentRunExecutor:
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
         provider_retry_evaluator: Optional[object] = None,
         provider_retry_observer: Optional[object] = None,
+        no_progress_observer: Optional[object] = None,
         agent_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._repository = repository
@@ -1558,6 +1620,7 @@ class AgentRunExecutor:
         self._run_compacted = False
         self._provider_retry_evaluator = provider_retry_evaluator
         self._provider_retry_observer = provider_retry_observer
+        self._no_progress_observer = no_progress_observer
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1924,6 +1987,12 @@ class AgentRunExecutor:
         *,
         assistant_entry_id: Optional[str] = None,
     ) -> RunExecutionResult:
+        if self._no_progress_observer is not None:
+            _evaluate_no_progress_shadow(
+                repository=self._repository,
+                run_id=run.id,
+                observer=self._no_progress_observer,
+            )
         return RunExecutionResult(
             status=status,
             run=run,
