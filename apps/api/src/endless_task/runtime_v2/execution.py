@@ -254,16 +254,25 @@ class ToolExecutionCoordinator:
         tool_filter_provider: Optional[
             Callable[[str], Optional[Callable[[str], bool]]]
         ] = None,
+        tool_definitions_provider: Optional[
+            Callable[[str], tuple[ProviderToolDefinition, ...]]
+        ] = None,
         limits: Optional[ToolExecutionLimits] = None,
     ) -> None:
         self._repository = repository
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate or WaitingToolApprovalGate()
         self._tool_filter_provider = tool_filter_provider
+        # AP-107 dual-path seam: when provided (feature flag on) the model
+        # surface comes from the version-2 planner instead of the legacy
+        # predicate; the default None keeps the legacy path byte-identical.
+        self._tool_definitions_provider = tool_definitions_provider
         self._limits = limits or ToolExecutionLimits()
         self._execution_slots = asyncio.Semaphore(self._limits.max_concurrent_calls)
 
     def definitions(self, conversation_id: str) -> tuple[ProviderToolDefinition, ...]:
+        if self._tool_definitions_provider is not None:
+            return self._tool_definitions_provider(conversation_id)
         predicate = (
             self._tool_filter_provider(conversation_id)
             if self._tool_filter_provider is not None

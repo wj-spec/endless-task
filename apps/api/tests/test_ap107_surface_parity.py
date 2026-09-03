@@ -34,6 +34,7 @@ from endless_task.tool_platform import (
     create_openai_compatible_profile,
     project_tool_surface,
 )
+from endless_task.runtime.provider import ProviderToolDefinition
 from endless_task.tooling import ToolRegistry
 from endless_task.workspace_runtime import WORKSPACE_TOOLS, workspace_tool_filter
 from endless_task.workspace_runtime.fs_tools import (
@@ -161,3 +162,109 @@ class LegacySurfaceParityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoordinatorSurfaceSeamTest(unittest.TestCase):
+    """Flag-gated seam: an injected v2 surface provider replaces the legacy
+    predicate path only when set; default stays byte-identical."""
+
+    def _v2_definitions_provider(self, binding: object | None):
+        catalog = InMemoryToolCatalog()
+        for tool_class in BUILTIN_TOOL_CLASSES:
+            adapter = LegacyToolAdapter(tool_class)
+            catalog.register(
+                adapter,
+                scope=ToolScope.BUILTIN,
+                provenance=ToolProvenance(
+                    kind=ToolProvenanceKind.LEGACY_ADAPTER,
+                    source_id="builtin",
+                ),
+            )
+        allowed = frozenset().union(
+            *(
+                policy.required_capabilities
+                for policy in (
+                    builtin_legacy_tool_policy(cls.definition.name)
+                    for cls in BUILTIN_TOOL_CLASSES
+                )
+                if policy is not None
+            )
+        )
+        granted = capability_grant_for_workspace_binding(binding is not None, allowed)
+
+        def provider(conversation_id: str):
+            del conversation_id
+            surface = catalog.surface(
+                ToolSurfaceRequest(
+                    context=CapabilityContext(
+                        profile=CapabilityProfile(
+                            name="flip_seam",
+                            allowed_capabilities=granted,
+                        ),
+                    ),
+                )
+            )
+            report = project_tool_surface(surface, create_openai_compatible_profile())
+            return tuple(
+                ProviderToolDefinition(
+                    name=projected.name,
+                    description=projected.description,
+                    input_schema=dict(projected.input_schema),
+                )
+                for projected in report.projected
+            )
+
+        return provider
+
+    def test_provider_path_matches_legacy_path_when_set(self) -> None:
+        from endless_task.runtime_v2.execution import ToolExecutionCoordinator
+
+        for binding, label in ((None, "unbound"), (object(), "bound")):
+            with self.subTest(binding=label):
+                registry = ToolRegistry()
+                for tool_class in BUILTIN_TOOL_CLASSES:
+                    registry.register(tool_class)
+                legacy = ToolExecutionCoordinator(
+                    repository=object(),
+                    tool_registry=registry,
+                    tool_filter_provider=lambda conv: workspace_tool_filter(
+                        FakeResolver(binding), conv
+                    ),
+                )
+                via_seam = ToolExecutionCoordinator(
+                    repository=object(),
+                    tool_registry=registry,
+                    tool_definitions_provider=self._v2_definitions_provider(binding),
+                )
+                legacy_defs = legacy.definitions("conversation_1")
+                seam_defs = via_seam.definitions("conversation_1")
+                self.assertEqual(
+                    [(d.name, d.description) for d in legacy_defs],
+                    [(d.name, d.description) for d in seam_defs],
+                    label,
+                )
+                legacy_schemas = {
+                    definition.name: dict(definition.input_schema)
+                    for definition in legacy_defs
+                }
+                seam_schemas = {
+                    definition.name: dict(definition.input_schema)
+                    for definition in seam_defs
+                }
+                self.assertEqual(legacy_schemas, seam_schemas, label)
+
+    def test_default_path_unchanged_without_provider(self) -> None:
+        from endless_task.runtime_v2.execution import ToolExecutionCoordinator
+
+        registry = ToolRegistry()
+        for tool_class in BUILTIN_TOOL_CLASSES:
+            registry.register(tool_class)
+        coordinator = ToolExecutionCoordinator(
+            repository=object(),
+            tool_registry=registry,
+        )
+        names = {definition.name for definition in coordinator.definitions("conv_1")}
+        self.assertEqual(
+            {cls.definition.name for cls in BUILTIN_TOOL_CLASSES},
+            names,
+        )
