@@ -311,6 +311,18 @@ class ToolCatalog(Protocol):
         override: bool = False,
     ) -> ToolRegistration: ...
 
+    def replace_provenance(
+        self,
+        *,
+        kind: ToolProvenanceKind,
+        source_id: str,
+        tools: Iterable[AgentToolV2],
+        scope: ToolScope,
+        scope_id: str,
+        revision: Optional[str] = None,
+        override: bool = False,
+    ) -> tuple[ToolRegistration, ...]: ...
+
     def resolve(self, name: str, context: CapabilityContext) -> AgentToolV2: ...
 
     def surface(self, request: ToolSurfaceRequest) -> ToolSurface: ...
@@ -321,6 +333,7 @@ class ToolCatalog(Protocol):
 class InMemoryToolCatalog:
     def __init__(self) -> None:
         self._generation = 0
+        self._id_counter = 0
         self._registrations: dict[
             tuple[str, ToolScope, Optional[str]], ToolRegistration
         ] = {}
@@ -388,8 +401,9 @@ class InMemoryToolCatalog:
         )
 
         generation = self._generation + 1
+        self._id_counter += 1
         registration = ToolRegistration(
-            registration_id=f"tool_registration_{generation}",
+            registration_id=f"tool_registration_{self._id_counter}",
             tool=tool,
             scope=scope,
             scope_id=normalized_scope_id,
@@ -404,6 +418,133 @@ class InMemoryToolCatalog:
         self._history.append(registration)
         self._generation = generation
         return registration
+
+    def replace_provenance(
+        self,
+        *,
+        kind: ToolProvenanceKind,
+        source_id: str,
+        tools: Iterable[AgentToolV2],
+        scope: ToolScope,
+        scope_id: str,
+        revision: Optional[str] = None,
+        override: bool = False,
+    ) -> tuple[ToolRegistration, ...]:
+        """Atomically replace every registration of one provenance source.
+
+        AP-105b: MCP servers refresh their tool namespace dynamically; this
+        removes all current registrations whose provenance matches
+        ``kind``/``source_id`` and registers ``tools`` in one generation
+        commit. Any validation failure (duplicate, capability or scope
+        conflict) leaves the catalog untouched.
+        """
+        if not isinstance(kind, ToolProvenanceKind):
+            raise AgentPlatformError(
+                "invalid_tool_provenance",
+                "Namespace replacement requires a provenance kind",
+            )
+        normalized_source = require_identifier(source_id, field_name="source_id")
+        if scope is ToolScope.BUILTIN:
+            raise AgentPlatformError(
+                "invalid_tool_scope",
+                "Namespace replacement requires a non-builtin scope",
+            )
+        normalized_scope_id = require_identifier(scope_id, field_name="scope_id")
+        if not isinstance(override, bool):
+            raise AgentPlatformError(
+                "invalid_tool_override",
+                "Namespace override flag must be boolean",
+            )
+        try:
+            replacement_tools = tuple(tools)
+        except TypeError as error:
+            raise AgentPlatformError(
+                "invalid_namespace_tools",
+                "Namespace replacement requires a collection of AgentToolV2 values",
+            ) from error
+        if any(not isinstance(getattr(tool, "definition", None), ToolDefinitionV2) for tool in replacement_tools):
+            raise AgentPlatformError(
+                "invalid_namespace_tools",
+                "Namespace replacement requires AgentToolV2 values",
+            )
+        normalized_revision: Optional[str] = None
+        if revision is not None:
+            normalized_revision = require_identifier(revision, field_name="revision")
+
+        # Phase 1: validate the prospective state without mutating.
+        prospective = dict(self._registrations)
+        replaced_by_slot: dict[tuple[str, ToolScope, Optional[str]], str] = {}
+        for slot, registration in list(prospective.items()):
+            if (
+                registration.provenance.kind is kind
+                and registration.provenance.source_id == normalized_source
+            ):
+                replaced_by_slot[slot] = registration.registration_id
+                del prospective[slot]
+        validated: list[tuple[AgentToolV2, Optional[str]]] = []
+        for tool in replacement_tools:
+            definition = tool.definition
+            name = _validate_tool_name(definition.name)
+            required = normalize_capabilities(
+                definition.required_capabilities,
+                field_name="required_capability",
+            )
+            if definition.effect is not ToolEffect.READ_ONLY and not required:
+                raise AgentPlatformError(
+                    "missing_tool_capability",
+                    "Effectful tools must declare at least one required capability",
+                )
+            slot = (name, scope, normalized_scope_id)
+            current = prospective.get(slot)
+            if current is not None and not override:
+                raise AgentPlatformError(
+                    "duplicate_tool_registration",
+                    f"Tool is already registered in this scope: {name}",
+                )
+            same_name = tuple(
+                registration
+                for registration in prospective.values()
+                if registration.definition.name == name
+                and registration is not current
+            )
+            self._validate_cross_scope_override(
+                name=name,
+                scope=scope,
+                override=override,
+                registrations=same_name,
+            )
+            replaced_id = replaced_by_slot.get(slot)
+            if replaced_id is None and current is not None:
+                replaced_id = current.registration_id
+            validated.append((tool, replaced_id))
+
+        # Phase 2: single-generation atomic commit.
+        generation = self._generation + 1
+        added: list[ToolRegistration] = []
+        for tool, replaced_registration_id in validated:
+            definition = tool.definition
+            name = definition.name
+            self._id_counter += 1
+            registration = ToolRegistration(
+                registration_id=f"tool_registration_{self._id_counter}",
+                tool=tool,
+                scope=scope,
+                scope_id=normalized_scope_id,
+                provenance=ToolProvenance(
+                    kind=kind,
+                    source_id=normalized_source,
+                    revision=normalized_revision,
+                ),
+                generation=generation,
+                override_declared=override,
+                replaced_registration_id=replaced_registration_id,
+            )
+            prospective[(name, scope, normalized_scope_id)] = registration
+            added.append(registration)
+        self._registrations = prospective
+        self._history.extend(added)
+        self._generation = generation
+        return tuple(added)
 
     def resolve(self, name: str, context: CapabilityContext) -> AgentToolV2:
         normalized = _validate_tool_name(name)

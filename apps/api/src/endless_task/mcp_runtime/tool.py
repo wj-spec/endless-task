@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
 from endless_task.workspace_runtime.effect_log import EffectLog, EffectReceipt
@@ -20,6 +20,9 @@ from endless_task.tooling import (
 )
 
 from .naming import public_tool_name
+
+if TYPE_CHECKING:
+    from endless_task.tool_platform import AgentToolV2
 
 
 class McpToolBridge:
@@ -197,3 +200,18 @@ class McpToolBridge:
                 "MCP 工具已调用，但本地审计日志写入失败；请在能力页检查服务器状态后核对结果。",
                 retryable=False,
             ) from error
+
+
+def adapt_mcp_bridge_to_agent_tool(bridge: McpToolBridge) -> AgentToolV2:
+    """Wrap an MCP bridge as a version-2 AgentTool for the tool platform.
+
+    AP-105b: the version-2 catalog consumes ``AgentToolV2`` values; this keeps
+    the MCP bridge as the single execution implementation and delegates to the
+    legacy adapter's conservative mapping (read-only stays safe, everything
+    else stays approval-required with an external-action capability).
+    """
+    from endless_task.tool_platform import LegacyToolAdapter
+
+    if not isinstance(bridge, McpToolBridge):
+        raise TypeError("adapt_mcp_bridge_to_agent_tool expects a McpToolBridge")
+    return LegacyToolAdapter(bridge)
