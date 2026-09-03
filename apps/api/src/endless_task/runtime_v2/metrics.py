@@ -109,6 +109,18 @@ class RuntimeV2MetricsCollector:
         if len(self._prefix_records) > 2_000:
             self._prefix_records = self._prefix_records[-2_000:]
 
+    def context_fingerprints(self, conversation_id: str) -> tuple[str, ...]:
+        """Fingerprints recorded for one conversation, in order (M2 prelude).
+
+        Consumers such as the RS-2 no-progress evaluation use the sequence to
+        detect context changes across model turns.
+        """
+        return tuple(
+            record.fingerprint
+            for record in self._prefix_records
+            if record.conversation_id == conversation_id
+        )
+
     # ---------- 汇总 ----------
 
     def summary(self) -> dict[str, object]:

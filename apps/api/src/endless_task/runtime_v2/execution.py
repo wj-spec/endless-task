@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -240,6 +241,30 @@ class _PreparedToolExecution:
     tool: RegisteredTool
     call: ToolCall
     needs_approval: bool
+
+
+def _messages_fingerprint(messages) -> str:
+    """Stable sha256 over model-turn messages (M2 prelude context signal)."""
+    rows = []
+    for message in messages:
+        rows.append(
+            {
+                "role": message.role,
+                "content": message.content,
+                "tool_call_ids": [
+                    call.id
+                    for call in (getattr(message, "tool_calls", ()) or ())
+                ],
+            }
+        )
+    canonical = json.dumps(
+        rows,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class ToolExecutionCoordinator:
@@ -1211,6 +1236,11 @@ class ModelTurnRunner:
             temperature=self._temperature,
             tools=self._tool_coordinator.definitions(run.conversation_id),
         )
+        if self._metrics is not None:
+            self._metrics.record_prefix_fingerprint(
+                conversation_id=run.conversation_id,
+                fingerprint=_messages_fingerprint(messages),
+            )
 
         try:
             if self._provider_slot is not None:
