@@ -151,3 +151,119 @@ class ShadowIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnforcementIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    """RS-2 enforcement: safe stop after repeated identical tool calls."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self._tmp.name) / "runtime.db")
+        self.database.initialize()
+        self.chat_repository = SqliteChatRepository(self.database)
+        self.repository = SqliteRuntimeV2Repository(self.database)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_repeated_identical_calls_stop_safely_when_enabled(self) -> None:
+        from endless_task.runtime_v2 import RunStatus
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "任务"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        turns = []
+        for index in range(3):
+            turns.append(
+                (
+                    ProviderTextDelta(f"读取{index}。"),
+                    ProviderToolCall(
+                        id=f"call_{index}",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                )
+            )
+        turns.append((ProviderTextDelta("完成。"), ProviderCompleted(finish_reason="stop")))
+        provider = ScriptedProvider(turns)
+        tool = FakeTool(content="file content")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+            no_progress_enforcement_enabled=True,
+        )
+        result = await executor.execute(
+            run.id,
+            cancellation_token=CancellationToken(),
+        )
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        # Stopped after the third identical tool turn; the final text turn
+        # was never requested.
+        self.assertEqual(3, len(provider.requests))
+        self.assertIn("安全停止", result.content)
+
+    async def test_default_off_runs_to_completion(self) -> None:
+        from endless_task.runtime_v2 import RunStatus
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "任务"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        turns = []
+        for index in range(4):
+            turns.append(
+                (
+                    ProviderTextDelta(f"读取{index}。"),
+                    ProviderToolCall(
+                        id=f"call_{index}",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                )
+            )
+        turns.append((ProviderTextDelta("完成。"), ProviderCompleted(finish_reason="stop")))
+        provider = ScriptedProvider(turns)
+        tool = FakeTool(content="file content")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="scripted-model",
+        )
+        result = await executor.execute(
+            run.id,
+            cancellation_token=CancellationToken(),
+        )
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual(5, len(provider.requests))

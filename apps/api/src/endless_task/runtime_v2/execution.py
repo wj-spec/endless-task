@@ -268,8 +268,8 @@ def _messages_fingerprint(messages) -> str:
 
 
 
-def _evaluate_no_progress_shadow(*, repository, run_id: str, observer) -> None:
-    """M2 prelude Stage 2: evaluate per-turn evidence (observation only)."""
+def _no_progress_evaluation_for_run(*, repository, run_id: str):
+    """Build and evaluate per-turn evidence for one run (shadow/enforcement)."""
     import hashlib
 
     from endless_task.reliability.stop import StopPolicyProfile, evaluate_no_progress
@@ -277,7 +277,7 @@ def _evaluate_no_progress_shadow(*, repository, run_id: str, observer) -> None:
 
     turns = repository.list_model_turns(run_id)
     if not turns:
-        return
+        return None
     events = repository.list_runtime_events(run_id)
     fingerprints = [
         getattr(event, "payload", {}).get("fingerprint")
@@ -316,8 +316,14 @@ def _evaluate_no_progress_shadow(*, repository, run_id: str, observer) -> None:
             )
         )
     signals = tuple(build_turn_signal(evidence) for evidence in evidences)
-    evaluation = evaluate_no_progress(signals, StopPolicyProfile())
-    observer(evaluation)
+    return evaluate_no_progress(signals, StopPolicyProfile())
+
+
+def _evaluate_no_progress_shadow(*, repository, run_id: str, observer) -> None:
+    """M2 prelude Stage 2: evaluate per-turn evidence (observation only)."""
+    evaluation = _no_progress_evaluation_for_run(repository=repository, run_id=run_id)
+    if evaluation is not None:
+        observer(evaluation)
 
 class ToolExecutionCoordinator:
     """Executes one model-turn tool batch while preserving source order."""
@@ -1605,6 +1611,7 @@ class AgentRunExecutor:
         provider_retry_evaluator: Optional[object] = None,
         provider_retry_observer: Optional[object] = None,
         no_progress_observer: Optional[object] = None,
+        no_progress_enforcement_enabled: bool = False,
         context_shadow_observer: Optional[object] = None,
         context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -1624,6 +1631,7 @@ class AgentRunExecutor:
         self._provider_retry_evaluator = provider_retry_evaluator
         self._provider_retry_observer = provider_retry_observer
         self._no_progress_observer = no_progress_observer
+        self._no_progress_enforcement_enabled = bool(no_progress_enforcement_enabled)
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
@@ -1794,6 +1802,41 @@ class AgentRunExecutor:
                         (),
                         assistant_entry_id=assistant_entry.id,
                     )
+                if self._no_progress_enforcement_enabled:
+                    from endless_task.reliability.stop import StopLevel
+                    from endless_task.reliability.stop_runtime import no_progress_guidance
+
+                    evaluation = _no_progress_evaluation_for_run(
+                        repository=self._repository,
+                        run_id=run.id,
+                    )
+                    if evaluation is not None and evaluation.level is StopLevel.STOP:
+                        guidance = no_progress_guidance(evaluation.level, evaluation.reasons)
+                        content_parts.append("\n\n" + guidance)
+                        final_run, assistant_entry = self._repository.finalize_run(
+                            run.id,
+                            content="".join(content_parts),
+                            finish_reason="no_progress_stop",
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                        )
+                        return self._result(
+                            RunStatus.COMPLETED,
+                            final_run,
+                            "".join(content_parts),
+                            input_tokens,
+                            output_tokens,
+                            tuple(model_turn_ids),
+                            (),
+                            assistant_entry_id=assistant_entry.id,
+                        )
+                    if evaluation is not None and (
+                        evaluation.level is StopLevel.REMIND
+                        or evaluation.level is StopLevel.RESTRICT
+                    ):
+                        self._steering_messages.append(
+                            no_progress_guidance(evaluation.level, evaluation.reasons)
+                        )
         except RuntimeCancelled:
             self._append_current_model_turn_ids(run.id, model_turn_ids)
             final_run = self._repository.transition_run_status(

@@ -67,4 +67,30 @@ def evaluate_turn_history(
     return evaluate_no_progress(signals, profile)
 
 
-__all__ = ["TurnEvidence", "build_turn_signal", "evaluate_turn_history"]
+def no_progress_guidance(level, reasons: Sequence[str]) -> str:
+    """Structured model-facing guidance for REMIND/RESTRICT/STOP levels."""
+    from .stop import StopLevel
+
+    if level is StopLevel.STOP:
+        return (
+            "系统已安全停止本轮：连续多轮未产生实质进展。"
+            "请向用户说明当前结论与卡点，不要继续重复尝试。"
+        )
+    if level is StopLevel.RESTRICT:
+        return (
+            "系统检测到连续多轮无实质进展（重复工具/结果或连续失败）。"
+            "请改变策略：先向用户确认方向，或改用不同的工具与输入；"
+            "不要原样重复同一调用。"
+        )
+    return (
+        "系统提示：最近几轮未见实质进展。请重新审视目标，"
+        "必要时先说明计划或向用户询问，而不是继续重复尝试。"
+    )
+
+
+__all__ = [
+    "TurnEvidence",
+    "build_turn_signal",
+    "evaluate_turn_history",
+    "no_progress_guidance",
+]
