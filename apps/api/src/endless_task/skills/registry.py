@@ -189,6 +189,11 @@ class SkillRegistry(Protocol):
 
     def resolve(self, locator: SkillLocator) -> Optional[SkillRevision]: ...
 
+    def visible_revisions(
+        self,
+        dependency_context: Optional[object] = None,
+    ) -> Tuple[SkillRevision, ...]: ...
+
 
 class InMemorySkillRegistry:
     """Registry resolving skill locators with explicit root precedence.
@@ -270,6 +275,29 @@ class InMemorySkillRegistry:
         )
         self._revisions[locator] = updated
         return updated
+
+    def visible_revisions(
+        self,
+        dependency_context: Optional[object] = None,
+    ) -> Tuple[SkillRevision, ...]:
+        """Revisions the model may see: active, model-invocable, deps met.
+
+        ``dependency_context`` is a :class:`.dependencies.SkillDependencyContext`
+        (imported lazily to keep registry free of a hard dependency);
+        without one, only the state/model-invocable gates apply.
+        """
+        candidates = [
+            revision
+            for revision in self._revisions.values()
+            if revision.state is SkillState.ACTIVE
+            and revision.model_invocable
+            and revision.invocable
+        ]
+        if dependency_context is None:
+            return tuple(candidates)
+        from .dependencies import dependency_satisfied_skills
+
+        return dependency_satisfied_skills(tuple(candidates), dependency_context)
 
     @property
     def conflicts(self) -> Tuple[SkillDiagnostic, ...]:

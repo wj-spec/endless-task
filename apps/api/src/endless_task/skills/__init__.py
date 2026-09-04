@@ -2,6 +2,12 @@
 
 from .manifest import SkillManifest, parse_skill_manifest
 from .models import Skill, SkillDiagnostic, SkillScope
+from .dependencies import (
+    DependencyReport,
+    SkillDependencyContext,
+    check_skill_dependencies,
+    dependency_satisfied_skills,
+)
 from .loader import discover_skills
 from .scanner import (
     QUARANTINE_LEVELS,
@@ -27,6 +33,10 @@ __all__ = [
     "Skill",
     "SkillDiagnostic",
     "SkillScope",
+    "DependencyReport",
+    "SkillDependencyContext",
+    "check_skill_dependencies",
+    "dependency_satisfied_skills",
     "SkillService",
     "discover_skills",
     "build_available_skills_prompt",

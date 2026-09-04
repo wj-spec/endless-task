@@ -1592,9 +1592,12 @@ def _build_container(
     def skill_locator_resolver(conversation_id: str):
         """Resolve ``skill://<scope>/<name>`` to a canonical SKILL.md path.
 
-        SK-1b: registry-backed locator resolution over the conversation's
-        skill roots. Returns None for unknown locators so the tool can
-        report a stable error; malformed locators raise ValueError.
+        SK-1b/SK-3: registry-backed locator resolution over the
+        conversation's skill roots; returns None for unknown, quarantined,
+        invalid or dependency-unsatisfied skills (fail closed) so the tool
+        reports a stable error and the runtime never auto-widens
+        capabilities to satisfy a skill. Malformed locators raise
+        ValueError.
         """
         if not settings.skill_packages_enabled:
             return None
@@ -1602,6 +1605,8 @@ def _build_container(
             InMemorySkillRegistry,
             SkillLocator,
             SkillRoot,
+            SkillDependencyContext,
+            check_skill_dependencies,
         )
 
         roots = skill_roots_for_conversation(conversation_id)
@@ -1612,15 +1617,51 @@ def _build_container(
             root_objects.append(SkillRoot(root, source, rank))
         registry = InMemorySkillRegistry()
         registry.discover(tuple(root_objects))
+        dependency_context = _conversation_skill_dependency_context(
+            conversation_id
+        )
 
         def resolve(locator: str) -> Optional[Path]:
             parsed = SkillLocator.parse(locator)
             revision = registry.resolve(parsed)
             if revision is None:
                 return None
+            if not check_skill_dependencies(
+                revision, dependency_context
+            ).satisfied:
+                return None
             return revision.manifest_path
 
         return resolve
+
+    def _conversation_skill_dependency_context(conversation_id: str):
+        """Tools + granted capabilities of one conversation (SK-3 context).
+
+        Mirrors the v2 surface grant so skill dependencies are checked
+        against the same surface the model can actually call.
+        """
+        from endless_task.skills import SkillDependencyContext
+        from endless_task.tool_platform import (
+            capability_grant_for_workspace_binding as _grant,
+        )
+
+        binding = workspace_resolver.resolve_binding(conversation_id)
+        tool_names: set[str] = set()
+        allowed: set[str] = set()
+        for definition in selected_tool_registry.definitions():
+            tool_names.add(definition.name)
+            try:
+                tool = selected_tool_registry.resolve(definition.name)
+            except Exception:
+                continue
+            allowed.update(tool.definition.required_capabilities)
+        return SkillDependencyContext(
+            available_tools=frozenset(tool_names),
+            granted_capabilities=_grant(
+                binding is not None,
+                frozenset(allowed),
+            ),
+        )
 
     effect_log = EffectLog(settings.database_path.parent / "logs")
     mcp_manager = McpManager(
