@@ -102,6 +102,14 @@ class CoordinatorDelegationHandler:
         except AgentPlatformError as error:
             return _failed(request, error)
         task = str(request.arguments.get("task", "")).strip()
+        if not task:
+            return _failed(
+                request,
+                AgentPlatformError(
+                    "invalid_delegation_task",
+                    "spawn_agent 的 task 必须是文本。",
+                ),
+            )
         timeout = request.arguments.get("timeoutSeconds")
         if timeout is None:
             timeout = self._default_timeout_seconds

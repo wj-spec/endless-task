@@ -25,6 +25,11 @@ from .limits import (
     ChildCapabilityDecision,
     compute_child_capabilities,
 )
+from .legacy_tools import (
+    CancelAgentLegacyTool,
+    QueryAgentLegacyTool,
+    SpawnAgentLegacyTool,
+)
 from .protocol import (
     DELEGATION_PROTOCOL_VERSION,
     ArtifactRef,
@@ -104,4 +109,7 @@ __all__ = [
     "CapabilityProvider",
     "CoordinatorDelegationHandler",
     "KernelProvider",
+    "CancelAgentLegacyTool",
+    "QueryAgentLegacyTool",
+    "SpawnAgentLegacyTool",
 ]
