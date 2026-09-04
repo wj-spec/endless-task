@@ -19,6 +19,19 @@ from .scanner import (
     scan_skill_directory,
     scan_skill_revision,
 )
+from .package_cases import (
+    PackageCase,
+    PackageCaseResult,
+    PackageCaseSuite,
+    load_package_cases,
+    run_package_case,
+    run_package_suite,
+)
+from .usage import (
+    InMemorySkillUsageRecorder,
+    SkillUsageEvent,
+    SkillUsageSnapshot,
+)
 from .registry import (
     DiscoveryReport,
     NON_INVOCABLE_STATES,
@@ -42,6 +55,15 @@ __all__ = [
     "discover_skills",
     "build_available_skills_prompt",
     "ImportFailure",
+    "PackageCase",
+    "PackageCaseResult",
+    "PackageCaseSuite",
+    "load_package_cases",
+    "run_package_case",
+    "run_package_suite",
+    "InMemorySkillUsageRecorder",
+    "SkillUsageEvent",
+    "SkillUsageSnapshot",
     "ImportResult",
     "import_skill_package",
     "SkillManifest",
