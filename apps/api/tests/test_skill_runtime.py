@@ -80,6 +80,13 @@ class SkillLoaderTest(unittest.TestCase):
         self.assertIn(str(path), prompt)
         self.assertNotIn("正文：", prompt)
 
+    def test_locator_mode_exposes_locator_not_host_path(self) -> None:
+        write_skill(self.user, "weekly-report", "写周报")
+        skills = discover_skills(self.user)
+        prompt = build_available_skills_prompt(skills, locator_mode=True)
+        self.assertIn("skill://user/weekly-report", prompt)
+        self.assertNotIn(str(self.user), prompt)
+
 
 class ReadSkillFileToolTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -120,6 +127,98 @@ class ReadSkillFileToolTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(Exception):
             await tool.execute(call, CancellationToken())
+
+    async def test_resolves_locator_when_resolver_configured(self) -> None:
+        tool = ReadSkillFileTool(
+            lambda conversation_id: (self.root,),
+            locator_resolver_provider=lambda conversation_id: (
+                lambda locator: (
+                    self.path if locator == "skill://user/demo" else None
+                )
+            ),
+        )
+        call = ToolCall(
+            id="call",
+            conversation_id="conversation",
+            turn_id="turn",
+            response_variant_id="variant",
+            tool_name="read_skill_file",
+            arguments={"locator": "skill://user/demo"},
+            status=ToolCallStatus.CREATED,
+            created_at="2026-08-27T00:00:00.000Z",
+        )
+        result = await tool.execute(call, CancellationToken())
+        self.assertIn("正文：demo", result.content)
+        self.assertEqual(
+            str(self.path.resolve()),
+            result.structured_content["path"],
+        )
+
+    async def test_locator_without_resolver_is_rejected(self) -> None:
+        tool = ReadSkillFileTool(lambda conversation_id: (self.root,))
+        call = ToolCall(
+            id="call",
+            conversation_id="conversation",
+            turn_id="turn",
+            response_variant_id="variant",
+            tool_name="read_skill_file",
+            arguments={"locator": "skill://user/demo"},
+            status=ToolCallStatus.CREATED,
+            created_at="2026-08-27T00:00:00.000Z",
+        )
+        from endless_task.tooling import ToolError
+
+        with self.assertRaises(ToolError) as caught:
+            await tool.execute(call, CancellationToken())
+        self.assertEqual("locator_unavailable", caught.exception.code)
+
+    async def test_unknown_locator_is_rejected(self) -> None:
+        tool = ReadSkillFileTool(
+            lambda conversation_id: (self.root,),
+            locator_resolver_provider=lambda conversation_id: (
+                lambda locator: None
+            ),
+        )
+        call = ToolCall(
+            id="call",
+            conversation_id="conversation",
+            turn_id="turn",
+            response_variant_id="variant",
+            tool_name="read_skill_file",
+            arguments={"locator": "skill://user/missing"},
+            status=ToolCallStatus.CREATED,
+            created_at="2026-08-27T00:00:00.000Z",
+        )
+        from endless_task.tooling import ToolError
+
+        with self.assertRaises(ToolError) as caught:
+            await tool.execute(call, CancellationToken())
+        self.assertEqual("skill_not_found", caught.exception.code)
+
+    async def test_locator_outside_roots_is_rejected(self) -> None:
+        tool = ReadSkillFileTool(
+            lambda conversation_id: (self.root,),
+            locator_resolver_provider=lambda conversation_id: (
+                lambda locator: Path.home() / "secret.txt"
+            ),
+        )
+        call = ToolCall(
+            id="call",
+            conversation_id="conversation",
+            turn_id="turn",
+            response_variant_id="variant",
+            tool_name="read_skill_file",
+            arguments={"locator": "skill://user/escape"},
+            status=ToolCallStatus.CREATED,
+            created_at="2026-08-27T00:00:00.000Z",
+        )
+        from endless_task.tooling import ToolError
+
+        # The same containment resolver that guards legacy paths rejects the
+        # escape; its stable code is path_escape.
+        with self.assertRaises(ToolError) as caught:
+            await tool.execute(call, CancellationToken())
+        self.assertEqual("path_escape", caught.exception.code)
 
 
 class SkillOverrideRepositoryTest(unittest.TestCase):

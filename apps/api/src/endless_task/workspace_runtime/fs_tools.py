@@ -68,17 +68,26 @@ class ReadSkillFileTool:
     definition = ToolDefinition(
         name="read_skill_file",
         description=(
-            "读取系统提示词中列出的技能正文。path 必须使用 available_skills 提供的"
-            "绝对路径；该工具只读且仅允许访问技能目录。"
+            "读取系统提示词中列出的技能正文。可传 locator（skill://user/name，推荐）"
+            "或 available_skills 提供的绝对路径（兼容）；该工具只读且仅允许访问技能目录。"
         ),
         input_schema={
             "type": "object",
             "properties": {
+                "locator": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "技能 locator，形如 skill://user/<name>。",
+                },
                 "path": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "start_line": {"type": "integer", "minimum": 1},
                 "line_count": {"type": "integer", "minimum": 1, "maximum": 200},
             },
-            "required": ["path"],
+            "anyOf": [
+                {"required": ["locator"]},
+                {"required": ["path"]},
+            ],
             "additionalProperties": False,
         },
         effect=ToolEffect.READ_ONLY,
@@ -91,9 +100,13 @@ class ReadSkillFileTool:
         self,
         skill_root_provider: Callable[[str], tuple[Path, ...]],
         *,
+        locator_resolver_provider: Optional[
+            Callable[[str], Optional[Callable[[str], Optional[Path]]]]
+        ] = None,
         max_file_bytes: int = 1_000_000,
     ) -> None:
         self._skill_root_provider = skill_root_provider
+        self._locator_resolver_provider = locator_resolver_provider
         self._max_file_bytes = max_file_bytes
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
@@ -105,15 +118,20 @@ class ReadSkillFileTool:
 
     async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
         token.raise_if_cancelled()
-        roots = self._skill_root_provider(call.conversation_id)
-        resolved = resolve_external_read_path(
-            roots, call.require_argument("path", str)
-        )
-        if not resolved.canonical.exists():
+        locator = call.optional_argument("locator", str, None)
+        if locator is not None:
+            canonical = self._resolve_locator(locator, call)
+        else:
+            roots = self._skill_root_provider(call.conversation_id)
+            resolved = resolve_external_read_path(
+                roots, call.require_argument("path", str)
+            )
+            canonical = resolved.canonical
+        if not canonical.exists():
             raise ToolError("path_not_found", f"技能文件不存在。", retryable=False)
-        if not resolved.canonical.is_file():
+        if not canonical.is_file():
             raise ToolError("path_is_directory", "路径指向目录。", retryable=False)
-        raw = resolved.canonical.read_bytes()
+        raw = canonical.read_bytes()
         if len(raw) > self._max_file_bytes:
             raise ToolError(
                 "file_too_large",
@@ -136,16 +154,50 @@ class ReadSkillFileTool:
         return ToolResult(
             tool_call_id=call.id,
             content=(
-                f"[来源：技能 {resolved.canonical}:L{start_line}-L{end_line}]\n"
+                f"[来源：技能 {canonical}:L{start_line}-L{end_line}]\n"
                 f"{selected}"
             ),
             structured_content={
-                "path": str(resolved.canonical),
+                "path": str(canonical),
                 "startLine": start_line,
                 "endLine": end_line,
                 "totalLines": len(lines),
             },
         )
+
+    def _resolve_locator(self, locator: str, call: ToolCall) -> Path:
+        if self._locator_resolver_provider is None:
+            raise ToolError(
+                "locator_unavailable",
+                "技能 locator 解析未启用；请改用 path。",
+                retryable=False,
+            )
+        resolver = self._locator_resolver_provider(call.conversation_id)
+        if resolver is None:
+            raise ToolError(
+                "locator_unavailable",
+                "技能 locator 解析未启用；请改用 path。",
+                retryable=False,
+            )
+        try:
+            canonical = resolver(locator)
+        except (ValueError, OSError) as error:
+            raise ToolError(
+                "invalid_skill_locator",
+                f"技能 locator 无效：{locator}。",
+                retryable=False,
+            ) from error
+        if canonical is None:
+            raise ToolError(
+                "skill_not_found",
+                f"未找到技能：{locator}。",
+                retryable=False,
+            )
+        # Locator resolution must still satisfy root containment: re-run the
+        # canonical path through the same resolver used for legacy paths and
+        # return its canonical (symlink-resolved) form.
+        roots = self._skill_root_provider(call.conversation_id)
+        return resolve_external_read_path(roots, str(canonical)).canonical
 
 
 class ReadWorkspaceFileTool:

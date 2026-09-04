@@ -9,7 +9,11 @@ from .loader import discover_skills
 from .models import Skill, SkillScope
 
 
-def build_available_skills_prompt(skills: Tuple[Skill, ...]) -> str:
+def build_available_skills_prompt(
+    skills: Tuple[Skill, ...],
+    *,
+    locator_mode: bool = False,
+) -> str:
     visible = [skill for skill in skills if skill.valid and not skill.disable_model_invocation]
     if not visible:
         return ""
@@ -19,12 +23,17 @@ def build_available_skills_prompt(skills: Tuple[Skill, ...]) -> str:
         "<available_skills>",
     ]
     for skill in visible:
+        location = (
+            f"skill://{skill.scope.value}/{skill.name}"
+            if locator_mode
+            else str(skill.file_path)
+        )
         lines.extend(
             [
                 "  <skill>",
                 f"    <name>{escape(skill.name)}</name>",
                 f"    <description>{escape(skill.description)}</description>",
-                f"    <location>{escape(str(skill.file_path))}</location>",
+                f"    <location>{escape(location)}</location>",
                 "  </skill>",
             ]
         )

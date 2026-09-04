@@ -307,6 +307,10 @@ class AppSettings:
     # implemented yet and fails startup rather than silently degrading to
     # read-only (no silent downgrade).
     delegation_mode: str = "0"
+    # M5 SK-1b: enable skill:// locator resolution for read_skill_file and
+    # locator-based prompt exposure. Default off keeps the legacy absolute
+    # path behavior unchanged. Illegal env values fail startup.
+    skill_packages_enabled: bool = False
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -442,6 +446,10 @@ class AppSettings:
             ),
             delegation_mode=_parse_delegation_mode(
                 env.get("ENDLESS_TASK_DELEGATION", "0"),
+            ),
+            skill_packages_enabled=_parse_strict_flag(
+                env.get("ENDLESS_TASK_SKILL_PACKAGES", "0"),
+                name="ENDLESS_TASK_SKILL_PACKAGES",
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -1577,8 +1585,42 @@ def _build_container(
             except Exception:
                 root = None
         return build_available_skills_prompt(
-            skill_service.visible_skills(root, workspace_id=workspace_id or "")
+            skill_service.visible_skills(root, workspace_id=workspace_id or ""),
+            locator_mode=settings.skill_packages_enabled,
         )
+
+    def skill_locator_resolver(conversation_id: str):
+        """Resolve ``skill://<scope>/<name>`` to a canonical SKILL.md path.
+
+        SK-1b: registry-backed locator resolution over the conversation's
+        skill roots. Returns None for unknown locators so the tool can
+        report a stable error; malformed locators raise ValueError.
+        """
+        if not settings.skill_packages_enabled:
+            return None
+        from endless_task.skills import (
+            InMemorySkillRegistry,
+            SkillLocator,
+            SkillRoot,
+        )
+
+        roots = skill_roots_for_conversation(conversation_id)
+        root_objects: list[SkillRoot] = []
+        for index, root in enumerate(roots):
+            source = "workspace" if index > 0 else "user"
+            rank = 1 if index > 0 else 2
+            root_objects.append(SkillRoot(root, source, rank))
+        registry = InMemorySkillRegistry()
+        registry.discover(tuple(root_objects))
+
+        def resolve(locator: str) -> Optional[Path]:
+            parsed = SkillLocator.parse(locator)
+            revision = registry.resolve(parsed)
+            if revision is None:
+                return None
+            return revision.manifest_path
+
+        return resolve
 
     effect_log = EffectLog(settings.database_path.parent / "logs")
     mcp_manager = McpManager(
@@ -1608,6 +1650,7 @@ def _build_container(
         selected_tool_registry.register(
             ReadSkillFileTool(
                 skill_roots_for_conversation,
+                locator_resolver_provider=skill_locator_resolver,
                 max_file_bytes=settings.max_file_bytes,
             )
         )
