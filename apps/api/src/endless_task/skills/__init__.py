@@ -3,6 +3,15 @@
 from .manifest import SkillManifest, parse_skill_manifest
 from .models import Skill, SkillDiagnostic, SkillScope
 from .loader import discover_skills
+from .scanner import (
+    QUARANTINE_LEVELS,
+    RiskLevel,
+    ScanFinding,
+    ScanReport,
+    ScannerRuleSet,
+    scan_skill_directory,
+    scan_skill_revision,
+)
 from .registry import (
     DiscoveryReport,
     InMemorySkillRegistry,
@@ -26,4 +35,11 @@ __all__ = [
     "SkillLocator",
     "SkillRevision",
     "SkillRoot",
+    "QUARANTINE_LEVELS",
+    "RiskLevel",
+    "ScanFinding",
+    "ScanReport",
+    "ScannerRuleSet",
+    "scan_skill_directory",
+    "scan_skill_revision",
 ]

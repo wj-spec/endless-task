@@ -52,6 +52,7 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "delegation" / "legacy_tools.py",
     SOURCE_ROOT / "skills" / "manifest.py",
     SOURCE_ROOT / "skills" / "registry.py",
+    SOURCE_ROOT / "skills" / "scanner.py",
     SOURCE_ROOT / "runtime_ledger" / "protocol.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
