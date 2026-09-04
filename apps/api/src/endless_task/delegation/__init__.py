@@ -1,5 +1,11 @@
 """Parent/child Agent execution contracts."""
 
+from .limits import (
+    READ_ONLY_FORBIDDEN_CAPABILITIES,
+    READ_ONLY_PROFILE_NAMES,
+    ChildCapabilityDecision,
+    compute_child_capabilities,
+)
 from .protocol import (
     DELEGATION_PROTOCOL_VERSION,
     ArtifactRef,
@@ -29,5 +35,9 @@ __all__ = [
     "SpawnSpec",
     "UsageSummary",
     "WorkspaceMode",
+    "READ_ONLY_FORBIDDEN_CAPABILITIES",
+    "READ_ONLY_PROFILE_NAMES",
+    "ChildCapabilityDecision",
+    "compute_child_capabilities",
     "intersect_capabilities",
 ]
