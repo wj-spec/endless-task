@@ -4,36 +4,12 @@ import re
 from pathlib import Path
 from typing import Optional, Tuple
 
+from .manifest import parse_skill_manifest
 from .models import Skill, SkillDiagnostic, SkillScope
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _NAME_FORBIDDEN = ("--",)
-
-
-def _parse_frontmatter(text: str) -> tuple[dict, str, str | None]:
-    if not text.startswith("---"):
-        return {}, text, "missing_frontmatter"
-    lines = text.splitlines()
-    if len(lines) < 2:
-        return {}, text, "missing_frontmatter"
-    end = None
-    for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
-            end = index
-            break
-    if end is None:
-        return {}, text, "missing_frontmatter"
-    frontmatter = lines[1:end]
-    body = "\n".join(lines[end + 1 :]).strip()
-    parsed: dict = {}
-    for line in frontmatter:
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if ":" not in line:
-            return {}, text, "invalid_frontmatter"
-        key, value = line.split(":", 1)
-        parsed[key.strip()] = value.strip().strip("\"'")
-    return parsed, body, None
+_MAX_DESCRIPTION_CHARACTERS = 1024
 
 
 def _diagnostic(path: Path, code: str, message: str) -> SkillDiagnostic:
@@ -52,30 +28,37 @@ def load_skill_file(path: Path, scope: SkillScope) -> Optional[Skill]:
             diagnostics=(_diagnostic(path, "unreadable", "无法读取技能文件。"),),
         )
 
-    frontmatter, body, parse_error = _parse_frontmatter(text)
-    diagnostics: list[SkillDiagnostic] = []
-    name = frontmatter.get("name") or path.parent.name
-    description = frontmatter.get("description", "")
-    if parse_error:
-        diagnostics.append(_diagnostic(path, parse_error, "缺少或格式错误的 frontmatter。"))
-    if not name or not _NAME_RE.match(name) or any(x in name for x in _NAME_FORBIDDEN):
+    manifest = parse_skill_manifest(path, text)
+    diagnostics: list[SkillDiagnostic] = list(manifest.diagnostics)
+    if not manifest.name or not _NAME_RE.match(manifest.name) or any(
+        marker in manifest.name for marker in _NAME_FORBIDDEN
+    ):
         diagnostics.append(
             _diagnostic(path, "invalid_name", "技能名必须为小写字母、数字或连字符。")
         )
-    if not description:
-        diagnostics.append(_diagnostic(path, "missing_description", "缺少 description。"))
-    elif len(description) > 1024:
-        diagnostics.append(_diagnostic(path, "description_too_long", "描述超过 1024 字符。"))
-    if not body:
-        diagnostics.append(_diagnostic(path, "empty_body", "技能正文不能为空。"))
+    if not manifest.description:
+        diagnostics.append(
+            _diagnostic(path, "missing_description", "缺少 description。")
+        )
+    elif len(manifest.description) > _MAX_DESCRIPTION_CHARACTERS:
+        diagnostics.append(
+            _diagnostic(
+                path,
+                "description_too_long",
+                "描述超过 1024 字符。",
+            )
+        )
+    if not manifest.body:
+        diagnostics.append(
+            _diagnostic(path, "empty_body", "技能正文不能为空。")
+        )
 
     return Skill(
-        name=name,
-        description=description,
+        name=manifest.name,
+        description=manifest.description,
         scope=scope,
         file_path=path,
-        disable_model_invocation=frontmatter.get("disable-model-invocation", "").lower()
-        in ("true", "1", "yes"),
+        disable_model_invocation=not manifest.model_invocable,
         diagnostics=tuple(diagnostics),
     )
 

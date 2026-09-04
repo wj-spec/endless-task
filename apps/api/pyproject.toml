@@ -17,6 +17,10 @@ dependencies = [
     "tokenizers>=0.23,<1",
     "mcp>=1.24,<2",
     "jsonschema>=4.26.0",
+    # SK-0: versioned SKILL.md manifests parse with the safe YAML subset;
+    # PyYAML was already a transitive dependency of the MCP SDK, now
+    # declared explicitly for the skill package lifecycle (07 doc SK-0).
+    "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]
