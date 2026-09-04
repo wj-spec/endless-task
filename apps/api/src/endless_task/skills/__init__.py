@@ -14,10 +14,12 @@ from .scanner import (
 )
 from .registry import (
     DiscoveryReport,
+    NON_INVOCABLE_STATES,
     InMemorySkillRegistry,
     SkillLocator,
     SkillRevision,
     SkillRoot,
+    SkillState,
 )
 from .service import SkillService, build_available_skills_prompt
 
@@ -35,6 +37,8 @@ __all__ = [
     "SkillLocator",
     "SkillRevision",
     "SkillRoot",
+    "SkillState",
+    "NON_INVOCABLE_STATES",
     "QUARANTINE_LEVELS",
     "RiskLevel",
     "ScanFinding",

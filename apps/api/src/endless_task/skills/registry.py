@@ -10,24 +10,56 @@ SK-1a builds the registry boundary only: protocol + locator + revision
 types + an in-memory registry over :mod:`.manifest` parsing. Wiring
 ``read_skill_file`` to locators and the feature flag land in SK-1b; the
 production prompt still uses host paths until then.
+
+SK-2b adds the lifecycle state: discovery auto-runs the static scanner,
+grading each revision (07 §5.2). Quarantined or invalid revisions are
+not resolvable (fail closed: they cannot be invoked through a locator),
+while remaining visible in the discovery report for audit.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional, Protocol, Tuple
+from typing import Optional, Protocol, Tuple
 
 from endless_task.agent_platform import require_identifier
 
 from .manifest import SkillManifest, parse_skill_manifest
 from .models import SkillDiagnostic
+from .scanner import RiskLevel, ScanFinding, ScanReport, scan_skill_revision
 
 #: ``skill://user/<name>`` | ``skill://workspace/<name>`` | ``skill://bundled/<name>``
 _SCOPE_NAMES = ("user", "workspace", "bundled")
 _SCOPE_RE = re.compile(r"^[a-z]+$")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+class SkillState(str, Enum):
+    """Lifecycle state of a skill revision (07 §4.3)."""
+
+    DISCOVERED = "discovered"
+    VALIDATING = "validating"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    QUARANTINED = "quarantined"
+    INVALID = "invalid"
+    SUPERSEDED = "superseded"
+    REMOVED = "removed"
+
+
+#: States that must never be invocable through a locator (fail closed).
+NON_INVOCABLE_STATES = frozenset(
+    {
+        SkillState.DISABLED,
+        SkillState.QUARANTINED,
+        SkillState.INVALID,
+        SkillState.REMOVED,
+        SkillState.SUPERSEDED,
+    }
+)
 
 
 class SkillLocator:
@@ -97,10 +129,26 @@ class SkillRevision:
     required_tools: Tuple[str, ...] = ()
     required_capabilities: Tuple[str, ...] = ()
     diagnostics: Tuple[SkillDiagnostic, ...] = field(default_factory=tuple)
+    state: SkillState = SkillState.DISCOVERED
+    scan_findings: Tuple[ScanFinding, ...] = ()
 
     @property
     def valid(self) -> bool:
         return not self.diagnostics
+
+    @property
+    def quarantined(self) -> bool:
+        return self.state is SkillState.QUARANTINED
+
+    @property
+    def invocable(self) -> bool:
+        return (
+            self.state not in NON_INVOCABLE_STATES
+            and self.valid
+        )
+
+    def scan_report(self) -> ScanReport:
+        return ScanReport(findings=self.scan_findings)
 
     @classmethod
     def from_manifest(
@@ -168,6 +216,7 @@ class InMemorySkillRegistry:
                     scope=root.source_type,
                     path=path,
                 )
+                revision = _grade_revision(revision)
                 key = revision.locator.name
                 previous = seen.get(key)
                 if previous is not None and previous.digest != revision.digest:
@@ -193,7 +242,34 @@ class InMemorySkillRegistry:
         )
 
     def resolve(self, locator: SkillLocator) -> Optional[SkillRevision]:
-        return self._revisions.get(locator)
+        revision = self._revisions.get(locator)
+        if revision is None or not revision.invocable:
+            # Fail closed: quarantined/invalid/superseded/removed revisions
+            # are not invocable through a locator (07 §5.3, M5 gate).
+            return None
+        return revision
+
+    def set_state(self, locator: SkillLocator, state: SkillState) -> Optional[SkillRevision]:
+        """Transition one revision's state (SK-4 rollback/disable support)."""
+        revision = self._revisions.get(locator)
+        if revision is None:
+            return None
+        updated = SkillRevision(
+            locator=revision.locator,
+            version=revision.version,
+            digest=revision.digest,
+            manifest_path=revision.manifest_path,
+            body=revision.body,
+            model_invocable=revision.model_invocable,
+            user_invocable=revision.user_invocable,
+            required_tools=revision.required_tools,
+            required_capabilities=revision.required_capabilities,
+            diagnostics=revision.diagnostics,
+            state=state,
+            scan_findings=revision.scan_findings,
+        )
+        self._revisions[locator] = updated
+        return updated
 
     @property
     def conflicts(self) -> Tuple[SkillDiagnostic, ...]:
@@ -202,6 +278,59 @@ class InMemorySkillRegistry:
     @property
     def revision_count(self) -> int:
         return len(self._revisions)
+
+
+def _grade_revision(revision: SkillRevision) -> SkillRevision:
+    """Assign lifecycle state from manifest validity and scanner findings.
+
+    - manifest invalid -> INVALID (fail closed, never invocable),
+    - scanner high/critical -> QUARANTINED,
+    - otherwise ACTIVE.
+    """
+    if not revision.valid:
+        return SkillRevision(
+            locator=revision.locator,
+            version=revision.version,
+            digest=revision.digest,
+            manifest_path=revision.manifest_path,
+            body=revision.body,
+            model_invocable=revision.model_invocable,
+            user_invocable=revision.user_invocable,
+            required_tools=revision.required_tools,
+            required_capabilities=revision.required_capabilities,
+            diagnostics=revision.diagnostics,
+            state=SkillState.INVALID,
+        )
+    scan = scan_skill_revision(revision)
+    if scan.quarantined:
+        return SkillRevision(
+            locator=revision.locator,
+            version=revision.version,
+            digest=revision.digest,
+            manifest_path=revision.manifest_path,
+            body=revision.body,
+            model_invocable=revision.model_invocable,
+            user_invocable=revision.user_invocable,
+            required_tools=revision.required_tools,
+            required_capabilities=revision.required_capabilities,
+            diagnostics=revision.diagnostics,
+            state=SkillState.QUARANTINED,
+            scan_findings=scan.findings,
+        )
+    return SkillRevision(
+        locator=revision.locator,
+        version=revision.version,
+        digest=revision.digest,
+        manifest_path=revision.manifest_path,
+        body=revision.body,
+        model_invocable=revision.model_invocable,
+        user_invocable=revision.user_invocable,
+        required_tools=revision.required_tools,
+        required_capabilities=revision.required_capabilities,
+        diagnostics=revision.diagnostics,
+        state=SkillState.ACTIVE,
+        scan_findings=scan.findings,
+    )
 
 
 def _rank_of(revision: SkillRevision, roots: Tuple[SkillRoot, ...]) -> int:
@@ -236,6 +365,8 @@ def _read_text(path: Path) -> str:
 
 __all__ = [
     "DiscoveryReport",
+    "NON_INVOCABLE_STATES",
+    "SkillState",
     "InMemorySkillRegistry",
     "SkillLocator",
     "SkillRegistry",

@@ -6,11 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from endless_task.skills.registry import (
-    InMemorySkillRegistry,
-    SkillLocator,
-    SkillRoot,
-)
+from endless_task.skills.manifest import parse_skill_manifest
+from endless_task.skills.registry import SkillRevision
 from endless_task.skills.scanner import (
     QUARANTINE_LEVELS,
     RiskLevel,
@@ -38,9 +35,9 @@ def write_skill(root: Path, name: str, body: str) -> Path:
 
 
 def revision_of(root: Path, name: str):
-    registry = InMemorySkillRegistry()
-    registry.discover((SkillRoot(root, "user", rank=2),))
-    return registry.resolve(SkillLocator(scope="user", name=name))
+    path = root / name / "SKILL.md"
+    manifest = parse_skill_manifest(path, path.read_text(encoding="utf-8"))
+    return SkillRevision.from_manifest(manifest, scope="user", path=path)
 
 
 class ScanReportTest(unittest.TestCase):

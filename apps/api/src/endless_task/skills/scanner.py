@@ -19,10 +19,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple
-
-from .registry import SkillRevision
-
+from typing import Optional, Protocol, Tuple
 
 class RiskLevel(str, Enum):
     INFO = "info"
@@ -83,6 +80,13 @@ class ScanReport:
         return any(finding.level is RiskLevel.CRITICAL for finding in self.findings)
 
 
+#: Revision surface used by :func:`scan_skill_revision`; avoids a
+#: scanner -> registry -> scanner import cycle (registry owns state).
+class ScannableRevision(Protocol):
+    body: str
+    manifest_path: Path
+
+
 #: Line-oriented pattern rules over the skill body. Each entry is
 #: (code, level, regex, message). Rules are declarative data so they can be
 #: versioned and reviewed without touching scanner code (README 4.7).
@@ -90,8 +94,8 @@ _BODY_RULES: tuple[tuple[str, RiskLevel, str, str], ...] = (
     (
         "prompt_role_override",
         RiskLevel.HIGH,
-        r"(?i)\b(system prompt|you are now|ignore (previous|all prior) instructions|"
-        r"disregard (your|all) (instructions|rules)|jailbreak)\b",
+        r"(?i)\b(system prompt|you are now|ignore (previous|all prior|all previous) "
+        r"instructions|disregard (your|all) (instructions|rules)|jailbreak)\b",
         "疑似提示注入或角色覆盖。",
     ),
     (
@@ -176,7 +180,7 @@ class ScannerRuleSet:
 
 
 def scan_skill_revision(
-    revision: SkillRevision,
+    revision: ScannableRevision,
     *,
     rule_set: Optional[ScannerRuleSet] = None,
 ) -> ScanReport:
