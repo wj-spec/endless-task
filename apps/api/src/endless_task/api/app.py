@@ -78,6 +78,13 @@ from endless_task.runtime_v2.compaction import RuntimeV2ContextCompactionService
 from endless_task.runtime_v2.memory_quality import RuntimeV2MemoryQualityService
 from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
 from endless_task.runtime_v2.plan_tool import UpdatePlanTool
+from endless_task.runtime_v2.agent_kernel_adapter import RuntimeV2AgentKernel
+from endless_task.delegation import (
+    CoordinatorDelegationHandler,
+    SpawnAgentLegacyTool,
+    QueryAgentLegacyTool,
+    CancelAgentLegacyTool,
+)
 from endless_task.artifacts import (
     ArtifactProposalService,
     SourceReferenceResolver,
@@ -294,6 +301,12 @@ class AppSettings:
     # context pruning under budget pressure; under-budget behavior is
     # byte-identical to legacy).
     context_engine_v2_enabled: bool = True
+    # M4A read-only delegation mode; default "0" (off). "readonly" registers
+    # the three delegation tools and runs children through the
+    # RuntimeV2AgentKernel production adapter. "isolated_write" (M4B) is not
+    # implemented yet and fails startup rather than silently degrading to
+    # read-only (no silent downgrade).
+    delegation_mode: str = "0"
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -426,6 +439,9 @@ class AppSettings:
             context_engine_v2_enabled=_parse_strict_flag(
                 env.get("ENDLESS_TASK_CONTEXT_ENGINE_V2", "1"),
                 name="ENDLESS_TASK_CONTEXT_ENGINE_V2",
+            ),
+            delegation_mode=_parse_delegation_mode(
+                env.get("ENDLESS_TASK_DELEGATION", "0"),
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -642,6 +658,7 @@ class AppContainer:
     runtime_v2_memory_quality_service: RuntimeV2MemoryQualityService
     runtime_v2_gateway: RuntimeV2SessionGateway
     runtime_v2_selection_service: RuntimeV2RuntimeSelectionService
+    delegation_handler: Optional[CoordinatorDelegationHandler] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1106,6 +1123,25 @@ def _parse_strict_flag(value: str, *, name: str) -> bool:
     raise ValueError(f"{name} 只允许 0 或 1")
 
 
+def _parse_delegation_mode(value: str) -> str:
+    """Strict delegation mode parsing (06 §9): 0 | readonly.
+
+    ``isolated_write`` (M4B) is not implemented yet and fails startup
+    instead of silently degrading to read-only.
+    """
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return "0"
+    if normalized in {"1", "true", "yes", "on", "readonly"}:
+        return "readonly"
+    if normalized == "isolated_write":
+        raise ValueError(
+            "ENDLESS_TASK_DELEGATION=isolated_write 属于 M4B，尚未实现；"
+            "请使用 0 或 readonly。"
+        )
+    raise ValueError("ENDLESS_TASK_DELEGATION 只允许 0 或 readonly")
+
+
 def _parse_hybrid_weights(value: str) -> tuple[float, float]:
     text = (value or "").strip()
     if not text:
@@ -1253,6 +1289,7 @@ def _build_container(
     def _v2_surface_definitions_provider(
         *,
         unattended: bool,
+        exclude_tools: frozenset[str] = frozenset(),
     ):
         """Build the flag-gated v2 model surface for one conversation.
 
@@ -1261,8 +1298,11 @@ def _build_container(
         (legacy predicate parity, AP-105a) and projects the authorized
         surface with the calibrated provider profile. ``unattended`` also
         hides approval-required tools, matching the legacy unattended
-        filter. Execution still resolves tools by name through the legacy
-        registry, so only the model surface switches.
+        filter. ``exclude_tools`` hides named tools from the projected
+        surface (delegation children never see the delegation tools
+        themselves — depth = 1 gate). Execution still resolves tools by
+        name through the legacy registry, so only the model surface
+        switches.
         """
 
         def provider(conversation_id: str):
@@ -1331,7 +1371,8 @@ def _build_container(
                     input_schema=dict(projected.input_schema),
                 )
                 for projected in report.projected
-                if not (
+                if projected.name not in exclude_tools
+                and not (
                     unattended
                     and approval_by_name.get(projected.name)
                     is ApprovalPolicy.REQUIRED
@@ -1414,6 +1455,103 @@ def _build_container(
         agent_timeout_seconds=settings.agent_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
     )
+    if settings.delegation_mode == "readonly":
+        # M4A read-only delegation (DR-2): register the three delegation
+        # tools and wire their handler to the production kernel adapter.
+        # Children execute through RuntimeV2AgentKernel against the same
+        # repository; child conversations are delegation-tagged so product
+        # enumeration hides them (06 2.4). Spawn idempotency keys on the
+        # parent tool call id (06 8.6); parents must hold read capabilities.
+        from endless_task.tool_platform import (
+            capability_grant_for_workspace_binding as _delegation_grant,
+        )
+
+        delegation_tool_names = frozenset(
+            {"spawn_agent", "query_agent", "cancel_agent"}
+        )
+
+        def _delegation_kernel_provider(request):
+            del request  # one kernel per parent run is created on demand
+            return RuntimeV2AgentKernel(
+                repository=runtime_v2_repository,
+                conversation_factory=_delegation_conversation_factory,
+                executor_builder=_delegation_executor_builder,
+            )
+
+        async def _delegation_conversation_factory(child_run_id: str):
+            return chat_repository.create_delegation_conversation(child_run_id)
+
+        def _delegation_executor_builder():
+            return AgentRunExecutor(
+                repository=runtime_v2_repository,
+                provider=selected_provider,
+                tool_registry=selected_tool_registry,
+                model=settings.model,
+                max_output_tokens=settings.max_output_tokens,
+                temperature=None,
+                approval_gate=UnattendedToolApprovalGate(),
+                provider_slot=(
+                    asyncio.Semaphore(settings.max_concurrent_model_calls)
+                    if settings.max_concurrent_model_calls
+                    else None
+                ),
+                compaction_hook=runtime_v2_compaction_hook,
+                tool_filter_provider=_delegation_child_tool_filter,
+                tool_definitions_provider=(
+                    _v2_surface_definitions_provider(
+                        unattended=True,
+                        exclude_tools=delegation_tool_names,
+                    )
+                    if settings.tool_platform_v2_enabled
+                    else None
+                ),
+                v2_pipeline_enabled=settings.tool_platform_v2_enabled,
+                context_engine_v2_enabled=settings.context_engine_v2_enabled,
+                context_window_tokens=settings.context_window_tokens,
+                metrics=runtime_v2_metrics_collector,
+                agent_timeout_seconds=settings.agent_timeout_seconds,
+                tool_execution_limits=tool_execution_limits,
+            )
+
+        def _delegation_child_tool_filter(conversation_id: str):
+            # Children must never surface the delegation tools themselves
+            # (depth = 1 gate, 06 9 DR-2) nor approval-required tools.
+            workspace_filter = _v2_workspace_tool_filter(conversation_id)
+
+            def allows(tool_name: str) -> bool:
+                if tool_name in delegation_tool_names:
+                    return False
+                if workspace_filter is not None and not workspace_filter(tool_name):
+                    return False
+                return (
+                    selected_tool_registry.resolve(tool_name)
+                    .definition.approval_mode
+                    is ToolApprovalMode.AUTO
+                )
+
+            return allows
+
+        def _delegation_capability_provider(request) -> frozenset[str]:
+            binding = workspace_resolver.resolve_binding(request.conversation_id)
+            allowed: set[str] = set()
+            for definition in selected_tool_registry.definitions():
+                tool = selected_tool_registry.resolve(definition.name)
+                allowed.update(tool.definition.required_capabilities)
+            return _delegation_grant(
+                binding is not None,
+                frozenset(allowed),
+            )
+
+        delegation_handler = CoordinatorDelegationHandler(
+            kernel_provider=_delegation_kernel_provider,
+            capability_provider=_delegation_capability_provider,
+        )
+        selected_tool_registry.register(SpawnAgentLegacyTool(delegation_handler))
+        selected_tool_registry.register(QueryAgentLegacyTool(delegation_handler))
+        selected_tool_registry.register(CancelAgentLegacyTool(delegation_handler))
+        delegation_handler_ref = delegation_handler
+    else:
+        delegation_handler_ref = None
     runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
         database=database,
         repository=runtime_v2_repository,
@@ -1819,6 +1957,11 @@ def _build_container(
         runtime_v2_memory_quality_service=runtime_v2_memory_quality_service,
         runtime_v2_gateway=runtime_v2_gateway,
         runtime_v2_selection_service=runtime_v2_selection_service,
+        delegation_handler=(
+            delegation_handler_ref
+            if settings.delegation_mode == "readonly"
+            else None
+        ),
     )
 
 
@@ -2177,6 +2320,14 @@ def create_app(
             },
             "contextEngineV2": {
                 "enabled": container.settings.context_engine_v2_enabled,
+            },
+            "delegation": {
+                "enabled": container.settings.delegation_mode == "readonly",
+                "mode": (
+                    container.settings.delegation_mode
+                    if container.settings.delegation_mode == "readonly"
+                    else None
+                ),
             },
         }
 
