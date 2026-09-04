@@ -1,5 +1,6 @@
 """R6.0 Skill 运行时：发现、校验、提示词拼装与状态服务。"""
 
+from .importer import ImportFailure, ImportResult, import_skill_package
 from .manifest import SkillManifest, parse_skill_manifest
 from .models import Skill, SkillDiagnostic, SkillScope
 from .dependencies import (
@@ -40,6 +41,9 @@ __all__ = [
     "SkillService",
     "discover_skills",
     "build_available_skills_prompt",
+    "ImportFailure",
+    "ImportResult",
+    "import_skill_package",
     "SkillManifest",
     "parse_skill_manifest",
     "DiscoveryReport",

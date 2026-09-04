@@ -54,6 +54,7 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "skills" / "registry.py",
     SOURCE_ROOT / "skills" / "scanner.py",
     SOURCE_ROOT / "skills" / "dependencies.py",
+    SOURCE_ROOT / "skills" / "importer.py",
     SOURCE_ROOT / "runtime_ledger" / "protocol.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
