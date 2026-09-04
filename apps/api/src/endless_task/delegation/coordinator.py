@@ -114,6 +114,39 @@ class ChildRunRecord:
             )
 
 
+@dataclass(frozen=True)
+class PreparedChildSpawn:
+    """Validated spawn intent, ready for kernel execution.
+
+    Splitting validation from execution lets a scheduler fail fast on
+    every spec in a batch before any child starts, while keeping the
+    synchronous single-child path of :meth:`InProcessChildCoordinator.spawn`
+    byte-for-byte equivalent.
+    """
+
+    spec: SpawnSpec
+    child_run_id: str
+    depth: int
+    decision: ChildCapabilityDecision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.spec, SpawnSpec):
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "Prepared spawn requires a SpawnSpec",
+            )
+        if not isinstance(self.decision, ChildCapabilityDecision):
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "Prepared spawn requires a capability decision",
+            )
+        if not isinstance(self.depth, int) or self.depth <= 0:
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "Prepared spawn depth must be a positive integer",
+            )
+
+
 class InProcessChildCoordinator:
     """Synchronous single-child coordinator over one AgentKernel.
 
@@ -200,6 +233,20 @@ class InProcessChildCoordinator:
     # -- DelegationRuntime -------------------------------------------------
 
     async def spawn(self, spec: SpawnSpec) -> str:
+        prepared = self.prepare_spawn(spec)
+        await self.execute_prepared(prepared)
+        return prepared.child_run_id
+
+    def prepare_spawn(self, spec: SpawnSpec) -> PreparedChildSpawn:
+        """Validate a spawn intent and produce its execution plan.
+
+        Pure with respect to the kernel and the spawn-key map: no child is
+        started and nothing is reserved, so a scheduler can validate a whole
+        batch (fail fast on any gate violation) before executing any child.
+        Reservation happens atomically inside :meth:`execute_prepared`
+        (no await between the duplicate check and the key write), which
+        keeps the synchronous single-child spawn path equivalent.
+        """
         if not isinstance(spec, SpawnSpec):
             raise AgentPlatformError(
                 "invalid_delegation_value",
@@ -264,25 +311,51 @@ class InProcessChildCoordinator:
                 retryable=False,
                 details={"child_run_id": existing},
             )
-        child_run_id = _child_run_id_for(key)
-        self._spawn_keys[key] = child_run_id
+        return PreparedChildSpawn(
+            spec=spec,
+            child_run_id=_child_run_id_for(key),
+            depth=child_depth,
+            decision=decision,
+        )
+
+    async def execute_prepared(self, prepared: PreparedChildSpawn) -> ChildRunRecord:
+        """Run one prepared child through the kernel and record the outcome."""
+        if not isinstance(prepared, PreparedChildSpawn):
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "Child execution requires a PreparedChildSpawn",
+            )
+        spec = prepared.spec
+        key = (spec.parent_run_id, spec.parent_tool_call_id)
+        existing = self._spawn_keys.get(key)
+        if existing is not None:
+            raise AgentPlatformError(
+                "delegation_duplicate_spawn",
+                "A child for this parent tool call was already spawned",
+                retryable=False,
+                details={"child_run_id": existing},
+            )
+        self._spawn_keys[key] = prepared.child_run_id
         try:
-            outcome = await self._kernel.run(self._build_run_command(spec, child_run_id))
+            outcome = await self._kernel.run(
+                self._build_run_command(spec, prepared.child_run_id)
+            )
         except Exception as error:  # kernel failure must not crash the parent
-            self._children[child_run_id] = self._failed_record(
-                child_run_id=child_run_id,
+            record = self._failed_record(
+                child_run_id=prepared.child_run_id,
                 spec=spec,
-                decision=decision,
-                depth=child_depth,
+                decision=prepared.decision,
+                depth=prepared.depth,
                 error=error,
             )
-            return child_run_id
+            self._children[prepared.child_run_id] = record
+            return record
         try:
             record = self._record_for_outcome(
-                child_run_id=child_run_id,
+                child_run_id=prepared.child_run_id,
                 spec=spec,
-                decision=decision,
-                depth=child_depth,
+                decision=prepared.decision,
+                depth=prepared.depth,
                 outcome=outcome,
             )
         except AgentPlatformError:
@@ -291,8 +364,8 @@ class InProcessChildCoordinator:
             # as a duplicate.
             self._spawn_keys.pop(key, None)
             raise
-        self._children[child_run_id] = record
-        return child_run_id
+        self._children[prepared.child_run_id] = record
+        return record
 
     async def query(self, child_run_id: str) -> ChildOutcome:
         record = self._children.get(child_run_id)

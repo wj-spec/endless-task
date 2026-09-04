@@ -6,6 +6,7 @@ from .coordinator import (
     ChildRunRecord,
     ChildRunStatus,
     InProcessChildCoordinator,
+    PreparedChildSpawn,
     _assemble_child_prompt,
 )
 from .limits import (
@@ -35,6 +36,13 @@ from .result_projection import (
     ChildResultPolicy,
     project_child_outcome,
 )
+from .scheduler import (
+    DEFAULT_MAX_CHILDREN_PER_PARENT,
+    DEFAULT_MAX_CONCURRENT_CHILDREN,
+    ChildBatchLimits,
+    ChildBatchSummary,
+    InProcessChildScheduler,
+)
 
 __all__ = [
     "DELEGATION_PROTOCOL_VERSION",
@@ -63,5 +71,11 @@ __all__ = [
     "ChildRunRecord",
     "ChildRunStatus",
     "InProcessChildCoordinator",
+    "PreparedChildSpawn",
     "_assemble_child_prompt",
+    "DEFAULT_MAX_CHILDREN_PER_PARENT",
+    "DEFAULT_MAX_CONCURRENT_CHILDREN",
+    "ChildBatchLimits",
+    "ChildBatchSummary",
+    "InProcessChildScheduler",
 ]

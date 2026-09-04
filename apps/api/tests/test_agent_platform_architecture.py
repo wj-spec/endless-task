@@ -46,6 +46,7 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "delegation" / "limits.py",
     SOURCE_ROOT / "delegation" / "result_projection.py",
     SOURCE_ROOT / "delegation" / "coordinator.py",
+    SOURCE_ROOT / "delegation" / "scheduler.py",
     SOURCE_ROOT / "runtime_ledger" / "protocol.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
