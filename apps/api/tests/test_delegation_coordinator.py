@@ -14,6 +14,7 @@ from endless_task.agent_kernel import (
 )
 from endless_task.agent_platform import AgentPlatformError, SafeDiagnostic
 from endless_task.delegation import (
+    READ_ONLY_FORBIDDEN_CAPABILITIES as READ_ONLY_FORBIDDEN,
     ChildContextPolicy,
     ChildModelPolicy,
     ChildOutputSchema,
@@ -25,6 +26,7 @@ from endless_task.delegation import (
     project_child_outcome,
 )
 from endless_task.runtime_ledger import TraceContext
+from endless_task.tool_platform import create_builtin_profile_registry
 
 PARENT_CAPABILITIES = frozenset(
     {
@@ -130,7 +132,13 @@ class WrongRunKernel:
         raise AssertionError
 
 
-def build_coordinator(kernel=None, *, parent_depth: int = 0) -> InProcessChildCoordinator:
+def build_coordinator(
+    kernel=None,
+    *,
+    parent_depth: int = 0,
+    allowed_profile_names=None,
+    profile_resolver=None,
+) -> InProcessChildCoordinator:
     if kernel is None:
         kernel = ScriptedAgentKernel()
     return InProcessChildCoordinator(
@@ -139,6 +147,8 @@ def build_coordinator(kernel=None, *, parent_depth: int = 0) -> InProcessChildCo
         parent_capabilities=PARENT_CAPABILITIES,
         parent_trace=trace_context(),
         parent_depth=parent_depth,
+        allowed_profile_names=allowed_profile_names,
+        profile_resolver=profile_resolver,
     )
 
 
@@ -352,12 +362,33 @@ class ChildCoordinatorTest(unittest.TestCase):
 
         run(scenario())
 
-    def test_work_profile_child_rejected_at_m4a_stage_gate(self) -> None:
-        # A non-read-only profile whose write capability the parent holds is
-        # still refused even in a legal read-only workspace: M4A executes
-        # read-only children only (M4B adds isolated write).
+    def test_work_profile_child_rejected_at_m4a_profile_gate(self) -> None:
+        # DR-1 fixes the child profile to the read-only set: a SpawnSpec
+        # carrying a non-read-only profile name is refused before any
+        # capability or kernel work happens.
         async def scenario() -> None:
             coordinator = build_coordinator()
+            spec = child_spec(
+                capabilities=frozenset({"workspace.read"}),
+                profile="subagent_workspace",
+                workspace_mode=WorkspaceMode.READ_ONLY_SHARED,
+            )
+            with self.assertRaises(AgentPlatformError) as caught:
+                await coordinator.spawn(spec)
+            self.assertEqual("delegation_profile_not_allowed", caught.exception.code)
+            self.assertIn("subagent_readonly", caught.exception.details["allowed_profiles"])
+
+        run(scenario())
+
+    def test_explicitly_allowed_work_profile_hits_write_stage_gate(self) -> None:
+        # When an operator extends allowed_profile_names to a write profile,
+        # the M4A write-capability stage gate still fires: a child whose
+        # effective capabilities include write/process/external is refused
+        # until M4B isolated-write delegation.
+        async def scenario() -> None:
+            coordinator = build_coordinator(
+                allowed_profile_names=frozenset({"subagent_readonly", "subagent_workspace"})
+            )
             spec = child_spec(
                 capabilities=frozenset({"workspace.write"}),
                 profile="subagent_workspace",
@@ -390,6 +421,58 @@ class ChildCoordinatorTest(unittest.TestCase):
             self.assertEqual("delegation_max_depth_exceeded", caught.exception.code)
 
         run(scenario())
+
+    def test_resolver_profile_layer_narrows_effective_capabilities(self) -> None:
+        # With a resolver, effective = parent ∩ requested ∩ resolved profile.
+        # The builtin subagent_readonly profile grants only
+        # {workspace.read, session.query, memory.read}, so a requested
+        # workspace.write must be cut even though the parent holds it.
+        async def scenario() -> None:
+            registry = create_builtin_profile_registry()
+            coordinator = build_coordinator(profile_resolver=registry)
+            spec = child_spec(
+                capabilities=frozenset(
+                    {"workspace.read", "workspace.write", "session.query"}
+                ),
+                workspace_mode=WorkspaceMode.READ_ONLY_SHARED,
+            )
+            child_run_id = await coordinator.spawn(spec)
+            record = next(
+                r for r in coordinator.children if r.child_run_id == child_run_id
+            )
+            self.assertEqual(
+                frozenset({"workspace.read", "session.query"}),
+                record.decision.effective,
+            )
+            self.assertNotIn("workspace.write", record.decision.effective)
+
+        run(scenario())
+
+    def test_unknown_profile_name_rejected_by_allowlist_before_resolver(self) -> None:
+        # Fail-closed order: a profile name outside the coordinator's allow
+        # list is refused without consulting the resolver at all.
+        async def scenario() -> None:
+            registry = create_builtin_profile_registry()
+            coordinator = build_coordinator(profile_resolver=registry)
+            with self.assertRaises(AgentPlatformError) as caught:
+                await coordinator.spawn(child_spec(profile="no_such_profile"))
+            self.assertEqual("delegation_profile_not_allowed", caught.exception.code)
+
+        run(scenario())
+
+    def test_resolver_profile_and_forbidden_vocabulary_stay_consistent(self) -> None:
+        # Single-vocabulary guard (ADR-AP-2): the read-only forbidden table
+        # and the builtin subagent_readonly profile must not disagree, so a
+        # child granted the builtin profile can never trip the M4A write gate
+        # on the same capability vocabulary.
+        registry = create_builtin_profile_registry()
+        readonly_profile = registry.resolve("subagent_readonly")
+        self.assertTrue(readonly_profile.capabilities.isdisjoint(READ_ONLY_FORBIDDEN))
+
+    def test_empty_allowed_profile_names_rejected(self) -> None:
+        with self.assertRaises(AgentPlatformError) as caught:
+            build_coordinator(allowed_profile_names=frozenset())
+        self.assertEqual("invalid_delegation_value", caught.exception.code)
 
     def test_unknown_child_query_denied(self) -> None:
         async def scenario() -> None:

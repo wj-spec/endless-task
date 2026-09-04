@@ -46,6 +46,7 @@ from endless_task.runtime_ledger import TraceContext
 
 from .limits import (
     READ_ONLY_FORBIDDEN_CAPABILITIES,
+    READ_ONLY_PROFILE_NAMES,
     ChildCapabilityDecision,
     compute_child_capabilities,
 )
@@ -119,6 +120,21 @@ class InProcessChildCoordinator:
     Construction is bound to the owning parent run: capabilities are the
     parent's, so a spawned child can never widen them (intersection is
     computed against ``parent_capabilities`` at spawn time).
+
+    DR-1 (read-only child) profile semantics are enforced here:
+
+    - only profile names in the M4A read-only set may spawn (default
+      ``READ_ONLY_PROFILE_NAMES`` = ``subagent_readonly``); a SpawnSpec
+      carrying another profile name is refused before any kernel work,
+    - when a :class:`CapabilityProfileResolver`-shaped ``profile_resolver``
+      is injected, the resolved profile capability layer participates in
+      the intersection instead of defaulting to the requested set, so a
+      child can never receive capabilities its profile does not grant.
+
+    The DR-1 "child uses the same AgentKernel factory" requirement is a
+    composition-root concern: this coordinator already accepts any
+    AgentKernel instance, and the production kernel (02 §11.3) is a later
+    milestone, so no factory seam is invented here.
     """
 
     def __init__(
@@ -130,6 +146,8 @@ class InProcessChildCoordinator:
         parent_trace: TraceContext,
         parent_depth: int = 0,
         result_policy: Optional[ChildResultPolicy] = None,
+        allowed_profile_names: Optional[frozenset[str]] = None,
+        profile_resolver: Optional[object] = None,
     ) -> None:
         if not callable(getattr(kernel, "run", None)):
             raise AgentPlatformError(
@@ -151,12 +169,31 @@ class InProcessChildCoordinator:
                 "invalid_delegation_value",
                 "result_policy must be a ChildResultPolicy",
             )
+        allowed = (
+            frozenset(READ_ONLY_PROFILE_NAMES)
+            if allowed_profile_names is None
+            else frozenset(allowed_profile_names)
+        )
+        if not allowed:
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "allowed_profile_names must not be empty",
+            )
+        if profile_resolver is not None and not callable(
+            getattr(profile_resolver, "resolve", None)
+        ):
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "profile_resolver must expose resolve(name)",
+            )
         self._kernel = kernel
         self._parent_run_id = parent_run_id
         self._parent_capabilities = parent_capabilities
         self._parent_trace = parent_trace
         self._parent_depth = parent_depth
         self._result_policy = result_policy if result_policy is not None else ChildResultPolicy()
+        self._allowed_profile_names = allowed
+        self._profile_resolver = profile_resolver
         self._children: dict[str, ChildRunRecord] = {}
         self._spawn_keys: dict[tuple[str, str], str] = {}
 
@@ -193,9 +230,21 @@ class InProcessChildCoordinator:
                 retryable=False,
                 details={"workspace_mode": spec.workspace_mode.value},
             )
+        if spec.capability_profile not in self._allowed_profile_names:
+            raise AgentPlatformError(
+                "delegation_profile_not_allowed",
+                "SpawnSpec capability profile is not allowed for this coordinator",
+                retryable=False,
+                details={
+                    "allowed_profiles": sorted(self._allowed_profile_names),
+                    "requested_profile": spec.capability_profile,
+                },
+            )
+        profile_capabilities = self._resolve_profile_capabilities(spec)
         decision = compute_child_capabilities(
             spec,
             parent_capabilities=self._parent_capabilities,
+            profile_capabilities=profile_capabilities,
         )
         forbidden = decision.effective & READ_ONLY_FORBIDDEN_CAPABILITIES
         if forbidden:
@@ -278,6 +327,29 @@ class InProcessChildCoordinator:
         )
 
     # -- record helpers ----------------------------------------------------
+
+    def _resolve_profile_capabilities(
+        self,
+        spec: SpawnSpec,
+    ) -> Optional[frozenset[str]]:
+        """Resolve the declared profile into its capability layer.
+
+        Without a resolver the profile layer is left as ``None`` and
+        :func:`compute_child_capabilities` falls back to the requested set
+        (M4A DR-0 behavior). With a resolver, the profile's granted
+        capabilities become an explicit intersection layer, so a child can
+        never receive capabilities the resolved profile does not grant.
+        """
+        if self._profile_resolver is None:
+            return None
+        profile = self._profile_resolver.resolve(spec.capability_profile)
+        capabilities = getattr(profile, "capabilities", None)
+        if not isinstance(capabilities, frozenset):
+            raise AgentPlatformError(
+                "invalid_delegation_value",
+                "Profile resolver returned a profile without a capabilities set",
+            )
+        return capabilities
 
     def _build_run_command(self, spec: SpawnSpec, child_run_id: str) -> RunCommand:
         namespace = f"delegation_{child_run_id}"
