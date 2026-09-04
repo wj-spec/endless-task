@@ -290,8 +290,10 @@ class AppSettings:
     context_compaction_enabled: bool = True
     # Agent Platform v2 tool path; default on after AP-107 flip. Illegal env values fail startup.
     tool_platform_v2_enabled: bool = True
-    # M2 context engine v2 cutover; default off (shadow/parity only).
-    context_engine_v2_enabled: bool = False
+    # M2 context engine v2 cutover; default on after validation (initial
+    # context pruning under budget pressure; under-budget behavior is
+    # byte-identical to legacy).
+    context_engine_v2_enabled: bool = True
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -422,7 +424,7 @@ class AppSettings:
                 name="ENDLESS_TASK_TOOL_PLATFORM_V2",
             ),
             context_engine_v2_enabled=_parse_strict_flag(
-                env.get("ENDLESS_TASK_CONTEXT_ENGINE_V2", "0"),
+                env.get("ENDLESS_TASK_CONTEXT_ENGINE_V2", "1"),
                 name="ENDLESS_TASK_CONTEXT_ENGINE_V2",
             ),
             artifact_proposals_enabled=_parse_flag(
