@@ -85,6 +85,7 @@ from .selection import (
     RuntimeV2GlobalRuntimeStatus,
     RuntimeV2RuntimeSelectionService,
 )
+from .agent_kernel_adapter import RuntimeV2AgentKernel
 
 __all__ = [
     "Actor",
@@ -166,4 +167,5 @@ __all__ = [
     "RuntimeV2ConversationRuntimeStatus",
     "RuntimeV2GlobalRuntimeStatus",
     "RuntimeV2RuntimeSelectionService",
+    "RuntimeV2AgentKernel",
 ]
