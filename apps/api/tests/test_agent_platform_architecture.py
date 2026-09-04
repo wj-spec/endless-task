@@ -44,6 +44,8 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "execution_env" / "container.py",
     SOURCE_ROOT / "delegation" / "protocol.py",
     SOURCE_ROOT / "delegation" / "limits.py",
+    SOURCE_ROOT / "delegation" / "result_projection.py",
+    SOURCE_ROOT / "delegation" / "coordinator.py",
     SOURCE_ROOT / "runtime_ledger" / "protocol.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
