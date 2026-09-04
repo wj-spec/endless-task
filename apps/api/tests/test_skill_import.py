@@ -9,6 +9,8 @@ from pathlib import Path
 from endless_task.skills.importer import (
     ImportFailure,
     import_skill_package,
+    list_archived_revisions,
+    rollback_skill_package,
     verify_installed_revision,
 )
 from endless_task.skills.registry import SkillLocator
@@ -128,6 +130,73 @@ class SkillImportTest(unittest.TestCase):
                 self.target, SkillLocator("user", "missing")
             )
         )
+
+
+class SkillRollbackTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary_directory.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        self.target = self.root / "skills"
+        self.target.mkdir()
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def test_upgrade_archives_previous_revision(self) -> None:
+        first = make_package(self.source, "demo", body="第一版")
+        import_skill_package(first, self.target)
+        first_digest = verify_installed_revision(
+            self.target, SkillLocator("user", "demo")
+        )[1]
+        second = make_package(self.source, "demo", body="第二版")
+        import_skill_package(second, self.target, allow_upgrade=True)
+        archived = list_archived_revisions(self.target, "demo")
+        self.assertIn(f"demo:{first_digest}", archived)
+
+    def test_rollback_restores_archived_digest(self) -> None:
+        first = make_package(self.source, "demo", body="第一版")
+        import_skill_package(first, self.target)
+        first_digest = verify_installed_revision(
+            self.target, SkillLocator("user", "demo")
+        )[1]
+        second = make_package(self.source, "demo", body="第二版")
+        import_skill_package(second, self.target, allow_upgrade=True)
+        restored = rollback_skill_package(self.target, "demo", first_digest)
+        self.assertIsNotNone(restored)
+        self.assertIn("第一版", restored.read_text(encoding="utf-8"))
+        # Active digest is back to the first revision.
+        active = verify_installed_revision(
+            self.target, SkillLocator("user", "demo")
+        )[1]
+        self.assertEqual(first_digest, active)
+
+    def test_rollback_unknown_digest_returns_none(self) -> None:
+        package = make_package(self.source, "demo", body="正文")
+        import_skill_package(package, self.target)
+        self.assertIsNone(
+            rollback_skill_package(
+                self.target, "demo", "0" * 64
+            )
+        )
+
+    def test_rollback_is_itself_reversible(self) -> None:
+        first = make_package(self.source, "demo", body="第一版", version="1.0.0")
+        import_skill_package(first, self.target)
+        first_digest = verify_installed_revision(
+            self.target, SkillLocator("user", "demo")
+        )[1]
+        second = make_package(self.source, "demo", body="第二版", version="1.1.0")
+        import_skill_package(second, self.target, allow_upgrade=True)
+        second_digest = verify_installed_revision(
+            self.target, SkillLocator("user", "demo")
+        )[1]
+        rollback_skill_package(self.target, "demo", first_digest)
+        # Rolling back archived the second revision, so it can be restored.
+        restored_second = rollback_skill_package(self.target, "demo", second_digest)
+        self.assertIsNotNone(restored_second)
+        self.assertIn("第二版", restored_second.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

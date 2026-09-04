@@ -131,6 +131,15 @@ def import_skill_package(
         staging_package = staging_root / manifest.name
         staging_package.mkdir(parents=True)
         _copy_package(source_dir, staging_package)
+        # Archive directory carries superseded revisions (SK-4b rollback).
+        archive_dir = target_root / _ARCHIVE_DIRNAME
+        if target_package.exists():
+            _archive_revision(
+                package_dir=target_package,
+                name=manifest.name,
+                archive_root=archive_dir,
+                digest=existing_digest,
+            )
         # Atomic activation: the package is fully staged before it becomes
         # visible under the target root.
         target_package.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +170,82 @@ def _existing_digest(package_dir: Path) -> Optional[str]:
         return None
     manifest = parse_skill_manifest(skill_file, text)
     return manifest.digest
+
+
+#: Per-root directory holding superseded revision snapshots (SK-4b).
+_ARCHIVE_DIRNAME = ".skill-revisions"
+
+
+def _archive_revision(
+    *,
+    package_dir: Path,
+    name: str,
+    archive_root: Path,
+    digest: Optional[str],
+) -> None:
+    """Snapshot the current package content under ``<archive>/<name>:<digest>``."""
+    if digest is None:
+        return
+    snapshot = archive_root / f"{name}:{digest}"
+    if snapshot.exists():
+        return
+    archive_root.mkdir(parents=True, exist_ok=True)
+    snapshot.mkdir(parents=True, exist_ok=True)
+    _copy_package(package_dir, snapshot)
+
+
+def list_archived_revisions(target_root: Path, name: str) -> Tuple[str, ...]:
+    """Digests of archived (superseded) revisions for one skill name."""
+    archive_root = target_root / _ARCHIVE_DIRNAME
+    if not archive_root.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            entry.name
+            for entry in archive_root.iterdir()
+            if entry.is_dir() and entry.name.startswith(name + ":")
+        )
+    )
+
+
+def rollback_skill_package(
+    target_root: Path,
+    name: str,
+    digest: str,
+) -> Optional[Path]:
+    """Restore an archived revision by digest (SK-4b).
+
+    The archived snapshot is staged-copied and atomically replaces the
+    active package; the previous active digest is archived in turn so the
+    rollback itself is reversible. Returns the restored SKILL.md path, or
+    None when the requested digest is not archived.
+    """
+    archive_root = target_root / _ARCHIVE_DIRNAME
+    snapshot = archive_root / f"{name}:{digest}"
+    if not (snapshot / "SKILL.md").is_file():
+        return None
+    target_package = target_root / name
+    active_digest = _existing_digest(target_package) if target_package.exists() else None
+
+    staging_root = Path(tempfile.mkdtemp(prefix="skill-rollback-"))
+    try:
+        staging_package = staging_root / name
+        staging_package.mkdir(parents=True)
+        _copy_package(snapshot, staging_package)
+        target_package.parent.mkdir(parents=True, exist_ok=True)
+        if target_package.exists():
+            _archive_revision(
+                package_dir=target_package,
+                name=name,
+                archive_root=archive_root,
+                digest=active_digest,
+            )
+            _replace_package(target_package, staging_package)
+        else:
+            shutil.move(str(staging_package), str(target_package))
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+    return target_package / "SKILL.md"
 
 
 def _copy_package(source_dir: Path, target_dir: Path) -> None:
@@ -211,5 +296,7 @@ __all__ = [
     "ImportFailure",
     "ImportResult",
     "import_skill_package",
+    "list_archived_revisions",
+    "rollback_skill_package",
     "verify_installed_revision",
 ]
