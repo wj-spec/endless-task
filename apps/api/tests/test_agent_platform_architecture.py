@@ -50,6 +50,8 @@ PROTOCOL_FILES = (
     SOURCE_ROOT / "delegation" / "agent_tools.py",
     SOURCE_ROOT / "delegation" / "runtime_handler.py",
     SOURCE_ROOT / "delegation" / "legacy_tools.py",
+    SOURCE_ROOT / "skills" / "manifest.py",
+    SOURCE_ROOT / "skills" / "registry.py",
     SOURCE_ROOT / "runtime_ledger" / "protocol.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
