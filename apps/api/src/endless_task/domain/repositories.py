@@ -56,6 +56,14 @@ class ChatRepository(Protocol):
     def create_conversation(self) -> Conversation:
         ...
 
+    def create_delegation_conversation(
+        self,
+        delegation_parent_run_id: str,
+        *,
+        workspace_id: Optional[str] = None,
+    ) -> Conversation:
+        ...
+
     def create_or_reuse_empty_conversation(self) -> Conversation:
         ...
 
@@ -68,6 +76,7 @@ class ChatRepository(Protocol):
         status: ConversationStatus = ConversationStatus.ACTIVE,
         title_query: Optional[str] = None,
         kind: Optional[ConversationKind] = None,
+        include_delegation: bool = False,
     ) -> Sequence[Conversation]:
         ...
 

@@ -130,8 +130,10 @@ class CoordinatorOverProductionKernelTest(unittest.TestCase):
         self._temporary_directory.cleanup()
 
     def _conversation_factory(self):
-        async def factory():
-            return self.chat_repository.create_conversation()
+        async def factory(child_run_id: str):
+            # Composition-root contract: child conversations are tagged so
+            # product enumeration excludes them (06 §2.4).
+            return self.chat_repository.create_delegation_conversation(child_run_id)
 
         return factory
 
@@ -203,6 +205,19 @@ class CoordinatorOverProductionKernelTest(unittest.TestCase):
         record = coordinator.children[0]
         self.assertEqual(ChildRunStatus.COMPLETED, record.status)
         self.assertTrue(record.decision.read_only)
+        # 06 §2.4: the child conversation is tagged and excluded from the
+        # product-facing conversation enumeration by default.
+        visible_ids = [
+            item.id for item in self.chat_repository.list_conversations()
+        ]
+        self.assertNotIn(run.conversation_id, visible_ids)
+        tagged_ids = [
+            item.id
+            for item in self.chat_repository.list_conversations(
+                include_delegation=True
+            )
+        ]
+        self.assertIn(run.conversation_id, tagged_ids)
 
     def test_failed_child_returns_failed_outcome_with_diagnostic(self) -> None:
         coordinator = self._coordinator(self._kernel(FailingProvider()))

@@ -135,8 +135,8 @@ class RuntimeV2AgentKernelTest(unittest.TestCase):
         self._temporary_directory.cleanup()
 
     def _conversation_factory(self) -> ConversationFactory:
-        async def factory():
-            return self.chat_repository.create_conversation()
+        async def factory(child_run_id: str):
+            return self.chat_repository.create_delegation_conversation(child_run_id)
 
         return factory
 

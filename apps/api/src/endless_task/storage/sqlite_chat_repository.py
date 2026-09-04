@@ -75,6 +75,41 @@ class SqliteChatRepository:
             )
             return self._get_conversation(connection, conversation_id)
 
+    def create_delegation_conversation(
+        self,
+        delegation_parent_run_id: str,
+        *,
+        workspace_id: Optional[str] = None,
+    ) -> Conversation:
+        """Create a product-invisible conversation hosting one child run.
+
+        Delegation child runs (06 §2.4) must not appear in the product
+        Conversation rail or knowledge lifecycle enumeration. The row is
+        tagged with the owning child run id; product-facing queries filter
+        tagged conversations by default (see ``include_delegation`` on
+        :meth:`list_conversations`).
+        """
+        conversation_id = self._id_factory("conv")
+        now = self._clock()
+        with self._database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, status, next_turn_ordinal, title_is_manual,
+                    created_at, updated_at, archived_at, workspace_id,
+                    provider_profile_id, model_override, delegation_parent_run_id
+                ) VALUES (?, '新对话', 'active', 1, 0, ?, ?, NULL, ?, NULL, NULL, ?)
+                """,
+                (
+                    conversation_id,
+                    now,
+                    now,
+                    workspace_id,
+                    delegation_parent_run_id,
+                ),
+            )
+            return self._get_conversation(connection, conversation_id)
+
     def create_or_reuse_empty_conversation(
         self, workspace_id: Optional[str] = None
     ) -> Conversation:
@@ -129,9 +164,14 @@ class SqliteChatRepository:
         kind: Optional[ConversationKind] = None,
         workspace_id: Optional[str] = None,
         general_only: bool = False,
+        include_delegation: bool = False,
     ) -> Sequence[Conversation]:
         sql = "SELECT * FROM conversations WHERE status = ?"
         params: list[object] = [status.value]
+        if not include_delegation:
+            # 06 §2.4: delegation child-run conversations are internal
+            # execution objects and must not surface in product rails.
+            sql += " AND delegation_parent_run_id IS NULL"
         if title_query and title_query.strip():
             sql += " AND instr(lower(title), lower(?)) > 0"
             params.append(title_query.strip())

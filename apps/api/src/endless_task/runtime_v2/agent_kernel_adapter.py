@@ -50,7 +50,7 @@ from endless_task.runtime.cancellation import CancellationToken
 from .domain import Actor, RunStatus, TranscriptEntryType
 from .execution import AgentRunExecutor, RunExecutionResult
 
-ConversationFactory = Callable[[], Awaitable[Conversation]]
+ConversationFactory = Callable[[str], Awaitable[Conversation]]
 ExecutorBuilder = Callable[[], AgentRunExecutor]
 
 
@@ -97,7 +97,7 @@ class RuntimeV2AgentKernel(AgentKernel):
                 "A child run with this run id is already active",
                 details={"run_id": command.run_id},
             )
-        conversation = await self._conversation_factory()
+        conversation = await self._conversation_factory(command.run_id)
         lane = self._repository.create_lane(conversation_id=conversation.id)
         trigger = self._repository.append_entry(
             conversation_id=conversation.id,
