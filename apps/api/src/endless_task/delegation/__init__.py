@@ -1,5 +1,15 @@
 """Parent/child Agent execution contracts."""
 
+from .agent_tools import (
+    CANCEL_AGENT_NAME,
+    QUERY_AGENT_NAME,
+    SPAWN_AGENT_NAME,
+    CancelAgentTool,
+    DelegationToolHandler,
+    QueryAgentTool,
+    SpawnAgentTool,
+    child_run_handle_json,
+)
 from .coordinator import (
     MAX_DEPTH,
     READ_ONLY_WORKSPACE_MODES,
@@ -35,6 +45,11 @@ from .result_projection import (
     CHILD_SUMMARY_MAX_CHARACTERS,
     ChildResultPolicy,
     project_child_outcome,
+)
+from .runtime_handler import (
+    CapabilityProvider,
+    CoordinatorDelegationHandler,
+    KernelProvider,
 )
 from .scheduler import (
     DEFAULT_MAX_CHILDREN_PER_PARENT,
@@ -78,4 +93,15 @@ __all__ = [
     "ChildBatchLimits",
     "ChildBatchSummary",
     "InProcessChildScheduler",
+    "CANCEL_AGENT_NAME",
+    "QUERY_AGENT_NAME",
+    "SPAWN_AGENT_NAME",
+    "CancelAgentTool",
+    "DelegationToolHandler",
+    "QueryAgentTool",
+    "SpawnAgentTool",
+    "child_run_handle_json",
+    "CapabilityProvider",
+    "CoordinatorDelegationHandler",
+    "KernelProvider",
 ]
