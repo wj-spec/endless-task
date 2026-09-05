@@ -1024,7 +1024,7 @@
 }
 
 .provider-connection-error {
-  color: var(--danger, #c0392b);
+  color: var(--danger);
 }
 
 .provider-models {
@@ -1218,7 +1218,7 @@
 }
 
 .workspace-binding-error {
-  color: var(--danger, #c0392b);
+  color: var(--danger);
   font-size: var(--fs-2, 13px);
 }
 
@@ -1861,8 +1861,8 @@
 .runtime-v2-plan {
   margin: 0.5rem 0;
   padding: 0.5rem 0.75rem;
-  border-left: 2px solid var(--accent, #2563eb);
-  background: var(--surface-subtle, transparent);
+  border-left: 2px solid var(--accent);
+  background: var(--surface-2);
   font-size: 0.85rem;
   line-height: 1.5;
 }
@@ -1872,5 +1872,5 @@
 }
 .plan-step-status {
   margin-left: 0.4rem;
-  color: var(--accent, #2563eb);
+  color: var(--accent);
 }

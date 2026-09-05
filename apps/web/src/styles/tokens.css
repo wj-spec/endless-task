@@ -18,6 +18,7 @@
   --paper: #fbfbf9;
   --accent: #275c4b;
   --accent-soft: #e5eee9;
+  --on-accent: #ffffff;
   --danger: #a33b36;  --ink-raise: #30332f;
   --muted-strong: #55554e;
   --accent-deep: #799286;
@@ -123,6 +124,7 @@
   --line-accent: #565c56;
   --accent: #6fbf9f;
   --accent-soft: #24352d;
+  --on-accent: #f2fbf7;
   --accent-deep: #8fc7b2;
   --accent-muted: #6d8a7d;
   --accent-faint: #3c4a43;

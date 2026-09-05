@@ -828,13 +828,13 @@
   padding: 0.5rem 0.75rem;
   margin: 0.5rem 0;
   border-radius: 8px;
-  background: var(--surface-info, #eef4ff);
-  color: var(--text-primary, inherit);
+  background: var(--accent-soft);
+  
   font-size: 0.9rem;
   line-height: 1.4;
 }
 .inline-notice strong {
-  color: var(--accent, #2563eb);
+  color: var(--accent);
 }
 .inline-error button {
   flex: 0 0 auto;
@@ -1301,7 +1301,7 @@ button.citation-chip {
 button.citation-chip:hover,
 button.citation-chip:focus-visible {
   background: var(--accent);
-  color: var(--bg-0, #fff);
+  color: var(--on-accent);
   outline: none;
 }
 
