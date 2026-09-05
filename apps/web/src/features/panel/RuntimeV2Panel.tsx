@@ -129,6 +129,14 @@ export function RuntimeV2Panel({
   delegation,
 }: RuntimeV2PanelProps) {
   const activeRun = snapshot?.runState ?? null;
+  const planEvent = [...events].reverse().find((e) => e.type === "plan.updated");
+  const planView =
+    planEvent && typeof planEvent.data === "object"
+      ? (planEvent.data as {
+          title?: unknown;
+          steps?: Array<{ title?: unknown; status?: unknown }>;
+        })
+      : null;
   const [metrics, setMetrics] = useState<RuntimeV2Metrics | null>(null);
   const [usage, setUsage] = useState<RuntimeV2RunUsageCost | null>(null);
   useEffect(() => {
@@ -222,6 +230,27 @@ export function RuntimeV2Panel({
               </span>
             ) : null}
           </div>
+
+          {planView ? (
+            <div className="runtime-v2-plan">
+              <strong>计划（诊断）</strong>
+              <div>{String(planView.title ?? "未命名计划")}</div>
+              {Array.isArray(planView.steps) ? (
+                <ol>
+                  {planView.steps.map((step, index) => (
+                    <li key={index}>
+                      {String(step?.title ?? "")}{" "}
+                      {step?.status ? (
+                        <span className="plan-step-status">
+                          {String(step.status)}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+            </div>
+          ) : null}
 
           {metrics ? (
             <div className="runtime-v2-card">
