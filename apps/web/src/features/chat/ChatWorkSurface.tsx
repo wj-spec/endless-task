@@ -25,6 +25,7 @@ import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
 import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
 import { CollapsibleMessage } from "./CollapsibleMessage";
+import { CopyButton } from "./CopyButton";
 import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -646,6 +647,10 @@ export function ChatWorkSurface({
               : null;
             const finalStatus = terminalRunStatus ?? status;
             const pendingApproval = useLive ? live.pendingApproval : undefined;
+            // 本对话车道是否正有运行（用于禁用跨轮操作，避免与后端 409 冲突）
+            const laneBusy = Boolean(
+              runState && !["completed", "failed", "cancelled"].includes(runState.status),
+            );
             const statusPresentation = turnStatusPresentation(
               finalStatus,
               Boolean(pendingApproval),
@@ -677,7 +682,15 @@ export function ChatWorkSurface({
               <section className="turn">
                 <article className="message-row user-row">
                   <div className="speaker-mark user-mark">你</div>
-                  <div className="user-copy">{turnSnapshot.userMessage.content}</div>
+                  <div className="user-row-body">
+                    <div className="user-copy">{turnSnapshot.userMessage.content}</div>
+                    <div className="user-row-actions">
+                      <CopyButton
+                        ariaLabel="复制这条消息"
+                        text={turnSnapshot.userMessage.content}
+                      />
+                    </div>
+                  </div>
                 </article>
 
                 <article className="message-row assistant-row">
@@ -804,9 +817,12 @@ export function ChatWorkSurface({
 
                     {turnSnapshot.turn.conversationId ===
                       conversation?.conversation.id &&
-                    ((isLatest && !["created", "running"].includes(status)) ||
-                      (status === "completed" && Boolean(onCreateBranch))) ? (
+                    (status === "completed" ||
+                      (isLatest && (status === "failed" || status === "cancelled"))) ? (
                       <div className="response-actions">
+                        {content.length > 0 ? (
+                          <CopyButton ariaLabel="复制这段回答" text={content} />
+                        ) : null}
                         {isLatest && (status === "failed" || status === "cancelled") ? (
                           <button
                             disabled={pendingAction !== null}
@@ -818,22 +834,31 @@ export function ChatWorkSurface({
                         ) : null}
                         {isLatest && status === "completed" ? (
                           <button
-                            disabled={pendingAction !== null}
+                            disabled={
+                              pendingAction !== null || laneBusy || isGenerating
+                            }
                             onClick={() => onRegenerate(turnSnapshot.turn.id)}
                             type="button"
                           >
                             重新生成
                           </button>
                         ) : null}
-                        {isLatest && turnSnapshot.responseVariants.length > 1 ? (
+                        {isLatest &&
+                        turnSnapshot.responseVariants.length > 1 &&
+                        status === "completed" ? (
                           <div className="variant-switcher" aria-label="回答版本">
                             <button
                               aria-label="上一个回答"
-                              disabled={selectedIndex <= 0 || pendingAction !== null}
+                              disabled={
+                                selectedIndex <= 0 ||
+                                pendingAction !== null ||
+                                laneBusy
+                              }
                               onClick={() =>
                                 onSelectVariant(
                                   turnSnapshot.turn.id,
-                                  turnSnapshot.responseVariants[selectedIndex - 1].variant.id,
+                                  turnSnapshot.responseVariants[selectedIndex - 1]
+                                    .variant.id,
                                 )
                               }
                               type="button"
@@ -846,13 +871,16 @@ export function ChatWorkSurface({
                             <button
                               aria-label="下一个回答"
                               disabled={
-                                selectedIndex >= turnSnapshot.responseVariants.length - 1 ||
-                                pendingAction !== null
+                                selectedIndex >=
+                                  turnSnapshot.responseVariants.length - 1 ||
+                                pendingAction !== null ||
+                                laneBusy
                               }
                               onClick={() =>
                                 onSelectVariant(
                                   turnSnapshot.turn.id,
-                                  turnSnapshot.responseVariants[selectedIndex + 1].variant.id,
+                                  turnSnapshot.responseVariants[selectedIndex + 1]
+                                    .variant.id,
                                 )
                               }
                               type="button"
@@ -866,7 +894,7 @@ export function ChatWorkSurface({
                             aria-busy={pendingAction === "fork-lane"}
                             aria-label="从此回答创建分支"
                             className="branch-from-answer"
-                            disabled={isGenerating || pendingAction !== null}
+                            disabled={isGenerating || pendingAction !== null || laneBusy}
                             onClick={() => onCreateBranch(turnSnapshot.turn.id)}
                             title="保留到这条完整回答，在右侧开始分支"
                             type="button"

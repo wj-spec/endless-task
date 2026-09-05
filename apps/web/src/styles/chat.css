@@ -753,12 +753,48 @@
 }
 
 .response-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 14px;
   margin-top: 14px;
 }
 
-.response-actions button {
+.response-actions button,
+.copy-button {
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
   color: var(--muted);
+  font-size: var(--fs-2);
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.response-actions button:hover:not(:disabled),
+.response-actions button:focus-visible,
+.copy-button:hover,
+.copy-button:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+.user-row-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.user-row-actions .copy-button {
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
+
+.user-row-actions .copy-button:hover,
+.user-row-actions .copy-button:focus-visible {
+  color: var(--accent);
 }
 
 .variant-switcher {

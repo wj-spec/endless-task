@@ -16,6 +16,7 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
+import { writeClipboard } from "./clipboard";
 
 // 只注册常用语言子集，控制包体；语言名可经别名归一。
 const REGISTERED = [
@@ -87,22 +88,7 @@ export function CodeBlock({ code, language = "" }: CodeBlockProps) {
     : null;
 
   const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-    } catch {
-      // 剪贴板 API 不可用（非安全上下文/权限）时的兜底
-      const textarea = document.createElement("textarea");
-      textarea.value = code;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      try {
-        document.execCommand("copy");
-      } finally {
-        textarea.remove();
-      }
-    }
+    await writeClipboard(code);
     setCopied(true);
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => setCopied(false), 2000);
