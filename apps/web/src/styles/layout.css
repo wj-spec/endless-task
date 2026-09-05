@@ -74,7 +74,8 @@
   gap: 12px;
 }
 
-.conversation-heading h1 {
+.conversation-heading h1,
+.conversation-heading h2 {
   min-width: 0;
   flex: 0 1 auto;
   overflow: hidden;
@@ -126,6 +127,14 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.heading-context h1.heading-sub {
+  margin: 0;
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: normal;
 }
 
 .conversation-heading > span {

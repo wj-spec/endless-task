@@ -1231,7 +1231,8 @@
   padding: 0 14px;
 }
 
-.chat-surface.is-side .conversation-heading h1 {
+.chat-surface.is-side .conversation-heading h1,
+.chat-surface.is-side .conversation-heading h2 {
   font-size: var(--fs-3);
 }
 

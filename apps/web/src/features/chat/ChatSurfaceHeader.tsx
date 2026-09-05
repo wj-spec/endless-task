@@ -79,11 +79,11 @@ export function ChatSurfaceHeader({
     return (
       <header className="surface-header side-surface-header">
         <div className="conversation-heading">
-          <h1>
+          <h2>
             {sideMode === "branch_lane"
               ? currentLaneLabel
               : (conversation?.conversation.title ?? "临时对话")}
-          </h1>
+          </h2>
           {sideMode === "temporary_conversation" ? (
             <span className="temporary-close-hint">关闭即删除</span>
           ) : sideMode === "branch_lane" ? (
@@ -153,9 +153,9 @@ export function ChatSurfaceHeader({
                 </span>
                 <span className="heading-focus-name">{activeWorkspace.name}</span>
               </span>
-              <span className="heading-sub">
+              <h1 className="heading-sub">
                 {conversation?.conversation.title ?? "Endless"}
-              </span>
+              </h1>
             </div>
           ) : (
             <h1 className="heading-title">
