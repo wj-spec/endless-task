@@ -484,5 +484,40 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("v1", (self._root / "f.txt").read_text(encoding="utf-8"))
 
 
+    async def test_crash_window_run_restored_on_next_startup(self) -> None:
+        # M3B slice E：run FAILED 但进程内自动 restore 未发生（此处用 gate-off
+        # 模拟崩溃窗口：失败留下内容且无 run_auto_restored marker）→ 重启（同数据
+        # 目录、gate 开的新 app）启动对账自动补恢复并写 marker。
+        (self._root / "task.txt").write_text("user-seed", encoding="utf-8")
+        provider = FailAfterWriteProvider(path="task.txt", content="agent-v1")
+        client, app, _ = await self._app(provider, auto_restore=False)
+        _, run_id = await self._run_once(
+            client, app, provider, key="k-crash", expected=RunStatus.FAILED
+        )
+        coordinator = app.state.container.run_checkpoint_coordinator
+        self.assertIn(run_id, coordinator.tracked_run_ids())
+        self.assertEqual(
+            "agent-v1",  # restore did not run at failure time (crash window)
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
+        await self._close_app(client, app)
+
+        # Fresh app on the same data dir with auto-restore enabled: startup
+        # reconciliation repairs the failed run before serving.
+        restarted, restarted_app, _ = await self._app(None)
+        self.assertEqual(
+            "user-seed",
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
+        events = restarted_app.state.container.runtime_v2_repository.list_runtime_events(
+            run_id
+        )
+        restored_events = [
+            e for e in events if e.event_type == "run_auto_restored"
+        ]
+        self.assertTrue(restored_events, f"no marker in {[e.event_type for e in events]}")
+        await self._close_app(restarted, restarted_app)
+
+
 if __name__ == "__main__":
     unittest.main()

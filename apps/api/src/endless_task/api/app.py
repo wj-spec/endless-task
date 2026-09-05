@@ -2435,6 +2435,34 @@ def create_app(
                 container.task_notification_service.notify_run(
                     swept_task, swept_run
                 )
+        # M3B slice E: crash-window startup reconciliation. A run that FAILED
+        # but whose terminal auto-restore never ran (process died in the
+        # window) is restored here, once per run (guarded, per-run scoped,
+        # marker run_auto_restored). Fail-open: never blocks API startup.
+        if (
+            container.settings.run_auto_restore_enabled
+            and container.run_checkpoint_coordinator is not None
+        ):
+            try:
+                from endless_task.runtime_v2.run_reconcile import (
+                    reconcile_failed_runs,
+                )
+
+                reconcile_summary = await reconcile_failed_runs(
+                    repository=container.runtime_v2_repository,
+                    coordinator=container.run_checkpoint_coordinator,
+                )
+                if reconcile_summary.restored_runs:
+                    logger.info(
+                        "Startup reconcile restored failed runs",
+                        extra={
+                            "candidates": reconcile_summary.candidates,
+                            "restoredRuns": reconcile_summary.restored_runs,
+                            "restoredFiles": reconcile_summary.restored_files,
+                        },
+                    )
+            except Exception:
+                logger.exception("Failed-run startup reconciliation failed")
         if container.settings.scheduler_enabled:
             lifespan_tasks.spawn(
                 container.task_scheduler.run(),
