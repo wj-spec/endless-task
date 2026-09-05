@@ -357,10 +357,15 @@ class ToolExecutionCoordinator:
         ] = None,
         v2_pipeline_enabled: bool = False,
         limits: Optional[ToolExecutionLimits] = None,
+        protocol_receipt_sink=None,
     ) -> None:
         self._repository = repository
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate or WaitingToolApprovalGate()
+        # RS-6 slice 2b: optional async sink(dict protocol-receipt fields,
+        # TraceContext) receiving completed tool side effects so they land
+        # in the runtime ledger as safety-critical records. None = off.
+        self._protocol_receipt_sink = protocol_receipt_sink
         self._tool_filter_provider = tool_filter_provider
         # AP-107 dual-path seam: when provided (feature flag on) the model
         # surface comes from the version-2 planner instead of the legacy
@@ -583,6 +588,11 @@ class ToolExecutionCoordinator:
                 error=item.error,
                 structured_content=item.structured_content,
             )
+            if self._protocol_receipt_sink is not None:
+                await self._emit_protocol_receipt(
+                    run=run,
+                    item=item,
+                )
             item.result_recorded = True
             terminal_ids.append(record.id)
             result_messages.append(
@@ -610,6 +620,65 @@ class ToolExecutionCoordinator:
             terminal_execution_ids=tuple(terminal_ids),
             terminate=request_terminate,
         )
+
+    async def _emit_protocol_receipt(
+        self,
+        *,
+        run: RunRecord,
+        item: _ToolWorkItem,
+    ) -> None:
+        """Forward a completed tool's workspace effect to the protocol sink.
+
+        Reads ``structured_content["effect"]`` (the workspace receipt the
+        tool embedded), maps it to protocol EffectReceipt fields, and hands
+        both to the sink with a run-scoped trace. Fail-open: observability
+        must not change the tool result already recorded above.
+        """
+        if item.status is not ToolExecutionStatus.COMPLETED:
+            return
+        structured = item.structured_content
+        if not isinstance(structured, Mapping):
+            return
+        effect = structured.get("effect")
+        if not isinstance(effect, Mapping):
+            return
+        try:
+            from endless_task.workspace_runtime.effect_log import (
+                EffectReceipt as WorkspaceReceipt,
+            )
+            from endless_task.workspace_runtime.effect_protocol import (
+                to_protocol_fields,
+            )
+            from endless_task.runtime_ledger.protocol import TraceContext
+
+            workspace_receipt = WorkspaceReceipt(
+                kind=str(effect.get("kind", "")),
+                path=str(effect.get("path", "")),
+                sha256=str(effect.get("sha256", "")),
+                executed_at=str(effect.get("executedAt", "")),
+                exit_code=effect.get("exitCode"),
+                timed_out=bool(effect.get("timedOut", False)),
+                truncated=bool(effect.get("truncated", False)),
+                unknown_outcome=bool(effect.get("unknownOutcome", False)),
+            )
+            fields = to_protocol_fields(
+                workspace_receipt,
+                effect_id=item.provider_call.id,
+                tool_call_id=item.provider_call.id,
+                backend="workspace_tool",
+            )
+            trace = TraceContext(
+                trace_id=run.correlation_id or run.id,
+                run_id=run.id,
+                correlation_id=run.correlation_id or run.id,
+                span_id=item.record_id,
+                tool_execution_id=item.record_id,
+            )
+            await self._protocol_receipt_sink(fields, trace)
+        except Exception:
+            # Best-effort protocol audit; the workspace audit log (and the
+            # tool result just persisted) remain authoritative.
+            return
 
     async def _execute_v2_auto_batch(
         self,
@@ -1737,6 +1806,16 @@ class AgentRunExecutor:
         self._context_engine_v2_enabled = context_engine_v2_enabled
         self._trace_observer = trace_observer
         self._span_recorder = span_recorder
+        protocol_receipt_sink = None
+        if self._span_recorder is not None and callable(
+            getattr(self._span_recorder, "record_effect", None)
+        ):
+            # RS-6 slice 2b: completed tool side effects land in the
+            # runtime ledger as safety-critical records (only when trace
+            # wiring is on; default off = current behavior).
+            from .effect_sink import build_record_effect_sink
+
+            protocol_receipt_sink = build_record_effect_sink(self._span_recorder)
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1745,6 +1824,7 @@ class AgentRunExecutor:
             tool_definitions_provider=tool_definitions_provider,
             v2_pipeline_enabled=v2_pipeline_enabled,
             limits=tool_execution_limits,
+            protocol_receipt_sink=protocol_receipt_sink,
         )
         self._model_turn_runner = ModelTurnRunner(
             repository=repository,

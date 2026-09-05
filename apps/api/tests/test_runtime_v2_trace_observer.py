@@ -566,3 +566,173 @@ class SpanRecorderTest(unittest.TestCase):
         spans = ledger.spans_for_run(run.id)
         statuses = [span.status for span in spans]
         self.assertIn("failed", statuses)
+
+
+class EffectReceiptLedgerTest(unittest.TestCase):
+    """RS-6 slice 2b: completed tool effects land in the runtime ledger."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        from endless_task.runtime.cancellation import CancellationToken
+        from endless_task.runtime.provider import ProviderCompleted, ProviderTextDelta, ProviderToolCall
+        from endless_task.runtime_v2 import Actor, AgentRunExecutor, TranscriptEntryType
+        from endless_task.storage import SqliteChatRepository, SqliteRuntimeV2Repository
+
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.workspace_root = Path(self._temporary_directory.name) / "ws"
+        self.workspace_root.mkdir()
+        self.database = Database(
+            Path(self._temporary_directory.name) / "trace.db"
+        )
+        self.database.initialize()
+        self.ledger = SqliteRuntimeLedger(self.database)
+        self.chat_repository = SqliteChatRepository(self.database)
+        self.repository = SqliteRuntimeV2Repository(self.database)
+        self._CancellationToken = CancellationToken
+        self._ProviderCompleted = ProviderCompleted
+        self._ProviderTextDelta = ProviderTextDelta
+        self._ProviderToolCall = ProviderToolCall
+        self._Actor = Actor
+        self._AgentRunExecutor = AgentRunExecutor
+        self._TranscriptEntryType = TranscriptEntryType
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _run_with_provider(self, provider):
+        from endless_task.runtime_v2 import Actor, TranscriptEntryType
+        from endless_task.tooling import ToolRegistry
+        from endless_task.workspace_runtime.effect_log import EffectLog
+        from endless_task.workspace_runtime.fs_tools import WriteWorkspaceFileTool
+        from endless_task.workspace_runtime.resolver import WorkspaceResolver
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=self._TranscriptEntryType.USER_MESSAGE,
+            actor=self._Actor.USER,
+            payload={"content": "写文件"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        registry = ToolRegistry()
+
+        class BindingResolver:
+            def __init__(self, root):
+                self._root = root
+
+            def require_binding(self, conversation_id):
+                from endless_task.workspace_runtime import WorkspaceBinding
+
+                return WorkspaceBinding(
+                    workspace_id="ws_1",
+                    root=self._root,
+                )
+
+        effect_log_dir = Path(self._temporary_directory.name) / "logs"
+        tool = WriteWorkspaceFileTool(
+            BindingResolver(self.workspace_root),
+            EffectLog(effect_log_dir),
+        )
+        registry.register(tool)
+        executor = self._AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=registry,
+            model="m",
+            span_recorder=self.ledger,
+        )
+        result = __import__("asyncio").run(
+            executor.execute(run.id, cancellation_token=self._CancellationToken())
+        )
+        return run, result
+
+    def test_completed_file_write_records_protocol_effect(self) -> None:
+        run, result = self._run_with_provider(_WriteThenStopProvider())
+        self.assertEqual("completed", result.status.value)
+        # File actually written (tool side effect happened).
+        self.assertTrue((self.workspace_root / "a.txt").exists())
+        events = self.ledger.events_for_run(run.id)
+        effect_events = [e for e in events if e.event_type == "effect_receipt"]
+        self.assertGreaterEqual(len(effect_events), 1)
+        data = effect_events[0].data
+        self.assertEqual("call_write", data["tool_call_id"])
+        self.assertEqual("committed", data["outcome"])
+        self.assertTrue(effect_events[0].safety_critical)
+
+    def test_no_effect_when_recorder_absent(self) -> None:
+        # Executor WITHOUT span_recorder: no ledger effect events.
+        from endless_task.tooling import ToolRegistry
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=self._TranscriptEntryType.USER_MESSAGE,
+            actor=self._Actor.USER,
+            payload={"content": "写"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        executor = self._AgentRunExecutor(
+            repository=self.repository,
+            provider=_WriteThenStopProvider(),
+            tool_registry=ToolRegistry(),
+            model="m",
+        )
+        import asyncio
+
+        asyncio.run(
+            executor.execute(run.id, cancellation_token=self._CancellationToken())
+        )
+        effect_events = [
+            e
+            for e in self.ledger.events_for_run(run.id)
+            if e.event_type == "effect_receipt"
+        ]
+        self.assertEqual([], effect_events)
+
+
+class _WriteThenStopProvider:
+    """Two-phase provider: tool-call turn then a stop turn."""
+
+    name = "scripted"
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    async def stream(self, request, cancellation_token):
+        from endless_task.runtime.provider import (
+            ProviderCompleted,
+            ProviderTextDelta,
+            ProviderToolCall,
+        )
+
+        self.turn += 1
+        if self.turn == 1:
+            yield ProviderTextDelta("写入文件。")
+            yield ProviderToolCall(
+                id="call_write",
+                name="write_workspace_file",
+                arguments={"path": "a.txt", "content": "hello"},
+            )
+            yield ProviderCompleted(
+                finish_reason="tool_calls", input_tokens=5, output_tokens=2
+            )
+            return
+        yield ProviderTextDelta("完成。")
+        yield ProviderCompleted(
+            finish_reason="stop", input_tokens=6, output_tokens=3
+        )
