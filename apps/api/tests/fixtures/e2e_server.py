@@ -274,6 +274,56 @@ async def resume_provider() -> dict[str, int]:
     return {"resumedCount": provider.resume_all()}
 
 
+@app.post("/__e2e/fixtures/failed-auto-restored-run", status_code=200)
+async def fixture_failed_auto_restored_run(
+    body: dict,
+) -> dict:
+    """② fixture：为一条会话制造 FAILED run + run_auto_restored 事件（仅 E2E）。"""
+    from endless_task.runtime_v2 import Actor, RunStatus, TranscriptEntryType
+
+    conversation_id = str(body.get("conversationId", "")).strip()
+    container = app.state.container
+    repo = container.runtime_v2_repository
+    conversation = container.chat_repository.get_conversation(conversation_id)
+    lane = repo.create_lane(conversation_id=conversation.id)
+    trigger = repo.append_entry(
+        conversation_id=conversation.id,
+        lane_id=lane.id,
+        type=TranscriptEntryType.USER_MESSAGE,
+        actor=Actor.USER,
+        payload={"content": "（E2E fixture 注入的失败 run）"},
+        context_policy={"include_in_llm": True, "transform": "full"},
+    )
+    run = repo.create_run(
+        conversation_id=conversation.id,
+        lane_id=lane.id,
+        trigger_entry_id=trigger.id,
+    )
+    repo.update_run_status(
+        run.id,
+        RunStatus.FAILED,
+        error_code="provider_timeout",
+        safe_message="模型调用超时（E2E fixture）。",
+    )
+    repo.append_runtime_event(
+        run_id=run.id,
+        event_type="run_failed",
+        payload={"errorCode": "provider_timeout", "safeMessage": "模型调用超时（E2E fixture）。"},
+    )
+    repo.append_runtime_event(
+        run_id=run.id,
+        event_type="run_auto_restored",
+        payload={
+            "errorCode": "provider_timeout",
+            "workspaces": 1,
+            "restored": 2,
+            "skipped": 0,
+            "trigger": "e2e_fixture",
+        },
+    )
+    return {"runId": run.id}
+
+
 @app.post("/__e2e/proposals", status_code=201)
 async def seed_proposal(body: dict[str, str]) -> dict[str, str]:
     conversation_id = body["conversationId"]
