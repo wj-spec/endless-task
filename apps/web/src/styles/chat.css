@@ -1,7 +1,7 @@
 /* chat：消息流、提案卡、折叠 */
 .conversation-stream {
   overflow-y: auto;
-  padding: 0 32px;
+  padding: 0 var(--space-8);
   scroll-behavior: smooth;
 }
 
@@ -10,7 +10,7 @@
   display: flex;
   gap: 10px;
   align-items: center;
-  margin: 16px 0 12px;
+  margin: var(--space-4) 0 var(--space-3);
   color: var(--faint);
   font-size: var(--fs-3);
   text-align: center;
@@ -28,9 +28,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin: 18px 0 4px;
-  padding: 10px 12px;
+  gap: var(--space-4);
+  margin: 18px 0 var(--space-1);
+  padding: 10px var(--space-3);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-s);
   background: var(--surface);
@@ -85,7 +85,7 @@
 }
 
 .message-row + .message-row {
-  margin-top: 24px;
+  margin-top: var(--space-6);
 }
 
 .speaker-mark {
@@ -124,7 +124,7 @@
 /* 用户轮次：轻微中性 surface + 短左标记，受控宽度而非聊天气泡 */
 .user-copy {
   max-width: 720px;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   border-left: 2px solid var(--accent-faint);
   border-radius: 0 var(--radius-s) var(--radius-s) 0;
   background: var(--surface-2);
@@ -134,7 +134,7 @@
 
 .message-copy p,
 .message-copy ul {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
 }
 
 .message-copy p:last-child,
@@ -144,12 +144,12 @@
 
 .message-copy ul,
 .message-copy ol {
-  padding-left: 20px;
+  padding-left: var(--space-5);
 }
 
 .message-copy blockquote {
-  margin: 0 0 12px;
-  padding: 2px 0 2px 14px;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-0) 0 var(--space-0) 14px;
   border-left: 3px solid var(--line-strong);
   color: var(--muted-strong);
 }
@@ -165,7 +165,7 @@
 .message-copy h3,
 .message-copy h4,
 .message-copy h5 {
-  margin: 22px 0 8px;
+  margin: 22px 0 var(--space-2);
   color: var(--ink);
   line-height: 1.4;
 }
@@ -177,7 +177,7 @@
 }
 
 .message-copy code {
-  padding: 2px 5px;
+  padding: var(--space-0) 5px;
   background: var(--line-soft);
   color: var(--ink-raise);
   font-family: var(--font-mono);
@@ -187,7 +187,7 @@
 
 /* --- 代码块（P0-1：语言标签头 + 复制 + 语法高亮） --- */
 .code-block {
-  margin: 16px 0;
+  margin: var(--space-4) 0;
   border: 1px solid var(--line);
   border-left: 2px solid var(--accent-faint);
   border-radius: var(--radius-md);
@@ -199,8 +199,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 2px 6px 2px 14px;
+  gap: var(--space-2);
+  padding: var(--space-0) 6px var(--space-0) 14px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
 }
@@ -220,7 +220,7 @@
 .code-block-copy {
   border: 0;
   background: transparent;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-s);
   color: var(--muted);
   font-size: var(--fs-1);
@@ -239,7 +239,7 @@
   margin: 0;
   max-height: 420px;
   overflow: auto;
-  padding: 12px 14px 14px;
+  padding: var(--space-3) 14px 14px;
 }
 
 .code-block pre code {
@@ -314,7 +314,7 @@
 /* GFM 扩展元素（P0-1） */
 .message-copy h1,
 .message-copy h2 {
-  margin: 22px 0 8px;
+  margin: 22px 0 var(--space-2);
   color: var(--ink);
   line-height: 1.35;
 }
@@ -345,7 +345,7 @@
 .message-copy img {
   display: block;
   max-width: 100%;
-  margin: 12px 0;
+  margin: var(--space-3) 0;
   border-radius: var(--radius-md);
 }
 
@@ -372,7 +372,7 @@
 
 .message-copy table th,
 .message-copy table td {
-  padding: 6px 12px;
+  padding: 6px var(--space-3);
   border: 1px solid var(--line-strong);
 }
 
@@ -384,7 +384,7 @@
 }
 
 .message-copy ul.contains-task-list {
-  padding-left: 4px;
+  padding-left: var(--space-1);
   list-style: none;
 }
 
@@ -393,25 +393,25 @@
 }
 
 .message-copy input[type="checkbox"] {
-  margin-right: 8px;
+  margin-right: var(--space-2);
   accent-color: var(--accent);
 }
 
 .assistant-content {
   min-width: 0;
-  padding-top: 2px;
+  padding-top: var(--space-0);
 }
 
 .activity-list {
   display: grid;
   gap: 5px;
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .activity-line {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--muted);
   font-size: var(--fs-2);
   line-height: 1.45;
@@ -447,7 +447,7 @@
 .runtime-trace {
   display: grid;
   gap: 6px;
-  margin-top: 12px;
+  margin-top: var(--space-3);
   max-width: 560px;
 }
 
@@ -486,7 +486,7 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   background: transparent;
   border: 0;
   color: var(--ink-raise);
@@ -580,13 +580,13 @@
 
 .runtime-tool-body {
   display: grid;
-  gap: 8px;
-  padding: 0 12px 12px;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 .runtime-tool-section {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .runtime-tool-label {
@@ -603,8 +603,8 @@
 }
 
 .runtime-tool-error-block {
-  margin: 0 0 4px;
-  padding: 6px 8px;
+  margin: 0 0 var(--space-1);
+  padding: 6px var(--space-2);
   border-radius: var(--radius-s);
   background: color-mix(in srgb, var(--danger-deep) 10%, transparent);
 }
@@ -616,7 +616,7 @@
 
 .runtime-tool-exit {
   justify-self: start;
-  padding: 2px 8px;
+  padding: var(--space-0) var(--space-2);
   border-radius: var(--radius-s);
   font-size: var(--fs-1);
   font-weight: 600;
@@ -659,7 +659,7 @@
 
 .runtime-tool-pre {
   margin: 0;
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   max-height: 200px;
   overflow: auto;
   border: 1px solid var(--line-faint);
@@ -685,7 +685,7 @@
 .turn-notice {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 10px;
   color: var(--faint);
   font-size: var(--fs-2);
@@ -730,7 +730,7 @@
 
 .approval-actions {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   margin-top: 10px;
 }
 
@@ -764,7 +764,7 @@
 .copy-button {
   border: 0;
   background: transparent;
-  padding: 2px 0;
+  padding: var(--space-0) 0;
   color: var(--muted);
   font-size: var(--fs-2);
   cursor: pointer;
@@ -813,7 +813,7 @@
   width: min(760px, 100%);
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: var(--space-5);
   margin: 18px auto 0;
   padding: 10px 0 10px 14px;
   border-left: 2px solid var(--danger);
@@ -843,7 +843,7 @@
 .runtime-recovery-card {
   width: min(760px, 100%);
   margin: 18px auto 0;
-  padding: 14px 16px;
+  padding: 14px var(--space-4);
   border: 1px solid var(--warn-border, var(--line));
   border-radius: var(--radius-m);
   background: var(--warn-soft);
@@ -872,8 +872,8 @@
 .runtime-recovery-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 12px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 
 .runtime-recovery-actions button {
@@ -934,7 +934,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 9px var(--space-3);
   border: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
   border-radius: var(--radius-s);
@@ -961,7 +961,7 @@
 
 .empty-hint {
   max-width: 440px;
-  margin: 20px 0 0;
+  margin: var(--space-5) 0 0;
   color: var(--faint);
   font-size: var(--fs-2);
   line-height: 1.6;
@@ -999,7 +999,7 @@
 
 @media (max-width: 760px) {
   .turn {
-    padding: 26px 0 24px;
+    padding: 26px 0 var(--space-6);
   }
 }
 
@@ -1052,8 +1052,8 @@
 .proposal-card.is-resolved {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px 12px;
-  padding: 9px 12px;
+  gap: var(--space-2) var(--space-3);
+  padding: 9px var(--space-3);
   border-left-color: var(--line-strong);
   background: transparent;
 }
@@ -1062,7 +1062,7 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .proposal-head strong {
@@ -1080,7 +1080,7 @@
 
 .proposal-kind {
   flex: none;
-  padding: 2px 7px;
+  padding: var(--space-0) 7px;
   border-radius: var(--radius-full);
   background: var(--accent-soft);
   color: var(--accent);
@@ -1116,7 +1116,7 @@
 }
 
 .proposal-preview {
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--ink);
   font-size: var(--fs-3);
   line-height: 1.6;
@@ -1134,7 +1134,7 @@
 .proposal-full-body {
   max-height: 320px;
   margin-top: 6px;
-  padding-top: 8px;
+  padding-top: var(--space-2);
   overflow-y: auto;
   border-top: 1px solid var(--line);
   color: var(--ink);
@@ -1145,7 +1145,7 @@
 }
 
 .proposal-error {
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   border-radius: var(--radius-s);
   background: var(--danger-soft);
   color: var(--danger-deep);
@@ -1155,7 +1155,7 @@
 .proposal-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 16px;
+  gap: 10px var(--space-4);
   padding-top: 10px;
   border-top: 1px solid var(--line-soft);
 }
@@ -1173,8 +1173,8 @@
 .expand-toggle {
   border: 0;
   background: transparent;
-  padding: 2px 0;
-  margin-top: 4px;
+  padding: var(--space-0) 0;
+  margin-top: var(--space-1);
   color: var(--accent);
   font-size: var(--fs-2);
   cursor: pointer;
@@ -1186,7 +1186,7 @@
 
 .collapsible-message.is-streaming .message-copy > *:last-child::after {
   content: "▍";
-  margin-left: 2px;
+  margin-left: var(--space-0);
   color: var(--accent-deep);
   animation: cursor-blink 1s steps(2, start) infinite;
 }
@@ -1195,7 +1195,7 @@
 .branch-from-answer {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: auto;
   color: var(--faint) !important;
   opacity: 0.72;
@@ -1240,7 +1240,7 @@
 }
 
 .chat-surface.is-side .turn {
-  padding: 22px 0 20px;
+  padding: 22px 0 var(--space-5);
 }
 
 .chat-surface.is-side .composer-region {
@@ -1274,13 +1274,13 @@
 }
 
 .chat-surface.is-side .empty-conversation {
-  padding: 0 8px;
+  padding: 0 var(--space-2);
 }
 
 /* P5 知识引用角标 */
 .citation-chip {
   display: inline-block;
-  margin: 0 2px;
+  margin: 0 var(--space-0);
   padding: 0 5px;
   border: 1px solid var(--line-accent);
   border-radius: 999px;
@@ -1306,8 +1306,8 @@ button.citation-chip:focus-visible {
 }
 
 .citation-card {
-  margin-top: var(--space-2, 8px);
-  padding: var(--space-3, 12px);
+  margin-top: var(--space-2, var(--space-2));
+  padding: var(--space-3, var(--space-3));
   border: 1px solid var(--line-accent);
   border-radius: var(--radius-md, 10px);
   background: var(--sheen-soft);
@@ -1318,7 +1318,7 @@ button.citation-chip:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2, 8px);
+  gap: var(--space-2, var(--space-2));
 }
 
 .citation-card-scope {
@@ -1334,16 +1334,16 @@ button.citation-chip:focus-visible {
   font-size: var(--fs-2, 16px);
   line-height: 1;
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
 }
 
 .citation-card-title {
-  margin-top: var(--space-1, 4px);
+  margin-top: var(--space-1, var(--space-1));
   font-weight: 600;
 }
 
 .citation-card-snippet {
-  margin: var(--space-1, 4px) 0 var(--space-2, 8px);
+  margin: var(--space-1, var(--space-1)) 0 var(--space-2, var(--space-2));
   color: var(--ink-2, inherit);
   font-size: var(--fs-3, 13px);
 }
@@ -1352,14 +1352,14 @@ button.citation-chip:focus-visible {
 .proposal-scope {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 4px 0;
+  gap: var(--space-2);
+  margin: var(--space-1) 0;
   font-size: var(--fs-3, 12px);
   color: var(--faint);
 }
 
 .proposal-scope button {
-  padding: 2px 8px;
+  padding: var(--space-0) var(--space-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-md, 8px);
   background: transparent;
@@ -1384,7 +1384,7 @@ button.citation-chip:focus-visible {
   max-width: 280px;
   align-items: center;
   gap: 7px;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
@@ -1412,7 +1412,7 @@ button.citation-chip:focus-visible {
   top: calc(100% + 8px);
   left: 0;
   width: min(420px, calc(100vw - 48px));
-  padding: 8px;
+  padding: var(--space-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--paper);
@@ -1424,8 +1424,8 @@ button.citation-chip:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 6px 8px;
+  gap: var(--space-3);
+  padding: 6px var(--space-2);
   color: var(--muted);
   font-size: var(--fs-2);
 }
@@ -1440,7 +1440,7 @@ button.citation-chip:focus-visible {
 .branch-navigator-tree {
   max-height: min(380px, 55vh);
   overflow-y: auto;
-  padding: 4px 0;
+  padding: var(--space-1) 0;
   border-block: 1px solid var(--line-soft);
 }
 
@@ -1449,7 +1449,7 @@ button.citation-chip:focus-visible {
   min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   border-left: 2px solid transparent;
 }
 
@@ -1488,7 +1488,7 @@ button.citation-chip:focus-visible {
 
 .branch-navigator-row input {
   min-width: 0;
-  margin: 5px 4px;
+  margin: 5px var(--space-1);
   padding: 5px 7px;
   border: 1px solid var(--line-accent);
   border-radius: var(--radius-xs);
@@ -1510,7 +1510,7 @@ button.citation-chip:focus-visible {
 
 .temporary-close-hint {
   flex: none;
-  padding: 2px 7px;
+  padding: var(--space-0) 7px;
   border-radius: 999px;
   background: var(--warn-soft);
   color: var(--warn-deep) !important;
@@ -1572,7 +1572,7 @@ button.citation-chip:focus-visible {
   z-index: var(--z-overlay);
   display: grid;
   justify-items: center;
-  padding: 12vh 16px 0;
+  padding: 12vh var(--space-4) 0;
   background: var(--scrim);
 }
 
@@ -1592,12 +1592,12 @@ button.citation-chip:focus-visible {
 .global-search-input-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .global-search-input-row input {
   width: 100%;
-  padding: 9px 12px;
+  padding: 9px var(--space-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-md);
   background: var(--paper);
@@ -1659,7 +1659,7 @@ button.citation-chip:focus-visible {
 
 .global-search-group ul {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1673,7 +1673,7 @@ button.citation-chip:focus-visible {
   display: grid;
   width: 100%;
   gap: 3px;
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -1710,7 +1710,7 @@ button.citation-chip:focus-visible {
 .user-edit-input {
   width: 100%;
   max-width: 720px;
-  padding: 10px 12px;
+  padding: 10px var(--space-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-md);
   background: var(--paper);
@@ -1736,7 +1736,7 @@ button.citation-chip:focus-visible {
 .user-edit-trigger {
   border: 0;
   background: transparent;
-  padding: 2px 0;
+  padding: var(--space-0) 0;
   color: var(--accent);
   font-size: var(--fs-2);
   cursor: pointer;
@@ -1756,13 +1756,13 @@ button.citation-chip:focus-visible {
 
 .user-row-actions {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 /* P1-4 表单错误汇总（可聚焦） */
 .form-error-summary {
-  margin: 8px 0;
-  padding: 10px 12px;
+  margin: var(--space-2) 0;
+  padding: 10px var(--space-3);
   border-left: 2px solid var(--danger);
   border-radius: var(--radius-s);
   background: var(--danger-soft);
@@ -1778,13 +1778,13 @@ button.citation-chip:focus-visible {
 
 .form-error-summary strong {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
   color: var(--danger-deep);
 }
 
 .form-error-summary ul {
   display: grid;
-  gap: 2px;
+  gap: var(--space-0);
   margin: 0;
   padding-left: 18px;
 }
