@@ -31,7 +31,9 @@ def _is_worse_when_larger(unit: EvalUnit) -> bool:
     return unit is not EvalUnit.BOOL
 
 
-def aggregate(run_evaluations: Sequence[RunEvaluation]) -> Aggregation:
+def aggregate(run_evaluations: Sequence[RunEvaluation | ScoreCard]) -> Aggregation:
+    """Aggregate per-run results (repo :class:`RunEvaluation` or trajectory
+    :class:`ScoreCard`) into one :class:`Aggregation`."""
     by_key: dict[str, list[float]] = {}
     blocker_counts: dict[str, int] = {}
     warning_counts: dict[str, int] = {}
@@ -41,17 +43,20 @@ def aggregate(run_evaluations: Sequence[RunEvaluation]) -> Aggregation:
     pass_count = warn_count = fail_count = judge_unavailable_count = 0
 
     for run in run_evaluations:
-        verdict = run.verdict
+        # Normalize carriers: RunEvaluation exposes .score_card/.verdict;
+        # ScoreCard is itself the carrier.
+        score_card = run.score_card if hasattr(run, "score_card") else run
+        verdict = run.verdict if hasattr(run, "verdict") else score_card.verdict
         if verdict.value == "pass":
             pass_count += 1
         elif verdict.value == "warn":
             warn_count += 1
         elif verdict.value == "fail":
             fail_count += 1
-        if run.score_card.judge_unavailable:
+        if score_card.judge_unavailable:
             judge_unavailable_count += 1
 
-        for metric in run.score_card.metrics:
+        for metric in score_card.metrics:
             if metric.value is None:
                 continue
             key = metric.key
