@@ -14,13 +14,14 @@ from endless_task.api.app import (
 from endless_task.runtime import FakeProvider
 
 
-def _settings(directory: str, *, trace_mode: str) -> AppSettings:
+def _settings(directory: str, *, trace_mode: str, otel_mode: str = "0") -> AppSettings:
     return AppSettings(
         database_path=Path(directory) / "api.db",
         memory_proposals_enabled=False,
         knowledge_proposals_enabled=False,
         tool_platform_v2_enabled=True,
         runtime_trace_mode=trace_mode,
+        otel_export_mode=otel_mode,
     )
 
 
@@ -89,3 +90,53 @@ class TraceFlagParsingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OtelCompositionTest(unittest.TestCase):
+    def _member_names(self, *, trace_mode: str, otel_mode: str) -> list[str]:
+        directory = tempfile.mkdtemp()
+        container = _build_container(
+            _settings(directory, trace_mode=trace_mode, otel_mode=otel_mode),
+            FakeProvider(chunks=("ok",)),
+            None,
+        )
+        container.database.initialize()
+        observer = container.runtime_v2_trace_observer
+        if observer is None:
+            return []
+        return [
+            type(member).__name__
+            for member in getattr(observer, "_observers", [])
+        ]
+
+    def test_otel_off_adds_no_bridge(self) -> None:
+        self.assertEqual(
+            ["LedgerTraceObserver", "RunTrajectoryExporter"],
+            self._member_names(trace_mode="all", otel_mode="0"),
+        )
+
+    def test_otel_on_alone_wires_bridge(self) -> None:
+        self.assertEqual(
+            ["JournalOtelBridge"],
+            self._member_names(trace_mode="0", otel_mode="otlp-http"),
+        )
+
+    def test_both_on_wires_all_three(self) -> None:
+        self.assertEqual(
+            [
+                "LedgerTraceObserver",
+                "RunTrajectoryExporter",
+                "JournalOtelBridge",
+            ],
+            self._member_names(trace_mode="all", otel_mode="otlp-http"),
+        )
+
+    def test_strict_otel_mode_parse(self) -> None:
+        from endless_task.api.app import _parse_otel_export_mode
+
+        self.assertEqual("0", _parse_otel_export_mode("0"))
+        self.assertEqual("0", _parse_otel_export_mode("off"))
+        self.assertEqual("otlp-http", _parse_otel_export_mode("otlp-http"))
+        self.assertEqual("otlp-http", _parse_otel_export_mode("1"))
+        with self.assertRaises(ValueError):
+            _parse_otel_export_mode("prometheus")

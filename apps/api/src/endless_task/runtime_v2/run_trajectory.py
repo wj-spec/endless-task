@@ -247,5 +247,106 @@ __all__ = [
     "JournalEventView",
     "JournalRunView",
     "RunTrajectoryExporter",
+    "JournalOtelBridge",
     "default_journal_reader",
 ]
+
+
+#: Journal event types that project to OTLP log records. Content-bearing
+#: events (model_text_delta, tool_progress_update, context_fingerprint,
+#: steer_injected) are excluded by default (08 §2.2: no secrets/content in
+#: observability by default).
+_OTEL_EXPORTABLE_EVENT_TYPES = frozenset(
+    {
+        "run_cancelled",
+        "run_failed",
+        "run_status_changed",
+        "run_cancel_requested",
+        "safety_stop",
+        "model_turn_cancelled",
+        "model_turn_failed",
+        "tool_execution_rejected",
+        "compaction_started",
+        "compaction_completed",
+    }
+)
+
+#: Payload keys projected onto OTLP log records; anything else is dropped
+#: before export (second gate after EVENT_DATA_ALLOWLIST).
+_OTEL_SAFE_PAYLOAD_KEYS = frozenset(
+    {
+        "errorCode",
+        "safeMessage",
+        "reason",
+        "status",
+        "toolName",
+        "cancelledBy",
+        "releasedTokens",
+    }
+)
+
+
+class JournalOtelBridge:
+    """Project exportable journal events to OTLP via :class:`OtelExporter`.
+
+    The v2 journal is the source of truth; OTel stays an exporter (08
+    §OE-5). Only allowlisted event types and payload keys are projected;
+    the exporter applies its own attribute allowlist as a second gate, so
+    secrets cannot leak through either layer. Export failures return
+    ``False`` from ``export_batch`` and never break the run.
+    """
+
+    def __init__(
+        self,
+        *,
+        exporter,
+        journal_reader: Callable[[str], JournalRunView],
+    ) -> None:
+        if not callable(journal_reader):
+            raise ValueError("journal_reader must be callable")
+        if not callable(getattr(exporter, "export_batch", None)):
+            raise ValueError("exporter must expose export_batch")
+        self._exporter = exporter
+        self._journal_reader = journal_reader
+
+    async def on_run_terminal(self, run_id: str) -> None:
+        try:
+            view = self._journal_reader(run_id)
+            events = tuple(
+                self._project_event(view, event)
+                for event in view.events
+                if event.event_type in _OTEL_EXPORTABLE_EVENT_TYPES
+            )
+            if not events:
+                return
+            self._exporter.export_batch(events=events)
+        except Exception:
+            logger.exception(
+                "OTel journal bridge failed for run",
+                extra={"run_id": run_id},
+            )
+
+    def _project_event(
+        self,
+        view: JournalRunView,
+        event: JournalEventView,
+    ):
+        # Imported by path: keeps this module free of storage imports at
+        # module top.
+        from endless_task.runtime_ledger.sqlite_recorder import StoredLedgerEvent
+
+        data = {
+            key: event.data[key]
+            for key in _OTEL_SAFE_PAYLOAD_KEYS
+            if key in event.data
+        }
+        return StoredLedgerEvent(
+            event_id=event.event_id,
+            trace_id=view.run_id,
+            run_id=view.run_id,
+            correlation_id=view.correlation_id,
+            event_type=event.event_type,
+            safety_critical=event.safety_critical,
+            occurred_at=event.occurred_at,
+            data=data,
+        )

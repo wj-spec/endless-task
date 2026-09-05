@@ -102,6 +102,14 @@ EVENT_DATA_ALLOWLIST = frozenset(
         "status",
         "duration_ms",
         "diagnostic_code",
+        # v2 journal lifecycle projection (run_trajectory.JournalOtelBridge):
+        # only explicit safe payload keys are projected onto events, and
+        # this allowlist is the exporter's second gate.
+        "errorCode",
+        "safeMessage",
+        "reason",
+        "toolName",
+        "cancelledBy",
     }
 )
 

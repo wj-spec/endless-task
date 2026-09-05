@@ -10,6 +10,7 @@ from pathlib import Path
 from endless_task.runtime_v2.run_trajectory import (
     FanoutTraceObserver,
     JournalEventView,
+    JournalOtelBridge,
     JournalRunView,
     RunTrajectoryExporter,
     default_journal_reader,
@@ -329,3 +330,119 @@ class FailedRunExecutorE2ETest(unittest.TestCase):
             any(event["eventType"] == "run_failed" for event in events),
             events,
         )
+
+
+class JournalOtelBridgeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from endless_task.runtime_ledger.otel_exporter import (
+            OtelExportMode,
+            OtelExporter,
+            OtelExporterConfig,
+        )
+
+        self._temporary_directory = tempfile.TemporaryDirectory()
+
+        class RecordingTransport:
+            def __init__(self) -> None:
+                self.bodies: list[bytes] = []
+
+            def __call__(self, endpoint: str, body: bytes) -> int:
+                self.bodies.append(body)
+                return 200
+
+        self.transport = RecordingTransport()
+        self.exporter = OtelExporter(
+            OtelExporterConfig(mode=OtelExportMode.OTLP_HTTP),
+            transport=self.transport,
+        )
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _events_view(self, *, events: list | None = None):
+        return JournalRunView(
+            run_id="run_1",
+            status="failed",
+            error_code="x",
+            safe_message="m",
+            started_at="s",
+            finished_at="f",
+            correlation_id="corr_1",
+            events=tuple(
+                events
+                or [
+                    JournalEventView(
+                        event_id="e1",
+                        event_type="run_failed",
+                        occurred_at="2026-09-05T00:00:01Z",
+                        safety_critical=True,
+                        data={"errorCode": "provider_timeout"},
+                    )
+                ]
+            ),
+        )
+
+    def test_exports_allowlisted_events_only(self) -> None:
+        import asyncio
+
+        bridge = JournalOtelBridge(
+            exporter=self.exporter,
+            journal_reader=lambda run_id: self._events_view(
+                events=[
+                    JournalEventView(
+                        event_id="e1",
+                        event_type="run_failed",
+                        occurred_at="2026-09-05T00:00:01Z",
+                        safety_critical=True,
+                        data={"errorCode": "provider_timeout", "secret": "sk-abc"},
+                    ),
+                    # content-bearing event must NOT export
+                    JournalEventView(
+                        event_id="e2",
+                        event_type="model_text_delta",
+                        occurred_at="2026-09-05T00:00:02Z",
+                        safety_critical=False,
+                        data={"delta": "user content"},
+                    ),
+                ]
+            ),
+        )
+        asyncio.run(bridge.on_run_terminal("run_1"))
+        self.assertEqual(1, len(self.transport.bodies))
+        body = json.loads(self.transport.bodies[0])
+        logs = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+        self.assertEqual(1, len(logs))
+        self.assertEqual("run_failed", logs[0]["body"]["stringValue"])
+        keys = {item["key"] for item in logs[0]["attributes"]}
+        # safe payload key exported; secret key dropped
+        self.assertIn("errorCode", keys)
+        self.assertNotIn("secret", keys)
+
+    def test_no_exportable_events_sends_nothing(self) -> None:
+        import asyncio
+
+        bridge = JournalOtelBridge(
+            exporter=self.exporter,
+            journal_reader=lambda run_id: self._events_view(
+                events=[
+                    JournalEventView(
+                        event_id="e1",
+                        event_type="model_turn_started",
+                        occurred_at="2026-09-05T00:00:01Z",
+                        safety_critical=False,
+                        data={},
+                    )
+                ]
+            ),
+        )
+        asyncio.run(bridge.on_run_terminal("run_1"))
+        self.assertEqual([], self.transport.bodies)
+
+    def test_bridge_never_raises_on_reader_error(self) -> None:
+        import asyncio
+
+        def explode(run_id: str) -> JournalRunView:
+            raise RuntimeError("journal down")
+
+        bridge = JournalOtelBridge(exporter=self.exporter, journal_reader=explode)
+        asyncio.run(bridge.on_run_terminal("run_1"))

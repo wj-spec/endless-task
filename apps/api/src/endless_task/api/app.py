@@ -329,6 +329,11 @@ class AppSettings:
     # wiring at all; errors|sampled|all enable the terminal-run usage
     # mirror into the SQLite trace ledger. Illegal env values fail startup.
     runtime_trace_mode: str = "0"
+    # M6 W6-4: OTLP export mode (08 §OE-5). "0" (default) = exporter not
+    # assembled; otlp-http exports terminal-run journal events to the
+    # endpoint below. Illegal env values fail startup.
+    otel_export_mode: str = "0"
+    otel_export_endpoint: str = "http://127.0.0.1:4318/v1/traces"
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -471,6 +476,13 @@ class AppSettings:
             ),
             runtime_trace_mode=_parse_runtime_trace_mode(
                 env.get("ENDLESS_TASK_RUNTIME_TRACE", "0"),
+            ),
+            otel_export_mode=_parse_otel_export_mode(
+                env.get("ENDLESS_TASK_OTEL_EXPORT", "0"),
+            ),
+            otel_export_endpoint=env.get(
+                "ENDLESS_TASK_OTEL_ENDPOINT",
+                "http://127.0.0.1:4318/v1/traces",
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -1193,6 +1205,16 @@ def _trace_runtime_version() -> str:
     return __version__ or "0.0.0"
 
 
+def _parse_otel_export_mode(value: str) -> str:
+    """Strict OTLP export mode parsing (08 §OE-5): 0|otlp-http."""
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off", ""}:
+        return "0"
+    if normalized in {"1", "true", "yes", "on", "otlp", "otlp-http"}:
+        return "otlp-http"
+    raise ValueError("ENDLESS_TASK_OTEL_EXPORT 只允许 0|otlp-http")
+
+
 def _parse_hybrid_weights(value: str) -> tuple[float, float]:
     text = (value or "").strip()
     if not text:
@@ -1316,6 +1338,7 @@ def _build_container(
     # distinction applies to span events in later slices).
     runtime_v2_trace_observer: Optional[LedgerTraceObserver] = None
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
+    trace_fanout_members: list[object] = []
     if settings.runtime_trace_mode != "0":
         trace_ledger = SqliteRuntimeLedger(database)
         runtime_v2_trace_observer = LedgerTraceObserver(
@@ -1324,6 +1347,7 @@ def _build_container(
             run_reader=default_run_reader(runtime_v2_repository),
             usage_exists=default_usage_exists(trace_ledger),
         )
+        trace_fanout_members.append(runtime_v2_trace_observer)
         runtime_v2_trajectory_exporter = RunTrajectoryExporter(
             export_root=settings.database_path.parent / "v2_trajectory_exports",
             journal_reader=default_journal_reader(runtime_v2_repository),
@@ -1332,9 +1356,32 @@ def _build_container(
             model=settings.model,
             config_fingerprint=settings.system_prompt_version,
         )
-        runtime_v2_trace_observer = FanoutTraceObserver(
-            [runtime_v2_trace_observer, runtime_v2_trajectory_exporter]
+        trace_fanout_members.append(runtime_v2_trajectory_exporter)
+    # M6 W6-4: optional OTLP export (08 §OE-5). Default off; when enabled
+    # a journal bridge exports allowlisted terminal-run events through the
+    # OtelExporter. Export failure never affects the run.
+    if settings.otel_export_mode == "otlp-http":
+        from endless_task.runtime_ledger.otel_exporter import (
+            OtelExportMode,
+            OtelExporter,
+            OtelExporterConfig,
         )
+        from endless_task.runtime_v2.run_trajectory import JournalOtelBridge
+
+        otel_exporter = OtelExporter(
+            OtelExporterConfig(
+                mode=OtelExportMode.OTLP_HTTP,
+                endpoint=settings.otel_export_endpoint,
+            )
+        )
+        trace_fanout_members.append(
+            JournalOtelBridge(
+                exporter=otel_exporter,
+                journal_reader=default_journal_reader(runtime_v2_repository),
+            )
+        )
+    if trace_fanout_members:
+        runtime_v2_trace_observer = FanoutTraceObserver(trace_fanout_members)
     provider_manager = ProviderManager(
         repository=provider_profile_repository,
         fallback_provider=selected_provider,
