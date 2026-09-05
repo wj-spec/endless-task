@@ -165,7 +165,11 @@ class RunCheckpointCoordinator:
         manifest = self._load_manifest(ref)
         from endless_task.execution_env.checkpoint import plan_restore as _plan
 
-        return _plan(manifest, Path(ref.workspace_root), ledger=self._ledger)
+        return _plan(
+            manifest,
+            Path(ref.workspace_root),
+            ledger=self._run_scoped_ledger(run_id),
+        )
 
     def apply_restore(
         self,
@@ -180,7 +184,7 @@ class RunCheckpointCoordinator:
             manifest,
             Path(ref.workspace_root),
             self._store_root,
-            ledger=self._ledger,
+            ledger=self._run_scoped_ledger(run_id),
         )
         logger.info(
             "Run workspace restored from checkpoint",
@@ -223,19 +227,21 @@ class RunCheckpointCoordinator:
     def record_effect(
         self,
         *,
+        run_id: str,
         effect_id: str,
         path: str,
         operation: str,
         before_hash: Optional[str] = None,
         after_hash: Optional[str] = None,
     ) -> None:
-        """Ledger an agent file side effect (interactive tool path, M3B A).
+        """Ledger an agent file side effect (interactive tool path, M3B A/D).
 
         Execution-env backends append their own ledger rows; workspace tools
         (write/delete) reach this hook so the run coordinator sees the same
-        attribution. Best-effort: a failed append only degrades restore
-        attribution (the change is then treated as user-owned and skipped),
-        never blocks the tool result.
+        attribution. ``run_id`` (M3B slice D) scopes the row to its run so a
+        restore of another run never attributes it. Best-effort: a failed
+        append only degrades restore attribution (the change is then treated
+        as user-owned and skipped), never blocks the tool result.
         """
         if self._ledger is None:
             return
@@ -248,6 +254,7 @@ class RunCheckpointCoordinator:
                     timestamp=ledger_timestamp(),
                     before_hash=before_hash,
                     after_hash=after_hash,
+                    run_id=require_identifier(run_id, field_name="run_id"),
                 )
             )
         except Exception:
@@ -288,6 +295,36 @@ class RunCheckpointCoordinator:
 
     def _load_manifest(self, ref: RunCheckpointRef) -> CheckpointManifest:
         return read_manifest(self._store_root, ref.checkpoint_id)
+
+    # -- run-scoped attribution (M3B slice D) ------------------------------
+
+    def _run_scoped_ledger(self, run_id: str):
+        """Ledger view restricted to one run's rows + legacy rows.
+
+        ``execution_env.plan_restore`` only consults ``last_entry_for``; this
+        wrapper answers with the latest entry for a path among rows whose
+        ``run_id`` is the restoring run or None (rows written before slice D
+        carried no run and are attributed to whichever run restores them —
+        keeps pre-slice-D ledger lines and their tests working).
+        """
+        ledger = self._ledger
+        if ledger is None:
+            return None
+        normalized_run = require_identifier(run_id, field_name="run_id")
+
+        class _RunScopedLedger:
+            def last_entry_for(self, path: str):
+                latest = None
+                for entry in reversed(ledger.entries()):
+                    if entry.path != path:
+                        continue
+                    if entry.run_id not in (None, normalized_run):
+                        continue
+                    latest = entry
+                    break
+                return latest
+
+        return _RunScopedLedger()
 
     # -- durable ref index (M3B slice C) -----------------------------------
 

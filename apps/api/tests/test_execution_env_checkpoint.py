@@ -151,6 +151,38 @@ class LedgerTest(unittest.TestCase):
             self.assertEqual("b.txt", ledger.last_entry_for("b.txt").path)
             self.assertIsNone(ledger.last_entry_for("missing.txt"))
 
+    def test_ledger_run_id_roundtrip_and_legacy_parity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = FileMutationLedger(Path(directory) / "ledger.jsonl")
+            ledger.append(
+                LedgerEntry(
+                    effect_id="e1",
+                    path="a.txt",
+                    operation="write",
+                    timestamp=ledger_timestamp(),
+                    before_hash=None,
+                    after_hash="h1",
+                    run_id="run_x",
+                )
+            )
+            ledger.append(
+                LedgerEntry(
+                    effect_id="e2",
+                    path="b.txt",
+                    operation="write",
+                    timestamp=ledger_timestamp(),
+                    before_hash=None,
+                    after_hash="h2",
+                )
+            )
+            entries = ledger.entries()
+            self.assertEqual("run_x", entries[0].run_id)
+            self.assertIsNone(entries[1].run_id)  # legacy row parse
+            self.assertIn('"run_id":"run_x"', ledger._path.read_text(encoding="utf-8"))
+            # Legacy rows (pre-slice-D) never wrote the key; parsing keeps None.
+            ledger._path.write_text('{"effect_id":"e3","path":"c.txt","operation":"write","timestamp":"t"}\n', encoding="utf-8")
+            self.assertIsNone(ledger.entries()[0].run_id)
+
 
 if __name__ == "__main__":
     unittest.main()

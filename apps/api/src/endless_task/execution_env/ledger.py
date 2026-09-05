@@ -23,16 +23,25 @@ class LedgerEntry:
     timestamp: str
     before_hash: Optional[str] = None
     after_hash: Optional[str] = None
+    #: Owning run (M3B slice D). None = legacy row written before run
+    #: attribution; restore treats None rows as belonging to whichever run
+    #: is restoring (backward compatible with pre-slice-D ledger lines).
+    run_id: Optional[str] = None
 
     def to_json(self) -> Mapping[str, Any]:
-        return {
+        row: dict[str, Any] = {
             "effect_id": self.effect_id,
             "path": self.path,
             "operation": self.operation,
             "timestamp": self.timestamp,
-            "before_hash": self.before_hash,
-            "after_hash": self.after_hash,
         }
+        if self.before_hash is not None:
+            row["before_hash"] = self.before_hash
+        if self.after_hash is not None:
+            row["after_hash"] = self.after_hash
+        if self.run_id is not None:
+            row["run_id"] = self.run_id
+        return row
 
 
 class FileMutationLedger:
@@ -100,6 +109,7 @@ class FileMutationLedger:
                     ),
                     before_hash=raw.get("before_hash"),
                     after_hash=raw.get("after_hash"),
+                    run_id=raw.get("run_id"),
                 )
             )
         return tuple(rows)

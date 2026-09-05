@@ -245,6 +245,7 @@ class LocalExecutionBackend(ExecutionEnvironment):
                     timestamp=ledger_timestamp(),
                     before_hash=before_hash,
                     after_hash=after_ref,
+                    run_id=request.trace.run_id,
                 )
             )
         return receipt

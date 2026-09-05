@@ -449,5 +449,40 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         await self._close_app(restarted, restarted_app)
 
 
+    async def test_restoring_old_run_keeps_later_run_change_on_same_file(self) -> None:
+        # M3B slice D（真实工具路径）：同一文件 run_1 写 v1、run_2 写 v2（各自 run_id
+        # 记账）。恢复 run_1 保留 run_2 的 intact 改动；恢复 run_2 只回自己的改动。
+        (self._root / "f.txt").write_text("orig", encoding="utf-8")
+        first = ScriptedWriteProvider(path="f.txt", content="v1")
+        client, app, _ = await self._app(first)
+        created = await client.post(
+            "/workspaces",
+            json={"name": "E2E区", "rootPath": str(self._root)},
+        )
+        workspace_id = created.json()["workspace"]["id"]
+        _, run_1 = await self._run_once(
+            client, app, first, key="k-same-r1", workspace_id=workspace_id
+        )
+        second = ScriptedWriteProvider(path="f.txt", content="v2")
+        _, run_2 = await self._run_once(
+            client, app, second, key="k-same-r2", workspace_id=workspace_id
+        )
+        self.assertEqual("v2", (self._root / "f.txt").read_text(encoding="utf-8"))
+
+        coordinator = app.state.container.run_checkpoint_coordinator
+        restored_1, skipped_1 = coordinator.apply_restore(
+            run_id=run_1, workspace_root=str(self._root)
+        )
+        self.assertNotIn("f.txt", restored_1)
+        self.assertIn("f.txt", skipped_1)
+        self.assertEqual("v2", (self._root / "f.txt").read_text(encoding="utf-8"))
+
+        restored_2, _ = coordinator.apply_restore(
+            run_id=run_2, workspace_root=str(self._root)
+        )
+        self.assertIn("f.txt", restored_2)
+        self.assertEqual("v1", (self._root / "f.txt").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

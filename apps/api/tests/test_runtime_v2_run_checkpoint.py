@@ -143,6 +143,60 @@ class RunCheckpointCoordinatorTest(unittest.TestCase):
         self.assertEqual(2, len(self.coordinator._checkpoints["run_1"]))
 
 
+    def test_restore_old_run_never_clobbers_later_run_intact_change(self) -> None:
+        # M3B slice D: 同一文件先 run_1 改、后 run_2 改（各带自己的 run_id 记账）。
+        # 恢复 run_1 不得把 run_2 的 intact 改动一起回滚；恢复 run_2 只回自己。
+        (self.ws / "f.txt").write_text("orig", encoding="utf-8")
+        import hashlib
+
+        def sha(data: bytes) -> str:
+            return hashlib.sha256(data).hexdigest()
+
+        def write_and_record(run_id: str, content: str) -> None:
+            before = (self.ws / "f.txt").read_bytes()
+            (self.ws / "f.txt").write_text(content, encoding="utf-8")
+            self.coordinator.record_effect(
+                run_id=run_id,
+                effect_id=f"fx_{run_id}",
+                path="f.txt",
+                operation="file_write",
+                before_hash=sha(before),
+                after_hash=sha(content.encode("utf-8")),
+            )
+
+        self.coordinator.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+        write_and_record("run_1", "v1")
+        self.coordinator.ensure_checkpoint(run_id="run_2", workspace_root=str(self.ws))
+        write_and_record("run_2", "v2")
+        self.assertEqual("v2", (self.ws / "f.txt").read_text(encoding="utf-8"))
+
+        restored_1, skipped_1 = self.coordinator.apply_restore(
+            run_id="run_1", workspace_root=str(self.ws)
+        )
+        self.assertNotIn("f.txt", restored_1)
+        self.assertIn("f.txt", skipped_1)  # run_2's intact change = other-run: keep
+        self.assertEqual("v2", (self.ws / "f.txt").read_text(encoding="utf-8"))
+
+        restored_2, skipped_2 = self.coordinator.apply_restore(
+            run_id="run_2", workspace_root=str(self.ws)
+        )
+        self.assertIn("f.txt", restored_2)
+        self.assertNotIn("f.txt", skipped_2)
+        self.assertEqual("v1", (self.ws / "f.txt").read_text(encoding="utf-8"))
+
+    def test_legacy_ledger_rows_without_run_id_still_restore(self) -> None:
+        # 兼容 slice D 之前写的账本行（run_id=None）：按恢复 run 归属。
+        (self.ws / "f.txt").write_text("orig", encoding="utf-8")
+        self.coordinator.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+        self._agent_write("f.txt", "changed")
+        restored, skipped = self.coordinator.apply_restore(
+            run_id="run_1", workspace_root=str(self.ws)
+        )
+        self.assertIn("f.txt", restored)
+        self.assertNotIn("f.txt", skipped)
+        self.assertEqual("orig", (self.ws / "f.txt").read_text(encoding="utf-8"))
+
+
 class RunCheckpointPersistenceTest(unittest.TestCase):
     """M3B slice C: durable ref index survives coordinator/process restart."""
 
@@ -184,6 +238,7 @@ class RunCheckpointPersistenceTest(unittest.TestCase):
 
         after = hashlib.sha256(b"agent-changed").hexdigest()
         second.record_effect(
+            run_id="run_1",
             effect_id="fx_post_restart",
             path="task.txt",
             operation="file_write",

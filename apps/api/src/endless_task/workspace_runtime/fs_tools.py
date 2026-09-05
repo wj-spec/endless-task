@@ -657,6 +657,7 @@ def _record_mutation(
     run_id = call.response_variant_id or call.id
     try:
         coordinator.record_effect(
+            run_id=run_id,
             effect_id=f"{operation}:{relative}:{run_id}:{(after_hash or before_hash or 'x')[:16]}",
             path=relative,
             operation=operation,
