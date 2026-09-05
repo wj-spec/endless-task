@@ -26,6 +26,7 @@ import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { CopyButton } from "./CopyButton";
+import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -253,6 +254,7 @@ export function ChatWorkSurface({
 }: ChatWorkSurfaceProps) {
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
@@ -431,6 +433,11 @@ export function ChatWorkSurface({
           onRestore={onRestore}
           onRestoreLane={onRestoreLane}
           onSearch={search.openSearch}
+          onGlobalSearch={
+            variant === "main" && onOpenConversation
+              ? () => setGlobalSearchOpen(true)
+              : undefined
+          }
           onSetConfirmingDelete={() => setConfirmingDelete(true)}
           onSetRenaming={setRenaming}
           onShowArchivedLanes={onShowArchivedLanes}
@@ -1053,6 +1060,24 @@ export function ChatWorkSurface({
           onClose={() => setConfirmingDelete(false)}
           onConfirm={onDelete}
           title="删除对话"
+        />
+      ) : null}
+
+      {globalSearchOpen ? (
+        <GlobalSearchDialog
+          onClose={() => setGlobalSearchOpen(false)}
+          onOpenAssistantTab={(tab) => {
+            setGlobalSearchOpen(false);
+            onOpenAssistantTab?.(tab);
+          }}
+          onOpenConversation={(conversationId) => {
+            setGlobalSearchOpen(false);
+            onOpenConversation?.(conversationId);
+          }}
+          onOpenWorkspace={() => {
+            setGlobalSearchOpen(false);
+            onOpenWorkspace?.();
+          }}
         />
       ) : null}
     </SurfaceRoot>

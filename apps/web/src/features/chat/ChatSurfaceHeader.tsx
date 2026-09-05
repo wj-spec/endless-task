@@ -30,6 +30,7 @@ type ChatSurfaceHeaderProps = {
   onRestore: () => void;
   onRestoreLane?: (laneId: string) => void;
   onSearch: () => void;
+  onGlobalSearch?: () => void;
   onSetConfirmingDelete: () => void;
   onSetRenaming: (renaming: boolean) => void;
   onShowArchivedLanes?: (visible: boolean) => void | Promise<void>;
@@ -63,6 +64,9 @@ export function ChatSurfaceHeader({
   onRequestSideClose,
   onRestore,
   onRestoreLane,
+
+    onGlobalSearch,
+
   onSearch,
   onSetConfirmingDelete,
   onSetRenaming,
@@ -178,6 +182,17 @@ export function ChatSurfaceHeader({
       <div className="surface-header-side">
         {conversation ? (
           <div className="conversation-actions">
+            {onGlobalSearch ? (
+              <button
+                aria-label="全局搜索"
+                className="icon-button conversation-icon-button"
+                onClick={onGlobalSearch}
+                title="搜索所有会话、知识、记忆与成果"
+                type="button"
+              >
+                <SearchIcon size={19} />
+              </button>
+            ) : null}
             <button
               aria-label="搜索当前会话"
               className="icon-button conversation-icon-button"

@@ -975,3 +975,26 @@ export type PermissionSettings = {
   mode: PermissionMode;
   updatedAt: string;
 };
+
+export type GlobalSearchScope = "source" | "memory" | "artifact" | "conversation";
+
+export type GlobalSearchHit = {
+  refId: string;
+  title: string;
+  snippet: string;
+  updatedAt?: string | null;
+  conversationId?: string | null;
+  sourceId?: string | null;
+  chunkSeq?: number | null;
+  kind?: string | null;
+  origin?: string | null;
+};
+
+export type GlobalSearchGroup = {
+  scope: GlobalSearchScope;
+  hits: GlobalSearchHit[];
+};
+
+export type GlobalSearchResponse = {
+  groups: GlobalSearchGroup[];
+};

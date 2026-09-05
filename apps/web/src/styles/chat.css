@@ -1549,3 +1549,144 @@ button.citation-chip:focus-visible {
     margin-left: 0;
   }
 }
+
+/* P0-4 全局搜索 */
+.global-search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: grid;
+  justify-items: center;
+  padding: 12vh 16px 0;
+  background: var(--scrim);
+}
+
+.global-search-dialog {
+  display: grid;
+  width: min(640px, 100%);
+  max-height: 70vh;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-deep);
+}
+
+.global-search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.global-search-input-row input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: var(--fs-4);
+}
+
+.global-search-input-row input:focus-visible,
+.global-search-input-row input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+
+.global-search-close {
+  border: 0;
+  background: transparent;
+  padding: 6px;
+  border-radius: var(--radius-s);
+  color: var(--muted);
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.global-search-close:hover,
+.global-search-close:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+}
+
+.global-search-hint,
+.global-search-status,
+.global-search-empty {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-2);
+}
+
+.global-search-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-2);
+}
+
+.global-search-group {
+  display: grid;
+  gap: 6px;
+}
+
+.global-search-group h2 {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.global-search-group ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.global-search-group li {
+  min-width: 0;
+}
+
+.global-search-group li button {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.global-search-group li button:hover,
+.global-search-group li button:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.global-search-hit-title {
+  color: var(--ink);
+  font-size: var(--fs-3);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-search-hit-snippet {
+  color: var(--muted);
+  font-size: var(--fs-2);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}

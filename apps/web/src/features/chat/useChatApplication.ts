@@ -28,6 +28,15 @@ import {
 
 const WORKSPACE_STORAGE_KEY = "endless-task.workspace";
 const ACTIVE_CONVERSATION_STORAGE_KEY = "endless-task.active-conversation";
+const conversationIdFromHash = (): string | null => {
+  try {
+    const match = /^#\/conversation\/([^/]+)/.exec(globalThis.location?.hash ?? "");
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+};
+
 
 const readStoredWorkspace = (): string | null => {
   try {
@@ -987,6 +996,36 @@ export function useChatApplication() {
   }, [activeConversationId, snapshots]);
 
   useEffect(() => {
+    // URL 深链（P0-4）：#/conversation/<id> 优先于本地恢复目标。
+    const hashId = conversationIdFromHash();
+    if (!hashId) return;
+    const storedId = readStoredActiveConversation()?.conversationId ?? undefined;
+    if (hashId === storedId) return; // 常规恢复路径已覆盖
+    let cancelled = false;
+    void chatApi
+      .getConversation(hashId)
+      .then((snapshot) => {
+        if (cancelled) return;
+        const workspaceId = snapshot.conversation.workspaceId ?? null;
+        setWorkspaceId((current) => current ?? workspaceId);
+        try {
+          globalThis.localStorage?.setItem(
+            ACTIVE_CONVERSATION_STORAGE_KEY,
+            JSON.stringify({ conversationId: hashId, workspaceId }),
+          );
+        } catch {
+          // 忽略存储异常。
+        }
+      })
+      .catch(() => {
+        // 无效/已删除会话：静默回退到常规恢复路径。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     // 刷新恢复上次会话：activeConversationId 尚未恢复时，用已持久化的会话 id 作为首选目标。
     const restored = activeConversationId
       ? activeConversationId
@@ -994,6 +1033,37 @@ export function useChatApplication() {
     void loadConversationList(statusFilter, restored);
     // active id 不作为重载触发；切换工作区时列表整体换防。
   }, [statusFilter, workspaceId, workspaceCanCreate]);
+
+  useEffect(() => {
+    // 主会话变化即同步 URL（replaceState，不产生历史项）；临时/遗留 ephemeral 不写。
+    if (!activeConversationId) return;
+    const snapshot = snapshots[activeConversationId];
+    if (snapshot?.conversation.kind === "ephemeral") return;
+    const next = `#/conversation/${encodeURIComponent(activeConversationId)}`;
+    try {
+      if ((globalThis.location?.hash ?? "") !== next) {
+        globalThis.history?.replaceState(null, "", next);
+      }
+    } catch {
+      // 忽略地址栏限制。
+    }
+  }, [activeConversationId, snapshots]);
+
+  const activeConversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    // 支持浏览器前进/后退与手动改地址打开其他会话。
+    const onHashChange = () => {
+      const id = conversationIdFromHash();
+      if (!id || id === activeConversationIdRef.current) return;
+      void openConversation(id);
+    };
+    globalThis.addEventListener?.("hashchange", onHashChange);
+    return () => globalThis.removeEventListener?.("hashchange", onHashChange);
+  }, [openConversation]);
 
   useEffect(
     () => () => {

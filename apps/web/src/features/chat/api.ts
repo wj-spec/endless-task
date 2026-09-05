@@ -41,6 +41,7 @@ import type { KnowledgeProposal,
   RuntimeV2RunSelectResponse,
   RuntimeV2RunVariantListResponse,
   RuntimeV2Snapshot,
+  GlobalSearchResponse,
   UploadedTextFile,
   BrowseItem,
   EffectLogEntry,
@@ -623,6 +624,17 @@ export const chatApi = {
       `/artifacts/${artifactId}/versions`,
     );
     return response.items;
+  },
+  searchGlobal: async (
+    query: string,
+    scopes: string[] = ["source", "memory", "artifact", "conversation"],
+    limit = 6,
+  ) => {
+    const response = await request<GlobalSearchResponse>("/search", {
+      method: "POST",
+      body: JSON.stringify({ query, scopes, limit }),
+    });
+    return response.groups;
   },
   listKnowledgeSources: async (
     status = "active",
