@@ -648,7 +648,7 @@
 }
 
 .workspace-item-meta.is-unbound {
-  color: var(--danger, #b4533a);
+  color: var(--danger);
   font-weight: 650;
 }
 
@@ -689,7 +689,7 @@
 
 .rail-error {
   margin: 8px 10px 0;
-  color: var(--danger, #b4533a);
+  color: var(--danger);
   font-size: var(--fs-2);
   line-height: 1.4;
 }

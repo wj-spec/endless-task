@@ -695,15 +695,15 @@
 }
 
 .capability-pill.is-ok .capability-dot {
-  background: #2f9e6e;
+  background: var(--success);
 }
 
 .capability-pill.is-degraded .capability-dot {
-  background: #c08a2e;
+  background: var(--warn-mid);
 }
 
 .capability-pill.is-unavailable .capability-dot {
-  background: var(--danger, #d64545);
+  background: var(--danger);
 }
 
 .assistant-panel-tabs {
@@ -828,11 +828,7 @@
   white-space: nowrap;
 }
 
-@media (max-width: 760px) {
-  .workspace-fab {
-    display: none;
-  }
-}
+
 
 /* P5 知识源管理 */
 .knowledge-toolbar {
@@ -893,8 +889,8 @@
 }
 
 .knowledge-badge.is-warning {
-  border-color: var(--warn-mid, #c08a2e);
-  color: var(--warn-mid, #c08a2e);
+  border-color: var(--warn-mid);
+  color: var(--warn-mid);
 }
 
 /* R6.3 模型配置管理 */
@@ -994,8 +990,8 @@
 }
 
 .provider-card .danger-button {
-  border-color: color-mix(in srgb, var(--danger, #d64545) 55%, transparent);
-  color: var(--danger, #d64545);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
 }
 
 .provider-form {
@@ -1134,8 +1130,8 @@
 }
 
 .provider-model-actions .danger-button {
-  border-color: color-mix(in srgb, var(--danger, #d64545) 55%, transparent);
-  color: var(--danger, #d64545);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
 }
 
 @media (max-width: 640px) {
@@ -1180,8 +1176,8 @@
 }
 
 .knowledge-badge.is-global {
-  border-color: color-mix(in srgb, var(--accent, #7c5cff) 45%, transparent);
-  color: var(--accent, #7c5cff);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
 }
 
 .knowledge-badge.is-workspace {
@@ -1415,18 +1411,18 @@
 }
 
 .mcp-state.is-connected {
-  border-color: #2f9e6e;
-  color: #2f9e6e;
+  border-color: var(--success);
+  color: var(--success);
 }
 
 .mcp-state.is-error {
-  border-color: #d64545;
-  color: #d64545;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .mcp-state.is-reconnecting {
-  border-color: #c08a2e;
-  color: #c08a2e;
+  border-color: var(--warn-mid);
+  color: var(--warn-mid);
 }
 
 .mcp-command {

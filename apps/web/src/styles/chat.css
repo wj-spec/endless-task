@@ -1369,8 +1369,8 @@ button.citation-chip:focus-visible {
 }
 
 .proposal-scope button:hover {
-  border-color: var(--accent, #7c5cff);
-  color: var(--accent, #7c5cff);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .branch-navigator {
