@@ -150,15 +150,24 @@ class SqliteChatRepositoryTest(unittest.TestCase):
         self.assertEqual(first.turn.id, reopened.turns[0].turn.id)
         self.assertEqual("第一条消息 保留格式", reopened.conversation.title)
 
-    def test_empty_conversation_can_be_reused_until_it_has_a_turn(self) -> None:
+    def test_empty_conversation_can_be_reused_until_it_has_content(self) -> None:
+        # 14 B1-iii-b: 非空判定以 v2 transcript 为真源。
+        from endless_task.runtime_v2 import Actor, TranscriptEntryType
+        from endless_task.storage import SqliteRuntimeV2Repository
+
+        v2 = SqliteRuntimeV2Repository(self.database)
         first = self.repository.create_or_reuse_empty_conversation()
         duplicate = self.repository.create_or_reuse_empty_conversation()
         self.assertEqual(first.id, duplicate.id)
 
-        self.repository.create_turn(
+        lane = v2.create_lane(conversation_id=first.id)
+        v2.append_entry(
             conversation_id=first.id,
-            client_request_id="request-1",
-            content="开始对话",
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "开始对话"},
+            context_policy={"include_in_llm": True, "transform": "full"},
         )
         next_empty = self.repository.create_or_reuse_empty_conversation()
         self.assertNotEqual(first.id, next_empty.id)
@@ -316,14 +325,27 @@ class SqliteChatRepositoryTest(unittest.TestCase):
                 variant_id=second_variant_id,
             )
 
-    def test_archive_requires_no_active_turn_and_delete_cascades(self) -> None:
+    def test_archive_requires_no_active_run_and_delete_cascades(self) -> None:
+        # 14 B1-iii-b: 活跃判定以 v2 run 为真源。
+        from endless_task.runtime_v2 import Actor, TranscriptEntryType, RunStatus
+        from endless_task.storage import SqliteRuntimeV2Repository
+
+        v2 = SqliteRuntimeV2Repository(self.database)
         conversation = self.repository.create_conversation()
-        turn = self.repository.create_turn(
+        lane = v2.create_lane(conversation_id=conversation.id)
+        trigger = v2.append_entry(
             conversation_id=conversation.id,
-            client_request_id="request-1",
-            content="临时消息",
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "临时消息"},
+            context_policy={"include_in_llm": True, "transform": "full"},
         )
-        variant_id = turn.turn.active_response_variant_id
+        run = v2.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
 
         with self.assertRaises(InvalidStateError):
             self.repository.set_conversation_status(
@@ -331,11 +353,7 @@ class SqliteChatRepositoryTest(unittest.TestCase):
                 ConversationStatus.ARCHIVED,
             )
 
-        self.repository.cancel_response(
-            turn_id=turn.turn.id,
-            variant_id=variant_id,
-            partial_content="",
-        )
+        v2.update_run_status(run.id, RunStatus.CANCELLED)
         archived = self.repository.set_conversation_status(
             conversation.id,
             ConversationStatus.ARCHIVED,
@@ -352,16 +370,11 @@ class SqliteChatRepositoryTest(unittest.TestCase):
                     "count"
                 ]
                 for table in (
-                    "turns",
-                    "messages",
-                    "response_variants",
-                    "client_requests",
+                    "v2_runs",
+                    "v2_transcript_entries",
                 )
             }
-        self.assertEqual(
-            {"turns": 0, "messages": 0, "response_variants": 0, "client_requests": 0},
-            counts,
-        )
+        self.assertEqual({"v2_runs": 0, "v2_transcript_entries": 0}, counts)
 
     def test_database_rejects_two_active_turns_even_outside_repository(self) -> None:
         conversation = self.repository.create_conversation()

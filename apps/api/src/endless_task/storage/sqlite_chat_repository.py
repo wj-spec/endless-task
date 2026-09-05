@@ -123,9 +123,6 @@ class SqliteChatRepository:
                   AND c.kind = 'normal'
                   AND c.workspace_id IS ?
                   AND NOT EXISTS (
-                      SELECT 1 FROM turns t WHERE t.conversation_id = c.id
-                  )
-                  AND NOT EXISTS (
                       SELECT 1
                       FROM v2_transcript_entries e
                       WHERE e.conversation_id = c.id
@@ -214,15 +211,18 @@ class SqliteChatRepository:
         now = self._clock()
         with self._database.transaction() as connection:
             self._get_conversation(connection, conversation_id)
+            # 14 B1-iii-b：活跃判定以 v2 run 为真源（v1 turns 不再写入）。
             active = connection.execute(
                 """
-                SELECT 1 FROM turns
-                WHERE conversation_id = ? AND status IN ('created', 'running')
+                SELECT 1 FROM v2_runs
+                WHERE conversation_id = ?
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                LIMIT 1
                 """,
                 (conversation_id,),
             ).fetchone()
             if status is ConversationStatus.ARCHIVED and active:
-                raise InvalidStateError("Stop the active turn before archiving")
+                raise InvalidStateError("Stop the active run before archiving")
 
             connection.execute(
                 """
