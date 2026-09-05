@@ -1905,3 +1905,89 @@
   margin: 6px 0 0;
   color: var(--warn-deep);
 }
+
+/* P2-1b trajectory 查看 */
+.runtime-v2-trajectory {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.runtime-v2-trajectory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-v2-trajectory-head strong {
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.runtime-v2-trajectory-head button {
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  color: var(--accent);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.runtime-v2-trajectory-list {
+  display: grid;
+  gap: 2px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-v2-trajectory-list li button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  padding: 6px 8px;
+  color: var(--ink);
+  font-size: var(--fs-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtime-v2-trajectory-list li button:hover,
+.runtime-v2-trajectory-list li button:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.runtime-v2-trajectory-run {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-v2-trajectory-meta pre {
+  margin: 2px 0 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: var(--radius-s);
+  background: var(--line-soft);
+  color: var(--ink-raise);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.runtime-v2-trajectory-muted {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-2);
+}

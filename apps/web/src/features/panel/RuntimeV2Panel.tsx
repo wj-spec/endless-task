@@ -13,6 +13,7 @@ import {
 } from "../chat/api";
 import type { RuntimeConnectionPhase } from "../chat/runtimeController";
 import { StatusBadge } from "../ui/StatusBadge";
+import { TrajectoryViewer } from "./TrajectoryViewer";
 
 type RuntimeStatusPresentation = {
   label: string;
@@ -396,6 +397,7 @@ export function RuntimeV2Panel({
           {conversationId ? "正在等待共享 Runtime 快照。" : "请选择一个会话。"}
         </p>
       )}
+      <TrajectoryViewer />
     </section>
   );
 }

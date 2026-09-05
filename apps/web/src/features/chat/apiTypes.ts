@@ -1010,3 +1010,21 @@ export type SkillPackagesResponse = {
   packages: SkillPackageSummary[];
   conflicts: { code: string; message: string }[];
 };
+
+export type TrajectoryBundleFile = { name: string; size: number };
+
+export type TrajectoryBundleSummary = {
+  runId: string;
+  files: TrajectoryBundleFile[];
+};
+
+export type TrajectoryListResponse = {
+  root: string;
+  items: TrajectoryBundleSummary[];
+};
+
+export type TrajectoryMeta = {
+  runId: string;
+  fileNames: string[];
+  manifest: Record<string, unknown>;
+};

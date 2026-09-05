@@ -50,6 +50,9 @@ import type { KnowledgeProposal,
   Workspace,
   WorkspaceSnapshot,
   SkillPackagesResponse,
+  TrajectoryMeta,
+  TrajectoryBundleSummary,
+  TrajectoryListResponse,
   TaskProposal,
   TaskSummary,
   TaskRun,
@@ -627,6 +630,12 @@ export const chatApi = {
     });
     return response.groups;
   },
+  listTrajectoryBundles: async () => {
+    const response = await request<TrajectoryListResponse>("/api/v2/trajectory");
+    return response.items;
+  },
+  getTrajectoryMeta: async (runId: string) =>
+    request<TrajectoryMeta>(`/api/v2/trajectory/${encodeURIComponent(runId)}`),
   listSkillPackages: async (workspaceId?: string | null) => {
     const parameters = new URLSearchParams();
     if (workspaceId) parameters.set("workspaceId", workspaceId);
