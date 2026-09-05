@@ -325,10 +325,12 @@ class AppSettings:
     # locator-based prompt exposure. Default off keeps the legacy absolute
     # path behavior unchanged. Illegal env values fail startup.
     skill_packages_enabled: bool = False
-    # M6 W6-2: runtime trace mode (08 §OE-1). "0" (default) = no ledger
-    # wiring at all; errors|sampled|all enable the terminal-run usage
-    # mirror into the SQLite trace ledger. Illegal env values fail startup.
-    runtime_trace_mode: str = "0"
+    # M6 W6-2/W6-8: runtime trace mode (08 §OE-1). Default "all" after
+    # real-provider validation (2026-09-05 deepseek E2E: usage rows +
+    # run/model-turn spans + trajectory export all verified). "0" disables
+    # all trace wiring; errors|sampled|all enable it. Illegal env values
+    # fail startup.
+    runtime_trace_mode: str = "all"
     # M6 W6-4: OTLP export mode (08 §OE-5). "0" (default) = exporter not
     # assembled; otlp-http exports terminal-run journal events to the
     # endpoint below. Illegal env values fail startup.
@@ -475,7 +477,7 @@ class AppSettings:
                 name="ENDLESS_TASK_SKILL_PACKAGES",
             ),
             runtime_trace_mode=_parse_runtime_trace_mode(
-                env.get("ENDLESS_TASK_RUNTIME_TRACE", "0"),
+                env.get("ENDLESS_TASK_RUNTIME_TRACE", "all"),
             ),
             otel_export_mode=_parse_otel_export_mode(
                 env.get("ENDLESS_TASK_OTEL_EXPORT", "0"),

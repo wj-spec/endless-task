@@ -79,6 +79,13 @@ class TraceFlagParsingTest(unittest.TestCase):
         self.assertEqual("all", _parse_runtime_trace_mode("all"))
         self.assertEqual("all", _parse_runtime_trace_mode("1"))
 
+    def test_default_is_all_after_real_provider_validation(self) -> None:
+        # W6-8: real deepseek E2E passed -> RUNTIME_TRACE defaults to
+        # "all" (documented flip per 02 11.4). OTEL stays default off.
+        settings = AppSettings(database_path=Path("unused.db"))
+        self.assertEqual("all", settings.runtime_trace_mode)
+        self.assertEqual("0", settings.otel_export_mode)
+
     def test_invalid_mode_rejected(self) -> None:
         for value in ("prometheus", "bogus", "verbose"):
             with self.assertRaises(ValueError):
