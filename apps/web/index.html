@@ -8,6 +8,21 @@
       content="Endless — 一个本地优先、专注于自然对话的个人 AI 助手。"
     />
     <title>Endless — 个人 AI 助手</title>
+    <script>
+      // P3-2：首帧主题防闪白——在 CSS 生效前按已存偏好/系统偏好设置 data-theme。
+      (function () {
+        try {
+          var key = "endless-task-theme";
+          var stored = localStorage.getItem(key);
+          var preference = stored === "light" || stored === "dark" ? stored : "system";
+          var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.dataset.theme =
+            preference === "system" ? (dark ? "dark" : "light") : preference;
+        } catch (e) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

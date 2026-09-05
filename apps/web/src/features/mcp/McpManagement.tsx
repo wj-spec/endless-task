@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { FormErrorSummary } from "../ui/FormErrorSummary";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { McpServer } from "../chat/apiTypes";
@@ -52,6 +53,7 @@ export function McpContent({ onChanged }: McpContentProps) {
   const [form, setForm] = useState<McpForm>(emptyForm);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<McpServer | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -131,7 +133,6 @@ export function McpContent({ onChanged }: McpContentProps) {
   };
 
   const removeServer = async (server: McpServer) => {
-    if (!window.confirm(`删除 MCP 服务器「${server.name}」？`)) return;
     setBusyId(server.id);
     setActionError(null);
     try {
@@ -308,7 +309,7 @@ export function McpContent({ onChanged }: McpContentProps) {
             <button
               className="danger-action"
               disabled={busyId === server.id}
-              onClick={() => void removeServer(server)}
+              onClick={() => setConfirmRemove(server)}
               type="button"
             >
               删除
@@ -316,6 +317,20 @@ export function McpContent({ onChanged }: McpContentProps) {
           </div>
         </div>
       ))}
+      {confirmRemove ? (
+        <ConfirmDialog
+          body={`删除 MCP 服务器「${confirmRemove.name}」？该服务器下的工具将从会话中移除。`}
+          confirmLabel="删除服务器"
+          onClose={() => setConfirmRemove(null)}
+          onConfirm={() => {
+            const target = confirmRemove;
+            setConfirmRemove(null);
+            if (target) void removeServer(target);
+          }}
+          title="删除 MCP 服务器"
+          tone="danger"
+        />
+      ) : null}
     </div>
   );
 }
