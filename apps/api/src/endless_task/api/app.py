@@ -396,6 +396,10 @@ class AppSettings:
     # enforcement (current direct tool execution). Illegal env values fail
     # startup.
     execution_backend_mode: str = "local"  # values: "" | local | container
+    # G1 item 5: no-progress StopPolicy enforcement (05 §RS-2). Default off;
+    # thresholds approved (remind=1/restrict=2/stop=3 consecutive signals).
+    # "1" turns on the safety stop for runs that make no progress.
+    stop_policy_enforcement: bool = False
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -515,6 +519,10 @@ class AppSettings:
             ),
             execution_backend_mode=_parse_execution_backend_mode(
                 env.get("ENDLESS_TASK_EXECUTION_BACKEND", "local")
+            ),
+            stop_policy_enforcement=_parse_strict_flag(
+                env.get("ENDLESS_TASK_STOP_POLICY_V2", "0"),
+                name="ENDLESS_TASK_STOP_POLICY_V2",
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -1675,6 +1683,7 @@ def _build_container(
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
+        no_progress_enforcement_enabled=settings.stop_policy_enforcement,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1710,6 +1719,7 @@ def _build_container(
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
+        no_progress_enforcement_enabled=settings.stop_policy_enforcement,
         provider_retry_observer=(
             # Task/reminder runs are one-shot; the process-level metrics
             # summary aggregates retry decisions (not per-run), so the
@@ -1792,6 +1802,7 @@ def _build_container(
                 trace_observer=runtime_v2_trace_observer,
                 span_recorder=runtime_v2_span_recorder,
                 provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
+                no_progress_enforcement_enabled=settings.stop_policy_enforcement,
                 provider_retry_observer=(
                     # Child run ids are assigned by the coordinator after the
                     # executor is built; the metrics summary is aggregate,

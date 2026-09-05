@@ -661,6 +661,8 @@ class RuntimeV2SessionGateway:
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         trace_observer: Optional[RunTraceObserver] = None,
         span_recorder: Optional[object] = None,
+        # G1 item 5: no-progress StopPolicy enforcement flag passthrough.
+        no_progress_enforcement_enabled: bool = False,
         provider_retry_evaluator: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
@@ -682,6 +684,9 @@ class RuntimeV2SessionGateway:
         self._tool_execution_limits = tool_execution_limits
         self._trace_observer = trace_observer
         self._span_recorder = span_recorder
+        self._no_progress_enforcement_enabled = bool(
+            no_progress_enforcement_enabled
+        )
         # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
         # legacy behavior. The observer is bound per run at launch so
         # retry decisions attribute to the correct run.
@@ -1391,6 +1396,7 @@ class RuntimeV2SessionGateway:
             selected_model = selection.model
         executor = AgentRunExecutor(
             repository=self._repository,
+            no_progress_enforcement_enabled=self._no_progress_enforcement_enabled,
             provider=selected_provider,
             tool_registry=self._tool_registry,
             model=selected_model,

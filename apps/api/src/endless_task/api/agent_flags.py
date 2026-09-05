@@ -4,7 +4,7 @@
 delete condition; 09 §9 运维 requires a feature-flag rollback drill. This
 module is the single registry the CLI and future UI read:
 
-- :data:`AGENT_PLATFORM_FLAGS` enumerates the eight platform flags with
+- :data:`AGENT_PLATFORM_FLAGS` enumerates the platform flags with
   their env name, settings field, current/default value and wiring state,
 - :func:`rollback_dry_run` rebuilds the container with one flag forced to
   its rollback (off) value and reports what changed, so an operator can
@@ -30,6 +30,8 @@ _OFF_VALUES: dict[str, object] = {
     "skill_packages_enabled": False,
     "runtime_trace_mode": "0",
     "otel_export_mode": "0",
+    "execution_backend_mode": "",
+    "stop_policy_enforcement": False,
 }
 
 #: Env-name -> settings field (wired flags only).
@@ -41,14 +43,13 @@ _ENV_TO_FIELD: dict[str, str] = {
     "ENDLESS_TASK_SKILL_PACKAGES": "skill_packages_enabled",
     "ENDLESS_TASK_RUNTIME_TRACE": "runtime_trace_mode",
     "ENDLESS_TASK_OTEL_EXPORT": "otel_export_mode",
+    "ENDLESS_TASK_EXECUTION_BACKEND": "execution_backend_mode",
+    "ENDLESS_TASK_STOP_POLICY_V2": "stop_policy_enforcement",
 }
 
 #: Flags declared in 09 §6 with no production wiring yet (reported, not
 #: pretended to be rollback-relevant).
-_UNWIRED_FLAGS: tuple[str, ...] = (
-    "ENDLESS_TASK_STOP_POLICY_V2",
-    "ENDLESS_TASK_EXECUTION_BACKEND",
-)
+_UNWIRED_FLAGS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

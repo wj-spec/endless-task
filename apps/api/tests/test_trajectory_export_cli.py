@@ -175,8 +175,9 @@ class AgentFlagsCliTest(unittest.TestCase):
         output = self._run_cli(["flags"])
         self.assertIn("ENDLESS_TASK_DELEGATION=readonly", output)
         self.assertIn("ENDLESS_TASK_RUNTIME_TRACE=all", output)
-        self.assertIn("ENDLESS_TASK_STOP_POLICY_V2=(未接线)", output)
-        self.assertIn("ENDLESS_TASK_EXECUTION_BACKEND=(未接线)", output)
+        self.assertNotIn("(未接线)", output)
+        self.assertIn("ENDLESS_TASK_STOP_POLICY_V2", output)
+        self.assertIn("ENDLESS_TASK_EXECUTION_BACKEND=local", output)
 
     def test_rollback_dry_run_wired_flag(self) -> None:
         output = self._run_cli(
@@ -195,12 +196,13 @@ class AgentFlagsCliTest(unittest.TestCase):
         self.assertIn("container_built=true", output)
         self.assertIn("after=0", output)
 
-    def test_rollback_dry_run_unwired_flag_is_noop(self) -> None:
+    def test_rollback_dry_run_stop_policy_flag(self) -> None:
         output = self._run_cli(
             ["flags", "--rollback-dry-run", "ENDLESS_TASK_STOP_POLICY_V2"]
         )
-        self.assertIn("wired=false", output)
-        self.assertIn("container_built=false", output)
+        self.assertIn("wired=true", output)
+        self.assertIn("container_built=true", output)
+        self.assertIn("before=False", output)
 
     def test_rollback_dry_run_unknown_flag_fails(self) -> None:
         output = self._run_cli(
