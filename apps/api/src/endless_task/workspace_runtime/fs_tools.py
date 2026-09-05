@@ -330,6 +330,7 @@ class WriteWorkspaceFileTool:
         *,
         max_write_bytes: int = 512_000,
         checkpoint_coordinator=None,
+        execution_backend=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
@@ -338,6 +339,9 @@ class WriteWorkspaceFileTool:
         # coordinator; the tool snapshots the workspace before its first
         # write so a failed run can be rolled back. None = current behavior.
         self._checkpoint_coordinator = checkpoint_coordinator
+        # M3B enforcement (slice F): when set, mutations run through an
+        # ExecutionEnvironment backend instead of direct host writes.
+        self._execution_backend = execution_backend
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -378,6 +382,10 @@ class WriteWorkspaceFileTool:
                 "路径指向目录，不能覆盖为文件。",
                 retryable=False,
             )
+        if self._execution_backend is not None:
+            return await self._execute_backend_write(
+                call, token, binding, path, content, resolved
+            )
         self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
@@ -416,6 +424,71 @@ class WriteWorkspaceFileTool:
             },
         )
 
+
+    async def _execute_backend_write(
+        self,
+        call: ToolCall,
+        token: CancellationToken,
+        binding: WorkspaceBinding,
+        path: str,
+        content: str,
+        resolved,
+    ) -> ToolResult:
+        """Write through the enforcement backend (M3B slice F).
+
+        Path containment is re-checked by the backend under its own policy;
+        the run-level checkpoint + path lock semantics are preserved, the
+        ledger row is appended by the backend (with the run id), and the
+        workspace audit log + ToolResult shape stay identical to the direct
+        path so consumers (task records, receipts) cannot tell the modes
+        apart.
+        """
+        run_id = call.response_variant_id or call.id
+        self._ensure_checkpoint(call, binding)
+        relative = resolved.canonical.relative_to(
+            Path(binding.root).expanduser().resolve()
+        ).as_posix()
+        policy, trace, Request, Operation = _backend_policy_and_trace(
+            binding, run_id
+        )
+        lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
+        async with lock:
+            receipt = await self._execution_backend.mutate_file(
+                Request(
+                    effect_id=f"enforced_write:{relative}:{run_id}",
+                    tool_call_id=call.id,
+                    path=relative,
+                    operation=Operation.WRITE,
+                    policy=policy,
+                    trace=trace,
+                    requested_at=_now_iso(),
+                    content=content,
+                )
+            )
+        audit_receipt = EffectReceipt(
+            kind="file_write",
+            path=str(resolved.canonical),
+            sha256=sha256_text(content),
+            executed_at=_now_iso(),
+        )
+        _log_effect(
+            self._effect_log,
+            call,
+            binding,
+            "write_file",
+            resolved.original_raw,
+            audit_receipt,
+        )
+        token.raise_if_cancelled()
+        return ToolResult(
+            tool_call_id=call.id,
+            content=f"已写入工作区文件：{resolved.original_raw}（{len(content)} 字符）。",
+            structured_content={
+                "path": resolved.original_raw,
+                "bytes": len(content.encode("utf-8")),
+                "effect": audit_receipt.as_dict(),
+            },
+        )
 
     def _ensure_checkpoint(self, call: ToolCall, binding) -> None:
         coordinator = self._checkpoint_coordinator
@@ -537,10 +610,12 @@ class DeleteWorkspaceFileTool:
         effect_log: EffectLog,
         *,
         checkpoint_coordinator=None,
+        execution_backend=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
         self._checkpoint_coordinator = checkpoint_coordinator
+        self._execution_backend = execution_backend
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -582,6 +657,10 @@ class DeleteWorkspaceFileTool:
                 "目录删除不开放给工具，请由用户手动处理。",
                 retryable=False,
             )
+        if self._execution_backend is not None:
+            return await self._execute_backend_delete(
+                call, token, binding, resolved
+            )
         self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
@@ -612,6 +691,58 @@ class DeleteWorkspaceFileTool:
             },
         )
 
+
+    async def _execute_backend_delete(
+        self,
+        call: ToolCall,
+        token: CancellationToken,
+        binding: WorkspaceBinding,
+        resolved,
+    ) -> ToolResult:
+        """Delete through the enforcement backend (M3B slice F)."""
+        run_id = call.response_variant_id or call.id
+        self._ensure_checkpoint(call, binding)
+        relative = resolved.canonical.relative_to(
+            Path(binding.root).expanduser().resolve()
+        ).as_posix()
+        policy, trace, Request, Operation = _backend_policy_and_trace(
+            binding, run_id
+        )
+        lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
+        async with lock:
+            receipt = await self._execution_backend.mutate_file(
+                Request(
+                    effect_id=f"enforced_delete:{relative}:{run_id}",
+                    tool_call_id=call.id,
+                    path=relative,
+                    operation=Operation.DELETE,
+                    policy=policy,
+                    trace=trace,
+                    requested_at=_now_iso(),
+                )
+            )
+        audit_receipt = EffectReceipt(
+            kind="file_delete",
+            path=str(resolved.canonical),
+            executed_at=_now_iso(),
+        )
+        _log_effect(
+            self._effect_log,
+            call,
+            binding,
+            "delete_file",
+            resolved.original_raw,
+            audit_receipt,
+        )
+        token.raise_if_cancelled()
+        return ToolResult(
+            tool_call_id=call.id,
+            content=f"已删除工作区文件：{resolved.original_raw}。",
+            structured_content={
+                "path": resolved.original_raw,
+                "effect": audit_receipt.as_dict(),
+            },
+        )
 
     def _ensure_checkpoint(self, call: ToolCall, binding) -> None:
         coordinator = self._checkpoint_coordinator
@@ -651,7 +782,9 @@ def _record_mutation(
     if coordinator is None:
         return
     try:
-        relative = resolved.canonical.relative_to(binding.root).as_posix()
+        relative = resolved.canonical.relative_to(
+            Path(binding.root).expanduser().resolve()
+        ).as_posix()
     except (ValueError, OSError):
         return
     run_id = call.response_variant_id or call.id
@@ -666,6 +799,24 @@ def _record_mutation(
         )
     except Exception:
         return
+
+
+def _backend_policy_and_trace(binding: WorkspaceBinding, run_id: str):
+    """ExecutionPolicy + TraceContext for an enforcement backend call."""
+    from endless_task.execution_env.protocol import (
+        ExecutionPolicy,
+        FileMutationOperation,
+        FileMutationRequest,
+    )
+    from endless_task.runtime_ledger.protocol import TraceContext
+
+    policy = ExecutionPolicy(
+        workspace_root=str(Path(binding.root).resolve()),
+        read_allow_paths=(),
+        write_allow_paths=(),
+    )
+    trace = TraceContext(trace_id=run_id, run_id=run_id, correlation_id=run_id)
+    return policy, trace, FileMutationRequest, FileMutationOperation
 
 
 def _log_effect(

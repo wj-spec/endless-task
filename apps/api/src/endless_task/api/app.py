@@ -385,6 +385,13 @@ class AppSettings:
     # Default on after run-level checkpoint landed (slice A) + guarded
     # restore E2E; "0" disables so ops keep partial state on failure.
     run_auto_restore_enabled: bool = True
+    # M3B slice F enforcement: execution backend for unattended executors'
+    # workspace fs mutations. "" (default) = current direct tool execution;
+    # local|container opt unattended write/delete tools into the
+    # ExecutionEnvironment seam (container's isolation difference is for
+    # process execution, which unattended runs cannot reach). Illegal env
+    # values fail startup.
+    execution_backend_mode: str = ""  # values: "" | local | container
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -501,6 +508,9 @@ class AppSettings:
             ),
             run_auto_restore_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_RUN_AUTO_RESTORE", "1")
+            ),
+            execution_backend_mode=_parse_execution_backend_mode(
+                env.get("ENDLESS_TASK_EXECUTION_BACKEND", "")
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -726,6 +736,10 @@ class AppContainer:
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
     runtime_v2_span_recorder: Optional[SqliteRuntimeLedger] = None
     run_checkpoint_coordinator: Optional[RunCheckpointCoordinator] = None
+    # M3B slice F enforcement (for ops/tests): registry view used by the
+    # unattended executors + configured mode.
+    unattended_tool_registry: Optional[ToolRegistry] = None
+    execution_backend_mode: str = ""
 
 
 class ConversationPatch(BaseModel):
@@ -1209,6 +1223,26 @@ def _parse_delegation_mode(value: str) -> str:
     raise ValueError("ENDLESS_TASK_DELEGATION 只允许 0 或 readonly")
 
 
+def _parse_execution_backend_mode(value: str) -> str:
+    """Strict execution-backend mode parsing (M3B slice F): 0|local|container.
+
+    "" = enforcement off (current direct tool behavior). ``local``/``container``
+    both route unattended fs mutations through the ExecutionEnvironment (the
+    container backend executes file mutations locally too — its isolation
+    difference applies to process execution, which unattended runs cannot
+    reach), so either value is an explicit opt-in to the enforcement seam;
+    illegal values fail startup.
+    """
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off", ""}:
+        return ""
+    if normalized in {"1", "true", "yes", "on", "local"}:
+        return "local"
+    if normalized == "container":
+        return "container"
+    raise ValueError("ENDLESS_TASK_EXECUTION_BACKEND 只允许 0|local|container")
+
+
 def _parse_strict_mode(value: str, *, name: str) -> str:
     """Strict 0|1 mode parsing: any value outside 0/1 fails startup."""
     normalized = value.strip().lower()
@@ -1488,6 +1522,26 @@ def _build_container(
     )
     selected_tool_registry = tool_registry or ToolRegistry()
     workspace_resolver = WorkspaceResolver(chat_repository, workspace_repository)
+    # M3B slice F: unattended-executor tool enforcement (late-bound holder).
+    # Built before the executors; replacements are configured after the
+    # built-in tools are registered (registration order in this function).
+    tool_enforcement = None
+    unattended_tool_registry = None
+    if settings.execution_backend_mode:
+        if tool_registry is not None:
+            raise ValueError(
+                "ENDLESS_TASK_EXECUTION_BACKEND requires the built-in tool "
+                "composition (a caller-supplied tool_registry is unsupported)"
+            )
+        from endless_task.workspace_runtime.enforcement import (
+            EnforcingToolRegistry,
+            ToolEnforcement,
+        )
+
+        tool_enforcement = ToolEnforcement()
+        unattended_tool_registry = EnforcingToolRegistry(
+            selected_tool_registry, tool_enforcement
+        )
 
     def _v2_workspace_tool_filter(
         conversation_id: str,
@@ -1658,7 +1712,10 @@ def _build_container(
     task_executor = AgentRunExecutor(
         repository=runtime_v2_repository,
         provider=selected_provider,
-        tool_registry=selected_tool_registry,
+        # M3B slice F: unattended task runs use the enforcement view when
+        # ENDLESS_TASK_EXECUTION_BACKEND is set (else identical to the
+        # shared registry).
+        tool_registry=unattended_tool_registry or selected_tool_registry,
         model=settings.model,
         max_output_tokens=settings.max_output_tokens,
         temperature=None,
@@ -1733,7 +1790,9 @@ def _build_container(
             return AgentRunExecutor(
                 repository=runtime_v2_repository,
                 provider=selected_provider,
-                tool_registry=selected_tool_registry,
+                # M3B slice F: same enforcement view as task runs (children
+                # are read-only today; write-enabled M4B children inherit it).
+                tool_registry=unattended_tool_registry or selected_tool_registry,
                 model=settings.model,
                 max_output_tokens=settings.max_output_tokens,
                 temperature=None,
@@ -1970,6 +2029,29 @@ def _build_container(
             )
         )
         selected_tool_registry.register(UpdatePlanTool(runtime_v2_repository))
+        if tool_enforcement is not None:
+            # Enforcement backend shares the run coordinator's mutation
+            # ledger so run-scoped restore attribution stays continuous.
+            from endless_task.execution_env import LocalExecutionBackend
+
+            enforcement_backend = LocalExecutionBackend(ledger=mutation_ledger)
+            tool_enforcement.configure(
+                replacements={
+                    "write_workspace_file": WriteWorkspaceFileTool(
+                        workspace_resolver,
+                        effect_log,
+                        max_write_bytes=settings.workspace_max_write_bytes,
+                        checkpoint_coordinator=run_checkpoint_coordinator,
+                        execution_backend=enforcement_backend,
+                    ),
+                    "delete_workspace_file": DeleteWorkspaceFileTool(
+                        workspace_resolver,
+                        effect_log,
+                        checkpoint_coordinator=run_checkpoint_coordinator,
+                        execution_backend=enforcement_backend,
+                    ),
+                }
+            )
     system_prompt = settings.system_prompt
     system_prompt_version = settings.system_prompt_version
     if settings.artifact_proposals_enabled:
@@ -2312,6 +2394,8 @@ def _build_container(
         runtime_v2_trajectory_exporter=runtime_v2_trajectory_exporter,
         runtime_v2_span_recorder=runtime_v2_span_recorder,
         run_checkpoint_coordinator=run_checkpoint_coordinator,
+        unattended_tool_registry=unattended_tool_registry,
+        execution_backend_mode=settings.execution_backend_mode,
     )
 
 
@@ -2346,6 +2430,10 @@ class KnowledgeSourcePatch(BaseModel):
     content: Optional[str] = None
     fileName: Optional[str] = None
     expiresAt: Optional[str] = None
+
+
+class ResendRuntimeV2RunBody(BaseModel):
+    content: str
 
 
 class SearchBody(BaseModel):
@@ -3868,7 +3956,7 @@ def create_app(
                 elif scope is KnowledgeScope.CONVERSATION:
                     with container.database.connect() as connection:
                         row = connection.execute(
-                            "SELECT conversation_id FROM turns WHERE id = ?",
+                            "SELECT conversation_id FROM v2_transcript_entries WHERE id = ?",
                             (hit.ref_id,),
                         ).fetchone()
                     if row is None:
@@ -4477,6 +4565,23 @@ def create_app(
             "runId": run_id,
             "siblingGroupId": variants[0].sibling_group_id if variants else None,
             "items": tuple(_runtime_v2_run_variant_json(variant) for variant in variants),
+        }
+
+    @app.post("/api/v2/runs/{run_id}/resend", status_code=202)
+    async def resend_runtime_v2_run(
+        run_id: str, body: ResendRuntimeV2RunBody
+    ) -> dict[str, object]:
+        result = await container.runtime_v2_gateway.resend_run(run_id, body.content)
+        return {
+            "oldRunId": result.old_run_id,
+            "newRunId": result.new_run_id,
+            "laneId": result.lane_id,
+            "triggerEntryId": result.trigger_entry_id,
+            "siblingGroupId": result.sibling_group_id,
+            "eventsUrl": (
+                f"/api/v2/conversations/"
+                f"{container.runtime_v2_repository.get_run(run_id).conversation_id}/events"
+            ),
         }
 
     @app.post("/api/v2/runs/{run_id}/regenerate", status_code=202)
