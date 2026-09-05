@@ -319,6 +319,12 @@ export type CapabilitySnapshot = {
   mcp: CapabilityMcpStatus;
   provider: CapabilityProviderStatus;
   embedding: CapabilityEmbeddingStatus;
+  delegation?: CapabilityDelegationStatus;
+};
+
+export type CapabilityDelegationStatus = {
+  enabled: boolean;
+  mode: "readonly" | null;
 };
 
 export type RuntimeV2GlobalRuntimeStatus = {

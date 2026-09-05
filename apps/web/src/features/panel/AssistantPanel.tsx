@@ -240,6 +240,7 @@ export function AssistantPanel({
             lanes={runtimeLanes}
             runtimeStatus={runtimeStatus}
             snapshot={runtimeSnapshot}
+            delegation={capabilities?.delegation ?? null}
           />
         ) : (
           <ProviderManagement onChanged={onProvidersChanged} />

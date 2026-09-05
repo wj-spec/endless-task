@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type {
+  CapabilityDelegationStatus,
   RuntimeV2ConversationRuntimeStatus,
   RuntimeV2Lane,
   RuntimeV2Metrics,
@@ -114,6 +115,7 @@ type RuntimeV2PanelProps = {
   lanes: RuntimeV2Lane[];
   runtimeStatus: RuntimeV2ConversationRuntimeStatus | null;
   snapshot: RuntimeV2Snapshot | null;
+  delegation?: CapabilityDelegationStatus | null;
 };
 
 export function RuntimeV2Panel({
@@ -123,6 +125,7 @@ export function RuntimeV2Panel({
   lanes,
   runtimeStatus,
   snapshot,
+  delegation,
 }: RuntimeV2PanelProps) {
   const activeRun = snapshot?.runState ?? null;
   const [metrics, setMetrics] = useState<RuntimeV2Metrics | null>(null);
@@ -167,6 +170,19 @@ export function RuntimeV2Panel({
           <p>执行、审批和恢复操作请在对应聊天工作面完成。</p>
         </div>
       </div>
+
+      {delegation ? (
+        <div className="runtime-v2-runtime">
+          <div>
+            <strong>子代理委派（M4A 只读）</strong>
+            <p>
+              {delegation.enabled
+                ? `已启用（mode=${delegation.mode ?? "readonly"}）：可通过 spawn_agent 派只读研究子代理`
+                : "已关闭：不注册委派工具，agent 无法派生子代理"}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {connection?.error ? (
         <div className="inline-error" role="alert">
