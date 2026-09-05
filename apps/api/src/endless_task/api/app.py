@@ -380,13 +380,15 @@ class AppSettings:
     # Default on after run-level checkpoint landed (slice A) + guarded
     # restore E2E; "0" disables so ops keep partial state on failure.
     run_auto_restore_enabled: bool = True
-    # M3B slice F enforcement: execution backend for unattended executors'
-    # workspace fs mutations. "" (default) = current direct tool execution;
-    # local|container opt unattended write/delete tools into the
-    # ExecutionEnvironment seam (container's isolation difference is for
-    # process execution, which unattended runs cannot reach). Illegal env
-    # values fail startup.
-    execution_backend_mode: str = ""  # values: "" | local | container
+    # M3B slice F/F2 enforcement: execution backend for unattended executors'
+    # workspace fs mutations. "local" (default since F2) routes unattended
+    # write/delete through the ExecutionEnvironment seam (containment
+    # re-check + run-scoped ledger + single execution boundary); "container"
+    # is the same seam for file mutations (container's isolation difference
+    # is process-bound, which unattended cannot reach today); "" disables
+    # enforcement (current direct tool execution). Illegal env values fail
+    # startup.
+    execution_backend_mode: str = "local"  # values: "" | local | container
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -505,7 +507,7 @@ class AppSettings:
                 env.get("ENDLESS_TASK_RUN_AUTO_RESTORE", "1")
             ),
             execution_backend_mode=_parse_execution_backend_mode(
-                env.get("ENDLESS_TASK_EXECUTION_BACKEND", "")
+                env.get("ENDLESS_TASK_EXECUTION_BACKEND", "local")
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -1483,12 +1485,11 @@ def _build_container(
     # built-in tools are registered (registration order in this function).
     tool_enforcement = None
     unattended_tool_registry = None
-    if settings.execution_backend_mode:
-        if tool_registry is not None:
-            raise ValueError(
-                "ENDLESS_TASK_EXECUTION_BACKEND requires the built-in tool "
-                "composition (a caller-supplied tool_registry is unsupported)"
-            )
+    if settings.execution_backend_mode and tool_registry is None:
+        # F2: enforcement applies to the built-in composition. A caller-supplied
+        # custom registry (dev/test only — the product path always uses the
+        # built-in tools) keeps its own tools untouched; no enforcement and no
+        # silent swap, which is fine because that surface is internal.
         from endless_task.workspace_runtime.enforcement import (
             EnforcingToolRegistry,
             ToolEnforcement,

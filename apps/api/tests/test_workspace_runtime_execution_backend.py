@@ -22,6 +22,16 @@ from pathlib import Path
 
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.runtime_v2.run_checkpoint import RunCheckpointCoordinator
+
+def _container_available() -> bool:
+    from endless_task.execution_env import probe_container_runtime
+
+    import shutil
+
+    runtime = shutil.which("docker") or shutil.which("colima")
+    return bool(runtime) and probe_container_runtime(runtime)
+
+
 from endless_task.tooling import ToolCall, ToolCallStatus, ToolRegistry
 from endless_task.workspace_runtime import WorkspaceBinding
 from endless_task.workspace_runtime.effect_log import EffectLog
@@ -169,6 +179,35 @@ class ToolBackendModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("a.txt", skipped)
         self.assertEqual("orig", (self.root / "a.txt").read_text(encoding="utf-8"))
 
+    @unittest.skipUnless(
+        _container_available(),
+        "container runtime not available (colima/docker required)",
+    )
+    async def test_enforced_write_via_container_backend_live(self) -> None:
+        # F2 live：operator 选 container 时，enforced 写经 ContainerExecutionBackend
+        # （文件 mutation 委托 workspace 受限 local，进程隔离留给未来 shell 面）。
+        from endless_task.execution_env import ContainerExecutionBackend
+
+        resolver = _BindingResolver(self.root)
+        tool = WriteWorkspaceFileTool(
+            resolver,
+            self.effect_log,
+            checkpoint_coordinator=self.coordinator,
+            execution_backend=ContainerExecutionBackend(
+                image="alpine:3.20", ledger=self.ledger
+            ),
+        )
+        (self.root / "a.txt").write_text("orig", encoding="utf-8")
+        await tool.execute(_call(path="a.txt", content="container-v1"), _token())
+        self.assertEqual(
+            "container-v1", (self.root / "a.txt").read_text(encoding="utf-8")
+        )
+        restored, _ = self.coordinator.apply_restore(
+            run_id="run_enforced", workspace_root=str(self.root)
+        )
+        self.assertIn("a.txt", restored)
+        self.assertEqual("orig", (self.root / "a.txt").read_text(encoding="utf-8"))
+
     async def test_enforced_delete_removes_and_restores(self) -> None:
         resolver = _BindingResolver(self.root)
         tool = DeleteWorkspaceFileTool(
@@ -304,6 +343,13 @@ class EnforcementCompositionTest(unittest.IsolatedAsyncioTestCase):
         enforced_write = view.resolve("write_workspace_file")
         self.assertIsNotNone(getattr(enforced_write, "_execution_backend", None))
         await self._close(client, lifespan)
+
+    async def test_default_mode_is_local_after_f2(self) -> None:
+        from endless_task.api import AppSettings
+
+        self.assertEqual(
+            "local", AppSettings(database_path="x.db").execution_backend_mode
+        )
 
     async def test_illegal_mode_fails_startup(self) -> None:
         # The strict gate lives in env parsing (startup path); illegal values
