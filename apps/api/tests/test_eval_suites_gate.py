@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from types import SimpleNamespace
 from datetime import date
@@ -560,3 +561,111 @@ class GateCliTest(unittest.TestCase):
             arguments,
         )
         self.assertEqual(0, exit_code)
+
+
+class TrajectoryBundleCliTest(unittest.TestCase):
+    """eval bundle: score exported trajectory bundles + optional gate."""
+
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary_directory.name)
+        self.export_root = self.root / "v2_trajectory_exports"
+        self.export_root.mkdir()
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _write_bundle(self, run_id: str, *, failed: bool = False) -> None:
+        from endless_task.runtime_ledger.trajectory import (
+            TrajectoryBundle,
+            TrajectoryManifest,
+            write_trajectory_bundle,
+        )
+
+        events = [
+            {
+                "eventId": "e1",
+                "eventType": "run.failed" if failed else "run.completed",
+                "occurredAt": "2026-09-05T00:00:00Z",
+                "traceId": run_id,
+                "runId": run_id,
+                "safetyCritical": failed,
+                "data": {},
+            }
+        ]
+        bundle = TrajectoryBundle(
+            manifest=TrajectoryManifest(
+                schema_version=1,
+                runtime_version="0.0.0",
+                provider="fake",
+                model="fake-model",
+                config_fingerprint="cfg",
+                redaction_policy_revision="r1",
+                source_run_id=run_id,
+            ),
+            events=tuple(events),
+        )
+        write_trajectory_bundle(
+            bundle, self.export_root / f"trajectory-{run_id}"
+        )
+
+    def _run_cli(self, argv: list[str], *, expected_exit_code: int = 0) -> str:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from endless_task.api import AppSettings
+        from endless_task.cli import main
+
+        settings = AppSettings(database_path=self.root / "api.db")
+        output = io.StringIO()
+        with mock.patch.object(AppSettings, "from_environment", return_value=settings):
+            with redirect_stdout(output):
+                exit_code = main(argv)
+        self.assertEqual(expected_exit_code, exit_code)
+        return output.getvalue()
+
+    def test_bundle_scores_completed_and_failed(self) -> None:
+        self._write_bundle("run_ok")
+        self._write_bundle("run_bad", failed=True)
+        output = self._run_cli(
+            ["eval", "bundle", "--directory", str(self.export_root)]
+        )
+        self.assertIn("bundle run_ok verdict=pass", output)
+        self.assertIn("bundle run_bad verdict=fail", output)
+        self.assertIn("runs=2", output)
+
+    def test_bundle_gate_against_baseline(self) -> None:
+        self._write_bundle("run_ok")
+        self._write_bundle("run_bad", failed=True)
+        baseline = _aggregation("core_loop", "rev-1", ["b1", "b2"])
+        baseline_path = self.root / "baseline.json"
+        baseline_path.write_text(
+            json.dumps(baseline.to_dict(), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        # Candidate has a failed run -> completion regression -> gate fails.
+        output = self._run_cli(
+            [
+                "eval",
+                "bundle",
+                "--directory",
+                str(self.export_root),
+                "--baseline",
+                str(baseline_path),
+                "--suite",
+                "core_loop",
+            ],
+            expected_exit_code=1,
+        )
+        self.assertIn("Eval gate: core_loop", output)
+        self.assertIn("completion", output)
+
+    def test_empty_directory_rejected(self) -> None:
+        empty = self.root / "empty"
+        empty.mkdir()
+        output = self._run_cli(
+            ["eval", "bundle", "--directory", str(empty)],
+            expected_exit_code=2,
+        )
+        self.assertIn("no trajectory bundles", output)

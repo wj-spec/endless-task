@@ -444,6 +444,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="blocking keys 取 suite 的 metric_keys 而非聚合默认集",
     )
+    eval_bundle = eval_sub.add_parser(
+        "bundle",
+        help="对 v2_trajectory_exports/ 下的 bundle 打分聚合（可选对 baseline gate）",
+    )
+    eval_bundle.add_argument(
+        "--directory",
+        default=None,
+        help="trajectory bundle 目录（默认 <db>.parent/v2_trajectory_exports）",
+    )
+    eval_bundle.add_argument(
+        "--baseline",
+        default=None,
+        help="冻结 baseline JSON（有则对聚合跑 release gate）",
+    )
+    eval_bundle.add_argument(
+        "--suite",
+        default=None,
+        help="gate 使用的 suite 名（--baseline 时有效）",
+    )
     eval_suites = eval_sub.add_parser(
         "suites", help="列出已注册的专题 suite 与 metric 覆盖"
     )

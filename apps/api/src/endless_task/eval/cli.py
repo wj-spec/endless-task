@@ -37,6 +37,8 @@ def run_eval_command(settings, arguments) -> int:
         return _diff(settings, arguments)
     if command == "gate":
         return _gate(settings, arguments)
+    if command == "bundle":
+        return _bundle(settings, arguments)
     if command == "suites":
         return _suites(settings, arguments)
     if command == "batches":
@@ -199,6 +201,65 @@ def _gate(settings, arguments) -> int:
         )
         print(f"report={json_path}")
     return 0 if result.passed else 1
+
+
+def _bundle(settings, arguments) -> int:
+    """Score trajectory bundles from a directory and optionally gate them.
+
+    Closes the 09 §9 quality gap: exported bundles (OE-3/W6-3) are scored
+    by the trajectory evaluator, aggregated, and optionally compared to a
+    frozen baseline (reusing the release gate with suite blocking keys).
+    """
+    from pathlib import Path as _Path
+
+    from endless_task.runtime_ledger.trajectory import load_trajectory_bundle
+    from endless_task.eval.trajectory_eval import evaluate_trajectories
+
+    export_root = _Path(arguments.directory or (
+        settings.database_path.parent / "v2_trajectory_exports"
+    ))
+    if not export_root.is_dir():
+        print(f"no trajectory export directory: {export_root}")
+        return 2
+    bundles = []
+    for child in sorted(export_root.iterdir()):
+        if child.is_dir() and (child / "manifest.json").exists():
+            try:
+                bundles.append(load_trajectory_bundle(child))
+            except Exception as error:
+                print(f"skip {child.name}: {error}")
+    if not bundles:
+        print(f"no trajectory bundles under {export_root}")
+        return 2
+    cards = evaluate_trajectories(bundles)
+    for card in cards:
+        print(
+            f"bundle {card.run_id} verdict={card.verdict.value} "
+            f"blockers={int(card.has_blocker)} warnings={card.warning_count}"
+        )
+    aggregation = aggregate(cards)
+    for line in summary_lines(aggregation):
+        print(line)
+    if arguments.baseline:
+        baseline_path = _Path(arguments.baseline)
+        try:
+            baseline = EvalBaseline.from_dict(
+                json.loads(baseline_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, ValueError) as error:
+            print(f"cannot load baseline {baseline_path}: {error}")
+            return 2
+        result = run_gate(
+            suite_name=arguments.suite or "core_loop",
+            baseline=baseline,
+            candidate=aggregation,
+            blocking_keys=tuple(SUITE_CATALOG[arguments.suite].metric_keys)
+            if arguments.suite and arguments.suite in SUITE_CATALOG
+            else (),
+        )
+        print(gate_to_markdown(result))
+        return 0 if result.passed else 1
+    return 0
 
 
 def _suites(settings, arguments) -> int:
