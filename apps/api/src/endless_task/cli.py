@@ -92,6 +92,36 @@ def _trajectory_export_command(settings, arguments) -> int:
     return 0
 
 
+def _flags_command(settings, arguments) -> int:
+    """Agent Platform feature-flag 状态与回滚演练（09 §6/§9 运维）。"""
+    from endless_task.api.agent_flags import (
+        agent_platform_flags,
+        rollback_dry_run,
+    )
+
+    if arguments.rollback_dry_run:
+        result = rollback_dry_run(settings, arguments.rollback_dry_run)
+        print(
+            f"flag={result['flag']} wired={str(result['wired']).lower()} "
+            f"container_built={str(result.get('containerBuilt', False)).lower()}"
+        )
+        if result.get("field") is not None:
+            print(
+                f"field={result['field']} before={result['before']} "
+                f"after={result['after']}"
+            )
+        print(f"note={result['note']}")
+        return 0 if result.get("containerBuilt", False) or not result["wired"] else 1
+
+    for flag in agent_platform_flags(settings):
+        value = flag.current_value if flag.wired else "(未接线)"
+        print(
+            f"{flag.env_name}={value}"
+            + (f" [field={flag.field}, rollback={flag.rollback_value}]" if flag.wired else "")
+        )
+    return 0
+
+
 def _retention_command(settings, arguments) -> int:
     """一键 trace 清理与 trajectory 导出目录整理（08 §11 一键清理）。
 
@@ -288,6 +318,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="显式导出 run 的 trajectory bundle 到 v2_trajectory_exports/（08 §OE-3）",
     )
     trajectory_export.add_argument("run_id", help="v2 run id")
+    flags = commands.add_parser(
+        "flags", help="Agent Platform feature-flag 状态（09 §6）；--rollback-dry-run 演练回滚"
+    )
+    flags.add_argument(
+        "--rollback-dry-run",
+        metavar="FLAG",
+        default=None,
+        help="演练：把指定 flag 置关闭并验证容器可构建",
+    )
     retention = commands.add_parser(
         "retention",
         help="trace/usage 与 trajectory 导出的一键清理（08 §11；dry-run 默认）",
@@ -436,6 +475,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _trajectory_export_command(settings, arguments)
     if command == "retention":
         return _retention_command(settings, arguments)
+    if command == "flags":
+        return _flags_command(settings, arguments)
     if command == "restore":
         return _restore_command(settings, arguments)
 

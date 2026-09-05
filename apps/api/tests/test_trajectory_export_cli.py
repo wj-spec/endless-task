@@ -146,3 +146,65 @@ class RetentionCliTest(unittest.TestCase):
         self.assertIn("trajectory_bundles=2", output)
         remaining = list(export_root.iterdir())
         self.assertEqual(1, len(remaining))
+
+
+class AgentFlagsCliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.database_path = Path(self._temporary_directory.name) / "cli.db"
+        self.database = Database(self.database_path)
+        self.database.initialize()
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _run_cli(self, arguments, *, expected_exit_code=0) -> str:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        settings = AppSettings(database_path=self.database_path)
+        output = io.StringIO()
+        with mock.patch.object(AppSettings, "from_environment", return_value=settings):
+            with redirect_stdout(output):
+                exit_code = main(arguments)
+        self.assertEqual(expected_exit_code, exit_code)
+        return output.getvalue()
+
+    def test_flags_lists_platform_flags(self) -> None:
+        output = self._run_cli(["flags"])
+        self.assertIn("ENDLESS_TASK_DELEGATION=readonly", output)
+        self.assertIn("ENDLESS_TASK_RUNTIME_TRACE=all", output)
+        self.assertIn("ENDLESS_TASK_STOP_POLICY_V2=(未接线)", output)
+        self.assertIn("ENDLESS_TASK_EXECUTION_BACKEND=(未接线)", output)
+
+    def test_rollback_dry_run_wired_flag(self) -> None:
+        output = self._run_cli(
+            ["flags", "--rollback-dry-run", "ENDLESS_TASK_RUNTIME_TRACE"]
+        )
+        self.assertIn("wired=true", output)
+        self.assertIn("container_built=true", output)
+        self.assertIn("before=all", output)
+        self.assertIn("after=0", output)
+
+    def test_rollback_dry_run_delegation(self) -> None:
+        output = self._run_cli(
+            ["flags", "--rollback-dry-run", "ENDLESS_TASK_DELEGATION"]
+        )
+        self.assertIn("wired=true", output)
+        self.assertIn("container_built=true", output)
+        self.assertIn("after=0", output)
+
+    def test_rollback_dry_run_unwired_flag_is_noop(self) -> None:
+        output = self._run_cli(
+            ["flags", "--rollback-dry-run", "ENDLESS_TASK_STOP_POLICY_V2"]
+        )
+        self.assertIn("wired=false", output)
+        self.assertIn("container_built=false", output)
+
+    def test_rollback_dry_run_unknown_flag_fails(self) -> None:
+        output = self._run_cli(
+            ["flags", "--rollback-dry-run", "ENDLESS_TASK_BOGUS"],
+            expected_exit_code=0,  # unwired path: no-op, exit 0
+        )
+        self.assertIn("wired=false", output)
