@@ -28,6 +28,13 @@ from endless_task.tooling import (
 )
 
 
+# E2E markdown 渲染样例：由 [e2e:markdown] 用户消息触发（前端 content-rendering spec 用）
+_E2E_MARKDOWN_REPLY = (
+    "# E2E 渲染标题\n\n"
+    "见 [OpenAI](https://openai.com) 官方文档与来源 [K1]。\n\n"
+    "| 名称 | 值 |\n| --- | --- |\n| 甲 | 1 |\n| 乙 | 2 |\n\n"
+    "```python\nprint(\"hello\")\n```\n"
+)
 class E2EApprovalTool:
     definition = ToolDefinition(
         name="e2e_approval",
@@ -115,6 +122,15 @@ class E2EProvider:
             yield ProviderCompleted(
                 finish_reason="stop",
                 input_tokens=14,
+                output_tokens=8,
+            )
+            return
+
+        if "[e2e:markdown]" in user_content:
+            yield ProviderTextDelta(_E2E_MARKDOWN_REPLY)
+            yield ProviderCompleted(
+                finish_reason="stop",
+                input_tokens=12,
                 output_tokens=8,
             )
             return
