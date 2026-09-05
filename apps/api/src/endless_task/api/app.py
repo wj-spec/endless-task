@@ -763,12 +763,6 @@ class RuntimeV2MessageBody(BaseModel):
     laneId: Optional[str] = None
 
 
-class RuntimeV2ConversationRuntimeBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    runtime: Literal["v1", "v2"]
-
-
 class RuntimeV2CreateLaneBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1872,11 +1866,10 @@ def _build_container(
         delegation_handler_ref = delegation_handler
     else:
         delegation_handler_ref = None
+    # 14 A2: v2 sole runtime — selection is a status service only.
     runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
         database=database,
         repository=runtime_v2_repository,
-        default_runtime="v2",
-        rollback_forced=False,
     )
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
@@ -4622,17 +4615,6 @@ def create_app(
         conversation_id: str,
     ) -> dict[str, object]:
         status = container.runtime_v2_selection_service.describe(conversation_id)
-        return _runtime_v2_conversation_runtime_json(status)
-
-    @app.post("/api/v2/conversations/{conversation_id}/runtime")
-    async def set_runtime_v2_conversation_runtime(
-        conversation_id: str,
-        body: RuntimeV2ConversationRuntimeBody,
-    ) -> dict[str, object]:
-        status = container.runtime_v2_selection_service.set_override(
-            conversation_id,
-            runtime=body.runtime,
-        )
         return _runtime_v2_conversation_runtime_json(status)
 
     @app.get("/api/v2/conversations/{conversation_id}/memories")

@@ -11,10 +11,71 @@ from endless_task.domain.repositories import ConflictError
 
 from endless_task.storage.database import Database
 
-from .selection import RuntimeV2RuntimeSelectionService
 
 
 MIGRATION_NAME = "v1_to_runtime_v2"
+
+
+def rollback_reconciliation_required(
+    connection,
+    *,
+    tree_conversation_id: str,
+    migrated_at: str,
+) -> bool:
+    """Whether a migrated tree received post-migration writes (v1 rollback unsafe).
+
+    Moved here from RuntimeV2RuntimeSelectionService during 14 A2 (v2 sole
+    runtime); lives with the migration machinery it belongs to and is removed
+    together with it in phase B.
+    """
+    post_migration_turn = connection.execute(
+        """
+        SELECT 1
+        FROM turns AS turn
+        JOIN v2_migration_conversation_mappings AS mapping
+          ON mapping.source_conversation_id = turn.conversation_id
+        WHERE mapping.tree_conversation_id = ?
+          AND turn.created_at > ?
+        LIMIT 1
+        """,
+        (tree_conversation_id, migrated_at),
+    ).fetchone()
+    if post_migration_turn is not None:
+        return True
+    promoted_after_migration = connection.execute(
+        """
+        SELECT 1
+        FROM conversations AS conversation
+        JOIN v2_migration_conversation_mappings AS mapping
+          ON mapping.source_conversation_id = conversation.id
+        WHERE mapping.tree_conversation_id = ?
+          AND conversation.promoted_at > ?
+        LIMIT 1
+        """,
+        (tree_conversation_id, migrated_at),
+    ).fetchone()
+    if promoted_after_migration is not None:
+        return True
+    unmapped_descendant = connection.execute(
+        """
+        WITH RECURSIVE descendants(id) AS (
+            SELECT id FROM conversations WHERE id = ?
+            UNION ALL
+            SELECT child.id
+            FROM conversations AS child
+            JOIN descendants AS parent
+              ON child.parent_conversation_id = parent.id
+        )
+        SELECT descendants.id
+        FROM descendants
+        LEFT JOIN v2_migration_conversation_mappings AS mapping
+          ON mapping.source_conversation_id = descendants.id
+        WHERE mapping.source_conversation_id IS NULL
+        LIMIT 1
+        """,
+        (tree_conversation_id,),
+    ).fetchone()
+    return unmapped_descendant is not None
 
 
 def _utc_now() -> str:
@@ -805,7 +866,7 @@ class RuntimeV2MigrationService:
                     FROM v2_migration_conversation_mappings
                     """
                 ).fetchall()
-                if RuntimeV2RuntimeSelectionService._rollback_reconciliation_required(
+                if rollback_reconciliation_required(
                     connection,
                     tree_conversation_id=str(tree_row["tree_conversation_id"]),
                     migrated_at=migrated_at,

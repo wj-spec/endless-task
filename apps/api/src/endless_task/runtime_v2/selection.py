@@ -1,9 +1,23 @@
+"""Runtime selection service — v2 sole runtime (14-runtime-single-mode, A2).
+
+旧版本含 v1 override/rollback/migration-required 分支（v1 引擎已删，只剩控制面）。
+A2 将该服务收敛为 **v2 唯一**：
+
+- ``default_runtime`` 恒 ``v2``、``rollback_forced`` 恒 False（构造参数删除）；
+- per-conversation override 移除（``v2_conversation_runtime_overrides`` 表由
+  migration 058 删除）；
+- describe 恒 ``effective_runtime=v2 / reason=v2_sole_runtime``，不再计算
+  requires_migration / v1_read_only / rollback_reconciliation；
+- global_status 保留会话/迁移计数（B 阶段删表前仍具诊断价值），
+  rollback_reconciliation_count 恒 0；
+- 回滚对账判定 ``rollback_reconciliation_required`` 移至 ``migration.py``
+  （B 阶段删除 migration 机制时一并移除），本模块不再提供 v1 能力。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
-
-from endless_task.domain.repositories import ConflictError, NotFoundError
 
 if TYPE_CHECKING:
     from endless_task.storage import Database, SqliteRuntimeV2Repository
@@ -37,10 +51,10 @@ class RuntimeV2ConversationRuntimeStatus:
 
 
 class RuntimeV2RuntimeSelectionService:
-    """Resolves the global runtime default and per-conversation override.
+    """Resolves runtime status — v2 is the only runtime (14 A2).
 
-    `v1` is a forced rollback mode. `v2` is the default mode and still allows a
-    conversation-level v1 override.
+    Kept as a status/diagnostic service for the runtime endpoints and the
+    conversation snapshot; it can no longer select or report v1.
     """
 
     def __init__(
@@ -48,13 +62,9 @@ class RuntimeV2RuntimeSelectionService:
         *,
         database: Database,
         repository: SqliteRuntimeV2Repository,
-        default_runtime: str,
-        rollback_forced: bool = False,
     ) -> None:
         self._database = database
         self._repository = repository
-        self._default_runtime = self._validate_runtime(default_runtime)
-        self._rollback_forced = rollback_forced
 
     def global_status(self) -> RuntimeV2GlobalRuntimeStatus:
         with self._database.connect() as connection:
@@ -89,27 +99,9 @@ class RuntimeV2RuntimeSelectionService:
                 )
                 """
             ).fetchone()
-            reconciliation_count = 0
-            if migration_row is not None:
-                migrated_at = str(migration_row["migrated_at"])
-                tree_rows = connection.execute(
-                    """
-                    SELECT DISTINCT tree_conversation_id
-                    FROM v2_migration_conversation_mappings
-                    """
-                ).fetchall()
-                reconciliation_count = sum(
-                    1
-                    for tree_row in tree_rows
-                    if self._rollback_reconciliation_required(
-                        connection,
-                        tree_conversation_id=str(tree_row["tree_conversation_id"]),
-                        migrated_at=migrated_at,
-                    )
-                )
         return RuntimeV2GlobalRuntimeStatus(
-            default_runtime=self._default_runtime,
-            rollback_forced=self._rollback_forced,
+            default_runtime="v2",
+            rollback_forced=False,
             migration_state=(
                 "migrated" if migration_row is not None else "not_migrated"
             ),
@@ -117,7 +109,7 @@ class RuntimeV2RuntimeSelectionService:
             mapped_conversation_count=int(mapping_row["mapped"]),
             conversation_tree_count=int(mapping_row["trees"]),
             pending_migration_count=int(pending_row["count"]),
-            rollback_reconciliation_count=reconciliation_count,
+            rollback_reconciliation_count=0,
         )
 
     def describe(self, conversation_id: str) -> RuntimeV2ConversationRuntimeStatus:
@@ -127,6 +119,8 @@ class RuntimeV2RuntimeSelectionService:
                 (conversation_id,),
             ).fetchone()
             if conversation is None:
+                from endless_task.domain.repositories import NotFoundError
+
                 raise NotFoundError(f"Conversation not found: {conversation_id}")
             mapping = connection.execute(
                 """
@@ -136,164 +130,28 @@ class RuntimeV2RuntimeSelectionService:
                 """,
                 (conversation_id,),
             ).fetchone()
-            migration_row = connection.execute(
-                """
-                SELECT migrated_at
-                FROM v2_migration_state
-                WHERE migration_name = ?
-                """,
-                ("v1_to_runtime_v2",),
-            ).fetchone()
-            tree_conversation_id = (
-                str(mapping["tree_conversation_id"])
-                if mapping is not None
-                else conversation_id
-            )
-            turn_count = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM turns WHERE conversation_id = ?",
-                    (conversation_id,),
-                ).fetchone()[0]
-            )
-            rollback_reconciliation_required = (
-                mapping is not None
-                and migration_row is not None
-                and self._rollback_reconciliation_required(
-                    connection,
-                    tree_conversation_id=tree_conversation_id,
-                    migrated_at=str(migration_row["migrated_at"]),
-                )
-            )
-        pointer = self._repository.get_conversation_pointer(tree_conversation_id)
-        override = self._repository.get_runtime_override(conversation_id)
-        can_use_v2 = (
-            mapping is not None or pointer is not None or turn_count == 0
-        ) and not rollback_reconciliation_required
-
-        if self._rollback_forced:
-            effective_runtime = "v1"
-            reason = "global_v1_rollback"
-        elif rollback_reconciliation_required:
-            effective_runtime = "v1"
-            reason = "rollback_reconciliation_required"
-        elif override is not None:
-            effective_runtime = override
-            reason = "conversation_override"
-        elif self._default_runtime == "v2" and can_use_v2:
-            effective_runtime = "v2"
-            reason = "global_default"
-        else:
-            effective_runtime = "v1"
-            reason = "migration_required"
-
+        tree_conversation_id = (
+            str(mapping["tree_conversation_id"])
+            if mapping is not None
+            else conversation_id
+        )
         return RuntimeV2ConversationRuntimeStatus(
             conversation_id=conversation_id,
             tree_conversation_id=tree_conversation_id,
-            default_runtime=self._default_runtime,
-            rollback_forced=self._rollback_forced,
-            override_runtime=override,
-            effective_runtime=effective_runtime,
-            can_use_v2=can_use_v2,
-            requires_migration=not can_use_v2,
-            v1_read_only=mapping is not None,
-            rollback_reconciliation_required=rollback_reconciliation_required,
-            reason=reason,
+            default_runtime="v2",
+            rollback_forced=False,
+            override_runtime=None,
+            effective_runtime="v2",
+            can_use_v2=True,
+            requires_migration=False,
+            v1_read_only=False,
+            rollback_reconciliation_required=False,
+            reason="v2_sole_runtime",
         )
 
-    def set_override(
-        self,
-        conversation_id: str,
-        *,
-        runtime: str,
-    ) -> RuntimeV2ConversationRuntimeStatus:
-        normalized = self._validate_runtime(runtime)
-        status = self.describe(conversation_id)
-        if normalized == "v2" and not status.can_use_v2:
-            raise ConflictError(
-                "Conversation must be migrated before selecting runtime v2"
-            )
-        if (
-            normalized == "v1"
-            and status.v1_read_only
-            and not self._rollback_forced
-        ):
-            raise ConflictError(
-                "Migrated v1 conversations are read-only; use global rollback to write v1"
-            )
-        self._repository.set_runtime_override(
-            conversation_id=conversation_id,
-            runtime=normalized,
-        )
-        return self.describe(conversation_id)
 
-    def ensure_v1_write_allowed(self, conversation_id: str) -> None:
-        status = self.describe(conversation_id)
-        if status.v1_read_only and not self._rollback_forced:
-            raise ConflictError(
-                "Migrated v1 conversations are read-only; use global rollback to write v1"
-            )
-
-    @staticmethod
-    def _validate_runtime(runtime: str) -> str:
-        normalized = runtime.strip().lower()
-        if normalized not in {"v1", "v2"}:
-            raise ConflictError("Runtime must be v1 or v2")
-        return normalized
-
-    @staticmethod
-    def _rollback_reconciliation_required(
-        connection,
-        *,
-        tree_conversation_id: str,
-        migrated_at: str,
-    ) -> bool:
-        post_migration_turn = connection.execute(
-            """
-            SELECT 1
-            FROM turns AS turn
-            JOIN v2_migration_conversation_mappings AS mapping
-              ON mapping.source_conversation_id = turn.conversation_id
-            WHERE mapping.tree_conversation_id = ?
-              AND turn.created_at > ?
-            LIMIT 1
-            """,
-            (tree_conversation_id, migrated_at),
-        ).fetchone()
-        if post_migration_turn is not None:
-            return True
-
-        promoted_after_migration = connection.execute(
-            """
-            SELECT 1
-            FROM conversations AS conversation
-            JOIN v2_migration_conversation_mappings AS mapping
-              ON mapping.source_conversation_id = conversation.id
-            WHERE mapping.tree_conversation_id = ?
-              AND conversation.promoted_at > ?
-            LIMIT 1
-            """,
-            (tree_conversation_id, migrated_at),
-        ).fetchone()
-        if promoted_after_migration is not None:
-            return True
-
-        unmapped_descendant = connection.execute(
-            """
-            WITH RECURSIVE descendants(id) AS (
-                SELECT id FROM conversations WHERE id = ?
-                UNION ALL
-                SELECT child.id
-                FROM conversations AS child
-                JOIN descendants AS parent
-                  ON child.parent_conversation_id = parent.id
-            )
-            SELECT descendants.id
-            FROM descendants
-            LEFT JOIN v2_migration_conversation_mappings AS mapping
-              ON mapping.source_conversation_id = descendants.id
-            WHERE mapping.source_conversation_id IS NULL
-            LIMIT 1
-            """,
-            (tree_conversation_id,),
-        ).fetchone()
-        return unmapped_descendant is not None
+__all__ = [
+    "RuntimeV2ConversationRuntimeStatus",
+    "RuntimeV2GlobalRuntimeStatus",
+    "RuntimeV2RuntimeSelectionService",
+]

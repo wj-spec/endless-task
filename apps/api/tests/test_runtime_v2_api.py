@@ -183,13 +183,14 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("v2", initial.json()["effectiveRuntime"])
         self.assertTrue(initial.json()["canUseV2"])
 
-        selected = await client.post(
-            f"/api/v2/conversations/{conversation.id}/runtime",
-            json={"runtime": "v2"},
+        # 14 A2: v2 sole runtime — no per-conversation override surface.
+        refreshed = await client.get(
+            f"/api/v2/conversations/{conversation.id}/runtime"
         )
-        self.assertEqual(200, selected.status_code)
-        self.assertEqual("v2", selected.json()["effectiveRuntime"])
-        self.assertEqual("conversation_override", selected.json()["reason"])
+        self.assertEqual(200, refreshed.status_code)
+        self.assertEqual("v2", refreshed.json()["effectiveRuntime"])
+        self.assertIsNone(refreshed.json()["overrideRuntime"])
+        self.assertEqual("v2_sole_runtime", refreshed.json()["reason"])
 
         message = await client.post(
             f"/api/v2/conversations/{conversation.id}/messages",
@@ -243,7 +244,8 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([], next_snapshot.json()["turns"])
 
-    async def test_runtime_v2_selection_rejects_unmigrated_history(self) -> None:
+    async def test_runtime_v2_status_is_v2_even_with_legacy_history(self) -> None:
+        # 14 A2: v1 引擎已删，旧历史也不得再选 v1；状态恒 v2。
         client, app = await self._client()
         container = app.state.container
         conversation = container.chat_repository.create_conversation()
@@ -253,11 +255,12 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
             content="旧会话",
         )
 
-        response = await client.post(
-            f"/api/v2/conversations/{conversation.id}/runtime",
-            json={"runtime": "v2"},
+        response = await client.get(
+            f"/api/v2/conversations/{conversation.id}/runtime"
         )
-        self.assertEqual(409, response.status_code)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("v2", response.json()["effectiveRuntime"])
+        self.assertEqual("v2_sole_runtime", response.json()["reason"])
 
     async def test_message_snapshot_and_sse_stream_recover_without_duplicate_delta(
         self,

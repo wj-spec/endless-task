@@ -1453,44 +1453,6 @@ class SqliteRuntimeV2Repository:
             updated_at=row["updated_at"],
         )
 
-    def get_runtime_override(self, conversation_id: str) -> Optional[str]:
-        with self._database.connect() as connection:
-            self._ensure_conversation(connection, conversation_id)
-            row = connection.execute(
-                """
-                SELECT runtime FROM v2_conversation_runtime_overrides
-                WHERE conversation_id = ?
-                """,
-                (conversation_id,),
-            ).fetchone()
-        return None if row is None else str(row["runtime"])
-
-    def set_runtime_override(
-        self,
-        *,
-        conversation_id: str,
-        runtime: str,
-    ) -> tuple[str, str]:
-        now = self._clock()
-
-        def operation(connection: sqlite3.Connection) -> tuple[str, str]:
-            self._ensure_conversation(connection, conversation_id)
-            connection.execute(
-                """
-                INSERT INTO v2_conversation_runtime_overrides(
-                    conversation_id, runtime, updated_at
-                )
-                VALUES (?, ?, ?)
-                ON CONFLICT(conversation_id) DO UPDATE SET
-                    runtime = excluded.runtime,
-                    updated_at = excluded.updated_at
-                """,
-                (conversation_id, runtime, now),
-            )
-            return runtime, now
-
-        return self._write(operation)
-
     def create_run(
         self,
         *,

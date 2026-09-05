@@ -129,12 +129,16 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             "057_runtime_v2_resend_override.sql",
             self.database.applied_migrations(),
         )
+        self.assertIn(
+            "058_runtime_v2_drop_runtime_overrides.sql",
+            self.database.applied_migrations(),
+        )
         self.database.initialize()
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(57, row["count"])
+        self.assertEqual(58, row["count"])
 
     def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
         conversation = self.chat_repository.create_conversation()
