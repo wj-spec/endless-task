@@ -3760,6 +3760,79 @@ def create_app(
             ],
         }
 
+    _TRAJECTORY_BUNDLE_FILES = (
+        "manifest.json",
+        "events.jsonl",
+        "spans.jsonl",
+        "messages.redacted.jsonl",
+        "tool-outcomes.redacted.jsonl",
+    )
+
+    def _trajectory_export_root() -> Path:
+        return settings.database_path.parent / "v2_trajectory_exports"
+
+    @app.get("/api/v2/trajectory")
+    async def list_trajectory_bundles() -> dict[str, object]:
+        """P2-1a：失败/显式导出 trajectory bundle 的只读列表（开发者向）。"""
+        root = _trajectory_export_root()
+        items: list[dict[str, object]] = []
+        if root.exists():
+            for child in sorted(root.iterdir(), key=lambda item: item.name, reverse=True):
+                if not child.is_dir():
+                    continue
+                manifest_path = child / "manifest.json"
+                if not manifest_path.exists():
+                    continue
+                files = [
+                    {"name": name, "size": (child / name).stat().st_size}
+                    for name in _TRAJECTORY_BUNDLE_FILES
+                    if (child / name).exists()
+                ]
+                items.append({"runId": child.name, "files": files})
+        return {"root": str(root), "items": items}
+
+    @app.get("/api/v2/trajectory/{run_id}")
+    async def get_trajectory_bundle(run_id: str) -> dict[str, object]:
+        bundle_dir = _trajectory_export_root() / run_id
+        manifest_path = bundle_dir / "manifest.json"
+        if not bundle_dir.is_dir() or not manifest_path.exists():
+            raise NotFoundError(f"Unknown trajectory bundle: {run_id}")
+        manifest: dict[str, object] = {}
+        try:
+            parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                manifest = parsed
+        except (OSError, ValueError):
+            manifest = {}
+        file_names = [
+            name
+            for name in _TRAJECTORY_BUNDLE_FILES
+            if (bundle_dir / name).exists()
+        ]
+        return {
+            "runId": run_id,
+            "fileNames": file_names,
+            "manifest": manifest,
+        }
+
+    @app.get("/api/v2/trajectory/{run_id}/files/{file_name}")
+    async def get_trajectory_bundle_file(
+        run_id: str, file_name: str
+    ) -> dict[str, object]:
+        if file_name not in _TRAJECTORY_BUNDLE_FILES:
+            raise ApiRequestError(
+                "invalid_request", f"不允许读取文件：{file_name}"
+            )
+        bundle_dir = _trajectory_export_root() / run_id
+        target = bundle_dir / file_name
+        if not bundle_dir.is_dir() or not target.exists():
+            raise NotFoundError(f"Unknown trajectory bundle file: {run_id}/{file_name}")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = ""
+        return {"runId": run_id, "fileName": file_name, "content": content}
+
     @app.get("/skills")
     async def list_skills(
         workspace: Optional[str] = Query(None),
