@@ -26,7 +26,6 @@ from endless_task.runtime_v2 import (
     RunStatus,
     TranscriptEntryType,
 )
-from endless_task.runtime_v2 import RuntimeV2MigrationService
 from endless_task.tooling import (
     ToolApprovalMode,
     ToolCall,

@@ -138,7 +138,7 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(58, row["count"])
+        self.assertEqual(59, row["count"])
 
     def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
         conversation = self.chat_repository.create_conversation()
