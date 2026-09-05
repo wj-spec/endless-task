@@ -13,7 +13,6 @@ from .protocol import (
     SpanStatus,
     TraceContext,
 )
-
 __all__ = [
     "TRACE_ATTRIBUTE_ALLOWLIST",
     "TRACE_SCHEMA_VERSION",
