@@ -118,10 +118,42 @@ class DelegationFlagParsingTest(unittest.TestCase):
         self.assertEqual("0", _parse_delegation_mode("0"))
         self.assertEqual("readonly", _parse_delegation_mode("readonly"))
         self.assertEqual("readonly", _parse_delegation_mode("1"))
-        with self.assertRaises(ValueError):
-            _parse_delegation_mode("isolated_write")
+        # M4B P2a: isolated_write parses (startup additionally requires the
+        # execution-backend enforcement seam).
+        self.assertEqual("isolated_write", _parse_delegation_mode("isolated_write"))
         with self.assertRaises(ValueError):
             _parse_delegation_mode("bogus")
+
+
+    def test_isolated_write_requires_enforcement_at_startup(self) -> None:
+        # M4B P2a: no silent degradation — isolated_write without the
+        # enforcement seam fails startup.
+        from endless_task.api import AppSettings, create_app
+
+        with self.assertRaises(ValueError):
+            create_app(
+                settings=AppSettings(
+                    database_path=Path(tempfile.mkdtemp()) / "gate.db",
+                    delegation_mode="isolated_write",
+                    execution_backend_mode="",
+                )
+            )
+
+    def test_isolated_write_builds_with_enforcement(self) -> None:
+        from endless_task.api import AppSettings, create_app
+
+        app = create_app(
+            settings=AppSettings(
+                database_path=Path(tempfile.mkdtemp()) / "gate2.db",
+                memory_proposals_enabled=False,
+                knowledge_proposals_enabled=False,
+                artifact_proposals_enabled=False,
+                task_proposals_enabled=False,
+                delegation_mode="isolated_write",
+                execution_backend_mode="local",
+            )
+        )
+        self.assertIsNotNone(app.state.container)
 
 
 if __name__ == "__main__":

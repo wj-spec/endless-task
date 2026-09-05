@@ -1163,10 +1163,11 @@ def _parse_strict_flag(value: str, *, name: str) -> bool:
 
 
 def _parse_delegation_mode(value: str) -> str:
-    """Strict delegation mode parsing (06 §9): 0 | readonly.
+    """Strict delegation mode parsing (06 §9): 0 | readonly | isolated_write.
 
-    ``isolated_write`` (M4B) is not implemented yet and fails startup
-    instead of silently degrading to read-only.
+    ``isolated_write`` (M4B) is accepted from P2a on; startup additionally
+    requires the execution-backend enforcement seam to be enabled (checked in
+    the composition root) — never silently degrades to read-only.
     """
     normalized = value.strip().lower()
     if normalized in {"0", "false", "no", "off"}:
@@ -1174,11 +1175,8 @@ def _parse_delegation_mode(value: str) -> str:
     if normalized in {"1", "true", "yes", "on", "readonly"}:
         return "readonly"
     if normalized == "isolated_write":
-        raise ValueError(
-            "ENDLESS_TASK_DELEGATION=isolated_write 属于 M4B，尚未实现；"
-            "请使用 0 或 readonly。"
-        )
-    raise ValueError("ENDLESS_TASK_DELEGATION 只允许 0 或 readonly")
+        return "isolated_write"
+    raise ValueError("ENDLESS_TASK_DELEGATION 只允许 0 | readonly | isolated_write")
 
 
 def _parse_execution_backend_mode(value: str) -> str:
@@ -1499,6 +1497,13 @@ def _build_container(
         unattended_tool_registry = EnforcingToolRegistry(
             selected_tool_registry, tool_enforcement
         )
+    # M4B P2a gate: isolated_write requires the enforcement seam (no silent
+    # degradation to read-only children / unrestricted local writes).
+    if settings.delegation_mode == "isolated_write" and not settings.execution_backend_mode:
+        raise ValueError(
+            "ENDLESS_TASK_DELEGATION=isolated_write 需要执行后端 enforcement；"
+            "请设置 ENDLESS_TASK_EXECUTION_BACKEND=local 或 container（或改回 0/readonly）。"
+        )
 
     def _v2_workspace_tool_filter(
         conversation_id: str,
@@ -1707,7 +1712,7 @@ def _build_container(
             else None
         ),
     )
-    if settings.delegation_mode == "readonly":
+    if settings.delegation_mode != "0":
         # M4A read-only delegation (DR-2): register the three delegation
         # tools and wire their handler to the production kernel adapter.
         # Children execute through RuntimeV2AgentKernel against the same
@@ -2337,7 +2342,7 @@ def _build_container(
         runtime_v2_gateway=runtime_v2_gateway,
         delegation_handler=(
             delegation_handler_ref
-            if settings.delegation_mode == "readonly"
+            if settings.delegation_mode != "0"
             else None
         ),
         runtime_v2_trace_observer=runtime_v2_trace_observer,
@@ -2735,10 +2740,10 @@ def create_app(
                 "enabled": container.settings.context_engine_v2_enabled,
             },
             "delegation": {
-                "enabled": container.settings.delegation_mode == "readonly",
+                "enabled": container.settings.delegation_mode != "0",
                 "mode": (
                     container.settings.delegation_mode
-                    if container.settings.delegation_mode == "readonly"
+                    if container.settings.delegation_mode != "0"
                     else None
                 ),
             },
