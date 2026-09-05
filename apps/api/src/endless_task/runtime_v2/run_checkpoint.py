@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SKIP_PREFIXES = (
     ".endless-task-checkpoints",
     ".endless-task/checkpoints",
+    # M4B P1: delegation child scratch dirs under the main workspace are never
+    # snapshotted into main-run checkpoints.
+    ".endless-task/delegation",
     ".git",
     "node_modules",
 )
