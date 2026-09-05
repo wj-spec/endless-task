@@ -136,16 +136,21 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([], snapshot["toolStates"])
             self.assertEqual(1, len(provider.requests))
             # 工具定义可用，但模型不调用时不得产生任何工具状态。
-            # 会话现在归属已绑定工作区，工作区工具（fs/shell）也一并注入。
+            # 会话现在归属已绑定工作区，工作区工具（fs/shell）也一并注入；
+            # delegation 默认 readonly 后，bound 会话经 agent.delegate 授权
+            # 门额外可见 spawn/query/cancel_agent（06 §29，M4A 默认开启）。
             self.assertEqual(
                 (
+                    "cancel_agent",
                     "delete_workspace_file",
                     "list_workspace_dir",
+                    "query_agent",
                     "read_artifact",
                     "read_skill_file",
                     "read_text_file",
                     "read_workspace_file",
                     "run_shell",
+                    "spawn_agent",
                     "update_plan",
                     "write_workspace_file",
                 ),

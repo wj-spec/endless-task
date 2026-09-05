@@ -315,12 +315,12 @@ class AppSettings:
     # context pruning under budget pressure; under-budget behavior is
     # byte-identical to legacy).
     context_engine_v2_enabled: bool = True
-    # M4A read-only delegation mode; default "0" (off). "readonly" registers
-    # the three delegation tools and runs children through the
-    # RuntimeV2AgentKernel production adapter. "isolated_write" (M4B) is not
-    # implemented yet and fails startup rather than silently degrading to
-    # read-only (no silent downgrade).
-    delegation_mode: str = "0"
+    # M4A read-only delegation mode; default "readonly" after real-provider
+    # validation (2026-09-05 deepseek E2E: child run + concurrent batch +
+    # delegate gate verified, 06 §27-29). "0" disables delegation tools.
+    # "isolated_write" (M4B) is not implemented yet and fails startup
+    # rather than silently degrading to read-only (no silent downgrade).
+    delegation_mode: str = "readonly"
     # M5 SK-1b: enable skill:// locator resolution for read_skill_file and
     # locator-based prompt exposure. Default off keeps the legacy absolute
     # path behavior unchanged. Illegal env values fail startup.
@@ -470,7 +470,7 @@ class AppSettings:
                 name="ENDLESS_TASK_CONTEXT_ENGINE_V2",
             ),
             delegation_mode=_parse_delegation_mode(
-                env.get("ENDLESS_TASK_DELEGATION", "0"),
+                env.get("ENDLESS_TASK_DELEGATION", "readonly"),
             ),
             skill_packages_enabled=_parse_strict_flag(
                 env.get("ENDLESS_TASK_SKILL_PACKAGES", "0"),

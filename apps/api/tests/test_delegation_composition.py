@@ -99,6 +99,18 @@ class DelegationCompositionTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(granted <= {"agent.delegate", "external.action", "session.query", "workspace.read", "workspace.write", "workspace.delete", "process.spawn", "process.signal"})
 
 
+class DelegationDefaultTest(unittest.TestCase):
+    def test_default_is_readonly_after_real_provider_validation(self) -> None:
+        # W6-9: real deepseek E2E passed (child run + concurrent batch +
+        # delegate gate, 06 27-28) -> delegation_mode defaults to
+        # "readonly" (documented flip per 02 11.4, 06 29).
+        import tempfile
+        from pathlib import Path
+
+        settings = AppSettings(database_path=Path(tempfile.mkdtemp()) / "x.db")
+        self.assertEqual("readonly", settings.delegation_mode)
+
+
 class DelegationFlagParsingTest(unittest.TestCase):
     def test_strict_mode_parse(self) -> None:
         from endless_task.api.app import _parse_delegation_mode
