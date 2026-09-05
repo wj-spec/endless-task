@@ -473,7 +473,12 @@ class InProcessChildCoordinator:
                     "parent_run_id": spec.parent_run_id,
                     "parent_tool_call_id": spec.parent_tool_call_id,
                     "expected_output": spec.expected_output.name,
-                }
+                },
+                **(
+                    {"child_workspace_id": spec.child_workspace_id}
+                    if spec.child_workspace_id
+                    else {}
+                ),
             },
         )
 

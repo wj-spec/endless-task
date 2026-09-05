@@ -130,10 +130,12 @@ class CoordinatorOverProductionKernelTest(unittest.TestCase):
         self._temporary_directory.cleanup()
 
     def _conversation_factory(self):
-        async def factory(child_run_id: str):
+        async def factory(child_run_id: str, *, workspace_id=None):
             # Composition-root contract: child conversations are tagged so
             # product enumeration excludes them (06 §2.4).
-            return self.chat_repository.create_delegation_conversation(child_run_id)
+            return self.chat_repository.create_delegation_conversation(
+                child_run_id, workspace_id=workspace_id
+            )
 
         return factory
 

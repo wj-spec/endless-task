@@ -367,6 +367,30 @@ class ChildCoordinatorTest(unittest.TestCase):
 
         run(scenario())
 
+    def test_isolated_spawn_carries_workspace_to_kernel_command(self) -> None:
+        # M4B P2b-ii: spec.child_workspace_id travels to the kernel command
+        # metadata so the conversation factory can bind the child scratch.
+        from dataclasses import replace
+
+        async def scenario() -> None:
+            kernel = ScriptedAgentKernel()
+            coordinator = build_coordinator(
+                kernel=kernel,
+                isolated_write_enabled=True,
+                allowed_profile_names=frozenset({"subagent_readonly"}),
+            )
+            spec = replace(
+                child_spec(workspace_mode=WorkspaceMode.ISOLATED_SNAPSHOT),
+                child_workspace_id="ws_scratch_child",
+            )
+            await coordinator.spawn(spec)
+            self.assertEqual(
+                "ws_scratch_child",
+                kernel.commands[-1].metadata["child_workspace_id"],
+            )
+
+        run(scenario())
+
     def test_isolated_mode_still_rejected_when_disabled(self) -> None:
         async def scenario() -> None:
             coordinator = build_coordinator()

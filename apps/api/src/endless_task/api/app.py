@@ -1745,8 +1745,14 @@ def _build_container(
                 executor_builder=_delegation_executor_builder,
             )
 
-        async def _delegation_conversation_factory(child_run_id: str):
-            return chat_repository.create_delegation_conversation(child_run_id)
+        async def _delegation_conversation_factory(
+            child_run_id: str, *, workspace_id=None
+        ):
+            # M4B P2b-ii: an isolated child conversation is bound to its
+            # scratch workspace so its fs tools resolve into the scratch root.
+            return chat_repository.create_delegation_conversation(
+                child_run_id, workspace_id=workspace_id
+            )
 
         def _delegation_executor_builder():
             return AgentRunExecutor(
@@ -1826,10 +1832,25 @@ def _build_container(
                 frozenset(allowed),
             )
 
+        def _delegation_isolated_workspace_provider(
+            conversation_id: str, child_run_id: str
+        ) -> str:
+            from endless_task.delegation.isolated_workspace import (
+                prepare_isolated_child_workspace,
+            )
+
+            binding = workspace_resolver.require_binding(conversation_id)
+            return prepare_isolated_child_workspace(
+                workspace_repository=workspace_repository,
+                parent_workspace_root=binding.root,
+                child_run_id=child_run_id,
+            )
+
         delegation_handler = CoordinatorDelegationHandler(
             kernel_provider=_delegation_kernel_provider,
             capability_provider=_delegation_capability_provider,
             isolated_write_enabled=(settings.delegation_mode == "isolated_write"),
+            isolated_workspace_provider=_delegation_isolated_workspace_provider,
         )
         selected_tool_registry.register(SpawnAgentLegacyTool(delegation_handler))
         selected_tool_registry.register(QueryAgentLegacyTool(delegation_handler))

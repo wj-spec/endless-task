@@ -141,7 +141,7 @@ class ConcurrentRealKernelBatchTest(unittest.IsolatedAsyncioTestCase):
         self._temporary_directory.cleanup()
 
     def _coordinator(self, provider) -> InProcessChildCoordinator:
-        async def conversation_factory(child_run_id: str):
+        async def conversation_factory(child_run_id: str, *, workspace_id=None):
             return self.chat_repository.create_delegation_conversation(
                 child_run_id
             )

@@ -20,6 +20,10 @@ call id is refused instead of double-executed.
 
 from __future__ import annotations
 
+import inspect
+
+from dataclasses import replace
+
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
 from endless_task.agent_kernel import AgentKernel
@@ -75,8 +79,12 @@ class CoordinatorDelegationHandler:
         profile_resolver: Optional[object] = None,
         default_timeout_seconds: float = 120.0,
         # M4B P2b-i: enables ISOLATED_SNAPSHOT children on this handler's
-        # coordinators (spawn write-mode plumbing arrives in P2b-ii).
+        # coordinators.
         isolated_write_enabled: bool = False,
+        # M4B P2b-ii: prepares the isolated scratch workspace for a child
+        # (conversation_id, child_run_id) -> workspace_id (composition root
+        # closure over the workspace resolver/repositories).
+        isolated_workspace_provider=None,
     ) -> None:
         if not callable(kernel_provider):
             raise AgentPlatformError(
@@ -102,6 +110,7 @@ class CoordinatorDelegationHandler:
         self._profile_resolver = profile_resolver
         self._default_timeout_seconds = float(default_timeout_seconds)
         self._isolated_write_enabled = bool(isolated_write_enabled)
+        self._isolated_workspace_provider = isolated_workspace_provider
         self._coordinators: dict[str, InProcessChildCoordinator] = {}
 
     # -- DelegationToolHandler ---------------------------------------------
@@ -124,6 +133,20 @@ class CoordinatorDelegationHandler:
         if timeout is None:
             timeout = self._default_timeout_seconds
         schema_arg = request.arguments.get("expectedOutputSchema")
+        mode = str(request.arguments.get("mode") or "readonly").strip().lower()
+        if mode not in ("readonly", "isolated_write"):
+            return _failed(
+                request,
+                AgentPlatformError(
+                    "invalid_delegation_mode",
+                    "spawn_agent 的 mode 只允许 readonly 或 isolated_write。",
+                ),
+            )
+        workspace_mode = (
+            WorkspaceMode.READ_ONLY_SHARED
+            if mode == "readonly"
+            else WorkspaceMode.ISOLATED_SNAPSHOT
+        )
         spec = SpawnSpec(
             task=task,
             expected_output=ChildOutputSchema(
@@ -135,13 +158,38 @@ class CoordinatorDelegationHandler:
             tool_allowlist=(),
             model_policy=ChildModelPolicy(preferred_model=None, allow_fallback=False),
             context_policy=ChildContextPolicy(),
-            workspace_mode=WorkspaceMode.READ_ONLY_SHARED,
+            workspace_mode=workspace_mode,
             timeout_seconds=float(timeout),
             parent_run_id=request.run_id,
             parent_tool_call_id=request.call_id,
         )
         try:
-            child_run_id = await coordinator.spawn(spec)
+            if mode == "isolated_write":
+                if not self._isolated_write_enabled:
+                    raise AgentPlatformError(
+                        "delegation_isolated_write_disabled",
+                        "全局 delegation 模式未开启 isolated_write（ENDLESS_TASK_DELEGATION），"
+                        "不能以隔离写模式创建子代理。",
+                        retryable=False,
+                    )
+                if not callable(self._isolated_workspace_provider):
+                    raise AgentPlatformError(
+                        "delegation_isolated_workspace_unavailable",
+                        "隔离写子代理需要 scratch workspace 提供方。",
+                        retryable=False,
+                    )
+                prepared = coordinator.prepare_spawn(spec)
+                workspace_id = self._isolated_workspace_provider(
+                    request.conversation_id, prepared.child_run_id
+                )
+                if inspect.isawaitable(workspace_id):
+                    workspace_id = await workspace_id
+                spec = replace(spec, child_workspace_id=workspace_id)
+                prepared = replace(prepared, spec=spec)
+                await coordinator.execute_prepared(prepared)
+                child_run_id = prepared.child_run_id
+            else:
+                child_run_id = await coordinator.spawn(spec)
             outcome = await coordinator.query(child_run_id)
         except AgentPlatformError as error:
             return _failed(request, error)

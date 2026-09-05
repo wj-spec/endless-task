@@ -105,6 +105,14 @@ class SpawnAgentTool(AgentToolV2):
                             "maximum": _MAX_TIMEOUT_SECONDS,
                             "description": "子代理超时秒数，默认 120。",
                         },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["readonly", "isolated_write"],
+                            "description": (
+                                "readonly（默认）= 只读子代理；isolated_write = M4B "
+                                "隔离写子代理（仅在隔离 scratch 工作区写，不触碰主工作区）。"
+                            ),
+                        },
                     },
                     "required": ["task"],
                     "additionalProperties": False,
