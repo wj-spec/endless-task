@@ -21,6 +21,7 @@ from endless_task.storage import (
     SqliteEmbeddingRepository,
     SqliteKnowledgeRepository,
     SqliteMemoryRepository,
+    SqliteRuntimeV2Repository,
 )
 from endless_task.domain.models import (
     KnowledgeScope,
@@ -53,6 +54,7 @@ class EmbeddingIndexerTest(unittest.TestCase):
         self.memory_repository = SqliteMemoryRepository(self.database)
         self.artifact_repository = SqliteArtifactRepository(self.database)
         self.chat_repository = SqliteChatRepository(self.database)
+        self.runtime_v2_repository = SqliteRuntimeV2Repository(self.database)
         self.embeddings = SqliteEmbeddingRepository(self.database)
         self.indexer: EmbeddingIndexer | None = None
 
@@ -80,24 +82,28 @@ class EmbeddingIndexerTest(unittest.TestCase):
         self.fail("Timed out waiting for condition")
 
     def _seed_completed_turn(self, user_text: str, assistant_text: str) -> str:
+        # conversation scope 事实源 = v2 transcript entries（14 B1-i）。
+        from endless_task.runtime_v2 import Actor, TranscriptEntryType
+
         conversation = self.chat_repository.create_conversation()
-        snapshot = self.chat_repository.create_turn(
+        lane = self.runtime_v2_repository.create_lane(conversation_id=conversation.id)
+        self.runtime_v2_repository.append_entry(
             conversation_id=conversation.id,
-            client_request_id="req-1",
-            content=user_text,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": user_text},
+            context_policy={"include_in_llm": True, "transform": "full"},
         )
-        variant = snapshot.response_variants[0].variant
-        self.chat_repository.mark_response_running(
-            turn_id=snapshot.turn.id,
-            variant_id=variant.id,
+        self.runtime_v2_repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.ASSISTANT_MESSAGE,
+            actor=Actor.ASSISTANT,
+            payload={"content": assistant_text},
+            context_policy={"include_in_llm": True, "transform": "full"},
         )
-        self.chat_repository.complete_response(
-            turn_id=snapshot.turn.id,
-            variant_id=variant.id,
-            content=assistant_text,
-            finish_reason=FinishReason.STOP,
-        )
-        return snapshot.turn.id
+        return conversation.id
 
     def test_submit_indexes_source_asynchronously(self) -> None:
         indexer = self._make_indexer()
@@ -189,7 +195,7 @@ class EmbeddingIndexerTest(unittest.TestCase):
 
         stats = indexer.rebuild()
         self.assertEqual(
-            stats, {"source": 1, "memory": 1, "artifact": 1, "conversation": 1}
+            stats, {"source": 1, "memory": 1, "artifact": 1, "conversation": 2}
         )
 
         second = EmbeddingIndexer(

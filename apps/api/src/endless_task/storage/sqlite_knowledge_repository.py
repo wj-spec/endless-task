@@ -414,16 +414,8 @@ class SqliteKnowledgeRepository:
             "WHERE a.status = 'active' AND ({match})"
         ),
         "conversation": (
-            # 会话正文 = v1 messages（历史 v1 会话）∪ v2 条目（默认运行时事实源）。
-            # P0-4b：v2 运行时不镜像 v1 messages，若只查 v1 会恒空。
-            "SELECT m.turn_id AS ref_id, c.title, m.content AS body, "
-            "NULL AS parent_id, NULL AS chunk_seq "
-            "FROM messages m "
-            "JOIN turns t ON t.id = m.turn_id "
-            "JOIN conversations c ON c.id = m.conversation_id "
-            "WHERE c.kind = 'normal' AND c.status = 'active' "
-            "AND t.status = 'completed' AND ({match}) "
-            "UNION ALL "
+            # 会话正文事实源 = v2 transcript entries（14 B1-i：v1 messages 不再
+            # 镜像/索引；runtime 唯一 v2，历史 v1 无归档需求）。
             "SELECT e.id AS ref_id, c.title, "
             "json_extract(e.payload_json, '$.content') AS body, "
             "NULL AS parent_id, NULL AS chunk_seq "
