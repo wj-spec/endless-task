@@ -119,14 +119,17 @@ class SqliteTextFileRepository:
                 raise NotFoundError("Conversation not found")
             if conversation["status"] != "active":
                 raise InvalidStateError("Cannot add a file to an archived conversation")
-            active_turn = connection.execute(
+            # 14 B1-iii-c：忙判定以 v2 run 为真源（v1 turns 不再写入）。
+            active_run = connection.execute(
                 """
-                SELECT 1 FROM turns
-                WHERE conversation_id = ? AND status IN ('created', 'running')
+                SELECT 1 FROM v2_runs
+                WHERE conversation_id = ?
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                LIMIT 1
                 """,
                 (conversation_id,),
             ).fetchone()
-            if active_turn:
+            if active_run:
                 raise FileError(
                     "conversation_busy",
                     "请等待当前回答结束后再添加文件。",
@@ -213,14 +216,17 @@ class SqliteTextFileRepository:
                     "归档对话中的文件不能修改。",
                     status_code=409,
                 )
-            active_turn = connection.execute(
+            # 14 B1-iii-c：忙判定以 v2 run 为真源（v1 turns 不再写入）。
+            active_run = connection.execute(
                 """
-                SELECT 1 FROM turns
-                WHERE conversation_id = ? AND status IN ('created', 'running')
+                SELECT 1 FROM v2_runs
+                WHERE conversation_id = ?
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                LIMIT 1
                 """,
                 (conversation_id,),
             ).fetchone()
-            if active_turn:
+            if active_run:
                 raise FileError(
                     "conversation_busy",
                     "请等待当前回答结束后再移除文件。",

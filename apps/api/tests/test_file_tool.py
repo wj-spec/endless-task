@@ -189,5 +189,44 @@ class FileToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret body", system)
 
 
+    def test_upload_blocked_while_v2_run_active(self) -> None:
+        # 14 B1-iii-c：忙判定以 v2 run 为真源。
+        from endless_task.runtime_v2 import Actor, RunStatus, TranscriptEntryType
+        from endless_task.storage import SqliteRuntimeV2Repository
+
+        v2 = SqliteRuntimeV2Repository(self.database)
+        lane = v2.create_lane(conversation_id=self.conversation.id)
+        trigger = v2.append_entry(
+            conversation_id=self.conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "生成中"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = v2.create_run(
+            conversation_id=self.conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        with self.assertRaises(FileError) as caught:
+            self.file_repository.create_file(
+                conversation_id=self.conversation.id,
+                original_name="notes.md",
+                media_type="text/plain",
+                content=b"content",
+            )
+        self.assertEqual("conversation_busy", caught.exception.code)
+
+        v2.update_run_status(run.id, RunStatus.COMPLETED)
+        uploaded = self.file_repository.create_file(
+            conversation_id=self.conversation.id,
+            original_name="notes.md",
+            media_type="text/plain",
+            content=b"content",
+        )
+        self.assertIsNotNone(uploaded.id)
+
+
 if __name__ == "__main__":
     unittest.main()
