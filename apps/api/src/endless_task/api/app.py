@@ -1829,6 +1829,7 @@ def _build_container(
         delegation_handler = CoordinatorDelegationHandler(
             kernel_provider=_delegation_kernel_provider,
             capability_provider=_delegation_capability_provider,
+            isolated_write_enabled=(settings.delegation_mode == "isolated_write"),
         )
         selected_tool_registry.register(SpawnAgentLegacyTool(delegation_handler))
         selected_tool_registry.register(QueryAgentLegacyTool(delegation_handler))

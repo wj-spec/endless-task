@@ -110,6 +110,9 @@ class SpawnSpec:
     max_model_turns: Optional[int] = None
     max_input_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    #: M4B P2b: scratch workspace id prepared for an ISOLATED_SNAPSHOT child
+    #: (filled by the handler before spawn when isolated write is requested).
+    child_workspace_id: Optional[str] = None
     protocol_version: int = DELEGATION_PROTOCOL_VERSION
 
     def __post_init__(self) -> None:

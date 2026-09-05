@@ -138,6 +138,7 @@ def build_coordinator(
     parent_depth: int = 0,
     allowed_profile_names=None,
     profile_resolver=None,
+    isolated_write_enabled: bool = False,
 ) -> InProcessChildCoordinator:
     if kernel is None:
         kernel = ScriptedAgentKernel()
@@ -149,6 +150,7 @@ def build_coordinator(
         parent_depth=parent_depth,
         allowed_profile_names=allowed_profile_names,
         profile_resolver=profile_resolver,
+        isolated_write_enabled=isolated_write_enabled,
     )
 
 
@@ -334,12 +336,41 @@ class ChildCoordinatorTest(unittest.TestCase):
 
         run(scenario())
 
-    def test_isolated_workspace_mode_stage_gate_denied(self) -> None:
+    def test_isolated_workspace_mode_stage_gate_denied_by_default(self) -> None:
         async def scenario() -> None:
             coordinator = build_coordinator()
             spec = child_spec(
                 workspace_mode=WorkspaceMode.ISOLATED_SNAPSHOT,
             )
+            with self.assertRaises(AgentPlatformError) as caught:
+                await coordinator.spawn(spec)
+            self.assertEqual(
+                "delegation_workspace_mode_not_supported",
+                caught.exception.code,
+            )
+
+        run(scenario())
+
+    def test_isolated_workspace_mode_allowed_when_enabled(self) -> None:
+        # M4B P2b-i: with isolated_write_enabled the ISOLATED_SNAPSHOT mode
+        # spawns (write-capability/profile expansion for the scratch root
+        # arrives with the handler wiring in P2b-ii).
+        async def scenario() -> None:
+            coordinator = build_coordinator(
+                isolated_write_enabled=True,
+                allowed_profile_names=frozenset({"subagent_readonly"}),
+            )
+            spec = child_spec(workspace_mode=WorkspaceMode.ISOLATED_SNAPSHOT)
+            child_run_id = await coordinator.spawn(spec)
+            self.assertTrue(child_run_id)
+            self.assertIn(child_run_id, coordinator.tracked_child_run_ids)
+
+        run(scenario())
+
+    def test_isolated_mode_still_rejected_when_disabled(self) -> None:
+        async def scenario() -> None:
+            coordinator = build_coordinator()
+            spec = child_spec(workspace_mode=WorkspaceMode.ISOLATED_SNAPSHOT)
             with self.assertRaises(AgentPlatformError) as caught:
                 await coordinator.spawn(spec)
             self.assertEqual(

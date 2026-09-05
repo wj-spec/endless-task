@@ -74,6 +74,9 @@ class CoordinatorDelegationHandler:
         capability_provider: CapabilityProvider,
         profile_resolver: Optional[object] = None,
         default_timeout_seconds: float = 120.0,
+        # M4B P2b-i: enables ISOLATED_SNAPSHOT children on this handler's
+        # coordinators (spawn write-mode plumbing arrives in P2b-ii).
+        isolated_write_enabled: bool = False,
     ) -> None:
         if not callable(kernel_provider):
             raise AgentPlatformError(
@@ -98,6 +101,7 @@ class CoordinatorDelegationHandler:
         self._capability_provider = capability_provider
         self._profile_resolver = profile_resolver
         self._default_timeout_seconds = float(default_timeout_seconds)
+        self._isolated_write_enabled = bool(isolated_write_enabled)
         self._coordinators: dict[str, InProcessChildCoordinator] = {}
 
     # -- DelegationToolHandler ---------------------------------------------
@@ -214,6 +218,7 @@ class CoordinatorDelegationHandler:
             parent_capabilities=capabilities,
             parent_trace=_trace_for(request),
             profile_resolver=self._profile_resolver,
+            isolated_write_enabled=self._isolated_write_enabled,
         )
         self._coordinators[request.run_id] = coordinator
         return coordinator

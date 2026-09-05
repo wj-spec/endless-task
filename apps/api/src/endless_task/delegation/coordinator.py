@@ -181,6 +181,9 @@ class InProcessChildCoordinator:
         result_policy: Optional[ChildResultPolicy] = None,
         allowed_profile_names: Optional[frozenset[str]] = None,
         profile_resolver: Optional[object] = None,
+        # M4B P2b-i: when enabled, ISOLATED_SNAPSHOT workspace mode may be
+        # requested (isolated scratch child); off = M4A read-only gates.
+        isolated_write_enabled: bool = False,
     ) -> None:
         if not callable(getattr(kernel, "run", None)):
             raise AgentPlatformError(
@@ -227,6 +230,7 @@ class InProcessChildCoordinator:
         self._result_policy = result_policy if result_policy is not None else ChildResultPolicy()
         self._allowed_profile_names = allowed
         self._profile_resolver = profile_resolver
+        self._isolated_write_enabled = bool(isolated_write_enabled)
         self._children: dict[str, ChildRunRecord] = {}
         self._spawn_keys: dict[tuple[str, str], str] = {}
 
@@ -270,10 +274,17 @@ class InProcessChildCoordinator:
                 retryable=False,
                 details={"max_depth": MAX_DEPTH, "attempted_depth": child_depth},
             )
-        if spec.workspace_mode not in READ_ONLY_WORKSPACE_MODES:
+        allowed_modes = frozenset(READ_ONLY_WORKSPACE_MODES)
+        if self._isolated_write_enabled:
+            allowed_modes = allowed_modes | {WorkspaceMode.ISOLATED_SNAPSHOT}
+        if spec.workspace_mode not in allowed_modes:
             raise AgentPlatformError(
                 "delegation_workspace_mode_not_supported",
-                "M4A delegation only supports none / read_only_shared workspaces",
+                (
+                    "Delegation only supports none / read_only_shared"
+                    if not self._isolated_write_enabled
+                    else "Delegation supports none / read_only_shared / isolated_snapshot"
+                ),
                 retryable=False,
                 details={"workspace_mode": spec.workspace_mode.value},
             )
@@ -294,7 +305,11 @@ class InProcessChildCoordinator:
             profile_capabilities=profile_capabilities,
         )
         forbidden = decision.effective & READ_ONLY_FORBIDDEN_CAPABILITIES
-        if forbidden:
+        isolated = (
+            self._isolated_write_enabled
+            and spec.workspace_mode is WorkspaceMode.ISOLATED_SNAPSHOT
+        )
+        if forbidden and not isolated:
             raise AgentPlatformError(
                 "delegation_write_child_not_supported",
                 "M4A delegation is read-only; write/process/external capabilities "
