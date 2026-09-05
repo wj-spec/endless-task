@@ -261,6 +261,17 @@ def redact_text(value: str) -> str:
     return redacted
 
 
+def redact_record(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Apply the full redaction pipeline to one record.
+
+    Public entry for non-ledger exporters (e.g. the v2 journal trajectory
+    exporter): drops raw-payload keys, scrubs secret patterns and walks
+    nested dicts/lists exactly like ledger exports do, so every bundle
+    written through :func:`write_trajectory_bundle` is equally guarded.
+    """
+    return _redact_mapping(record)
+
+
 def _redact_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     out: dict[str, Any] = {}
     for key, item in value.items():
@@ -382,6 +393,7 @@ __all__ = [
     "TrajectoryManifest",
     "export_trajectory",
     "load_trajectory_bundle",
+    "redact_record",
     "redact_text",
     "write_trajectory_bundle",
 ]

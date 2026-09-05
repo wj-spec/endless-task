@@ -82,6 +82,11 @@ from endless_task.runtime_v2.trace_observer import (
     default_run_reader,
     default_usage_exists,
 )
+from endless_task.runtime_v2.run_trajectory import (
+    FanoutTraceObserver,
+    RunTrajectoryExporter,
+    default_journal_reader,
+)
 # runtime_ledger implementation modules are imported by path (not through
 # the package __init__, which stays protocol-only to avoid init cycles).
 from endless_task.runtime_ledger.pricing import make_default_catalog
@@ -683,7 +688,8 @@ class AppContainer:
     runtime_v2_gateway: RuntimeV2SessionGateway
     runtime_v2_selection_service: RuntimeV2RuntimeSelectionService
     delegation_handler: Optional[CoordinatorDelegationHandler] = None
-    runtime_v2_trace_observer: Optional[LedgerTraceObserver] = None
+    runtime_v2_trace_observer: Optional[object] = None
+    runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1181,6 +1187,12 @@ def _parse_runtime_trace_mode(value: str) -> str:
     raise ValueError("ENDLESS_TASK_RUNTIME_TRACE 只允许 0|errors|sampled|all")
 
 
+def _trace_runtime_version() -> str:
+    from endless_task import __version__
+
+    return __version__ or "0.0.0"
+
+
 def _parse_hybrid_weights(value: str) -> tuple[float, float]:
     text = (value or "").strip()
     if not text:
@@ -1296,12 +1308,14 @@ def _build_container(
         embedder=embedder,
     )
     runtime_v2_metrics_collector = RuntimeV2MetricsCollector()
-    # M6 W6-2: runtime trace wiring (flag ENDLESS_TASK_RUNTIME_TRACE,
+    # M6 W6-2/W6-3: runtime trace wiring (flag ENDLESS_TASK_RUNTIME_TRACE,
     # default "0"). When enabled, terminal-run usage is mirrored into the
-    # SQLite trace ledger (08 §17/§24). "errors"|"sampled"|"all" all
-    # enable the mirror (usage rows are ordinary observability; the
-    # sampling distinction applies to span events in later slices).
+    # SQLite trace ledger (08 §17/§24) and failed runs auto-export a
+    # trajectory bundle (08 §OE-3/§25). "errors"|"sampled"|"all" all
+    # enable both (usage rows are ordinary observability; the sampling
+    # distinction applies to span events in later slices).
     runtime_v2_trace_observer: Optional[LedgerTraceObserver] = None
+    runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
     if settings.runtime_trace_mode != "0":
         trace_ledger = SqliteRuntimeLedger(database)
         runtime_v2_trace_observer = LedgerTraceObserver(
@@ -1309,6 +1323,17 @@ def _build_container(
             catalog=make_default_catalog(),
             run_reader=default_run_reader(runtime_v2_repository),
             usage_exists=default_usage_exists(trace_ledger),
+        )
+        runtime_v2_trajectory_exporter = RunTrajectoryExporter(
+            export_root=settings.database_path.parent / "v2_trajectory_exports",
+            journal_reader=default_journal_reader(runtime_v2_repository),
+            runtime_version=_trace_runtime_version(),
+            provider=settings.provider_name,
+            model=settings.model,
+            config_fingerprint=settings.system_prompt_version,
+        )
+        runtime_v2_trace_observer = FanoutTraceObserver(
+            [runtime_v2_trace_observer, runtime_v2_trajectory_exporter]
         )
     provider_manager = ProviderManager(
         repository=provider_profile_repository,
@@ -2101,6 +2126,7 @@ def _build_container(
             else None
         ),
         runtime_v2_trace_observer=runtime_v2_trace_observer,
+        runtime_v2_trajectory_exporter=runtime_v2_trajectory_exporter,
     )
 
 
