@@ -416,3 +416,153 @@ class ExecutorSeamIntegrationTest(unittest.TestCase):
         )
         self.assertEqual("completed", result.status.value)
         self.assertEqual((), self.ledger.usage_for_run(run.id))
+
+
+class SpanRecorderTest(unittest.TestCase):
+    """M6 W6-7: executor records run + model-turn spans into a recorder."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        from endless_task.storage import SqliteChatRepository, SqliteRuntimeV2Repository
+
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.database = Database(
+            Path(self._temporary_directory.name) / "trace.db"
+        )
+        self.database.initialize()
+        self.chat_repository = SqliteChatRepository(self.database)
+        self.repository = SqliteRuntimeV2Repository(self.database)
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _create_run(self):
+        from endless_task.runtime_v2 import Actor, TranscriptEntryType
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "你好"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        return conversation, lane, trigger, run
+
+    def _provider(self):
+        from endless_task.runtime.provider import ProviderCompleted, ProviderTextDelta
+
+        class OneShot:
+            name = "scripted"
+
+            def __init__(self) -> None:
+                self.requests = []
+
+            async def stream(self, request, cancellation_token):
+                self.requests.append(request)
+                for event in (
+                    ProviderTextDelta("你好！"),
+                    ProviderCompleted(
+                        finish_reason="stop", input_tokens=10, output_tokens=5
+                    ),
+                ):
+                    cancellation_token.raise_if_cancelled()
+                    yield event
+
+        return OneShot()
+
+    def test_executor_records_run_and_turn_spans(self) -> None:
+        import asyncio
+
+        from endless_task.runtime.cancellation import CancellationToken
+        from endless_task.runtime_v2 import AgentRunExecutor
+        from endless_task.tooling import ToolRegistry
+
+        _, lane, trigger, run = self._create_run()
+        ledger = SqliteRuntimeLedger(self.database)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=self._provider(),
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+            span_recorder=ledger,
+        )
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+        self.assertEqual("completed", result.status.value)
+        spans = ledger.spans_for_run(run.id)
+        # one run span + one model turn span
+        self.assertGreaterEqual(len(spans), 2)
+        kinds = [span.kind for span in spans]
+        self.assertIn("internal", kinds)
+        self.assertIn("model", kinds)
+        for span in spans:
+            self.assertEqual("completed", span.status)
+            self.assertIsNotNone(span.ended_at)
+        model_spans = [s for s in spans if s.kind == "model"]
+        self.assertEqual(1, len(model_spans))
+        self.assertEqual("scripted", model_spans[0].attributes.get("provider"))
+
+    def test_executor_without_recorder_unchanged(self) -> None:
+        import asyncio
+
+        from endless_task.runtime.cancellation import CancellationToken
+        from endless_task.runtime_v2 import AgentRunExecutor
+        from endless_task.tooling import ToolRegistry
+
+        _, lane, trigger, run = self._create_run()
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=self._provider(),
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+        )
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+        self.assertEqual("completed", result.status.value)
+        self.assertEqual((), SqliteRuntimeLedger(self.database).spans_for_run(run.id))
+
+    def test_failed_turn_closes_span_failed(self) -> None:
+        import asyncio
+
+        from endless_task.runtime.cancellation import CancellationToken
+        from endless_task.runtime.provider import (
+            ProviderError,
+            ProviderTextDelta,
+        )
+        from endless_task.runtime_v2 import AgentRunExecutor
+        from endless_task.tooling import ToolRegistry
+
+        class Failing:
+            name = "failing"
+
+            async def stream(self, request, cancellation_token):
+                yield ProviderTextDelta("partial")
+                raise ProviderError("provider_timeout", "超时", retryable=False)
+
+        _, lane, trigger, run = self._create_run()
+        ledger = SqliteRuntimeLedger(self.database)
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=Failing(),
+            tool_registry=ToolRegistry(),
+            model="m",
+            span_recorder=ledger,
+        )
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+        self.assertEqual("failed", result.status.value)
+        spans = ledger.spans_for_run(run.id)
+        statuses = [span.status for span in spans]
+        self.assertIn("failed", statuses)

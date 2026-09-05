@@ -702,6 +702,7 @@ class AppContainer:
     delegation_handler: Optional[CoordinatorDelegationHandler] = None
     runtime_v2_trace_observer: Optional[object] = None
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
+    runtime_v2_span_recorder: Optional[SqliteRuntimeLedger] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1339,8 +1340,10 @@ def _build_container(
     runtime_v2_trace_observer: Optional[LedgerTraceObserver] = None
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
     trace_fanout_members: list[object] = []
+    runtime_v2_span_recorder: Optional[SqliteRuntimeLedger] = None
     if settings.runtime_trace_mode != "0":
         trace_ledger = SqliteRuntimeLedger(database)
+        runtime_v2_span_recorder = trace_ledger
         runtime_v2_trace_observer = LedgerTraceObserver(
             trace_ledger,
             catalog=make_default_catalog(),
@@ -1551,6 +1554,7 @@ def _build_container(
         approval_timeout_seconds=settings.approval_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
         trace_observer=runtime_v2_trace_observer,
+        span_recorder=runtime_v2_span_recorder,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1581,6 +1585,7 @@ def _build_container(
         agent_timeout_seconds=settings.agent_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
         trace_observer=runtime_v2_trace_observer,
+        span_recorder=runtime_v2_span_recorder,
     )
     if settings.delegation_mode == "readonly":
         # M4A read-only delegation (DR-2): register the three delegation
@@ -1645,6 +1650,7 @@ def _build_container(
                 agent_timeout_seconds=settings.agent_timeout_seconds,
                 tool_execution_limits=tool_execution_limits,
                 trace_observer=runtime_v2_trace_observer,
+                span_recorder=runtime_v2_span_recorder,
             )
 
         def _delegation_child_tool_filter(conversation_id: str):
@@ -2174,6 +2180,7 @@ def _build_container(
         ),
         runtime_v2_trace_observer=runtime_v2_trace_observer,
         runtime_v2_trajectory_exporter=runtime_v2_trajectory_exporter,
+        runtime_v2_span_recorder=runtime_v2_span_recorder,
     )
 
 

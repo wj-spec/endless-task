@@ -660,6 +660,7 @@ class RuntimeV2SessionGateway:
         approval_timeout_seconds: Optional[float] = None,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         trace_observer: Optional[RunTraceObserver] = None,
+        span_recorder: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
@@ -679,6 +680,7 @@ class RuntimeV2SessionGateway:
         self._approval_timeout_seconds = approval_timeout_seconds
         self._tool_execution_limits = tool_execution_limits
         self._trace_observer = trace_observer
+        self._span_recorder = span_recorder
         self._temperature = temperature
         self._provider_slot = (
             asyncio.Semaphore(provider_slot_limit)
@@ -1369,6 +1371,7 @@ class RuntimeV2SessionGateway:
             agent_timeout_seconds=self._agent_timeout_seconds,
             tool_execution_limits=self._tool_execution_limits,
             trace_observer=self._trace_observer,
+            span_recorder=self._span_recorder,
         )
         task = self._active_run_supervisor.spawn(
             executor.execute(

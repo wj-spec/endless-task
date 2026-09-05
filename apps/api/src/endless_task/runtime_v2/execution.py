@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
@@ -49,6 +50,13 @@ from .domain import (
 from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
 from .trace_observer import MIRROR_TIMEOUT_SECONDS, RunTraceObserver
+# runtime_ledger span protocol types (imported by path; no storage at top).
+from endless_task.runtime_ledger.protocol import (
+    SpanKind,
+    SpanSpec,
+    SpanStatus,
+    TraceContext,
+)
 
 if TYPE_CHECKING:
     from endless_task.storage.sqlite_runtime_v2_repository import (
@@ -57,6 +65,12 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
 
 _MODEL_TURN_WAITING_SLOT_STATUS = ModelTurnStatus.WAITING_PROVIDER_SLOT
 _MODEL_TURN_STREAMING_STATUS = ModelTurnStatus.STREAMING
@@ -1221,6 +1235,7 @@ class ModelTurnRunner:
         metrics: Optional["RuntimeV2MetricsCollector"] = None,
         provider_retry_evaluator: Optional[object] = None,
         provider_retry_observer: Optional[object] = None,
+        span_recorder: Optional[object] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -1230,11 +1245,60 @@ class ModelTurnRunner:
         self._temperature = temperature
         self._provider_slot = provider_slot
         self._metrics = metrics
+        # M6 W6-7: optional trace-span recorder (RuntimeLedger-shaped:
+        # start_span/end). None = byte-identical legacy behavior.
+        self._span_recorder = span_recorder
         # M3A RS-1: optional provider retry orchestration (default off =
         # legacy behavior; shadow observers may still be attached).
         self._provider_retry_evaluator = provider_retry_evaluator
         self._provider_retry_observer = provider_retry_observer
         self._last_first_event_at: Optional[float] = None
+        self._last_span_ended = False
+
+    def _open_model_turn_span(
+        self,
+        *,
+        run: RunRecord,
+        model_turn: ModelTurnRecord,
+        turn_started: float,
+    ):
+        """Open a MODEL span for one model turn when a recorder is wired.
+
+        Returns a :class:`SpanHandle` or ``None`` (no recorder / no
+        end-to-end trace context available). The handle's ``end`` is
+        idempotent, so multiple terminal transitions stay safe.
+        """
+        recorder = self._span_recorder
+        if recorder is None or not callable(getattr(recorder, "start_span", None)):
+            return None
+        trace_id = run.correlation_id or run.id
+        started_at = model_turn.started_at or _iso_now()
+        try:
+            return recorder.start_span(
+                SpanSpec(
+                    trace=TraceContext(
+                        trace_id=trace_id,
+                        run_id=run.id,
+                        correlation_id=trace_id,
+                        span_id=model_turn.id,
+                        model_turn_id=model_turn.id,
+                    ),
+                    kind=SpanKind.MODEL,
+                    name=f"model_turn:{model_turn.turn_index}",
+                    started_at=started_at,
+                    monotonic_started=turn_started,
+                    attributes={
+                        "provider": self._provider.name,
+                        "model": self._model,
+                    },
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Failed to open model-turn trace span",
+                extra={"model_turn_id": model_turn.id},
+            )
+            return None
 
     async def run(
         self,
@@ -1254,6 +1318,12 @@ class ModelTurnRunner:
             _MODEL_TURN_WAITING_SLOT_STATUS,
             event_type="model_turn_status_changed",
             payload={"status": _MODEL_TURN_WAITING_SLOT_STATUS.value},
+        )
+
+        span_handle = self._open_model_turn_span(
+            run=run,
+            model_turn=model_turn,
+            turn_started=time.monotonic(),
         )
 
         provider_calls: list[ProviderToolCall] = []
@@ -1286,6 +1356,22 @@ class ModelTurnRunner:
                     finish_reason=finish_reason,
                 )
             )
+
+        async def _close_turn_span(status_value: str) -> None:
+            if span_handle is None:
+                return
+            handle = span_handle
+            try:
+                await handle.end(
+                    SpanStatus(status_value),
+                    ended_at=_iso_now(),
+                    monotonic_ended=time.monotonic(),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to close model-turn trace span",
+                    extra={"model_turn_id": model_turn.id},
+                )
 
         request = ProviderRequest(
             request_id=request_id,
@@ -1340,6 +1426,7 @@ class ModelTurnRunner:
                 _MODEL_TURN_CANCELLED_STATUS,
                 event_type="model_turn_cancelled",
             )
+            await _close_turn_span("cancelled")
             raise
         except asyncio.CancelledError:
             self._repository.transition_model_turn_status(
@@ -1347,6 +1434,7 @@ class ModelTurnRunner:
                 _MODEL_TURN_CANCELLED_STATUS,
                 event_type="model_turn_cancelled",
             )
+            await _close_turn_span("cancelled")
             raise
         except BaseException as error:
             error_code = "provider_failed"
@@ -1361,6 +1449,7 @@ class ModelTurnRunner:
                 error_code=error_code,
                 safe_message=safe_message,
             )
+            await _close_turn_span("failed")
             raise
 
         content = "".join(content_parts)
@@ -1373,6 +1462,7 @@ class ModelTurnRunner:
                 error_code="invalid_provider_response",
                 safe_message="模型未返回完成事件。",
             )
+            await _close_turn_span("failed")
             raise ProviderError(
                 "invalid_provider_response",
                 "模型未返回完成事件。",
@@ -1386,6 +1476,7 @@ class ModelTurnRunner:
                 error_code="invalid_provider_response",
                 safe_message="模型声明工具调用但未返回调用内容。",
             )
+            await _close_turn_span("failed")
             raise ProviderError(
                 "invalid_provider_response",
                 "模型声明工具调用但未返回调用内容。",
@@ -1413,6 +1504,7 @@ class ModelTurnRunner:
                     _MODEL_TURN_CANCELLED_STATUS,
                     event_type="model_turn_cancelled",
                 )
+                await _close_turn_span("cancelled")
                 raise
             except asyncio.CancelledError:
                 self._repository.transition_model_turn_status(
@@ -1420,6 +1512,7 @@ class ModelTurnRunner:
                     _MODEL_TURN_CANCELLED_STATUS,
                     event_type="model_turn_cancelled",
                 )
+                await _close_turn_span("cancelled")
                 raise
             except BaseException:
                 self._repository.transition_model_turn_status(
@@ -1429,6 +1522,7 @@ class ModelTurnRunner:
                     error_code="tool_execution_failed",
                     safe_message="工具执行未能继续。",
                 )
+                await _close_turn_span("failed")
                 raise
             if tool_outcome.pending_approval_execution_ids:
                 self._repository.transition_run_status(
@@ -1442,6 +1536,7 @@ class ModelTurnRunner:
                     input_tokens=completion.input_tokens,
                     output_tokens=completion.output_tokens,
                 )
+                await _close_turn_span("completed")
                 return ModelTurnOutcome(
                     model_turn_id=model_turn.id,
                     content=content,
@@ -1466,6 +1561,7 @@ class ModelTurnRunner:
                 input_tokens=completion.input_tokens,
                 output_tokens=completion.output_tokens,
             )
+            await _close_turn_span("completed")
             return ModelTurnOutcome(
                 model_turn_id=model_turn.id,
                 content=content,
@@ -1490,6 +1586,7 @@ class ModelTurnRunner:
             input_tokens=completion.input_tokens,
             output_tokens=completion.output_tokens,
         )
+        await _close_turn_span("completed")
         return ModelTurnOutcome(
             model_turn_id=model_turn.id,
             content=content,
@@ -1617,6 +1714,7 @@ class AgentRunExecutor:
         context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
         trace_observer: Optional[RunTraceObserver] = None,
+        span_recorder: Optional[object] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -1638,6 +1736,7 @@ class AgentRunExecutor:
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
         self._trace_observer = trace_observer
+        self._span_recorder = span_recorder
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1658,6 +1757,7 @@ class AgentRunExecutor:
             metrics=metrics,
             provider_retry_evaluator=self._provider_retry_evaluator,
             provider_retry_observer=self._provider_retry_observer,
+            span_recorder=self._span_recorder,
         )
         self._context_projection = ContextProjection()
         self._steering_messages: list[str] = []
@@ -1665,6 +1765,35 @@ class AgentRunExecutor:
         self._queue_lock = asyncio.Lock()
         self._active_run_id: Optional[str] = None
         self._cancellation_token: Optional[CancellationToken] = None
+
+    def _open_run_span(self, run: RunRecord, *, monotonic_started: float):
+        """Open a run-level INTERNAL span when a recorder is wired."""
+        recorder = self._span_recorder
+        if recorder is None or not callable(getattr(recorder, "start_span", None)):
+            return None
+        trace_id = run.correlation_id or run.id
+        try:
+            return recorder.start_span(
+                SpanSpec(
+                    trace=TraceContext(
+                        trace_id=trace_id,
+                        run_id=run.id,
+                        correlation_id=trace_id,
+                        span_id=run.id,
+                    ),
+                    kind=SpanKind.INTERNAL,
+                    name=f"run:{run.conversation_id}",
+                    started_at=run.started_at or _iso_now(),
+                    monotonic_started=monotonic_started,
+                    attributes={},
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Failed to open run trace span",
+                extra={"run_id": run.id},
+            )
+            return None
 
     async def execute(
         self,
@@ -1710,6 +1839,7 @@ class AgentRunExecutor:
         provider_messages.extend(projection.messages)
         run = self._repository.start_run(run.id)
         cancellation_token.raise_if_cancelled()
+        run_span = self._open_run_span(run, monotonic_started=run_started)
 
         content_parts: list[str] = []
         model_turn_ids: list[str] = []
@@ -1945,6 +2075,25 @@ class AgentRunExecutor:
                         compaction_released_tokens=0,
                     )
                 )
+            if run_span is not None:
+                try:
+                    final_status_run = self._repository.get_run(run.id)
+                    await run_span.end(
+                        SpanStatus(final_status_run.status.value)
+                        if final_status_run.status.value in {
+                            "completed",
+                            "failed",
+                            "cancelled",
+                        }
+                        else SpanStatus.FAILED,
+                        ended_at=final_status_run.finished_at or _iso_now(),
+                        monotonic_ended=time.monotonic(),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to close run trace span",
+                        extra={"run_id": run.id},
+                    )
             if self._trace_observer is not None:
                 # Observability projection (M6 W6-1): mirror terminal usage
                 # into the runtime ledger under a hard timeout. The observer

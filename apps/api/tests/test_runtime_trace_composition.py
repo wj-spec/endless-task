@@ -50,6 +50,17 @@ class TraceCompositionTest(unittest.TestCase):
             container.runtime_v2_gateway._trace_observer,
         )
 
+    def test_flag_on_wires_span_recorder(self) -> None:
+        container = self._container(trace_mode="all")
+        recorder = container.runtime_v2_span_recorder
+        self.assertIsNotNone(recorder)
+        # The gateway forwards the same recorder to its executors.
+        self.assertIs(recorder, container.runtime_v2_gateway._span_recorder)
+
+    def test_flag_off_wires_no_span_recorder(self) -> None:
+        container = self._container(trace_mode="0")
+        self.assertIsNone(container.runtime_v2_span_recorder)
+
     def test_flag_errors_also_wires_observer(self) -> None:
         container = self._container(trace_mode="errors")
         self.assertIsNotNone(container.runtime_v2_trace_observer)
