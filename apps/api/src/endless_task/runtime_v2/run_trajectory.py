@@ -98,6 +98,29 @@ def default_journal_reader(repository) -> Callable[[str], JournalRunView]:
     return read
 
 
+def _run_duration_ms(started_at: Optional[str], finished_at: Optional[str]) -> Optional[int]:
+    """Wall-clock run duration in ms when both instants parse (07 G1)."""
+    from datetime import datetime, timezone
+
+    def parse(value: Optional[str]):
+        if not value:
+            return None
+        try:
+            normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+            instant = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if instant.tzinfo is not None:
+            instant = instant.astimezone(timezone.utc).replace(tzinfo=None)
+        return instant
+
+    start = parse(started_at)
+    end = parse(finished_at)
+    if start is None or end is None:
+        return None
+    return max(0, int((end - start).total_seconds() * 1000))
+
+
 class RunTrajectoryExporter:
     """Export terminal runs to OE-3 trajectory bundle directories."""
 
@@ -196,15 +219,19 @@ class RunTrajectoryExporter:
             )
             for event in view.events
         )
-        expected = redact_record(
-            {
-                "terminal": view.status,
-                "errorCode": view.error_code,
-                "safeMessage": view.safe_message,
-                "startedAt": view.started_at,
-                "finishedAt": view.finished_at,
-            }
-        )
+        duration_ms = _run_duration_ms(view.started_at, view.finished_at)
+        expected_record = {
+            "terminal": view.status,
+            "errorCode": view.error_code,
+            "safeMessage": view.safe_message,
+            "startedAt": view.started_at,
+            "finishedAt": view.finished_at,
+        }
+        if duration_ms is not None:
+            # 07 G1: duration lands in the bundle so offline P95 latency
+            # budgets can be computed over exported runs.
+            expected_record["durationMs"] = duration_ms
+        expected = redact_record(expected_record)
         usages = ()
         if self._usage_ledger is not None:
             usages = tuple(

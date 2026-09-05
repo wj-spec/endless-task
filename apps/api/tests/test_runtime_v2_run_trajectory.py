@@ -87,6 +87,8 @@ class ExporterUnitTest(unittest.TestCase):
         )
         self.assertEqual("failed", expected["terminal"])
         self.assertEqual("provider_timeout", expected["errorCode"])
+        # 07 G1: wall-clock duration lands in the bundle for offline P95.
+        self.assertEqual(1000, expected["durationMs"])
 
     def test_completed_run_not_auto_exported(self) -> None:
         exporter = RunTrajectoryExporter(
