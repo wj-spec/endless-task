@@ -48,6 +48,7 @@ from .domain import (
 )
 from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
+from .trace_observer import MIRROR_TIMEOUT_SECONDS, RunTraceObserver
 
 if TYPE_CHECKING:
     from endless_task.storage.sqlite_runtime_v2_repository import (
@@ -1615,6 +1616,7 @@ class AgentRunExecutor:
         context_shadow_observer: Optional[object] = None,
         context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
+        trace_observer: Optional[RunTraceObserver] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -1635,6 +1637,7 @@ class AgentRunExecutor:
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
+        self._trace_observer = trace_observer
         self._tool_coordinator = ToolExecutionCoordinator(
             repository=repository,
             tool_registry=tool_registry,
@@ -1942,6 +1945,21 @@ class AgentRunExecutor:
                         compaction_released_tokens=0,
                     )
                 )
+            if self._trace_observer is not None:
+                # Observability projection (M6 W6-1): mirror terminal usage
+                # into the runtime ledger under a hard timeout. The observer
+                # is fail-open (errors swallowed, non-terminal/idempotent
+                # runs skipped), so this can never break or hang a run.
+                try:
+                    await asyncio.wait_for(
+                        self._trace_observer.on_run_terminal(run.id),
+                        timeout=MIRROR_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Terminal trace observer failed for run",
+                        extra={"run_id": run.id},
+                    )
 
     async def enqueue_user_message(self, content: str) -> bool:
         async with self._queue_lock:
