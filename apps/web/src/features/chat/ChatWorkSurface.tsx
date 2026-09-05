@@ -259,7 +259,11 @@ export function ChatWorkSurface({
   // G1 item 2: latest run_auto_restored event -> visible rollback notice.
   const autoRestoreEvent = [...runtimeEvents]
     .reverse()
-    .find((event) => event.type === "run_auto_restored");
+    .find(
+      (event) =>
+        event.type === "run.auto_restored" ||
+        event.type === "run_auto_restored",
+    );
   const autoRestoreNotice =
     autoRestoreEvent && typeof autoRestoreEvent.data === "object"
       ? (autoRestoreEvent.data as Record<string, unknown>)

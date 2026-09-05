@@ -558,6 +558,15 @@ class ProductRuntimeEventProjection:
                 "steps": payload.get("steps"),
                 "currentStepIndex": payload.get("currentStepIndex"),
             }
+        if event_type == "run_auto_restored":
+            return "run.auto_restored", {
+                "runId": event.run_id,
+                "errorCode": _string(payload, "errorCode"),
+                "workspaces": payload.get("workspaces"),
+                "restored": payload.get("restored"),
+                "skipped": payload.get("skipped"),
+                "trigger": _string(payload, "trigger"),
+            }
         if event_type == "safety_stop":
             return "run.status_changed", {
                 "runId": event.run_id,

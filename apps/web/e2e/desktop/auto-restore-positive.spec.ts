@@ -6,7 +6,7 @@ import {
 } from "../support/api";
 
 test.fixme(
-  "G1 ② 正向（fixme：依赖 P1-2 事件回填/推送基础，见 13）",
+  "G1 ② 正向（fixme：事件达 UI 待 debug，见 13）",
   async ({
   page,
   request,
