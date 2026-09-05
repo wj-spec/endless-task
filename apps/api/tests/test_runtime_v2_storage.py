@@ -140,6 +140,23 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(59, row["count"])
 
+    def test_nested_write_raises_instead_of_deadlocking(self) -> None:
+        # 06 §30.5: same-thread nested _write would block the inner BEGIN
+        # IMMEDIATE on the outer write lock; the reentrancy guard turns it
+        # into an explicit error.
+        from endless_task.domain.repositories import InvalidStateError
+
+        def nested(connection):
+            self.repository._write(
+                lambda inner_connection: inner_connection.execute(
+                    "SELECT 1"
+                )
+            )
+
+        with self.assertRaises(InvalidStateError) as caught:
+            self.repository._write(nested)
+        self.assertIn("嵌套调用", str(caught.exception))
+
     def test_main_lane_pointer_migration_repairs_legacy_run_pointer(self) -> None:
         conversation = self.chat_repository.create_conversation()
         main = self.repository.create_lane(conversation_id=conversation.id)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -103,6 +104,9 @@ def _load(value: str) -> dict[str, Any]:
 
 
 class SqliteRuntimeV2Repository:
+
+    #: per-thread write-reentrancy guard (06 §30.5).
+    _write_depth = threading.local()
     """SQLite persistence for the v2 Agent Runtime state model.
 
     The repository intentionally does not migrate v1 rows. M1 only provides the
@@ -3000,11 +3004,24 @@ class SqliteRuntimeV2Repository:
             return tuple(self._context_compaction_from_row(row) for row in rows)
 
     def _write(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
+        # 死锁加固（06 §30.5）：同线程嵌套 _write 会让内层 BEGIN IMMEDIATE 等待外层
+        # 写锁并静默挂起（busy_timeout 在本死锁下不收敛）。重入检测把该场景变成显式
+        # 报错，暴露真实嵌套调用点，而不是无限等待。
+        depth = getattr(self._write_depth, "value", 0)
+        if depth:
+            raise InvalidStateError(
+                "nested_database_write",
+                "RuntimeV2 仓库写操作在同线程内嵌套调用（可能的死锁路径）；"
+                "请将嵌套写移到事务外。",
+            )
+        self._write_depth.value = depth + 1
         try:
             with self._database.transaction() as connection:
                 return operation(connection)
         except sqlite3.IntegrityError as error:
             raise ConflictError(str(error)) from error
+        finally:
+            self._write_depth.value = depth
 
     def _insert_runtime_event(
         self,
