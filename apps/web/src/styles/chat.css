@@ -821,6 +821,21 @@
   font-size: var(--fs-3);
 }
 
+.inline-notice {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  border-radius: 8px;
+  background: var(--surface-info, #eef4ff);
+  color: var(--text-primary, inherit);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+.inline-notice strong {
+  color: var(--accent, #2563eb);
+}
 .inline-error button {
   flex: 0 0 auto;
 }

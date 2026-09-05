@@ -256,6 +256,14 @@ export function ChatWorkSurface({
   sideMode = null,
   variant = "main",
 }: ChatWorkSurfaceProps) {
+  // G1 item 2: latest run_auto_restored event -> visible rollback notice.
+  const autoRestoreEvent = [...runtimeEvents]
+    .reverse()
+    .find((event) => event.type === "run_auto_restored");
+  const autoRestoreNotice =
+    autoRestoreEvent && typeof autoRestoreEvent.data === "object"
+      ? (autoRestoreEvent.data as Record<string, unknown>)
+      : null;
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -559,6 +567,17 @@ export function ChatWorkSurface({
           <div className="inline-error" role="alert">
             <span>{error}</span>
             <button onClick={onDismissError} type="button">关闭</button>
+          </div>
+        ) : null}
+
+        {autoRestoreNotice ? (
+          <div className="inline-notice" role="status">
+            <strong>已自动回滚</strong>
+            <span>
+              本次失败的改动已自动恢复（{String(autoRestoreNotice.restored ?? "?")}
+              {" "}个文件恢复，{String(autoRestoreNotice.skipped ?? "?")}
+              {" "}个跳过）；你的修改未受影响。
+            </span>
           </div>
         ) : null}
 
