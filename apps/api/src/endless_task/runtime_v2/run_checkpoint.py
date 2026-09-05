@@ -57,6 +57,14 @@ class RunCheckpointRef:
     created_at: str
 
 
+@dataclass(frozen=True)
+class RestoreRunOutcome:
+    run_id: str
+    workspace_root: str
+    restored: tuple[str, ...]
+    skipped: tuple[str, ...]
+
+
 class RunCheckpointCoordinator:
     """Per-run workspace checkpoint/restore coordination (run-level A)."""
 
@@ -163,6 +171,33 @@ class RunCheckpointCoordinator:
         )
         return restored, skipped
 
+    def workspace_roots_for(self, *, run_id: str) -> tuple[str, ...]:
+        """Workspace roots checkpointed for a run (ordered)."""
+        return tuple(self._checkpoints.get(run_id, {}))
+
+    def restore_run(self, *, run_id: str) -> tuple[RestoreRunOutcome, ...]:
+        """Restore every workspace this run checkpointed (M3B slice B).
+
+        Each workspace uses the guarded apply_restore (never overwrites user
+        edits, never touches post-checkpoint files). Runs without checkpoints
+        return no outcomes. Applying twice is a no-op: after the first restore
+        current content equals the checkpoint.
+        """
+        outcomes: list[RestoreRunOutcome] = []
+        for workspace_root in self.workspace_roots_for(run_id=run_id):
+            restored, skipped = self.apply_restore(
+                run_id=run_id, workspace_root=workspace_root
+            )
+            outcomes.append(
+                RestoreRunOutcome(
+                    run_id=run_id,
+                    workspace_root=workspace_root,
+                    restored=restored,
+                    skipped=skipped,
+                )
+            )
+        return tuple(outcomes)
+
     def record_effect(
         self,
         *,
@@ -234,6 +269,7 @@ class RunCheckpointCoordinator:
 
 
 __all__ = [
+    "RestoreRunOutcome",
     "RunCheckpointCoordinator",
     "RunCheckpointRef",
 ]

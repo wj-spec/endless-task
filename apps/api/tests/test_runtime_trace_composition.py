@@ -29,6 +29,9 @@ def _settings(
         runtime_trace_mode=trace_mode,
         otel_export_mode=otel_mode,
         provider_retry_mode=retry_mode,
+        # M3B slice B auto-restore is an independent fanout member; switch it
+        # off so these tests measure trace/otel wiring in isolation.
+        run_auto_restore_enabled=False,
     )
 
 

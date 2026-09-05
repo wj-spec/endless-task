@@ -31,6 +31,7 @@ from endless_task.api import AppSettings, create_app
 from endless_task.execution_env.checkpoint import read_manifest
 from endless_task.runtime import (
     ProviderCompleted,
+    ProviderError,
     ProviderTextDelta,
     ProviderToolCall,
 )
@@ -90,6 +91,35 @@ class ScriptedWriteProvider:
         yield ProviderCompleted(finish_reason="stop")
 
 
+class FailAfterWriteProvider:
+    """Writes once, then the provider errors on the next request: a real
+    mid-run execution fault (run FAILED after side effects)."""
+
+    name = "scripted-fail-after-write"
+
+    def __init__(self, *, path: str, content: str) -> None:
+        self._path = path
+        self._content = content
+        self.requests = []
+
+    async def stream(self, request, cancellation_token):
+        cancellation_token.raise_if_cancelled()
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            yield ProviderToolCall(
+                id="call_write_1",
+                name="write_workspace_file",
+                arguments={"path": self._path, "content": self._content},
+            )
+            yield ProviderCompleted(finish_reason="tool_calls")
+            return
+        raise ProviderError(
+            "provider_upstream_error",
+            "上游服务暂时不可用（E2E 注入）。",
+            retryable=False,
+        )
+
+
 class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -102,7 +132,9 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
             await lifespan.__aexit__(None, None, None)
         self._tmp.cleanup()
 
-    async def _app(self, provider=None) -> tuple[httpx.AsyncClient, object, str]:
+    async def _app(
+        self, provider=None, *, auto_restore: bool = True
+    ) -> tuple[httpx.AsyncClient, object, str]:
         index = len(getattr(self, "_apps", []))
         swappable = SwappableProvider()
         if provider is not None:
@@ -115,6 +147,7 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
                 knowledge_proposals_enabled=False,
                 artifact_proposals_enabled=False,
                 task_proposals_enabled=False,
+                run_auto_restore_enabled=auto_restore,
             ),
             provider=swappable,
         )
@@ -152,6 +185,7 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         *,
         key: str,
         workspace_id: str | None = None,
+        expected: RunStatus = RunStatus.COMPLETED,
     ) -> tuple[str, str]:
         if provider is not None:
             self._swappable.set(provider)
@@ -163,7 +197,7 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         )
         run_id = handle["runId"]
         status = await wait_for_run_terminal(app.state.container, run_id)
-        self.assertEqual(RunStatus.COMPLETED, status)
+        self.assertEqual(expected, status)
         return conversation_id, run_id
 
     def _ledger_path(self, app: object) -> Path:
@@ -294,6 +328,69 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("plan.txt", restored)
         self.assertEqual("plan-r1", (self._root / "plan.txt").read_text(encoding="utf-8"))
         self.assertEqual("todo-seed", (self._root / "todo.txt").read_text(encoding="utf-8"))
+
+
+    async def test_failed_run_auto_restores_its_workspace(self) -> None:
+        # 方案 A 兑现：run 写文件后 provider 故障 → run FAILED，工作区自动回滚
+        # 到 checkpoint（写前状态），守卫语义不变。
+        (self._root / "task.txt").write_text("user-seed", encoding="utf-8")
+        (self._root / "keep.txt").write_text("keep-seed", encoding="utf-8")
+        provider = FailAfterWriteProvider(path="task.txt", content="agent-v1")
+        client, app, _ = await self._app(provider)
+        _, run_id = await self._run_once(client, app, provider, key="k-fail", expected=RunStatus.FAILED)
+        coordinator = app.state.container.run_checkpoint_coordinator
+        self.assertIn(run_id, coordinator.tracked_run_ids())
+        # Auto-restore reverted the agent write; user-owned file untouched.
+        self.assertEqual(
+            "user-seed",
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            "keep-seed",
+            (self._root / "keep.txt").read_text(encoding="utf-8"),
+        )
+        # Audit: a run_auto_restored runtime event landed on the run.
+        events = app.state.container.runtime_v2_repository.list_runtime_events(
+            run_id
+        )
+        self.assertTrue(
+            any(e.event_type == "run_auto_restored" for e in events),
+            f"no run_auto_restored event in {[e.event_type for e in events]}",
+        )
+
+    async def test_failed_run_without_side_effects_is_noop(self) -> None:
+        # run 尚未写过任何工作区文件就失败：无 checkpoint，自动恢复 no-op。
+        class FailFirstProvider:
+            name = "scripted-fail-first"
+
+            async def stream(self, request, cancellation_token):
+                cancellation_token.raise_if_cancelled()
+                raise ProviderError(
+                    "provider_upstream_error",
+                    "上游服务暂时不可用（E2E 注入）。",
+                    retryable=False,
+                )
+
+        (self._root / "task.txt").write_text("user-seed", encoding="utf-8")
+        client, app, _ = await self._app(FailFirstProvider())
+        _, run_id = await self._run_once(client, app, None, key="k-fail0", expected=RunStatus.FAILED)
+        coordinator = app.state.container.run_checkpoint_coordinator
+        self.assertNotIn(run_id, coordinator.tracked_run_ids())
+        self.assertEqual(
+            "user-seed",
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
+
+    async def test_gate_off_keeps_agent_content_on_failure(self) -> None:
+        # ENDLESS_TASK_RUN_AUTO_RESTORE=0：失败后保留部分状态（不自动回滚）。
+        (self._root / "task.txt").write_text("user-seed", encoding="utf-8")
+        provider = FailAfterWriteProvider(path="task.txt", content="agent-v1")
+        client, app, _ = await self._app(provider, auto_restore=False)
+        _, _ = await self._run_once(client, app, provider, key="k-gateoff", expected=RunStatus.FAILED)
+        self.assertEqual(
+            "agent-v1",
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

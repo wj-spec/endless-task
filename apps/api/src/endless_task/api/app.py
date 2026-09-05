@@ -380,6 +380,11 @@ class AppSettings:
     shell_no_change_timeout_seconds: float = 60.0
     shell_max_output_bytes: int = 65_536
     workspace_max_write_bytes: int = 512_000
+    # M3B slice B (方案 A 兑现): a v2 run that reaches terminal FAILED
+    # auto-restores its workspace checkpoints (guards keep user edits).
+    # Default on after run-level checkpoint landed (slice A) + guarded
+    # restore E2E; "0" disables so ops keep partial state on failure.
+    run_auto_restore_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -493,6 +498,9 @@ class AppSettings:
             ),
             otel_export_mode=_parse_otel_export_mode(
                 env.get("ENDLESS_TASK_OTEL_EXPORT", "0"),
+            ),
+            run_auto_restore_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_RUN_AUTO_RESTORE", "1")
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -1377,6 +1385,20 @@ def _build_container(
                 deadline_seconds=min(30.0, settings.agent_timeout_seconds or 30.0),
             )
         )
+    # M3B run-level (方案 A): shared per-run workspace checkpoint
+    # coordinator. Every fs/shell write snapshots the workspace before its
+    # first side effect; the FileMutationLedger records agent changes so a
+    # later restore never overwrites user edits. Store + ledger live under
+    # the data directory. Constructed before the run observers/executors so
+    # M3B slice B's failure auto-restore can share the same instance.
+    checkpoint_store = settings.database_path.parent / "checkpoints"
+    mutation_ledger = FileMutationLedger(
+        settings.database_path.parent / "file-mutations.jsonl"
+    )
+    run_checkpoint_coordinator = RunCheckpointCoordinator(
+        store_root=checkpoint_store,
+        ledger=mutation_ledger,
+    )
     # M6 W6-2/W6-3: runtime trace wiring (flag ENDLESS_TASK_RUNTIME_TRACE,
     # default "0"). When enabled, terminal-run usage is mirrored into the
     # SQLite trace ledger (08 §17/§24) and failed runs auto-export a
@@ -1430,6 +1452,31 @@ def _build_container(
             JournalOtelBridge(
                 exporter=otel_exporter,
                 journal_reader=default_journal_reader(runtime_v2_repository),
+            )
+        )
+    # M3B slice B (方案 A 兑现): failed-run auto-restore rides the same
+    # terminal fanout but assembles independently of trace mode, so
+    # runtime_trace_mode="0" keeps failure rollback active. Rule set in
+    # run_restore.py: only terminal FAILED restores; CANCELLED/COMPLETED and
+    # runs without checkpoints are no-ops; the observer is fail-open under
+    # the executor's hard timeout. Gate: ENDLESS_TASK_RUN_AUTO_RESTORE.
+    if settings.run_auto_restore_enabled:
+        from endless_task.runtime_v2.run_restore import (
+            RunFailureAutoRestoreObserver,
+            default_run_status_reader,
+        )
+
+        trace_fanout_members.append(
+            RunFailureAutoRestoreObserver(
+                run_reader=default_run_status_reader(runtime_v2_repository),
+                coordinator=run_checkpoint_coordinator,
+                event_sink=(
+                    lambda run_id, event_type, payload: runtime_v2_repository.append_runtime_event(  # noqa: E501
+                        run_id=run_id,
+                        event_type=event_type,
+                        payload=payload,
+                    )
+                ),
             )
         )
     if trace_fanout_members:
@@ -1873,19 +1920,6 @@ def _build_container(
         )
 
     effect_log = EffectLog(settings.database_path.parent / "logs")
-    # M3B run-level (方案 A): shared per-run workspace checkpoint
-    # coordinator. Every fs/shell write snapshots the workspace before its
-    # first side effect; the FileMutationLedger records agent changes so a
-    # later restore never overwrites user edits. Store + ledger live under
-    # the data directory.
-    checkpoint_store = settings.database_path.parent / "checkpoints"
-    mutation_ledger = FileMutationLedger(
-        settings.database_path.parent / "file-mutations.jsonl"
-    )
-    run_checkpoint_coordinator = RunCheckpointCoordinator(
-        store_root=checkpoint_store,
-        ledger=mutation_ledger,
-    )
     mcp_manager = McpManager(
         repository=mcp_server_repository,
         tool_registry=selected_tool_registry,
