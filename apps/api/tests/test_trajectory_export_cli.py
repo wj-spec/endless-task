@@ -100,3 +100,49 @@ class TrajectoryExportCliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetentionCliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.database_path = Path(self._temporary_directory.name) / "cli.db"
+        self.database = Database(self.database_path)
+        self.database.initialize()
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _run_cli(self, arguments, *, expected_exit_code=0) -> str:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        settings = AppSettings(database_path=self.database_path)
+        output = io.StringIO()
+        with mock.patch.object(AppSettings, "from_environment", return_value=settings):
+            with redirect_stdout(output):
+                exit_code = main(arguments)
+        self.assertEqual(expected_exit_code, exit_code)
+        return output.getvalue()
+
+    def test_retention_dry_run_default(self) -> None:
+        output = self._run_cli(["retention"])
+        self.assertIn("dry_run=true", output)
+        self.assertIn("spans=0 events=0 usage=0", output)
+
+    def test_retention_apply_on_empty_db(self) -> None:
+        output = self._run_cli(["retention", "--apply"])
+        self.assertIn("dry_run=false", output)
+        self.assertIn("spans=0 events=0 usage=0", output)
+
+    def test_retention_cleans_trajectory_bundles(self) -> None:
+        export_root = self.database_path.parent / "v2_trajectory_exports"
+        for index in range(3):
+            (export_root / f"trajectory-run_{index}").mkdir(parents=True)
+        output = self._run_cli(
+            ["retention", "--keep-bundles", "1", "--apply"]
+        )
+        self.assertIn("dry_run=false", output)
+        self.assertIn("trajectory_bundles=2", output)
+        remaining = list(export_root.iterdir())
+        self.assertEqual(1, len(remaining))

@@ -92,6 +92,40 @@ def _trajectory_export_command(settings, arguments) -> int:
     return 0
 
 
+def _retention_command(settings, arguments) -> int:
+    """一键 trace 清理与 trajectory 导出目录整理（08 §11 一键清理）。
+
+    dry-run 默认：只报告将删除的行/目录，不实际删除（09 §9 运维安全）。
+    """
+    from endless_task.runtime_ledger.retention import (
+        cleanup_trajectory_exports,
+        sweep_trace_ledger,
+    )
+
+    database = Database(settings.database_path)
+    database.initialize()
+    report = sweep_trace_ledger(
+        database,
+        retention_days=arguments.days,
+        audit_retention_days=arguments.audit_days,
+        apply=arguments.apply,
+        include_safety_critical=arguments.include_safety_critical,
+    )
+    export_report = cleanup_trajectory_exports(
+        settings.database_path.parent / "v2_trajectory_exports",
+        keep_latest=arguments.keep_bundles,
+        apply=arguments.apply,
+    )
+    print(
+        f"dry_run={str(report.dry_run).lower()} "
+        f"spans={report.spans_removed} events={report.events_removed} "
+        f"usage={report.usage_removed} "
+        f"safety_critical_kept={report.safety_critical_kept} "
+        f"trajectory_bundles={export_report.trajectory_bundles_removed}"
+    )
+    return 0
+
+
 def _trace_runtime_version() -> str:
     from endless_task import __version__
 
@@ -254,6 +288,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="显式导出 run 的 trajectory bundle 到 v2_trajectory_exports/（08 §OE-3）",
     )
     trajectory_export.add_argument("run_id", help="v2 run id")
+    retention = commands.add_parser(
+        "retention",
+        help="trace/usage 与 trajectory 导出的一键清理（08 §11；dry-run 默认）",
+    )
+    retention.add_argument(
+        "--days", type=int, default=30, help="trace 保留天数（默认 30）"
+    )
+    retention.add_argument(
+        "--audit-days", type=int, default=90, help="audit/safety 事件保留天数（默认 90）"
+    )
+    retention.add_argument(
+        "--keep-bundles", type=int, default=10, help="保留最近 N 个 trajectory bundle"
+    )
+    retention.add_argument("--apply", action="store_true", help="实际删除（默认 dry-run）")
+    retention.add_argument(
+        "--include-safety-critical",
+        action="store_true",
+        help="同时清理超过 audit 窗口的 safety-critical 事件",
+    )
     embeddings = commands.add_parser("embeddings", help="R5.8 向量索引管理")
     embeddings_actions = embeddings.add_subparsers(dest="embeddings_command")
     embeddings_actions.add_parser("status", help="查看嵌入配置与索引计数")
@@ -381,6 +434,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return run_eval_command(settings, arguments)
     if command == "trajectory-export":
         return _trajectory_export_command(settings, arguments)
+    if command == "retention":
+        return _retention_command(settings, arguments)
     if command == "restore":
         return _restore_command(settings, arguments)
 
