@@ -78,6 +78,15 @@ class _WriteOnceProvider:
         yield ProviderCompleted(finish_reason="stop")
 
 
+def _container_available() -> bool:
+    import shutil
+
+    from endless_task.execution_env import probe_container_runtime
+
+    runtime = shutil.which("docker") or shutil.which("colima")
+    return bool(runtime) and probe_container_runtime(runtime)
+
+
 class ExecutorChildIsolatedE2ETest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -189,6 +198,48 @@ class ExecutorChildIsolatedE2ETest(unittest.IsolatedAsyncioTestCase):
             "pre-run",
             (binding.root / "output.md").read_text(encoding="utf-8"),
         )
+
+
+    @unittest.skipUnless(_container_available(), "container runtime required")
+    async def test_container_backend_child_write_live(self) -> None:
+        # M4B container live 复核：child 写经 ContainerExecutionBackend enforcement
+        # 落在 scratch（其文件 mutation 委托 workspace 受限 local；容器进程隔离留待
+        # unattended 进程面），主工作区零变化。
+        from endless_task.execution_env import ContainerExecutionBackend
+        from endless_task.execution_env.ledger import FileMutationLedger as L
+
+        conversation, _ = self._bind_scratch_conversation("child_live")
+        binding = self.resolver.require_binding(conversation.id)
+        run = self._run_for(conversation)
+
+        registry = ToolRegistry()
+        registry.register(
+            WriteWorkspaceFileTool(
+                self.resolver,
+                EffectLog(self.base / "logs"),
+                execution_backend=ContainerExecutionBackend(
+                    image="alpine:3.20",
+                    ledger=L(self.base / "ledger-container.jsonl"),
+                ),
+            )
+        )
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=_WriteOnceProvider("live.md", "# container live"),
+            tool_registry=registry,
+            model="scripted-model",
+            approval_gate=UnattendedToolApprovalGate(),
+            v2_pipeline_enabled=True,
+        )
+        result = await executor.execute(
+            run.id, cancellation_token=CancellationToken()
+        )
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertEqual(
+            "# container live",
+            (binding.root / "live.md").read_text(encoding="utf-8"),
+        )
+        self.assertFalse((self.main / "live.md").exists())
 
 
 if __name__ == "__main__":
