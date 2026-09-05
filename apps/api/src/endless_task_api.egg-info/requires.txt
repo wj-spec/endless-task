@@ -7,6 +7,7 @@ onnxruntime<2,>=1.29
 tokenizers<1,>=0.23
 mcp<2,>=1.24
 jsonschema>=4.26.0
+PyYAML<7,>=6.0
 
 [dev]
 httpx<1,>=0.27
