@@ -285,7 +285,11 @@ async def fixture_failed_auto_restored_run(
     container = app.state.container
     repo = container.runtime_v2_repository
     conversation = container.chat_repository.get_conversation(conversation_id)
-    lane = repo.create_lane(conversation_id=conversation.id)
+    lanes = repo.list_lanes(conversation.id)
+    lane = next(
+        (l for l in lanes if getattr(l, "kind", None) is not None and l.kind.value == "main"),
+        lanes[0] if lanes else repo.create_lane(conversation_id=conversation.id),
+    )
     trigger = repo.append_entry(
         conversation_id=conversation.id,
         lane_id=lane.id,
