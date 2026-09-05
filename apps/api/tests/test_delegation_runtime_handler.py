@@ -185,6 +185,24 @@ class DelegationToolHandlerTest(unittest.TestCase):
         self.assertEqual(ToolOutcomeStatus.FAILED, outcome.status)
         self.assertEqual("delegation_capability_escalation", outcome.diagnostic.code)
 
+    def test_parent_without_memory_tool_grant_can_spawn(self) -> None:
+        # Regression (real-provider E2E, 06 §27): product memory is context
+        # injected, not a tool capability, so a real parent's tool-union
+        # grant never contains memory.read. The child request set must not
+        # include it, or every real spawn would fail closed as an
+        # escalation.
+        parent = CoordinatorDelegationHandler(
+            kernel_provider=lambda req: EchoAgentKernel(),
+            capability_provider=lambda req: frozenset(
+                {"workspace.read", "session.query"}
+            ),
+        )
+        tool = SpawnAgentTool(handler=parent)
+        outcome = asyncio.run(
+            tool.execute(request("spawn_agent", {"task": "调查"}))
+        )
+        self.assertEqual(ToolOutcomeStatus.COMPLETED, outcome.status)
+
 
 if __name__ == "__main__":
     unittest.main()

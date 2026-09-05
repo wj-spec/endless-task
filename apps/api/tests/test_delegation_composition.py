@@ -10,6 +10,7 @@ import httpx
 
 from endless_task.api import AppSettings, create_app
 from endless_task.runtime import FakeProvider
+from endless_task.runtime.cancellation import CancellationToken
 
 
 def _settings(directory: str, *, delegation: bool) -> AppSettings:
@@ -67,6 +68,35 @@ class DelegationCompositionTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("query_agent", definitions)
             self.assertIn("cancel_agent", definitions)
             self.assertIsNotNone(container.delegation_handler)
+
+    async def test_capability_provider_does_not_crash_on_v1_definitions(self) -> None:
+        # Regression (real-provider E2E, 06 §27): the composition capability
+        # provider read tool.definition.required_capabilities on v1 legacy
+        # ToolDefinitions (no such field) and raised AttributeError on every
+        # real spawn; it now adapts through LegacyToolAdapter like the v2
+        # surface provider.
+        async for client, app in self._container_app(delegation=True):
+            container = app.state.container
+            from endless_task.tool_platform import ToolExecutionRequest
+
+            request = ToolExecutionRequest(
+                tool_name="spawn_agent",
+                call_id="call_1",
+                arguments={"task": "x"},
+                conversation_id="conv_unused",
+                run_id="run_unused",
+                model_turn_id="turn_1",
+                correlation_id="corr_1",
+                cancellation=CancellationToken(),
+                created_at="2026-09-05T00:00:00Z",
+            )
+            granted = container.delegation_handler._capability_provider(request)
+            self.assertIsInstance(granted, frozenset)
+            # No crash on v1 definitions is the regression; an unbound
+            # conversation correctly loses agent.delegate (fail-closed
+            # delegate gate, AP-105a parity).
+            self.assertNotIn("agent.delegate", granted)
+            self.assertTrue(granted <= {"agent.delegate", "external.action", "session.query", "workspace.read", "workspace.write", "workspace.delete", "process.spawn", "process.signal"})
 
 
 class DelegationFlagParsingTest(unittest.TestCase):

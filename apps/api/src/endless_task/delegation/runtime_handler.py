@@ -53,8 +53,14 @@ CapabilityProvider = Callable[[ToolExecutionRequest], frozenset[str]]
 
 #: Capabilities a read-only research child requests by default (subset of
 #: the builtin subagent_readonly profile; the parent must hold them all).
+#:
+#: ``memory.read`` is intentionally NOT requested: product memory is
+#: injected via <runtime-memory> context, not exposed as a tool, so no
+#: registered tool grants it and the parent's tool-union capability set
+#: never contains it — requesting it would make every real spawn fail
+#: closed as an escalation (real-provider E2E finding, 06 §27).
 _READ_ONLY_CHILD_CAPABILITIES = frozenset(
-    {"workspace.read", "session.query", "memory.read"}
+    {"workspace.read", "session.query"}
 )
 
 

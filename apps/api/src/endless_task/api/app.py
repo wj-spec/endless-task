@@ -1674,11 +1674,17 @@ def _build_container(
             return allows
 
         def _delegation_capability_provider(request) -> frozenset[str]:
+            # Capabilities are read from the v2 adapter definition (the v1
+            # legacy ToolDefinition carries no required_capabilities field);
+            # LegacyToolAdapter fills them from the audited policy table or
+            # the conservative generic effect mapping (AP-105a parity).
+            from endless_task.tool_platform import LegacyToolAdapter
+
             binding = workspace_resolver.resolve_binding(request.conversation_id)
             allowed: set[str] = set()
             for definition in selected_tool_registry.definitions():
                 tool = selected_tool_registry.resolve(definition.name)
-                allowed.update(tool.definition.required_capabilities)
+                allowed.update(LegacyToolAdapter(tool).definition.required_capabilities)
             return _delegation_grant(
                 binding is not None,
                 frozenset(allowed),
@@ -1776,6 +1782,7 @@ def _build_container(
         """
         from endless_task.skills import SkillDependencyContext
         from endless_task.tool_platform import (
+            LegacyToolAdapter,
             capability_grant_for_workspace_binding as _grant,
         )
 
@@ -1788,7 +1795,7 @@ def _build_container(
                 tool = selected_tool_registry.resolve(definition.name)
             except Exception:
                 continue
-            allowed.update(tool.definition.required_capabilities)
+            allowed.update(LegacyToolAdapter(tool).definition.required_capabilities)
         return SkillDependencyContext(
             available_tools=frozenset(tool_names),
             granted_capabilities=_grant(
