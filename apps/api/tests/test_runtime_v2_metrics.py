@@ -190,3 +190,64 @@ class MetricsGatewayIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderRetryMetricsTest(unittest.TestCase):
+    def test_record_provider_retry_and_summary(self) -> None:
+        from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
+
+        collector = RuntimeV2MetricsCollector()
+        observer = collector.provider_retry_observer("run_parent_1")
+
+        class Record:
+            error_code = "network_error"
+            retryable = True
+            would_retry = True
+            delay_seconds = 1.0
+            attempts_used = 1
+            reason = "retryable_pre_emission"
+
+        observer(Record())
+        summary = collector.summary()
+        retries = summary["providerRetries"]
+        self.assertEqual(1, retries["count"])
+        self.assertEqual(1, retries["wouldRetry"])
+        self.assertEqual(1, retries["retryable"])
+        self.assertEqual(1, retries["reasons"].get("retryable_pre_emission"))
+
+    def test_shadow_observer_records_non_retryable_too(self) -> None:
+        from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
+
+        collector = RuntimeV2MetricsCollector()
+        observer = collector.provider_retry_observer("run_x")
+
+        class Record:
+            error_code = "auth_error"
+            retryable = False
+            would_retry = False
+            delay_seconds = 0.0
+            attempts_used = 0
+            reason = "auth_invalid"
+
+        observer(Record())
+        summary = collector.summary()
+        self.assertEqual(1, summary["providerRetries"]["count"])
+        self.assertEqual(0, summary["providerRetries"]["wouldRetry"])
+
+    def test_bounded_collection(self) -> None:
+        from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
+
+        collector = RuntimeV2MetricsCollector()
+
+        class Record:
+            error_code = "e"
+            retryable = True
+            would_retry = True
+            delay_seconds = 0.0
+            attempts_used = 0
+            reason = "r"
+
+        observer = collector.provider_retry_observer("run_y")
+        for _ in range(2_000):
+            observer(Record())
+        self.assertLessEqual(collector.summary()["providerRetries"]["count"], 1_000)

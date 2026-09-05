@@ -661,6 +661,7 @@ class RuntimeV2SessionGateway:
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         trace_observer: Optional[RunTraceObserver] = None,
         span_recorder: Optional[object] = None,
+        provider_retry_evaluator: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
@@ -681,6 +682,10 @@ class RuntimeV2SessionGateway:
         self._tool_execution_limits = tool_execution_limits
         self._trace_observer = trace_observer
         self._span_recorder = span_recorder
+        # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
+        # legacy behavior. The observer is bound per run at launch so
+        # retry decisions attribute to the correct run.
+        self._provider_retry_evaluator = provider_retry_evaluator
         self._temperature = temperature
         self._provider_slot = (
             asyncio.Semaphore(provider_slot_limit)
@@ -1372,6 +1377,12 @@ class RuntimeV2SessionGateway:
             tool_execution_limits=self._tool_execution_limits,
             trace_observer=self._trace_observer,
             span_recorder=self._span_recorder,
+            provider_retry_evaluator=self._provider_retry_evaluator,
+            provider_retry_observer=(
+                self._metrics.provider_retry_observer(run.id)
+                if self._provider_retry_evaluator is not None
+                else None
+            ),
         )
         task = self._active_run_supervisor.spawn(
             executor.execute(

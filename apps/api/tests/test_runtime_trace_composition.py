@@ -14,7 +14,13 @@ from endless_task.api.app import (
 from endless_task.runtime import FakeProvider
 
 
-def _settings(directory: str, *, trace_mode: str, otel_mode: str = "0") -> AppSettings:
+def _settings(
+    directory: str,
+    *,
+    trace_mode: str,
+    otel_mode: str = "0",
+    retry_mode: str = "0",
+) -> AppSettings:
     return AppSettings(
         database_path=Path(directory) / "api.db",
         memory_proposals_enabled=False,
@@ -22,6 +28,7 @@ def _settings(directory: str, *, trace_mode: str, otel_mode: str = "0") -> AppSe
         tool_platform_v2_enabled=True,
         runtime_trace_mode=trace_mode,
         otel_export_mode=otel_mode,
+        provider_retry_mode=retry_mode,
     )
 
 
@@ -158,3 +165,39 @@ class OtelCompositionTest(unittest.TestCase):
         self.assertEqual("otlp-http", _parse_otel_export_mode("1"))
         with self.assertRaises(ValueError):
             _parse_otel_export_mode("prometheus")
+
+
+class ProviderRetryCompositionTest(unittest.TestCase):
+    def _container(self, *, retry_mode: str):
+        directory = tempfile.mkdtemp()
+        container = _build_container(
+            _settings(directory, trace_mode="0", retry_mode=retry_mode),
+            FakeProvider(chunks=("ok",)),
+            None,
+        )
+        container.database.initialize()
+        return container
+
+    def test_mode_0_wires_shadow_evaluator(self) -> None:
+        container = self._container(retry_mode="0")
+        evaluator = container.runtime_v2_gateway._provider_retry_evaluator
+        self.assertIsNone(evaluator)
+
+    def test_mode_1_wires_evaluator(self) -> None:
+        container = self._container(retry_mode="1")
+        evaluator = container.runtime_v2_gateway._provider_retry_evaluator
+        self.assertIsNotNone(evaluator)
+        # The gateway forwards it to its executors.
+        self.assertIs(
+            evaluator,
+            container.runtime_v2_gateway._provider_retry_evaluator,
+        )
+
+    def test_strict_mode_parse(self) -> None:
+        from endless_task.api.app import _parse_strict_mode
+
+        self.assertEqual("0", _parse_strict_mode("0", name="X"))
+        self.assertEqual("1", _parse_strict_mode("1", name="X"))
+        self.assertEqual("1", _parse_strict_mode("on", name="X"))
+        with self.assertRaises(ValueError):
+            _parse_strict_mode("2", name="X")

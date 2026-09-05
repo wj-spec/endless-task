@@ -321,6 +321,12 @@ class AppSettings:
     # "isolated_write" (M4B) is not implemented yet and fails startup
     # rather than silently degrading to read-only (no silent downgrade).
     delegation_mode: str = "readonly"
+    # M3A RS-1 (G1-2): provider retry mode (05 §RS-1). "0" (default) =
+    # shadow only: evaluator observes and records retry decisions, never
+    # retries (max_attempts=0); "1" enables bounded auto-retry of
+    # pre-emission retryable provider errors. Illegal env values fail
+    # startup.
+    provider_retry_mode: str = "0"
     # M5 SK-1b: enable skill:// locator resolution for read_skill_file and
     # locator-based prompt exposure. Default off keeps the legacy absolute
     # path behavior unchanged. Illegal env values fail startup.
@@ -471,6 +477,10 @@ class AppSettings:
             ),
             delegation_mode=_parse_delegation_mode(
                 env.get("ENDLESS_TASK_DELEGATION", "readonly"),
+            ),
+            provider_retry_mode=_parse_strict_mode(
+                env.get("ENDLESS_TASK_PROVIDER_RETRY_V2", "0"),
+                name="ENDLESS_TASK_PROVIDER_RETRY_V2",
             ),
             skill_packages_enabled=_parse_strict_flag(
                 env.get("ENDLESS_TASK_SKILL_PACKAGES", "0"),
@@ -1188,6 +1198,16 @@ def _parse_delegation_mode(value: str) -> str:
     raise ValueError("ENDLESS_TASK_DELEGATION 只允许 0 或 readonly")
 
 
+def _parse_strict_mode(value: str, *, name: str) -> str:
+    """Strict 0|1 mode parsing: any value outside 0/1 fails startup."""
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return "1"
+    if normalized in {"0", "false", "no", "off"}:
+        return "0"
+    raise ValueError(f"{name} 只允许 0 或 1")
+
+
 def _parse_runtime_trace_mode(value: str) -> str:
     """Strict runtime trace mode parsing (08 §OE-1): 0|errors|sampled|all."""
     normalized = value.strip().lower()
@@ -1333,6 +1353,27 @@ def _build_container(
         embedder=embedder,
     )
     runtime_v2_metrics_collector = RuntimeV2MetricsCollector()
+    # M3A RS-1 (G1-2): provider retry wiring. Default mode "0" = shadow
+    # only: the evaluator observes provider failures and the metrics
+    # collector records every decision; auto-retry is off (max_attempts=0
+    # per 05 §RS-1). Mode "1" enables bounded auto-retry of pre-emission
+    # retryable errors.
+    from endless_task.reliability.retry_runtime import (
+        ProviderRetryConfig,
+        ProviderRetryEvaluator,
+    )
+
+    runtime_v2_provider_retry_evaluator: Optional[ProviderRetryEvaluator] = None
+    if settings.provider_retry_mode != "0":
+        runtime_v2_provider_retry_evaluator = ProviderRetryEvaluator(
+            ProviderRetryConfig(
+                max_attempts=(
+                    1 if settings.provider_retry_mode == "1" else 0
+                ),
+                max_total_retry_delay=30.0,
+                deadline_seconds=min(30.0, settings.agent_timeout_seconds or 30.0),
+            )
+        )
     # M6 W6-2/W6-3: runtime trace wiring (flag ENDLESS_TASK_RUNTIME_TRACE,
     # default "0"). When enabled, terminal-run usage is mirrored into the
     # SQLite trace ledger (08 §17/§24) and failed runs auto-export a
@@ -1557,6 +1598,7 @@ def _build_container(
         tool_execution_limits=tool_execution_limits,
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
+        provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1588,6 +1630,15 @@ def _build_container(
         tool_execution_limits=tool_execution_limits,
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
+        provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
+        provider_retry_observer=(
+            # Task/reminder runs are one-shot; the process-level metrics
+            # summary aggregates retry decisions (not per-run), so the
+            # static label only marks the execution path.
+            runtime_v2_metrics_collector.provider_retry_observer("task")
+            if runtime_v2_provider_retry_evaluator is not None
+            else None
+        ),
     )
     if settings.delegation_mode == "readonly":
         # M4A read-only delegation (DR-2): register the three delegation
@@ -1653,6 +1704,17 @@ def _build_container(
                 tool_execution_limits=tool_execution_limits,
                 trace_observer=runtime_v2_trace_observer,
                 span_recorder=runtime_v2_span_recorder,
+                provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
+                provider_retry_observer=(
+                    # Child run ids are assigned by the coordinator after the
+                    # executor is built; the metrics summary is aggregate,
+                    # so the static label marks the delegation path.
+                    runtime_v2_metrics_collector.provider_retry_observer(
+                        "delegation_child"
+                    )
+                    if runtime_v2_provider_retry_evaluator is not None
+                    else None
+                ),
             )
 
         def _delegation_child_tool_filter(conversation_id: str):

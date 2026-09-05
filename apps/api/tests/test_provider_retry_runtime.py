@@ -163,6 +163,51 @@ class RuntimeRetryIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(shadows[0].would_retry)
         self.assertEqual("network_error", shadows[0].error_code)
 
+    async def test_shadow_mode_0_never_retries_but_records(self) -> None:
+        from endless_task.runtime_v2 import Actor, AgentRunExecutor, RunStatus, TranscriptEntryType
+        from endless_task.tooling import ToolRegistry
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "hi"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        provider = _RetryThenOkProvider()
+        shadows: list[ProviderRetryRecord] = []
+        # max_attempts=0 = shadow mode (05 §RS-1): evaluate + record, never
+        # retry; run fails with the provider error.
+        evaluator = ProviderRetryEvaluator(ProviderRetryConfig(max_attempts=0))
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=ToolRegistry(),
+            model="retry-model",
+            provider_retry_evaluator=evaluator,
+            provider_retry_observer=shadows.append,
+        )
+        result = await executor.execute(
+            run.id,
+            cancellation_token=CancellationToken(),
+        )
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual(1, len(provider.requests))  # no retry
+        self.assertEqual(1, len(shadows))  # shadow still recorded
+        # max_attempts=0 means no retry budget (would_retry False), but the
+        # classifier still flags the error as retryable - shadow value.
+        self.assertTrue(shadows[0].retryable)
+        self.assertFalse(shadows[0].would_retry)
+        self.assertEqual("network_error", shadows[0].error_code)
+
 
 if __name__ == "__main__":
     unittest.main()

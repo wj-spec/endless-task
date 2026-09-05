@@ -58,6 +58,18 @@ class _PrefixFingerprintRecord:
     occurred_at: float
 
 
+@dataclass(frozen=True)
+class _ProviderRetryRecord:
+    run_id: str
+    error_code: str
+    retryable: bool
+    would_retry: bool
+    delay_seconds: float
+    attempts_used: int
+    reason: str
+    occurred_at: float
+
+
 class RuntimeV2MetricsCollector:
     """进程内指标聚合器;线程安全由 GIL + 单事件循环保证。"""
 
@@ -67,6 +79,7 @@ class RuntimeV2MetricsCollector:
         self._approvals: list[ApprovalMetric] = []
         self._prefix_records: list[_PrefixFingerprintRecord] = []
         self._compaction_events = 0
+        self._provider_retry_records: list[_ProviderRetryRecord] = []
         self._max_runs = max_runs
         self._max_turns = max_turns
 
@@ -92,6 +105,40 @@ class RuntimeV2MetricsCollector:
 
     def record_compaction(self, *, released_tokens: int) -> None:
         self._compaction_events += 1
+
+    def provider_retry_observer(self, run_id: str):
+        """Build a shadow observer bound to one run (M3A RS-1 wiring).
+
+        The reliability :class:`ProviderRetryRecord` carries no run id;
+        this factory binds one so the in-process collector can attribute
+        retry decisions per run. Sync, called from the provider error
+        path.
+        """
+        collector = self
+
+        def observe(record) -> None:
+            collector.record_provider_retry(run_id, record)
+
+        return observe
+
+    def record_provider_retry(self, run_id: str, record) -> None:
+        """M3A RS-1 shadow: record one provider retry evaluation."""
+        import time as _time
+
+        self._provider_retry_records.append(
+            _ProviderRetryRecord(
+                run_id=run_id,
+                error_code=record.error_code,
+                retryable=record.retryable,
+                would_retry=record.would_retry,
+                delay_seconds=record.delay_seconds,
+                attempts_used=record.attempts_used,
+                reason=record.reason,
+                occurred_at=_time.monotonic(),
+            )
+        )
+        if len(self._provider_retry_records) > 1_000:
+            self._provider_retry_records = self._provider_retry_records[-1_000:]
 
     def record_prefix_fingerprint(
         self,
@@ -168,6 +215,16 @@ class RuntimeV2MetricsCollector:
                 "count": len(self._approvals),
                 "avgWaitMs": _avg_list(approval_waits),
                 "decisions": _counts(approval.decision for approval in self._approvals),
+            },
+            "providerRetries": {
+                "count": len(self._provider_retry_records),
+                "wouldRetry": sum(
+                    1 for record in self._provider_retry_records if record.would_retry
+                ),
+                "retryable": sum(
+                    1 for record in self._provider_retry_records if record.retryable
+                ),
+                "reasons": _counts(record.reason for record in self._provider_retry_records),
             },
             "compactions": {
                 "events": self._compaction_events,
