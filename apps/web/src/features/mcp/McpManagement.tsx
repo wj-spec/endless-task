@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { FormErrorSummary } from "../ui/FormErrorSummary";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { McpServer } from "../chat/apiTypes";
@@ -154,11 +155,11 @@ export function McpContent({ onChanged }: McpContentProps) {
           {adding ? "取消" : "添加服务器"}
         </button>
       </div>
-      {actionError ? (
-        <div className="proposal-error" role="alert">
-          {actionError}
-        </div>
-      ) : null}
+      <FormErrorSummary
+        error={actionError}
+        heading="服务器操作没有完成"
+        className="proposal-error form-error-summary"
+      />
       {adding ? (
         <div className="knowledge-form mcp-form">
           <input
@@ -273,9 +274,11 @@ export function McpContent({ onChanged }: McpContentProps) {
               : server.url}
           </p>
           {server.lastError ? (
-            <p className="proposal-error" role="alert">
-              {server.lastError}
-            </p>
+            <FormErrorSummary
+              error={server.lastError}
+              heading="连接没有完成"
+              className="proposal-error form-error-summary"
+            />
           ) : null}
           {server.tools.length > 0 ? (
             <div className="mcp-tools">

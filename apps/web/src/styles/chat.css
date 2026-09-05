@@ -1743,3 +1743,33 @@ button.citation-chip:focus-visible {
   display: flex;
   gap: 12px;
 }
+
+/* P1-4 表单错误汇总（可聚焦） */
+.form-error-summary {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--danger);
+  border-radius: var(--radius-s);
+  background: var(--danger-soft);
+  color: var(--danger-deep);
+  font-size: var(--fs-2);
+  line-height: 1.5;
+}
+
+.form-error-summary:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.form-error-summary strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--danger-deep);
+}
+
+.form-error-summary ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 18px;
+}

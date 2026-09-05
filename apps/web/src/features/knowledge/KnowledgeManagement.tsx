@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FormErrorSummary } from "../ui/FormErrorSummary";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
 import type { KnowledgeSource, Workspace } from "../chat/apiTypes";
@@ -262,11 +263,11 @@ export function KnowledgeContent({
         </div>
       ) : null}
 
-      {actionError ? (
-        <div className="proposal-error" role="alert">
-          {actionError}
-        </div>
-      ) : null}
+      <FormErrorSummary
+        error={actionError}
+        heading="知识操作没有完成"
+        className="proposal-error form-error-summary"
+      />
       {loading ? (
         <div aria-hidden="true" className="skeleton-panel">
           <span className="skeleton-line" />

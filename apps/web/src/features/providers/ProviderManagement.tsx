@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { FormErrorSummary } from "../ui/FormErrorSummary";
 import { ApiClientError, chatApi } from "../chat/api";
 import type { ProviderModel, ProviderProfile } from "../chat/apiTypes";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -205,11 +206,11 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
         </button>
       </div>
 
-      {actionError ? (
-        <div className="proposal-error" role="alert">
-          {actionError}
-        </div>
-      ) : null}
+      <FormErrorSummary
+        error={actionError}
+        heading="模型服务操作没有完成"
+        className="proposal-error form-error-summary"
+      />
 
       {adding ? (
         <div className="knowledge-form provider-form">
@@ -262,6 +263,7 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
           </label>
           <div className="provider-form-actions">
             <button
+              aria-busy={busyId === "create"}
               disabled={!form.name.trim() || busyId === "create"}
               onClick={() => void createProfile()}
               type="button"
@@ -381,6 +383,7 @@ export function ProviderManagement({ onChanged }: ProviderManagementProps) {
                 </label>
                 <div className="provider-form-actions">
                   <button
+                    aria-busy={busyId === profile.id}
                     disabled={busyId === profile.id || !editForm.name.trim()}
                     onClick={() => void saveProfile(profile)}
                     type="button"
