@@ -644,7 +644,6 @@ export function App() {
               : []
           }
           runtimeSnapshot={chat.activeRuntimeSnapshot}
-          runtimeStatus={chat.activeRuntimeStatus}
           tab={assistantTab}
           unreadCount={hub.unread}
           workspaceId={chat.workspaceId}

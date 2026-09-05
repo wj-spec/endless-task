@@ -12,7 +12,6 @@ import type {
   HealthSnapshot,
   LiveTurn,
   ProviderProfile,
-  RuntimeV2ConversationRuntimeStatus,
   RuntimeV2Entry,
   RuntimeV2Lane,
   RuntimeV2ProductEvent,
@@ -339,9 +338,6 @@ export function useChatApplication() {
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [capabilities, setCapabilities] = useState<CapabilitySnapshot | null>(null);
-  const [runtimeStatuses, setRuntimeStatuses] = useState<
-    Record<string, RuntimeV2ConversationRuntimeStatus>
-  >({});
   const [mainLaneIds, setMainLaneIds] = useState<Record<string, string>>({});
   const [viewLaneIds, setViewLaneIds] = useState<Record<string, string>>({});
   const [laneTrees, setLaneTrees] = useState<Record<string, RuntimeV2Lane[]>>({});
@@ -607,15 +603,6 @@ export function useChatApplication() {
       target: SnapshotTarget = "main",
       isCurrent: () => boolean = () => true,
     ) => {
-      const runtimeStatus = await chatApi.getRuntimeV2ConversationRuntimeStatus(
-        legacy.conversation.id,
-      );
-      if (!isCurrent()) return;
-      setRuntimeStatuses((current) => ({
-        ...current,
-        [legacy.conversation.id]: runtimeStatus,
-      }));
-
       const laneList = await chatApi.listRuntimeV2Lanes(legacy.conversation.id);
       if (!isCurrent()) return;
       const mainLane =
@@ -801,11 +788,6 @@ export function useChatApplication() {
         } catch {
           // 临时对话已删除；列表刷新失败不应阻止右侧状态清理。
         }
-        setRuntimeStatuses((current) => {
-          const next = { ...current };
-          delete next[sideLane.conversationId];
-          return next;
-        });
         setMainLaneIds((current) => {
           const next = { ...current };
           delete next[sideLane.conversationId];
@@ -1119,9 +1101,6 @@ export function useChatApplication() {
   const activeRuntimeEvents = activeConversationId
     ? (runtimeController.events[activeConversationId] ?? [])
     : [];
-  const activeRuntimeStatus = activeConversationId
-    ? (runtimeStatuses[activeConversationId] ?? null)
-    : null;
   const sideRuntimeSnapshot = sideCommandTarget
     ? (runtimeController.snapshots[runtimeTargetKey(sideCommandTarget)] ?? null)
     : null;
@@ -1326,20 +1305,13 @@ export function useChatApplication() {
         {},
       );
       const temporaryConversationId = created.conversation.id;
-      const [legacy, runtime, runtimeStatus] = await Promise.all([
+      const [legacy, runtime] = await Promise.all([
         chatApi.getConversation(temporaryConversationId),
         runtimeController.loadSnapshot({
           conversationId: temporaryConversationId,
           laneId: created.lane.id,
         }),
-        chatApi.getRuntimeV2ConversationRuntimeStatus(
-          temporaryConversationId,
-        ),
       ]);
-      setRuntimeStatuses((current) => ({
-        ...current,
-        [temporaryConversationId]: runtimeStatus,
-      }));
       setMainLaneIds((current) => ({
         ...current,
         [temporaryConversationId]: created.lane.id,
@@ -2125,7 +2097,6 @@ export function useChatApplication() {
     activeRuntimeConnection,
     activeRuntimeEvents,
     activeRuntimeSnapshot,
-    activeRuntimeStatus,
     createWorkspace,
     currentWorkspace,
     deleteWorkspace,

@@ -314,7 +314,6 @@ export type CapabilityEmbeddingStatus = {
 
 export type CapabilitySnapshot = {
   summary: CapabilitySummary;
-  runtime?: RuntimeV2GlobalRuntimeStatus;
   skills: CapabilitySkillStatus;
   mcp: CapabilityMcpStatus;
   provider: CapabilityProviderStatus;
@@ -325,30 +324,6 @@ export type CapabilitySnapshot = {
 export type CapabilityDelegationStatus = {
   enabled: boolean;
   mode: "readonly" | null;
-};
-
-export type RuntimeV2GlobalRuntimeStatus = {
-  defaultRuntime: "v1" | "v2";
-  rollbackForced: boolean;
-  migrationState: "migrated" | "not_migrated";
-  conversationCount: number;
-  mappedConversationCount: number;
-  conversationTreeCount: number;
-  pendingMigrationCount: number;
-  rollbackReconciliationCount: number;
-};
-
-export type RuntimeV2ConversationRuntimeStatus = {
-  conversationId: string;
-  treeConversationId: string;
-  defaultRuntime: "v1" | "v2";
-  rollbackForced: boolean;
-  overrideRuntime: "v1" | "v2" | null;
-  canUseV2: boolean;
-  requiresMigration: boolean;
-  v1ReadOnly: boolean;
-  rollbackReconciliationRequired: boolean;
-  reason: string;
 };
 
 export type RuntimeV2Metrics = {

@@ -3,7 +3,6 @@ import type {
   CapabilitySnapshot,
   CapabilityState,
   PendingProposal,
-  RuntimeV2ConversationRuntimeStatus,
   RuntimeV2Lane,
   RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
@@ -77,7 +76,6 @@ type AssistantPanelProps = {
   runtimeEvents: RuntimeV2ProductEvent[];
   runtimeLanes: RuntimeV2Lane[];
   runtimeSnapshot: RuntimeV2Snapshot | null;
-  runtimeStatus: RuntimeV2ConversationRuntimeStatus | null;
   tab: AssistantPanelTab;
   unreadCount: number;
   workspaceId: string | null;
@@ -97,7 +95,6 @@ export function AssistantPanel({
   runtimeEvents,
   runtimeLanes,
   runtimeSnapshot,
-  runtimeStatus,
   tab,
   unreadCount,
   workspaceId,
@@ -238,7 +235,6 @@ export function AssistantPanel({
             conversationId={conversationId}
             events={runtimeEvents}
             lanes={runtimeLanes}
-            runtimeStatus={runtimeStatus}
             snapshot={runtimeSnapshot}
             delegation={capabilities?.delegation ?? null}
           />

@@ -17,8 +17,6 @@ import type { KnowledgeProposal,
   MemoryRecord,
   PermissionSettings,
   RuntimeV2MessageResponse,
-  RuntimeV2ConversationRuntimeStatus,
-  RuntimeV2GlobalRuntimeStatus,
   RuntimeV2Metrics,
   RuntimeV2MemoryCreateResponse,
   RuntimeV2MemoryListResponse,
@@ -349,20 +347,6 @@ export const chatApi = {
       `/api/v2/conversations/${conversationId}/snapshot${query ? `?${query}` : ""}`,
     );
   },
-  getRuntimeV2GlobalRuntimeStatus: () =>
-    request<RuntimeV2GlobalRuntimeStatus>("/api/v2/runtime"),
-  getRuntimeV2ConversationRuntimeStatus: (conversationId: string) =>
-    request<RuntimeV2ConversationRuntimeStatus>(
-      `/api/v2/conversations/${conversationId}/runtime`,
-    ),
-  setRuntimeV2ConversationRuntime: (
-    conversationId: string,
-    runtime: "v1" | "v2",
-  ) =>
-    request<RuntimeV2ConversationRuntimeStatus>(
-      `/api/v2/conversations/${conversationId}/runtime`,
-      { method: "POST", body: JSON.stringify({ runtime }) },
-    ),
   createRuntimeV2Message: (
     conversationId: string,
     content: string,

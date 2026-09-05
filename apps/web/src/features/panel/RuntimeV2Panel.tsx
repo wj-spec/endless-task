@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type {
   CapabilityDelegationStatus,
-  RuntimeV2ConversationRuntimeStatus,
   RuntimeV2Lane,
   RuntimeV2Metrics,
   RuntimeV2ProductEvent,
@@ -113,7 +112,6 @@ type RuntimeV2PanelProps = {
   conversationId: string | null;
   events: RuntimeV2ProductEvent[];
   lanes: RuntimeV2Lane[];
-  runtimeStatus: RuntimeV2ConversationRuntimeStatus | null;
   snapshot: RuntimeV2Snapshot | null;
   delegation?: CapabilityDelegationStatus | null;
 };
@@ -123,7 +121,6 @@ export function RuntimeV2Panel({
   conversationId,
   events,
   lanes,
-  runtimeStatus,
   snapshot,
   delegation,
 }: RuntimeV2PanelProps) {
@@ -187,15 +184,6 @@ export function RuntimeV2Panel({
       {connection?.error ? (
         <div className="inline-error" role="alert">
           <span>{connection.error}</span>
-        </div>
-      ) : null}
-
-      {runtimeStatus ? (
-        <div className="runtime-v2-runtime">
-          <div>
-            <strong>Runtime v2</strong>
-            <p>{runtimeStatus.reason}</p>
-          </div>
         </div>
       ) : null}
 
