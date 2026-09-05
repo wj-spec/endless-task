@@ -3833,6 +3833,52 @@ def create_app(
             content = ""
         return {"runId": run_id, "fileName": file_name, "content": content}
 
+    @app.get("/api/v2/eval/batches")
+    async def list_eval_batches() -> dict[str, object]:
+        """P2-1c：离线 eval 批次只读列表（开发者向）。"""
+        from endless_task.eval.storage import SqliteEvalRepository
+
+        repository = SqliteEvalRepository(container.database)
+        return {
+            "items": [
+                {
+                    "id": batch.id,
+                    "mode": batch.mode,
+                    "status": batch.status,
+                    "runCount": batch.run_count,
+                    "createdAt": batch.created_at,
+                    "judgeProvider": batch.judge_provider,
+                    "judgeModel": batch.judge_model,
+                    "aggregate": batch.aggregate,
+                }
+                for batch in repository.list_batches()
+            ]
+        }
+
+    @app.get("/api/v2/eval/batches/{batch_id}")
+    async def get_eval_batch(batch_id: str) -> dict[str, object]:
+        from endless_task.eval.storage import SqliteEvalRepository
+
+        repository = SqliteEvalRepository(container.database)
+        batch = repository.get_batch(batch_id)  # unknown -> 404
+        with container.database.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM eval_run_results WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        result_count = int(row["count"]) if row else 0
+        return {
+            "id": batch.id,
+            "mode": batch.mode,
+            "status": batch.status,
+            "runCount": batch.run_count,
+            "resultCount": result_count,
+            "createdAt": batch.created_at,
+            "judgeProvider": batch.judge_provider,
+            "judgeModel": batch.judge_model,
+            "aggregate": batch.aggregate,
+        }
+
     @app.get("/skills")
     async def list_skills(
         workspace: Optional[str] = Query(None),
