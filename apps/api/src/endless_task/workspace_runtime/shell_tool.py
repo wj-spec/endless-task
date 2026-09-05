@@ -66,12 +66,17 @@ class RunShellTool:
         timeout_seconds: float = DEFAULT_SHELL_TIMEOUT_SECONDS,
         no_change_timeout_seconds: float = DEFAULT_NO_CHANGE_TIMEOUT_SECONDS,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+        checkpoint_coordinator=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
         self._timeout_seconds = timeout_seconds
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._max_output_bytes = max_output_bytes
+        # M3B run-level (方案 A): optional per-run workspace checkpoint
+        # coordinator; snapshot before executing so a failed run can roll
+        # back its shell/file side effects. None = current behavior.
+        self._checkpoint_coordinator = checkpoint_coordinator
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -108,6 +113,7 @@ class RunShellTool:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
         command = call.require_argument("command", str)
+        self._ensure_checkpoint(call, binding)
         result: ShellResult = await run_shell_command(
             command=command,
             cwd=binding.root,
@@ -128,6 +134,7 @@ class RunShellTool:
         token.raise_if_cancelled()
         binding = self._resolver.require_binding(call.conversation_id)
         command = call.require_argument("command", str)
+        self._ensure_checkpoint(call, binding)
         result: ShellResult = await run_shell_command(
             command=command,
             cwd=binding.root,
@@ -220,6 +227,21 @@ class RunShellTool:
                 "effect": receipt.as_dict(),
             },
         )
+
+
+    def _ensure_checkpoint(self, call: ToolCall, binding) -> None:
+        coordinator = self._checkpoint_coordinator
+        if coordinator is None:
+            return
+        run_id = call.response_variant_id or call.id
+        try:
+            coordinator.ensure_checkpoint(
+                run_id=run_id,
+                workspace_root=str(binding.root),
+            )
+        except Exception:
+            # Snapshot is best-effort; never block the user's command.
+            return
 
 
 def _now_iso() -> str:

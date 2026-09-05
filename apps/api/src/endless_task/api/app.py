@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import AsyncIterator, Callable, Literal, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Literal, Optional
 
 from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -82,6 +82,8 @@ from endless_task.runtime_v2.trace_observer import (
     default_run_reader,
     default_usage_exists,
 )
+from endless_task.execution_env.ledger import FileMutationLedger
+from endless_task.runtime_v2.run_checkpoint import RunCheckpointCoordinator
 from endless_task.runtime_v2.run_trajectory import (
     FanoutTraceObserver,
     RunTrajectoryExporter,
@@ -715,6 +717,7 @@ class AppContainer:
     runtime_v2_trace_observer: Optional[object] = None
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
     runtime_v2_span_recorder: Optional[SqliteRuntimeLedger] = None
+    run_checkpoint_coordinator: Optional[RunCheckpointCoordinator] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1870,6 +1873,19 @@ def _build_container(
         )
 
     effect_log = EffectLog(settings.database_path.parent / "logs")
+    # M3B run-level (方案 A): shared per-run workspace checkpoint
+    # coordinator. Every fs/shell write snapshots the workspace before its
+    # first side effect; the FileMutationLedger records agent changes so a
+    # later restore never overwrites user edits. Store + ledger live under
+    # the data directory.
+    checkpoint_store = settings.database_path.parent / "checkpoints"
+    mutation_ledger = FileMutationLedger(
+        settings.database_path.parent / "file-mutations.jsonl"
+    )
+    run_checkpoint_coordinator = RunCheckpointCoordinator(
+        store_root=checkpoint_store,
+        ledger=mutation_ledger,
+    )
     mcp_manager = McpManager(
         repository=mcp_server_repository,
         tool_registry=selected_tool_registry,
@@ -1891,6 +1907,7 @@ def _build_container(
                 workspace_resolver,
                 effect_log,
                 max_write_bytes=settings.workspace_max_write_bytes,
+                checkpoint_coordinator=run_checkpoint_coordinator,
             )
         )
         selected_tool_registry.register(ListWorkspaceDirTool(workspace_resolver))
@@ -1902,7 +1919,11 @@ def _build_container(
             )
         )
         selected_tool_registry.register(
-            DeleteWorkspaceFileTool(workspace_resolver, effect_log)
+            DeleteWorkspaceFileTool(
+                workspace_resolver,
+                effect_log,
+                checkpoint_coordinator=run_checkpoint_coordinator,
+            )
         )
         selected_tool_registry.register(
             RunShellTool(
@@ -1911,6 +1932,7 @@ def _build_container(
                 timeout_seconds=settings.shell_timeout_seconds,
                 no_change_timeout_seconds=settings.shell_no_change_timeout_seconds,
                 max_output_bytes=settings.shell_max_output_bytes,
+                checkpoint_coordinator=run_checkpoint_coordinator,
             )
         )
         selected_tool_registry.register(UpdatePlanTool(runtime_v2_repository))
@@ -2255,6 +2277,7 @@ def _build_container(
         runtime_v2_trace_observer=runtime_v2_trace_observer,
         runtime_v2_trajectory_exporter=runtime_v2_trajectory_exporter,
         runtime_v2_span_recorder=runtime_v2_span_recorder,
+        run_checkpoint_coordinator=run_checkpoint_coordinator,
     )
 
 

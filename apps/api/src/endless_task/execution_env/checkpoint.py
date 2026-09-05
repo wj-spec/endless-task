@@ -163,16 +163,30 @@ def plan_restore(
 ) -> RestorePlan:
     root_path = Path(root).expanduser().resolve(strict=False)
     manifest_paths = {relative for relative, _ in manifest.entries}
-    manifest_sha = dict(manifest.entries)
     would_apply: list[str] = []
     user_modified: list[str] = []
     for relative, checkpoint_sha in sorted(manifest.entries):
         current = _current_sha(root_path, relative)
         if current == checkpoint_sha:
             continue
-        agent_recorded = ledger is not None and ledger.last_entry_for(relative) is not None
-        if current is not None and not agent_recorded:
-            # Changed but no agent record: user modification. Never overwrite.
+        if current is None:
+            # File missing: restore the checkpoint blob. From hashes alone we
+            # cannot distinguish agent vs user deletion, and 05 semantics
+            # (test_execution_env_checkpoint) recreate removed files.
+            would_apply.append(relative)
+            continue
+        # Changed and present. Only an agent mutation whose recorded
+        # after_hash still matches the current content is revertible; if the
+        # content moved on after the last recorded agent write (user edit,
+        # another run, any unmediated change) the file is user-owned now and
+        # must never be overwritten (G1 restore gate).
+        agent_entry = ledger.last_entry_for(relative) if ledger is not None else None
+        agent_intact = (
+            agent_entry is not None
+            and agent_entry.after_hash is not None
+            and agent_entry.after_hash == current
+        )
+        if not agent_intact:
             user_modified.append(relative)
             continue
         would_apply.append(relative)

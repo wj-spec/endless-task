@@ -25,6 +25,12 @@ from endless_task.tooling import (
 )
 
 from .effect_log import EffectLog, EffectReceipt, sha256_text
+
+
+def _sha256_bytes(content: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(content).hexdigest()
 from .path_safety import (
     resolve_external_read_path,
     resolve_read_path_with_variants,
@@ -323,10 +329,15 @@ class WriteWorkspaceFileTool:
         effect_log: EffectLog,
         *,
         max_write_bytes: int = 512_000,
+        checkpoint_coordinator=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
         self._max_write_bytes = max_write_bytes
+        # M3B run-level (方案 A): optional per-run workspace checkpoint
+        # coordinator; the tool snapshots the workspace before its first
+        # write so a failed run can be rolled back. None = current behavior.
+        self._checkpoint_coordinator = checkpoint_coordinator
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -367,10 +378,26 @@ class WriteWorkspaceFileTool:
                 "路径指向目录，不能覆盖为文件。",
                 retryable=False,
             )
+        self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
+            before_hash = (
+                _sha256_bytes(resolved.canonical.read_bytes())
+                if resolved.canonical.exists()
+                else None
+            )
             resolved.canonical.parent.mkdir(parents=True, exist_ok=True)
             resolved.canonical.write_text(content, encoding="utf-8")
+        after_hash = sha256_text(content)
+        _record_mutation(
+            self._checkpoint_coordinator,
+            call,
+            binding,
+            resolved,
+            operation="file_write",
+            before_hash=before_hash,
+            after_hash=after_hash,
+        )
         receipt = EffectReceipt(
             kind="file_write",
             path=str(resolved.canonical),
@@ -388,6 +415,22 @@ class WriteWorkspaceFileTool:
                 "effect": receipt.as_dict(),
             },
         )
+
+
+    def _ensure_checkpoint(self, call: ToolCall, binding) -> None:
+        coordinator = self._checkpoint_coordinator
+        if coordinator is None:
+            return
+        run_id = call.response_variant_id or call.id
+        try:
+            coordinator.ensure_checkpoint(
+                run_id=run_id,
+                workspace_root=str(binding.root),
+            )
+        except Exception:
+            # Checkpoint is best-effort for observability/recovery; a
+            # snapshot failure must not block the user's write.
+            return
 
 
 class ListWorkspaceDirTool:
@@ -488,9 +531,16 @@ class DeleteWorkspaceFileTool:
         max_output_characters=2_000,
     )
 
-    def __init__(self, resolver, effect_log: EffectLog) -> None:
+    def __init__(
+        self,
+        resolver,
+        effect_log: EffectLog,
+        *,
+        checkpoint_coordinator=None,
+    ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
+        self._checkpoint_coordinator = checkpoint_coordinator
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -532,9 +582,20 @@ class DeleteWorkspaceFileTool:
                 "目录删除不开放给工具，请由用户手动处理。",
                 retryable=False,
             )
+        self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
+            before_hash = _sha256_bytes(resolved.canonical.read_bytes())
             resolved.canonical.unlink()
+        _record_mutation(
+            self._checkpoint_coordinator,
+            call,
+            binding,
+            resolved,
+            operation="file_delete",
+            before_hash=before_hash,
+            after_hash=None,
+        )
         receipt = EffectReceipt(
             kind="file_delete",
             path=str(resolved.canonical),
@@ -552,10 +613,58 @@ class DeleteWorkspaceFileTool:
         )
 
 
+    def _ensure_checkpoint(self, call: ToolCall, binding) -> None:
+        coordinator = self._checkpoint_coordinator
+        if coordinator is None:
+            return
+        run_id = call.response_variant_id or call.id
+        try:
+            coordinator.ensure_checkpoint(
+                run_id=run_id,
+                workspace_root=str(binding.root),
+            )
+        except Exception:
+            return
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def _record_mutation(
+    coordinator,
+    call: ToolCall,
+    binding: WorkspaceBinding,
+    resolved,
+    *,
+    operation: str,
+    before_hash: Optional[str],
+    after_hash: Optional[str],
+) -> None:
+    """Ledger an agent file side effect for run-level restore (M3B A).
+
+    Best-effort like the checkpoint hook: failures only degrade restore
+    attribution to "user-owned", never block the tool result.
+    """
+    if coordinator is None:
+        return
+    try:
+        relative = resolved.canonical.relative_to(binding.root).as_posix()
+    except (ValueError, OSError):
+        return
+    run_id = call.response_variant_id or call.id
+    try:
+        coordinator.record_effect(
+            effect_id=f"{operation}:{relative}:{run_id}:{(after_hash or before_hash or 'x')[:16]}",
+            path=relative,
+            operation=operation,
+            before_hash=before_hash,
+            after_hash=after_hash,
+        )
+    except Exception:
+        return
 
 
 def _log_effect(
