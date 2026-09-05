@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { chatApi } from "../chat/api";
+import { RefreshIcon } from "../ui/Icons";
 import type { EvalBatchDetail, EvalBatchSummary } from "../chat/apiTypes";
 
 const formatAggregate = (value: Record<string, unknown> | null): string =>
@@ -44,7 +45,12 @@ export function EvalBatchesViewer() {
     <section aria-label="评测批次" className="runtime-v2-trajectory">
       <div className="runtime-v2-trajectory-head">
         <strong>评测批次（诊断）</strong>
-        <button onClick={() => void load()} type="button">
+        <button
+          aria-label="刷新列表"
+          onClick={() => void load()}
+          type="button"
+        >
+          <RefreshIcon size={13} />
           刷新
         </button>
       </div>

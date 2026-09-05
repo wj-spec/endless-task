@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { chatApi } from "../chat/api";
+import { RefreshIcon } from "../ui/Icons";
 import type {
   TrajectoryBundleSummary,
   TrajectoryMeta,
@@ -51,7 +52,12 @@ export function TrajectoryViewer() {
     <section aria-label="轨迹包" className="runtime-v2-trajectory">
       <div className="runtime-v2-trajectory-head">
         <strong>轨迹包（诊断）</strong>
-        <button onClick={() => void load()} type="button">
+        <button
+          aria-label="刷新列表"
+          onClick={() => void load()}
+          type="button"
+        >
+          <RefreshIcon size={13} />
           刷新
         </button>
       </div>
