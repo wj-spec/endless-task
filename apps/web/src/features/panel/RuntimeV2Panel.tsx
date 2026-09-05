@@ -3,10 +3,14 @@ import type {
   CapabilityDelegationStatus,
   RuntimeV2Lane,
   RuntimeV2Metrics,
+  RuntimeV2RunUsageCost,
   RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
 } from "../chat/apiTypes";
-import { fetchRuntimeV2Metrics } from "../chat/api";
+import {
+  fetchRuntimeV2Metrics,
+  getRuntimeV2RunUsageCost,
+} from "../chat/api";
 import type { RuntimeConnectionPhase } from "../chat/runtimeController";
 import { StatusBadge } from "../ui/StatusBadge";
 
@@ -126,6 +130,21 @@ export function RuntimeV2Panel({
 }: RuntimeV2PanelProps) {
   const activeRun = snapshot?.runState ?? null;
   const [metrics, setMetrics] = useState<RuntimeV2Metrics | null>(null);
+  const [usage, setUsage] = useState<RuntimeV2RunUsageCost | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeRun?.runId) return undefined;
+    getRuntimeV2RunUsageCost(activeRun.runId)
+      .then((value) => {
+        if (!cancelled) setUsage(value);
+      })
+      .catch(() => {
+        /* 诊断用量不可用时保持空白 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRun?.runId]);
   useEffect(() => {
     let cancelled = false;
     fetchRuntimeV2Metrics()
@@ -196,6 +215,12 @@ export function RuntimeV2Panel({
               {snapshot.contextUsage.outputTokens}
             </span>
             <span>工具 {snapshot.toolStates.length}</span>
+            {usage ? (
+              <span>
+                成本 ${usage.totals.costUsd.toFixed(4)} · 用量{" "}
+                {usage.totals.inputTokens}/{usage.totals.outputTokens} tokens
+              </span>
+            ) : null}
           </div>
 
           {metrics ? (

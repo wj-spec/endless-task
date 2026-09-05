@@ -348,10 +348,6 @@ export const chatApi = {
       `/api/v2/conversations/${conversationId}/snapshot${query ? `?${query}` : ""}`,
     );
   },
-  getRuntimeV2RunUsageCost: (runId: string) =>
-    request<RuntimeV2RunUsageCost>(
-      `/api/v2/runs/${runId}/usage-cost`,
-    ),
   createRuntimeV2Message: (
     conversationId: string,
     content: string,
@@ -808,6 +804,12 @@ export async function downloadArtifactExport(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+export async function getRuntimeV2RunUsageCost(
+  runId: string,
+): Promise<RuntimeV2RunUsageCost> {
+  return request<RuntimeV2RunUsageCost>(`/api/v2/runs/${runId}/usage-cost`);
 }
 
 export async function fetchRuntimeV2Metrics(): Promise<RuntimeV2Metrics> {
