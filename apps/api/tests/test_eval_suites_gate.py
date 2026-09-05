@@ -130,7 +130,7 @@ class SuiteCatalogTest(unittest.TestCase):
         # Topics without metric coverage must stay pending, not empty suites.
         for name in PENDING_SUITE_NAMES:
             self.assertNotIn(name, SUITE_CATALOG)
-        self.assertIn("context_compaction", PENDING_SUITE_NAMES)
+        self.assertIn("memory_retrieval", PENDING_SUITE_NAMES)
         self.assertIn("sandbox_escape", PENDING_SUITE_NAMES)
 
     def test_suites_for_change_returns_instances(self) -> None:

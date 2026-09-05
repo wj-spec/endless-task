@@ -42,6 +42,8 @@ class RunEvaluationContext:
     run: RunRecord
     replay: RunReplayResult
     crash: Optional[CrashRecoveryReport] = None
+    #: how many context compactions happened on this run's lane (G1 item 6)
+    compaction_count: int = 0
     read_only_tools: frozenset[str] = DEFAULT_READ_ONLY_TOOLS
     auto_write_tools: frozenset[str] = DEFAULT_AUTO_WRITE_TOOLS
     write_tools: frozenset[str] = DEFAULT_WRITE_TOOLS
@@ -330,6 +332,24 @@ def _all_tool_executions(replay: RunReplayResult) -> tuple[ToolExecutionRecord, 
     return tuple(records)
 
 
+class ContextCompactionEvaluator:
+    """context_compacted: whether the run's lane underwent a context
+    compaction — observable signal for the context-compaction eval topic."""
+
+    key = "context_compacted"
+
+    def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
+        compacted = context.compaction_count > 0
+        yield EvalMetric(
+            key=self.key,
+            value=compacted,
+            unit=EvalUnit.BOOL,
+            severity=EvalSeverity.INFO,
+            source="deterministic",
+            notes=f"compaction_count={context.compaction_count}",
+        )
+
+
 class FailedRunEvaluator:
     """failed_run: whether this run reached FAILED (checkpoint/restore
     scenario population — a corpus with failed runs exercises restore)."""
@@ -380,6 +400,7 @@ class AutoRestoredEvaluator:
 
 
 DEFAULT_EVALUATORS: tuple[Evaluator, ...] = (
+    ContextCompactionEvaluator(),
     FailedRunEvaluator(),
     AutoRestoredEvaluator(),
     CompletionEvaluator(),

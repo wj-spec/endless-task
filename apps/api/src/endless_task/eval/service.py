@@ -54,10 +54,17 @@ class EvaluationService:
             if run.status in _ACTIVE_RUN_STATUSES
             else None
         )
+        try:
+            compaction_count = len(
+                self._repository.list_context_compactions(run.lane_id)
+            )
+        except Exception:
+            compaction_count = 0
         context = RunEvaluationContext(
             run=run,
             replay=replay,
             crash=crash,
+            compaction_count=compaction_count,
             read_only_tools=self.read_only_tools,
             write_tools=self.write_tools,
         )
