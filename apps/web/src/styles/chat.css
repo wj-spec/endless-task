@@ -1690,3 +1690,56 @@ button.citation-chip:focus-visible {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+
+/* P0-2c 编辑自己的消息 */
+.user-edit-input {
+  width: 100%;
+  max-width: 720px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--fs-4);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.user-edit-input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+
+.user-edit-actions {
+  display: flex;
+  gap: 14px;
+}
+
+.user-edit-actions button,
+.user-edit-trigger {
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--accent);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+
+.user-edit-actions button:hover:not(:disabled),
+.user-edit-trigger:hover:not(:disabled),
+.user-edit-trigger:focus-visible {
+  text-decoration: underline;
+}
+
+.user-edit-actions button:disabled,
+.user-edit-trigger:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.user-row-actions {
+  display: flex;
+  gap: 12px;
+}

@@ -101,6 +101,8 @@ type ChatWorkSurfaceProps = {
   onOpenRunningLane?: (laneId: string) => void;
   onOpenWorkspace?: () => void;
   onOpenWorkspaceSettings?: () => void;
+  onEditResendMessage?: (turnId: string, content: string) => void;
+  editedUserMessages?: Record<string, string>;
   branchLanes?: RuntimeV2Lane[];
   currentLaneId?: string | null;
   onArchiveLane?: (laneId: string, includeArchived: boolean) => void;
@@ -239,6 +241,8 @@ export function ChatWorkSurface({
   onOpenRunningLane,
   onOpenWorkspace,
   onOpenWorkspaceSettings,
+  onEditResendMessage,
+  editedUserMessages,
   workspaces,
   branchLanes = [],
   currentLaneId = null,
@@ -255,6 +259,8 @@ export function ChatWorkSurface({
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [editTurnId, setEditTurnId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
@@ -690,13 +696,84 @@ export function ChatWorkSurface({
                 <article className="message-row user-row">
                   <div className="speaker-mark user-mark">你</div>
                   <div className="user-row-body">
-                    <div className="user-copy">{turnSnapshot.userMessage.content}</div>
-                    <div className="user-row-actions">
-                      <CopyButton
-                        ariaLabel="复制这条消息"
-                        text={turnSnapshot.userMessage.content}
-                      />
-                    </div>
+                    {editTurnId === turnSnapshot.turn.id ? (
+                      <>
+                        <textarea
+                          aria-label="编辑这条消息"
+                          className="user-edit-input"
+                          onChange={(event) => setEditDraft(event.target.value)}
+                          rows={3}
+                          value={editDraft}
+                        />
+                        <div className="user-edit-actions">
+                          <button
+                            disabled={
+                              editDraft.trim().length === 0 ||
+                              editDraft.trim() ===
+                                (editedUserMessages?.[turnSnapshot.turn.id] ??
+                                  turnSnapshot.userMessage.content) ||
+                              pendingAction !== null ||
+                              laneBusy ||
+                              isGenerating
+                            }
+                            onClick={() => {
+                              onEditResendMessage?.(
+                                turnSnapshot.turn.id,
+                                editDraft.trim(),
+                              );
+                              setEditTurnId(null);
+                            }}
+                            type="button"
+                          >
+                            保存并重新生成
+                          </button>
+                          <button
+                            onClick={() => setEditTurnId(null)}
+                            type="button"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="user-copy">
+                          {editedUserMessages?.[turnSnapshot.turn.id] ??
+                            turnSnapshot.userMessage.content}
+                        </div>
+                        <div className="user-row-actions">
+                          <CopyButton
+                            ariaLabel="复制这条消息"
+                            text={
+                              editedUserMessages?.[turnSnapshot.turn.id] ??
+                              turnSnapshot.userMessage.content
+                            }
+                          />
+                          {turnSnapshot.turn.conversationId ===
+                            conversation?.conversation.id &&
+                          isLatest &&
+                          onEditResendMessage &&
+                          !["created", "running"].includes(status) ? (
+                            <button
+                              className="user-edit-trigger"
+                              disabled={
+                                laneBusy || isGenerating || pendingAction !== null
+                              }
+                              onClick={() => {
+                                setEditTurnId(turnSnapshot.turn.id);
+                                setEditDraft(
+                                  editedUserMessages?.[turnSnapshot.turn.id] ??
+                                    turnSnapshot.userMessage.content,
+                                );
+                              }}
+                              type="button"
+                            >
+                              编辑
+                            </button>
+                          ) : null}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </article>
 

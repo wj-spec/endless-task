@@ -445,6 +445,11 @@ export const chatApi = {
     request<RuntimeV2RunSelectResponse>(`/api/v2/runs/${runId}/select`, {
       method: "POST",
     }),
+  resendRuntimeV2Run: (runId: string, content: string) =>
+    request<RuntimeV2RegenerateResponse>(`/api/v2/runs/${runId}/resend`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
   listRuntimeV2Memories: (
     conversationId: string,
     laneId: string,

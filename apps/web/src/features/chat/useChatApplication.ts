@@ -141,6 +141,13 @@ const runtimeSnapshotToConversationSnapshot = (
     const turnId = firstAssistant
       ? (firstAssistant.sourceRunId ?? `${currentDraft.user.id}:turn`)
       : (runtime.activeRunId ?? `${currentDraft.user.id}:turn`);
+    // 活动变体优先：conversation 指针指向的 run（重生成/编辑后的新回答）优先展示
+    const activeVariantId =
+      currentDraft.variants.find(
+        (item) => item.sourceRunId === runtime.activeRunVariantId,
+      )?.sourceRunId ??
+      firstAssistant?.sourceRunId ??
+      turnId;
     const variantStatus = firstAssistant
       ? runtimeEntryStatusToTurnStatus(firstAssistant.status)
       : status;
@@ -150,7 +157,7 @@ const runtimeSnapshotToConversationSnapshot = (
         conversationId: legacy.conversation.id,
         ordinal: turns.length + 1,
         userMessageId: currentDraft.user.id,
-        activeResponseVariantId: firstAssistant?.sourceRunId ?? turnId,
+        activeResponseVariantId: activeVariantId,
         status: variantStatus,
         createdAt: currentDraft.user.createdAt,
         startedAt: currentDraft.user.createdAt,
@@ -158,7 +165,7 @@ const runtimeSnapshotToConversationSnapshot = (
         inherited: currentDraft.user.inherited === true,
       },
       userMessage: entryMessage(currentDraft.user, "user", turnId),
-      activeResponseVariantId: firstAssistant?.sourceRunId ?? turnId,
+      activeResponseVariantId: activeVariantId,
       responseVariants: currentDraft.variants.map((assistant, index) => ({
         variant: {
           id: assistant.sourceRunId ?? `${turnId}:variant:${index}`,
@@ -306,6 +313,9 @@ export function useChatApplication() {
     Record<string, ConversationSnapshot>
   >({});
   const [liveTurns, setLiveTurns] = useState<Record<string, LiveTurn>>({});
+  const [editedUserMessages, setEditedUserMessages] = useState<
+    Record<string, string>
+  >({});
   const [sideConversationId, setSideConversationId] = useState<string | null>(null);
   const [sideLane, setSideLane] = useState<SideLaneTarget | null>(null);
   const [sideDraft, setSideDraft] = useState("");
@@ -1984,6 +1994,58 @@ export function useChatApplication() {
     await runRuntimeV2Command("regenerate", targetId!, turnId, laneId, surface);
   };
 
+  const resend = async (
+    turnId: string,
+    content: string,
+    conversationId?: string,
+    surface: SnapshotTarget = "main",
+  ) => {
+    const targetId = conversationId ?? activeConversationId;
+    if (!targetId) return;
+    const isSide = surface === "side";
+    const laneId = isSide
+      ? sideLane?.laneId
+      : (viewLaneIds[targetId] ?? mainLaneIds[targetId]);
+    const feedbackTarget = isSide ? sideCommandTarget : primaryCommandTarget;
+    const requestVersion = isSide
+      ? sideRequestVersion.current
+      : primarySurfaceRequestVersion.current;
+    const isCurrent = () =>
+      isSide
+        ? sideRequestVersion.current === requestVersion
+        : primarySurfaceRequestVersion.current === requestVersion;
+    setCommandFeedback(feedbackTarget, "resend", null);
+    try {
+      const runtimeTarget = { conversationId: targetId, laneId: laneId ?? null };
+      const before = await runtimeController.loadSnapshot(runtimeTarget);
+      await chatApi.resendRuntimeV2Run(turnId, content);
+      if (!isCurrent()) {
+        setCommandFeedback(feedbackTarget, null, null);
+        return;
+      }
+      // 202 后立即记录改写展示（即使后续 snapshot 刷新异常也保留编辑态）
+      setEditedUserMessages((current) => ({ ...current, [turnId]: content }));
+      const runtime = await runtimeController.loadSnapshot(runtimeTarget);
+      const legacy = await chatApi.getConversation(runtime.conversationId);
+      if (!isCurrent()) {
+        setCommandFeedback(feedbackTarget, null, null);
+        return;
+      }
+      applyRuntimeSnapshot(legacy, runtime, surface);
+      followRuntimeConversation(
+        runtime.conversationId,
+        before.lastEventSeq,
+        runtimeTarget.laneId,
+        surface,
+      );
+      setCommandFeedback(feedbackTarget, null, null);
+    } catch (resendError) {
+      if (isCurrent()) {
+        setCommandFeedback(feedbackTarget, null, readableError(resendError));
+      }
+    }
+  };
+
   const selectVariant = async (
     turnId: string,
     variantId: string,
@@ -2103,10 +2165,12 @@ export function useChatApplication() {
     loading,
     newConversation,
     openConversation,
+    editedUserMessages,
     pendingAction: primaryCommandState?.pendingAction ?? pendingAction,
     sidePendingAction: sideCommandState?.pendingAction ?? null,
     providers,
     regenerate,
+    resend,
     removeFile,
     resolveApproval,
     resolveRuntimeRecovery,

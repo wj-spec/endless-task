@@ -330,6 +330,8 @@ export function App() {
         }}
         onPromote={() => void chat.promoteConversation()}
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
+        onEditResendMessage={(turnId, content) => void chat.resend(turnId, content)}
+        editedUserMessages={chat.editedUserMessages}
         onResolveApproval={(turnId, approvalId, decision) =>
           void chat.resolveApproval(turnId, approvalId, decision)
         }
