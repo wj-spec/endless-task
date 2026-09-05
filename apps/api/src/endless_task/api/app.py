@@ -2879,6 +2879,34 @@ def create_app(
                     else None
                 ),
             },
+            "skillPackages": {
+                "enabled": container.settings.skill_packages_enabled,
+            },
+            "providerRetry": {
+                "enabled": container.settings.provider_retry_mode != "0",
+                "mode": (
+                    container.settings.provider_retry_mode
+                    if container.settings.provider_retry_mode != "0"
+                    else None
+                ),
+            },
+            "runtimeTrace": {
+                "mode": container.settings.runtime_trace_mode,
+            },
+            "otlpExport": {
+                "enabled": container.settings.otel_export_mode != "0",
+                "mode": (
+                    container.settings.otel_export_mode
+                    if container.settings.otel_export_mode != "0"
+                    else None
+                ),
+            },
+            "executionBackend": {
+                "mode": container.settings.execution_backend_mode or None,
+            },
+            "stopPolicy": {
+                "enabled": container.settings.stop_policy_enforcement,
+            },
         }
 
     @app.get("/settings/permissions")
@@ -3666,6 +3694,71 @@ def create_app(
             status = container.mcp_manager.status(server_id)
         config = container.mcp_server_repository.get_server(server_id)
         return {"server": _mcp_json(config, status)}
+
+    @app.get("/api/v2/skills/packages")
+    async def list_runtime_v2_skill_packages(
+        workspace_id: Optional[str] = Query(None, alias="workspaceId"),
+    ) -> dict[str, object]:
+        """P2-2a：skill 包 registry 只读查看（M5；flag 关时返回 enabled=false）。
+
+        默认发现用户级技能根；传入 workspaceId 时叠加该工作区根（同 locator
+        rank 语义：workspace 优先于 user）。包体内容与校验由 M5 离线单测覆盖，
+        这里只暴露 registry 的可见视图，不执行导入/回滚。
+        """
+        if not settings.skill_packages_enabled:
+            return {
+                "enabled": False,
+                "mode": "legacy",
+                "packages": [],
+                "conflicts": [],
+            }
+        from endless_task.skills import InMemorySkillRegistry, SkillRoot
+
+        roots: list[SkillRoot] = []
+        user_skills_dir = settings.database_path.parent / "skills"
+        if user_skills_dir.exists():
+            roots.append(SkillRoot(user_skills_dir, "user", 2))
+        if workspace_id is not None:
+            text = workspace_id.strip()
+            if not text:
+                raise ApiRequestError("invalid_request", "workspaceId 不能为空。")
+            if text == "general":
+                raise ApiRequestError(
+                    "invalid_request", "通用工作区没有绑定目录，无技能包根。"
+                )
+            try:
+                workspace = container.workspace_repository.get_workspace(text)
+            except NotFoundError as error:
+                raise NotFoundError(f"Unknown workspace: {text}") from error
+            if workspace.root_path:
+                root_path = Path(workspace.root_path).expanduser()
+                if root_path.exists():
+                    roots.append(SkillRoot(root_path, "workspace", 1))
+        registry = InMemorySkillRegistry()
+        report = registry.discover(tuple(roots))
+        packages = [
+            {
+                "scope": revision.locator.scope,
+                "name": revision.locator.name,
+                "version": revision.version,
+                "state": revision.state.value,
+                "valid": revision.valid,
+                "quarantined": revision.quarantined,
+                "invocable": revision.invocable,
+                "requiredTools": list(revision.required_tools),
+                "requiredCapabilities": list(revision.required_capabilities),
+            }
+            for revision in report.revisions
+        ]
+        return {
+            "enabled": True,
+            "mode": "packages",
+            "packages": packages,
+            "conflicts": [
+                {"code": diagnostic.code, "message": diagnostic.message}
+                for diagnostic in report.conflicts
+            ],
+        }
 
     @app.get("/skills")
     async def list_skills(

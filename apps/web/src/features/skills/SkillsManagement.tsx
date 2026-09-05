@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
-import type { Skill } from "../chat/apiTypes";
+import type { Skill, SkillPackagesResponse } from "../chat/apiTypes";
 
 type SkillsContentProps = {
   onChanged?: () => void | Promise<void>;
@@ -15,6 +15,14 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [packages, setPackages] = useState<SkillPackagesResponse | null>(null);
+
+  useEffect(() => {
+    void chatApi
+      .listSkillPackages(workspaceId)
+      .then(setPackages)
+      .catch(() => setPackages(null));
+  }, [workspaceId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +63,28 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
 
   return (
     <div className="panel-content">
+      {packages?.enabled ? (
+        <section aria-label="技能包" className="skill-packages-note">
+          <strong>技能包（v2 registry）</strong>
+          {packages.packages.length === 0 ? (
+            <p>已开启但当前根目录没有可用技能包。</p>
+          ) : (
+            <ul>
+              {packages.packages.map((skill) => (
+                <li key={`${skill.scope}/${skill.name}`}>
+                  {skill.name}@{skill.version}
+                  {skill.invocable ? " · 可用" : ` · ${skill.state}`}
+                </li>
+              ))}
+            </ul>
+          )}
+          {packages.conflicts.length > 0 ? (
+            <p className="skill-packages-conflicts">
+              冲突 {packages.conflicts.length} 项（registry 已拒绝歧义版本）
+            </p>
+          ) : null}
+        </section>
+      ) : null}
       <div className="knowledge-toolbar">
         <p className="skill-directory">{userDirectory}</p>
         <button onClick={() => void load()} type="button">

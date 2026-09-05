@@ -1874,3 +1874,34 @@
   margin-left: 0.4rem;
   color: var(--accent);
 }
+
+/* P2-2a 技能包状态 */
+.skill-packages-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--accent-faint);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--muted-strong);
+  font-size: var(--fs-2);
+  line-height: 1.6;
+}
+
+.skill-packages-note strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.skill-packages-note ul {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding-left: 16px;
+}
+
+.skill-packages-conflicts {
+  margin: 6px 0 0;
+  color: var(--warn-deep);
+}

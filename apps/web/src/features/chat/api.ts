@@ -49,6 +49,7 @@ import type { KnowledgeProposal,
   Skill,
   Workspace,
   WorkspaceSnapshot,
+  SkillPackagesResponse,
   TaskProposal,
   TaskSummary,
   TaskRun,
@@ -625,6 +626,14 @@ export const chatApi = {
       body: JSON.stringify({ query, scopes, limit }),
     });
     return response.groups;
+  },
+  listSkillPackages: async (workspaceId?: string | null) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspaceId", workspaceId);
+    const suffix = parameters.toString();
+    return request<SkillPackagesResponse>(
+      `/api/v2/skills/packages${suffix ? `?${suffix}` : ""}`,
+    );
   },
   listKnowledgeSources: async (
     status = "active",

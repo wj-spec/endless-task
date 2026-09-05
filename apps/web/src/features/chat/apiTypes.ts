@@ -991,3 +991,22 @@ export type GlobalSearchGroup = {
 export type GlobalSearchResponse = {
   groups: GlobalSearchGroup[];
 };
+
+export type SkillPackageSummary = {
+  scope: string;
+  name: string;
+  version: string;
+  state: string;
+  valid: boolean;
+  quarantined: boolean;
+  invocable: boolean;
+  requiredTools: string[];
+  requiredCapabilities: string[];
+};
+
+export type SkillPackagesResponse = {
+  enabled: boolean;
+  mode: "legacy" | "packages";
+  packages: SkillPackageSummary[];
+  conflicts: { code: string; message: string }[];
+};
