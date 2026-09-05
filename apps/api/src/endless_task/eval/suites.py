@@ -44,6 +44,9 @@ KNOWN_METRIC_KEYS: frozenset[str] = frozenset(
         "tool_execution_count",
         "duration_ms",
         "loop_detected",
+        # checkpoint/restore suite (G1 open list 6)
+        "failed_run",
+        "auto_restored",
         # trajectory evaluator (deterministic, over exported bundles)
         "trajectory_completion",
         "trajectory_unknown_effect_count",
@@ -90,6 +93,15 @@ SUITE_CATALOG: Mapping[str, EvalSuite] = {
                 "trajectory_completion",
                 "trajectory_consistency_note_count",
             ),
+        ),
+        EvalSuite(
+            name="checkpoint_restore",
+            description=(
+                "failed-run population + auto-restore coverage: a FAILED run "
+                "must carry run_auto_restored (rollback executed), else the "
+                "crash-window repair regressed"
+            ),
+            metric_keys=("failed_run", "auto_restored"),
         ),
         EvalSuite(
             name="schema_and_tool_use",
@@ -173,11 +185,12 @@ CHANGE_GATES: Mapping[str, ChangeGate] = {
 #: Topic suites called out in 08 §10.1 that still lack metric coverage
 #: (their evaluators land with the topic work) — catalog stays without
 #: them rather than registering empty suites.
+#: Topics with no evaluator yet (08 §21.x). checkpoint_restore shipped its
+#: evaluator (06 G1 open list 6) and left this list.
 PENDING_SUITE_NAMES: Tuple[str, ...] = (
     "context_compaction",
     "memory_retrieval",
     "sandbox_escape",
-    "checkpoint_restore",
     "product_visible_semantics",
 )
 

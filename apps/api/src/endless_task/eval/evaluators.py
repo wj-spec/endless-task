@@ -330,7 +330,58 @@ def _all_tool_executions(replay: RunReplayResult) -> tuple[ToolExecutionRecord, 
     return tuple(records)
 
 
+class FailedRunEvaluator:
+    """failed_run: whether this run reached FAILED (checkpoint/restore
+    scenario population — a corpus with failed runs exercises restore)."""
+
+    key = "failed_run"
+
+    def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
+        failed = context.run.status is RunStatus.FAILED
+        yield EvalMetric(
+            key=self.key,
+            value=failed,
+            unit=EvalUnit.BOOL,
+            severity=EvalSeverity.INFO,
+            source="deterministic",
+            notes=f"run_status={context.run.status.value}",
+        )
+
+
+class AutoRestoredEvaluator:
+    """auto_restored: a FAILED run carries a run_auto_restored event
+    (in-process observer or startup reconciliation actually rolled back its
+    workspace). Failed runs without the marker mean the crash-window repair
+    did not run — a regression signal for checkpoint/restore reliability."""
+
+    key = "auto_restored"
+
+    def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
+        failed = context.run.status is RunStatus.FAILED
+        restored = any(
+            event.event_type == "run_auto_restored"
+            for event in context.replay.events
+        )
+        value = failed and restored
+        yield EvalMetric(
+            key=self.key,
+            value=value,
+            unit=EvalUnit.BOOL,
+            severity=(
+                EvalSeverity.BLOCKER
+                if failed and not restored
+                else EvalSeverity.INFO
+            ),
+            source="deterministic",
+            notes=(
+                f"failed={str(failed).lower()}; restored={str(restored).lower()}"
+            ),
+        )
+
+
 DEFAULT_EVALUATORS: tuple[Evaluator, ...] = (
+    FailedRunEvaluator(),
+    AutoRestoredEvaluator(),
     CompletionEvaluator(),
     ToolCorrectnessEvaluator(),
     ApprovalGateEvaluator(),
