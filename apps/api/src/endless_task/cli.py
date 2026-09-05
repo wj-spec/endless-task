@@ -165,113 +165,6 @@ def _trace_runtime_version() -> str:
     return __version__ or "0.0.0"
 
 
-def _print_runtime_v2_report(report) -> None:
-    print(f"already_migrated={str(report.already_migrated).lower()}")
-    print(f"conversations={report.conversation_count}")
-    print(f"lanes={report.lane_count}")
-    print(f"entries={report.entry_count}")
-    print(f"runs={report.run_count}")
-    print(f"model_turns={report.model_turn_count}")
-    print(f"tool_executions={report.tool_execution_count}")
-    print(f"runtime_events={report.runtime_event_count}")
-    print(f"context_compactions={report.context_compaction_count}")
-    print(f"conversation_trees={report.conversation_tree_count}")
-    print(f"branch_conversations={report.branch_conversation_count}")
-    print(f"conversation_mappings={report.conversation_mapping_count}")
-    print(
-        "legacy_temporary_lane_repairs="
-        f"{report.legacy_temporary_lane_repair_count}"
-    )
-    if report.warnings:
-        print("warnings:")
-        for warning in report.warnings:
-            print(f"- {warning}")
-
-
-def _print_runtime_v2_audit_report(report) -> None:
-    print(f"passed={str(report.passed).lower()}")
-    print(f"migration_state={report.migration_state}")
-    print(f"conversations={report.conversation_count}")
-    print(f"conversation_mappings={report.mapped_conversation_count}")
-    print(f"conversation_trees={report.conversation_tree_count}")
-    print(f"branch_conversations={report.branch_conversation_count}")
-    print(f"pending_migration_conversations={report.pending_migration_count}")
-    print(f"rollback_reconciliation_trees={report.rollback_reconciliation_count}")
-    print(
-        "legacy_temporary_lane_repairs="
-        f"{report.legacy_temporary_lane_repair_count}"
-    )
-    print(
-        "pending_legacy_temporary_lane_repairs="
-        f"{report.pending_legacy_temporary_lane_repair_count}"
-    )
-    if report.errors:
-        print("errors:")
-        for error in report.errors:
-            print(f"- {error}")
-
-
-def _runtime_v2_migration_command(settings, arguments) -> int:
-    from endless_task.runtime_v2 import RuntimeV2MigrationService
-
-    if not arguments.dry_run and not arguments.apply and not arguments.audit:
-        print("请指定 --dry-run、--apply 或 --audit。")
-        return 2
-
-    database = Database(settings.database_path)
-    if not database.path.is_file():
-        mode = (
-            "audit"
-            if arguments.audit
-            else "dry-run"
-            if arguments.dry_run
-            else "apply"
-        )
-        print(f"mode={mode}")
-        print("source_unchanged=true")
-        print(f"error=database does not exist: {database.path}")
-        return 1
-
-    if arguments.audit:
-        with tempfile.TemporaryDirectory(prefix="endless-task-audit-") as directory:
-            temporary_path = Path(directory) / "audit.db"
-            database.backup(temporary_path)
-            temporary_database = Database(temporary_path)
-            temporary_database.initialize()
-            report = RuntimeV2MigrationService(temporary_database).audit()
-        print("mode=audit")
-        print("source_unchanged=true")
-        _print_runtime_v2_audit_report(report)
-        return 0 if report.passed else 1
-
-    if arguments.dry_run:
-        with tempfile.TemporaryDirectory(prefix="endless-task-migration-") as directory:
-            temporary_path = Path(directory) / "dry-run.db"
-            database.backup(temporary_path)
-            temporary_database = Database(temporary_path)
-            temporary_database.initialize()
-            report = RuntimeV2MigrationService(temporary_database).migrate()
-        print("mode=dry-run")
-        print("source_unchanged=true")
-        _print_runtime_v2_report(report)
-        return 0
-
-    backup_path = _default_backup_path(settings.database_path)
-    created_backup = database.backup(backup_path)
-    print("mode=apply")
-    print(f"backup={created_backup}")
-    try:
-        database.initialize()
-        report = RuntimeV2MigrationService(database).migrate()
-    except Exception as error:
-        print("migrated=false")
-        print(f"error={error}")
-        return 1
-    print("migrated=true")
-    _print_runtime_v2_report(report)
-    return 0
-
-
 def _restore_command(settings, arguments) -> int:
     if not arguments.confirm:
         print("恢复会替换当前数据库；请停止应用并显式传入 --confirm。")
@@ -353,26 +246,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     embeddings_actions = embeddings.add_subparsers(dest="embeddings_command")
     embeddings_actions.add_parser("status", help="查看嵌入配置与索引计数")
     embeddings_actions.add_parser("rebuild", help="按当前模型全量重建向量")
-    migration = commands.add_parser(
-        "migrate-runtime-v2",
-        help="迁移 v1 聊天与 Runtime 数据到 v2 Agent Runtime",
-    )
-    migration_modes = migration.add_mutually_exclusive_group()
-    migration_modes.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="在临时数据库副本上预演迁移，不修改当前数据库",
-    )
-    migration_modes.add_argument(
-        "--apply",
-        action="store_true",
-        help="先创建备份，再执行迁移",
-    )
-    migration_modes.add_argument(
-        "--audit",
-        action="store_true",
-        help="只读校验迁移状态、数量与关系",
-    )
     eval_command = commands.add_parser(
         "eval",
         help="离线自动化评估（质量/回归）：对录制的 v2 Run 批量打分",
@@ -492,8 +365,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command == "embeddings":
         return _embeddings_command(settings, arguments)
 
-    if command == "migrate-runtime-v2":
-        return _runtime_v2_migration_command(settings, arguments)
     if command == "eval":
         from endless_task.eval.cli import run_eval_command
 

@@ -1141,22 +1141,9 @@ def _resolve_runtime_v2_conversation(
     write: bool,
 ) -> str:
     del write
-    # 14 A3: v2 sole runtime — resolve the migration tree directly; the
-    # runtime selection service was removed with the v1 control plane.
-    with container.database.connect() as connection:
-        mapping = connection.execute(
-            """
-            SELECT tree_conversation_id
-            FROM v2_migration_conversation_mappings
-            WHERE source_conversation_id = ?
-            """,
-            (conversation_id,),
-        ).fetchone()
-    return (
-        str(mapping["tree_conversation_id"])
-        if mapping is not None
-        else conversation_id
-    )
+    # 14 B2: v2 sole runtime — conversation id is its own tree (migration
+    # mapping tables removed with the migration machinery).
+    return conversation_id
 
 
 def _parse_flag(value: str) -> bool:
