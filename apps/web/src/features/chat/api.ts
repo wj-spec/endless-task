@@ -53,6 +53,8 @@ import type { KnowledgeProposal,
   TrajectoryMeta,
   TrajectoryBundleSummary,
   TrajectoryListResponse,
+  EvalBatchListResponse,
+  EvalBatchDetail,
   TaskProposal,
   TaskSummary,
   TaskRun,
@@ -630,6 +632,12 @@ export const chatApi = {
     });
     return response.groups;
   },
+  listEvalBatches: async () => {
+    const response = await request<EvalBatchListResponse>("/api/v2/eval/batches");
+    return response.items;
+  },
+  getEvalBatch: async (batchId: string) =>
+    request<EvalBatchDetail>(`/api/v2/eval/batches/${encodeURIComponent(batchId)}`),
   listTrajectoryBundles: async () => {
     const response = await request<TrajectoryListResponse>("/api/v2/trajectory");
     return response.items;

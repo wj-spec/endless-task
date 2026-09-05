@@ -14,6 +14,7 @@ import {
 import type { RuntimeConnectionPhase } from "../chat/runtimeController";
 import { StatusBadge } from "../ui/StatusBadge";
 import { TrajectoryViewer } from "./TrajectoryViewer";
+import { EvalBatchesViewer } from "./EvalBatchesViewer";
 
 type RuntimeStatusPresentation = {
   label: string;
@@ -398,6 +399,7 @@ export function RuntimeV2Panel({
         </p>
       )}
       <TrajectoryViewer />
+      <EvalBatchesViewer />
     </section>
   );
 }

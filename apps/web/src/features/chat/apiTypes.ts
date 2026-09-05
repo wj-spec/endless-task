@@ -1028,3 +1028,18 @@ export type TrajectoryMeta = {
   fileNames: string[];
   manifest: Record<string, unknown>;
 };
+
+export type EvalBatchSummary = {
+  id: string;
+  mode: string;
+  status: string;
+  runCount: number;
+  createdAt: string;
+  judgeProvider: string | null;
+  judgeModel: string | null;
+  aggregate: Record<string, unknown> | null;
+};
+
+export type EvalBatchListResponse = { items: EvalBatchSummary[] };
+
+export type EvalBatchDetail = EvalBatchSummary & { resultCount: number };
