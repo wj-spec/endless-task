@@ -1478,6 +1478,16 @@ def _build_container(
             {"spawn_agent", "query_agent", "cancel_agent"}
         )
 
+        # One shared provider slot for ALL children of the process (same
+        # global concurrency cap the gateway applies to parent runs); every
+        # child executor receives it, so N parallel children cannot each
+        # spin an unbounded provider fan-out.
+        delegation_provider_slot = (
+            asyncio.Semaphore(settings.max_concurrent_model_calls)
+            if settings.max_concurrent_model_calls
+            else None
+        )
+
         def _delegation_kernel_provider(request):
             del request  # one kernel per parent run is created on demand
             return RuntimeV2AgentKernel(
@@ -1498,11 +1508,7 @@ def _build_container(
                 max_output_tokens=settings.max_output_tokens,
                 temperature=None,
                 approval_gate=UnattendedToolApprovalGate(),
-                provider_slot=(
-                    asyncio.Semaphore(settings.max_concurrent_model_calls)
-                    if settings.max_concurrent_model_calls
-                    else None
-                ),
+                provider_slot=delegation_provider_slot,
                 compaction_hook=runtime_v2_compaction_hook,
                 tool_filter_provider=_delegation_child_tool_filter,
                 tool_definitions_provider=(
