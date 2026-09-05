@@ -846,7 +846,7 @@ export function ChatWorkSurface({
                         {isLatest &&
                         turnSnapshot.responseVariants.length > 1 &&
                         status === "completed" ? (
-                          <div className="variant-switcher" aria-label="回答版本">
+                          <div className="variant-switcher" aria-label="其他回答">
                             <button
                               aria-label="上一个回答"
                               disabled={

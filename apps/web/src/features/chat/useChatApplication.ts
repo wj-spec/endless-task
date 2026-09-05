@@ -504,10 +504,24 @@ export function useChatApplication() {
                 ? "running"
                 : "cancelled";
         const previousActivity = next.activities.find((item) => item.id === toolId);
+        const toolStatusTail: Record<string, string> = {
+          created: "正在执行…",
+          queued: "等待执行…",
+          started: "正在执行…",
+          running: "正在执行…",
+          completed: "已完成",
+          failed: "执行失败",
+          cancelled: "已取消",
+          rejected: "未获批准",
+          expired: "等待确认超时，已跳过",
+        };
+        const toolName = event.data.toolName ? String(event.data.toolName) : null;
         const activity = {
           id: toolId,
           status: activityStatus,
-          message: `工具执行 ${toolId.split(":").pop() ?? toolId}：${rawStatus}`,
+          message: `工具${toolName ? `「${toolName}」` : ""}${
+            toolStatusTail[rawStatus] ?? "已结束"
+          }`,
           startedAt: previousActivity?.startedAt ?? event.createdAt,
           updatedAt: event.createdAt,
         };
