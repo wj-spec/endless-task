@@ -164,6 +164,48 @@ def run_gate(
     )
 
 
+def waiver_from_string(text: str) -> Waiver:
+    """Parse ``metric_key;reason;owner;YYYY-MM-DD`` into a :class:`Waiver`.
+
+    Raises :class:`ValueError` on malformed input so the CLI fails loud
+    instead of silently dropping a waiver (08 §10.3: explicit waiver
+    records reason/owner/expiry).
+    """
+    parts = [part.strip() for part in text.split(";")]
+    if len(parts) != 4 or not parts[0] or not parts[2]:
+        raise ValueError(
+            "waiver 格式: metric_key;reason;owner;YYYY-MM-DD"
+        )
+    key, reason, owner, expiry = parts
+    try:
+        expires_at = date.fromisoformat(expiry)
+    except ValueError as error:
+        raise ValueError(f"waiver expiry 必须是 YYYY-MM-DD: {expiry!r}") from error
+    return Waiver(
+        metric_key=key,
+        reason=reason,
+        owner=owner,
+        expires_at=expires_at,
+    )
+
+
+def write_gate_report(
+    result: GateResult,
+    directory: Path,
+) -> tuple[Path, Path]:
+    """Write machine JSON + human markdown gate reports into a directory.
+
+    CI 落盘入口 (08 §10/§OE-4): machine report is the authoritative
+    artifact, markdown is the human-readable summary.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    json_path = directory / f"gate-{result.suite_name}.json"
+    json_path.write_text(gate_to_json(result), encoding="utf-8")
+    md_path = directory / f"gate-{result.suite_name}.md"
+    md_path.write_text(gate_to_markdown(result), encoding="utf-8")
+    return json_path, md_path
+
+
 def gate_to_json(result: GateResult) -> str:
     """Machine-readable gate report for CI."""
     return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
@@ -212,4 +254,6 @@ __all__ = [
     "gate_to_json",
     "gate_to_markdown",
     "run_gate",
+    "waiver_from_string",
+    "write_gate_report",
 ]

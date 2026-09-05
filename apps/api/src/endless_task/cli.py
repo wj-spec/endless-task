@@ -280,6 +280,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dest="tolerances",
         help="形如 metric=0.05；可重复",
     )
+    eval_gate = eval_sub.add_parser(
+        "gate",
+        help="release gate：候选批次 vs 冻结 baseline JSON artifact；"
+        "支持 waiver；blocking 回归时非零退出（CI 门禁）",
+    )
+    eval_gate.add_argument("--suite", required=True, help="SUITE_CATALOG 中的 suite 名")
+    eval_gate.add_argument(
+        "--baseline",
+        required=True,
+        help="冻结 baseline JSON 文件（EvalBaseline.to_dict 产物）",
+    )
+    eval_gate.add_argument("--candidate", required=True, help="候选 eval batch id")
+    eval_gate.add_argument(
+        "--waiver",
+        action="append",
+        default=[],
+        dest="waivers",
+        help="形如 metric_key;reason;owner;YYYY-MM-DD；可重复",
+    )
+    eval_gate.add_argument(
+        "--report-dir",
+        default=None,
+        help="落盘 gate-<suite>.json / gate-<suite>.md（CI artifact）",
+    )
+    eval_gate.add_argument(
+        "--suite-blocking",
+        action="store_true",
+        help="blocking keys 取 suite 的 metric_keys 而非聚合默认集",
+    )
+    eval_suites = eval_sub.add_parser(
+        "suites", help="列出已注册的专题 suite 与 metric 覆盖"
+    )
     eval_sub.add_parser("batches", help="列出已知评估批次")
     arguments = parser.parse_args(argv)
 

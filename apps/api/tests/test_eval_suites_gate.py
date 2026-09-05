@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from types import SimpleNamespace
 from datetime import date
+from pathlib import Path
 
 from endless_task.eval.aggregator import aggregate
 from endless_task.eval.gate import (
@@ -356,3 +359,204 @@ class ReleaseGateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaiverParsingTest(unittest.TestCase):
+    def test_parses_well_formed_waiver(self) -> None:
+        from endless_task.eval.gate import waiver_from_string
+
+        waiver = waiver_from_string("completion;known flake;platform-team;2030-01-01")
+        self.assertEqual("completion", waiver.metric_key)
+        self.assertEqual("known flake", waiver.reason)
+        self.assertEqual("platform-team", waiver.owner)
+        self.assertEqual(date(2030, 1, 1), waiver.expires_at)
+
+    def test_rejects_malformed_waiver(self) -> None:
+        from endless_task.eval.gate import waiver_from_string
+
+        for bad in (
+            "completion;reason;owner",
+            ";;owner;2030-01-01",
+            "completion;reason;owner;not-a-date",
+        ):
+            with self.assertRaises(ValueError):
+                waiver_from_string(bad)
+
+    def test_write_gate_report_lands_artifacts(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from endless_task.eval.gate import write_gate_report
+
+        baseline = _aggregation("core_loop", "rev-1", ["r1", "r2"])
+        candidate = aggregate(
+            [_score_card("r3", True), _score_card("r4", False)]
+        )
+        result = run_gate(
+            suite_name="core_loop", baseline=baseline, candidate=candidate
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            json_path, md_path = write_gate_report(
+                result, Path(directory)
+            )
+            self.assertTrue(json_path.exists())
+            self.assertTrue(md_path.exists())
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual("core_loop", payload["suite"])
+            self.assertIn("Eval gate: core_loop", md_path.read_text(encoding="utf-8"))
+
+
+class GateCliTest(unittest.TestCase):
+    """eval gate CLI: candidate batch vs frozen baseline JSON artifact."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        from endless_task.eval.storage import SqliteEvalRepository
+        from endless_task.storage import Database
+
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.database = Database(
+            Path(self._temporary_directory.name) / "eval.db"
+        )
+        self.database.initialize()
+        self._repository = SqliteEvalRepository(self.database)
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _make_batch(self, *, completions: list[bool]) -> str:
+        batch_id = self._repository.create_batch(
+            mode="deterministic", filters={}, judge_provider=None,
+            judge_model=None, run_count=len(completions),
+        )
+        results = []
+        for index, completed in enumerate(completions):
+            from endless_task.runtime_v2 import RunStatus
+
+            results.append(
+                RunEvaluation(
+                    run_id=f"run_{index}",
+                    run_status=RunStatus.COMPLETED,
+                    score_card=_score_card(
+                        f"run_{index}", completed, tool_failures=1 if not completed else 0
+                    ),
+                )
+            )
+        aggregation = aggregate(results)
+        for result in results:
+            self._repository.append_run_result(batch_id, result)
+        self._repository.finish_batch(batch_id, aggregation)
+        return batch_id
+
+    def _write_baseline(self) -> Path:
+        baseline = _aggregation("core_loop", "rev-frozen", ["b1", "b2"])
+        baseline_path = (
+            Path(self._temporary_directory.name) / "baseline.json"
+        )
+        baseline_path.write_text(
+            json.dumps(baseline.to_dict(), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return baseline_path
+
+    def test_gate_passes_and_lands_report(self) -> None:
+        from endless_task.eval.cli import run_eval_command
+
+        candidate_id = self._make_batch(completions=[True, True])
+        baseline_path = self._write_baseline()
+        report_dir = Path(self._temporary_directory.name) / "reports"
+
+        arguments = SimpleNamespace(
+            eval_command="gate",
+            suite="core_loop",
+            baseline=str(baseline_path),
+            candidate=candidate_id,
+            waivers=[],
+            report_dir=str(report_dir),
+            suite_blocking=False
+        )
+
+        exit_code = run_eval_command(
+            SimpleNamespace(database_path=str(self.database.path)),
+            arguments,
+        )
+        self.assertEqual(0, exit_code)
+        self.assertTrue((report_dir / "gate-core_loop.json").exists())
+        self.assertTrue((report_dir / "gate-core_loop.md").exists())
+
+    def test_gate_fails_on_completion_regression(self) -> None:
+        from endless_task.eval.cli import run_eval_command
+
+        candidate_id = self._make_batch(completions=[True, False])
+        baseline_path = self._write_baseline()
+
+        arguments = SimpleNamespace(
+            eval_command="gate",
+            suite="core_loop",
+            baseline=str(baseline_path),
+            candidate=candidate_id,
+            waivers=[],
+            report_dir=None,
+            suite_blocking=False
+        )
+
+        exit_code = run_eval_command(
+            SimpleNamespace(database_path=str(self.database.path)),
+            arguments,
+        )
+        self.assertEqual(1, exit_code)
+
+    def test_gate_waiver_releases_blocking_regression(self) -> None:
+        from endless_task.eval.cli import run_eval_command
+
+        candidate_id = self._make_batch(completions=[True, False])
+        baseline_path = self._write_baseline()
+
+        arguments = SimpleNamespace(
+            eval_command="gate",
+            suite="core_loop",
+            baseline=str(baseline_path),
+            candidate=candidate_id,
+            waivers=["completion;known flake;platform-team;2030-01-01"],
+            report_dir=None,
+            suite_blocking=False
+        )
+
+        exit_code = run_eval_command(
+            SimpleNamespace(database_path=str(self.database.path)),
+            arguments,
+        )
+        self.assertEqual(0, exit_code)
+
+    def test_gate_rejects_unknown_suite(self) -> None:
+        from endless_task.eval.cli import run_eval_command
+
+        arguments = SimpleNamespace(
+            eval_command="gate",
+            suite="no_such_suite",
+            baseline="x.json",
+            candidate="irrelevant",  # suite checked before candidate load
+            waivers=[],
+            report_dir=None,
+            suite_blocking=False
+        )
+
+        exit_code = run_eval_command(
+            SimpleNamespace(database_path=str(self.database.path)),
+            arguments,
+        )
+        self.assertEqual(2, exit_code)
+
+    def test_suites_lists_catalog(self) -> None:
+        from endless_task.eval.cli import run_eval_command
+
+        arguments = SimpleNamespace(
+            eval_command="suites"
+        )
+
+        exit_code = run_eval_command(
+            SimpleNamespace(database_path=str(self.database.path)),
+            arguments,
+        )
+        self.assertEqual(0, exit_code)

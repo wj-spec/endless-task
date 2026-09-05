@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Optional
 
 from endless_task.runtime_v2 import RunStatus
@@ -7,11 +9,20 @@ from endless_task.storage import Database
 
 from .aggregator import aggregate, diff
 from .evaluators import DEFAULT_READ_ONLY_TOOLS, DEFAULT_WRITE_TOOLS
+from .gate import (
+    EvalBaseline,
+    Waiver,
+    gate_to_markdown,
+    run_gate,
+    waiver_from_string,
+    write_gate_report,
+)
 from .harvest import EvalHarvestSpec
 from .models import Aggregation
 from .reporting import summary_lines, to_jsonl, to_markdown
 from .service import EvaluationService
 from .storage import SqliteEvalRepository
+from .suites import SUITE_CATALOG
 
 
 def run_eval_command(settings, arguments) -> int:
@@ -24,6 +35,10 @@ def run_eval_command(settings, arguments) -> int:
         return _export(settings, arguments)
     if command == "diff":
         return _diff(settings, arguments)
+    if command == "gate":
+        return _gate(settings, arguments)
+    if command == "suites":
+        return _suites(settings, arguments)
     if command == "batches":
         return _batches(settings, arguments)
     return 2
@@ -133,5 +148,64 @@ def _batches(settings, arguments) -> int:
         print(
             f"{batch.id} mode={batch.mode} status={batch.status} "
             f"runs={batch.run_count} created={batch.created_at}"
+        )
+    return 0
+
+
+def _gate(settings, arguments) -> int:
+    """Release gate: candidate batch vs frozen baseline, with waivers.
+
+    CI 门禁落盘入口（08 §OE-4/§10.3）：输出机器可读 JSON 与人类可读
+    markdown（``--report-dir`` 落盘），blocking 回归时以非零退出码 fail。
+    """
+    database = _database(settings)
+    repository = SqliteEvalRepository(database)
+    suite_name = arguments.suite
+    if suite_name not in SUITE_CATALOG:
+        print(
+            f"unknown suite {suite_name!r}; known: "
+            + ", ".join(sorted(SUITE_CATALOG))
+        )
+        return 2
+    baseline_path = Path(arguments.baseline)
+    try:
+        baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline = EvalBaseline.from_dict(baseline_data)
+    except (OSError, ValueError) as error:
+        print(f"cannot load baseline {baseline_path}: {error}")
+        return 2
+    candidate = aggregate(repository.load_run_results(arguments.candidate))
+    waivers: list[Waiver] = []
+    for raw in arguments.waivers or ():
+        try:
+            waivers.append(waiver_from_string(raw))
+        except ValueError as error:
+            print(f"invalid waiver {raw!r}: {error}")
+            return 2
+    result = run_gate(
+        suite_name=suite_name,
+        baseline=baseline,
+        candidate=candidate,
+        waivers=waivers,
+        blocking_keys=tuple(SUITE_CATALOG[suite_name].metric_keys)
+        if arguments.suite_blocking
+        else (),
+    )
+    print(gate_to_markdown(result))
+    if arguments.report_dir:
+        json_path, _ = write_gate_report(
+            result,
+            Path(arguments.report_dir),
+        )
+        print(f"report={json_path}")
+    return 0 if result.passed else 1
+
+
+def _suites(settings, arguments) -> int:
+    """List registered topic suites and their metric coverage."""
+    for name, suite in SUITE_CATALOG.items():
+        print(
+            f"{name}: {suite.description} "
+            f"[{', '.join(suite.metric_keys)}]"
         )
     return 0
