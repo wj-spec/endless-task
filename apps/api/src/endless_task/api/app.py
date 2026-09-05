@@ -77,6 +77,15 @@ from endless_task.runtime_v2 import (
 from endless_task.runtime_v2.compaction import RuntimeV2ContextCompactionService
 from endless_task.runtime_v2.memory_quality import RuntimeV2MemoryQualityService
 from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
+from endless_task.runtime_v2.trace_observer import (
+    LedgerTraceObserver,
+    default_run_reader,
+    default_usage_exists,
+)
+# runtime_ledger implementation modules are imported by path (not through
+# the package __init__, which stays protocol-only to avoid init cycles).
+from endless_task.runtime_ledger.pricing import make_default_catalog
+from endless_task.runtime_ledger.sqlite_recorder import SqliteRuntimeLedger
 from endless_task.runtime_v2.plan_tool import UpdatePlanTool
 from endless_task.runtime_v2.agent_kernel_adapter import RuntimeV2AgentKernel
 from endless_task.delegation import (
@@ -311,6 +320,10 @@ class AppSettings:
     # locator-based prompt exposure. Default off keeps the legacy absolute
     # path behavior unchanged. Illegal env values fail startup.
     skill_packages_enabled: bool = False
+    # M6 W6-2: runtime trace mode (08 §OE-1). "0" (default) = no ledger
+    # wiring at all; errors|sampled|all enable the terminal-run usage
+    # mirror into the SQLite trace ledger. Illegal env values fail startup.
+    runtime_trace_mode: str = "0"
     artifact_proposals_enabled: bool = True
     task_proposals_enabled: bool = True
     knowledge_proposals_enabled: bool = True
@@ -450,6 +463,9 @@ class AppSettings:
             skill_packages_enabled=_parse_strict_flag(
                 env.get("ENDLESS_TASK_SKILL_PACKAGES", "0"),
                 name="ENDLESS_TASK_SKILL_PACKAGES",
+            ),
+            runtime_trace_mode=_parse_runtime_trace_mode(
+                env.get("ENDLESS_TASK_RUNTIME_TRACE", "0"),
             ),
             artifact_proposals_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_ARTIFACT_PROPOSALS", "1")
@@ -667,6 +683,7 @@ class AppContainer:
     runtime_v2_gateway: RuntimeV2SessionGateway
     runtime_v2_selection_service: RuntimeV2RuntimeSelectionService
     delegation_handler: Optional[CoordinatorDelegationHandler] = None
+    runtime_v2_trace_observer: Optional[LedgerTraceObserver] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1150,6 +1167,20 @@ def _parse_delegation_mode(value: str) -> str:
     raise ValueError("ENDLESS_TASK_DELEGATION 只允许 0 或 readonly")
 
 
+def _parse_runtime_trace_mode(value: str) -> str:
+    """Strict runtime trace mode parsing (08 §OE-1): 0|errors|sampled|all."""
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return "0"
+    if normalized in {"errors"}:
+        return "errors"
+    if normalized in {"sampled"}:
+        return "sampled"
+    if normalized in {"1", "true", "yes", "on", "all"}:
+        return "all"
+    raise ValueError("ENDLESS_TASK_RUNTIME_TRACE 只允许 0|errors|sampled|all")
+
+
 def _parse_hybrid_weights(value: str) -> tuple[float, float]:
     text = (value or "").strip()
     if not text:
@@ -1265,6 +1296,20 @@ def _build_container(
         embedder=embedder,
     )
     runtime_v2_metrics_collector = RuntimeV2MetricsCollector()
+    # M6 W6-2: runtime trace wiring (flag ENDLESS_TASK_RUNTIME_TRACE,
+    # default "0"). When enabled, terminal-run usage is mirrored into the
+    # SQLite trace ledger (08 §17/§24). "errors"|"sampled"|"all" all
+    # enable the mirror (usage rows are ordinary observability; the
+    # sampling distinction applies to span events in later slices).
+    runtime_v2_trace_observer: Optional[LedgerTraceObserver] = None
+    if settings.runtime_trace_mode != "0":
+        trace_ledger = SqliteRuntimeLedger(database)
+        runtime_v2_trace_observer = LedgerTraceObserver(
+            trace_ledger,
+            catalog=make_default_catalog(),
+            run_reader=default_run_reader(runtime_v2_repository),
+            usage_exists=default_usage_exists(trace_ledger),
+        )
     provider_manager = ProviderManager(
         repository=provider_profile_repository,
         fallback_provider=selected_provider,
@@ -1433,6 +1478,7 @@ def _build_container(
         agent_timeout_seconds=settings.agent_timeout_seconds,
         approval_timeout_seconds=settings.approval_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
+        trace_observer=runtime_v2_trace_observer,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1462,6 +1508,7 @@ def _build_container(
         metrics=runtime_v2_metrics_collector,
         agent_timeout_seconds=settings.agent_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
+        trace_observer=runtime_v2_trace_observer,
     )
     if settings.delegation_mode == "readonly":
         # M4A read-only delegation (DR-2): register the three delegation
@@ -1525,6 +1572,7 @@ def _build_container(
                 metrics=runtime_v2_metrics_collector,
                 agent_timeout_seconds=settings.agent_timeout_seconds,
                 tool_execution_limits=tool_execution_limits,
+                trace_observer=runtime_v2_trace_observer,
             )
 
         def _delegation_child_tool_filter(conversation_id: str):
@@ -2052,6 +2100,7 @@ def _build_container(
             if settings.delegation_mode == "readonly"
             else None
         ),
+        runtime_v2_trace_observer=runtime_v2_trace_observer,
     )
 
 

@@ -50,6 +50,7 @@ from .execution import (
     ToolExecutionLimits,
 )
 from .metrics import ApprovalMetric, RuntimeV2MetricsCollector
+from .trace_observer import RunTraceObserver
 from .replay import (
     CrashRecoveryReport,
     ConversationRuntimeSnapshot,
@@ -658,6 +659,7 @@ class RuntimeV2SessionGateway:
         agent_timeout_seconds: Optional[float] = None,
         approval_timeout_seconds: Optional[float] = None,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
+        trace_observer: Optional[RunTraceObserver] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
@@ -676,6 +678,7 @@ class RuntimeV2SessionGateway:
         self._agent_timeout_seconds = agent_timeout_seconds
         self._approval_timeout_seconds = approval_timeout_seconds
         self._tool_execution_limits = tool_execution_limits
+        self._trace_observer = trace_observer
         self._temperature = temperature
         self._provider_slot = (
             asyncio.Semaphore(provider_slot_limit)
@@ -1365,6 +1368,7 @@ class RuntimeV2SessionGateway:
             metrics=self._metrics,
             agent_timeout_seconds=self._agent_timeout_seconds,
             tool_execution_limits=self._tool_execution_limits,
+            trace_observer=self._trace_observer,
         )
         task = self._active_run_supervisor.spawn(
             executor.execute(
