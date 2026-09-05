@@ -63,11 +63,8 @@ from endless_task.runtime_v2 import (
     ProductRuntimeEventRecord,
     RunRecord,
     RunStatus,
-    RuntimeV2ConversationRuntimeStatus,
-    RuntimeV2GlobalRuntimeStatus,
     RuntimeV2MemoryPromotion,
     RuntimeV2MemoryRecord,
-    RuntimeV2RuntimeSelectionService,
     RuntimeV2SessionGateway,
     ToolApprovalDecision,
     ToolExecutionLimits,
@@ -728,7 +725,6 @@ class AppContainer:
     runtime_v2_memory_repository: SqliteRuntimeV2MemoryRepository
     runtime_v2_memory_quality_service: RuntimeV2MemoryQualityService
     runtime_v2_gateway: RuntimeV2SessionGateway
-    runtime_v2_selection_service: RuntimeV2RuntimeSelectionService
     delegation_handler: Optional[CoordinatorDelegationHandler] = None
     runtime_v2_trace_observer: Optional[object] = None
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
@@ -1138,39 +1134,6 @@ def _runtime_v2_memory_promotion_json(
     }
 
 
-def _runtime_v2_global_runtime_json(
-    status: RuntimeV2GlobalRuntimeStatus,
-) -> dict[str, object]:
-    return {
-        "defaultRuntime": status.default_runtime,
-        "rollbackForced": status.rollback_forced,
-        "migrationState": status.migration_state,
-        "conversationCount": status.conversation_count,
-        "mappedConversationCount": status.mapped_conversation_count,
-        "conversationTreeCount": status.conversation_tree_count,
-        "pendingMigrationCount": status.pending_migration_count,
-        "rollbackReconciliationCount": status.rollback_reconciliation_count,
-    }
-
-
-def _runtime_v2_conversation_runtime_json(
-    status: RuntimeV2ConversationRuntimeStatus,
-) -> dict[str, object]:
-    return {
-        "conversationId": status.conversation_id,
-        "treeConversationId": status.tree_conversation_id,
-        "defaultRuntime": status.default_runtime,
-        "rollbackForced": status.rollback_forced,
-        "overrideRuntime": status.override_runtime,
-        "effectiveRuntime": status.effective_runtime,
-        "canUseV2": status.can_use_v2,
-        "requiresMigration": status.requires_migration,
-        "v1ReadOnly": status.v1_read_only,
-        "rollbackReconciliationRequired": status.rollback_reconciliation_required,
-        "reason": status.reason,
-    }
-
-
 def _resolve_runtime_v2_conversation(
     container: AppContainer,
     conversation_id: str,
@@ -1178,8 +1141,22 @@ def _resolve_runtime_v2_conversation(
     write: bool,
 ) -> str:
     del write
-    status = container.runtime_v2_selection_service.describe(conversation_id)
-    return status.tree_conversation_id
+    # 14 A3: v2 sole runtime — resolve the migration tree directly; the
+    # runtime selection service was removed with the v1 control plane.
+    with container.database.connect() as connection:
+        mapping = connection.execute(
+            """
+            SELECT tree_conversation_id
+            FROM v2_migration_conversation_mappings
+            WHERE source_conversation_id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+    return (
+        str(mapping["tree_conversation_id"])
+        if mapping is not None
+        else conversation_id
+    )
 
 
 def _parse_flag(value: str) -> bool:
@@ -1866,11 +1843,6 @@ def _build_container(
         delegation_handler_ref = delegation_handler
     else:
         delegation_handler_ref = None
-    # 14 A2: v2 sole runtime — selection is a status service only.
-    runtime_v2_selection_service = RuntimeV2RuntimeSelectionService(
-        database=database,
-        repository=runtime_v2_repository,
-    )
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
         database_path=settings.database_path,
@@ -2375,7 +2347,6 @@ def _build_container(
         runtime_v2_memory_repository=runtime_v2_memory_repository,
         runtime_v2_memory_quality_service=runtime_v2_memory_quality_service,
         runtime_v2_gateway=runtime_v2_gateway,
-        runtime_v2_selection_service=runtime_v2_selection_service,
         delegation_handler=(
             delegation_handler_ref
             if settings.delegation_mode == "readonly"
@@ -2727,9 +2698,6 @@ def create_app(
         ]
         return {
             "summary": {"state": summary_state, "issues": issues},
-            "runtime": _runtime_v2_global_runtime_json(
-                container.runtime_v2_selection_service.global_status()
-            ),
             "skills": {
                 "state": skills_state,
                 "total": len(skills),
@@ -4603,19 +4571,6 @@ def create_app(
             "assistantEntryId": selected.assistant_entry_id,
             "isActiveVariant": selected.is_active_variant,
         }
-
-    @app.get("/api/v2/runtime")
-    async def get_runtime_v2_runtime_status() -> dict[str, object]:
-        return _runtime_v2_global_runtime_json(
-            container.runtime_v2_selection_service.global_status()
-        )
-
-    @app.get("/api/v2/conversations/{conversation_id}/runtime")
-    async def get_runtime_v2_conversation_runtime(
-        conversation_id: str,
-    ) -> dict[str, object]:
-        status = container.runtime_v2_selection_service.describe(conversation_id)
-        return _runtime_v2_conversation_runtime_json(status)
 
     @app.get("/api/v2/conversations/{conversation_id}/memories")
     async def list_runtime_v2_memories(
