@@ -206,6 +206,33 @@ class SqliteRuntimeLedgerTest(unittest.TestCase):
         self.assertEqual("effect_receipt", events[0].event_type)
         self.assertEqual("workspace_write", events[0].data["effect_type"])
 
+    def test_record_usage_with_cost_persists_revision(self) -> None:
+        import asyncio
+
+        from endless_task.runtime_ledger.pricing import (
+            UsageCategory,
+            compute_cost,
+            make_default_catalog,
+        )
+
+        usage = CanonicalUsage(
+            provider="deepseek",
+            model="deepseek-chat",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cached_input_tokens=1_000_000,
+            reasoning_tokens=0,
+            request_count=1,
+            occurred_at="2026-09-05T00:00:00Z",
+            trace=trace(),
+        )
+        cost = compute_cost(usage, make_default_catalog(), category=UsageCategory.COMPACTION)
+        asyncio.run(self.ledger.record_usage(usage, cost=cost))
+        stored = self.ledger.usage_for_run("run_1")[0]
+        self.assertEqual(cost.price_revision, stored.price_revision)
+        self.assertAlmostEqual(1.44, stored.cost_usd, places=6)
+        self.assertEqual("compaction", stored.category)
+
     def test_reads_are_run_scoped(self) -> None:
         import asyncio
 

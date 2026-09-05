@@ -96,6 +96,9 @@ class StoredUsage:
     reasoning_tokens: int
     request_count: int
     occurred_at: str
+    price_revision: Optional[str] = None
+    cost_usd: Optional[float] = None
+    category: str = "primary"
 
 
 class _SpanHandleImpl(SpanHandle):
@@ -196,15 +199,29 @@ class SqliteRuntimeLedger:
             )
         )
 
-    async def record_usage(self, usage: CanonicalUsage) -> None:
+    async def record_usage(
+        self,
+        usage: CanonicalUsage,
+        *,
+        cost=None,
+    ) -> None:
+        """Persist one usage row; ``cost`` (a CostRecord) adds revision/pricing."""
+        cost_revision = getattr(cost, "price_revision", None)
+        cost_usd = getattr(cost, "cost_usd", None)
+        category = getattr(cost, "category", None)
+        if category is not None:
+            category_value = category.value if hasattr(category, "value") else str(category)
+        else:
+            category_value = "primary"
         with self._database.transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO trace_usage(
                     trace_id, run_id, correlation_id, provider, model,
                     input_tokens, output_tokens, cached_input_tokens,
-                    reasoning_tokens, request_count, occurred_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reasoning_tokens, request_count, occurred_at, created_at,
+                    price_revision, cost_usd, category
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     usage.trace.trace_id,
@@ -219,6 +236,9 @@ class SqliteRuntimeLedger:
                     usage.request_count,
                     usage.occurred_at,
                     self._clock(),
+                    cost_revision,
+                    cost_usd,
+                    category_value,
                 ),
             )
 
@@ -303,7 +323,8 @@ class SqliteRuntimeLedger:
                 """
                 SELECT usage_id, trace_id, run_id, correlation_id, provider,
                        model, input_tokens, output_tokens, cached_input_tokens,
-                       reasoning_tokens, request_count, occurred_at
+                       reasoning_tokens, request_count, occurred_at,
+                       price_revision, cost_usd, category
                 FROM trace_usage
                 WHERE run_id = ?
                 ORDER BY occurred_at
@@ -367,6 +388,9 @@ def _usage_from_row(row) -> StoredUsage:
         reasoning_tokens=row["reasoning_tokens"],
         request_count=row["request_count"],
         occurred_at=row["occurred_at"],
+        price_revision=row["price_revision"],
+        cost_usd=row["cost_usd"],
+        category=row["category"],
     )
 
 
