@@ -245,6 +245,7 @@ class RunRecord:
     error_code: Optional[str] = None
     safe_message: Optional[str] = None
     correlation_id: Optional[str] = None
+    trigger_content_override: Optional[str] = None
 
 
 @dataclass(frozen=True)

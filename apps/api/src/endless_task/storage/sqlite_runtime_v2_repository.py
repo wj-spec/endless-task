@@ -1502,6 +1502,7 @@ class SqliteRuntimeV2Repository:
         is_active_variant: bool = False,
         run_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        user_content_override: Optional[str] = None,
     ) -> RunRecord:
         run_id = run_id or self._id_factory("run")
         sibling_group_id = sibling_group_id or self._id_factory("run_group")
@@ -1534,9 +1535,9 @@ class SqliteRuntimeV2Repository:
                 INSERT INTO v2_runs(
                     id, conversation_id, lane_id, trigger_entry_id,
                     sibling_group_id, assistant_entry_id, is_active_variant,
-                    status, created_at, correlation_id
+                    status, created_at, correlation_id, trigger_content_override
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1549,6 +1550,7 @@ class SqliteRuntimeV2Repository:
                     RunStatus.CREATED.value,
                     now,
                     correlation_id,
+                    user_content_override,
                 ),
             )
             return RunRecord(
@@ -1562,6 +1564,7 @@ class SqliteRuntimeV2Repository:
                 status=RunStatus.CREATED,
                 created_at=now,
                 correlation_id=correlation_id,
+                trigger_content_override=user_content_override,
             )
 
         return self._write(operation)
@@ -3385,6 +3388,11 @@ class SqliteRuntimeV2Repository:
             error_code=row["error_code"],
             safe_message=row["safe_message"],
             correlation_id=row["correlation_id"],
+            trigger_content_override=(
+                row["trigger_content_override"]
+                if "trigger_content_override" in row.keys()
+                else None
+            ),
         )
 
     @staticmethod

@@ -1888,6 +1888,20 @@ class AgentRunExecutor:
         self._run_compacted = False
         run_started = time.monotonic()
         entries = self._repository.list_entry_context_entries(run.trigger_entry_id)
+        if run.trigger_content_override is not None:
+            # P0-2b：编辑重跑只覆盖本轮的触发用户文案，不新增/改写 transcript 条目
+            # （事实源保持 append-only，链语义与 regenerate 一致）。
+            from dataclasses import replace as replace_entry
+
+            entries = tuple(
+                replace_entry(
+                    entry,
+                    payload={**entry.payload, "content": run.trigger_content_override},
+                )
+                if entry.id == run.trigger_entry_id
+                else entry
+                for entry in entries
+            )
         from endless_task.context_engine import ContextBudget
 
         from .context_segments import build_plan_shadow

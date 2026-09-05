@@ -218,5 +218,34 @@ class KnowledgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("相关知识", system_content)
 
 
+    # ---------- P0-4b：conversation scope 以 v2 条目为事实源 ----------
+
+    async def test_conversation_scope_searches_v2_transcript_entries(self):
+        client, app = await self._client()
+        container = app.state.container
+        marker = f"v2convsearch{hex(id(self))[2:]}"
+        create = await create_bound_conversation(client)
+        conversation_id = create["id"]
+        handle = await send_message(
+            client,
+            conversation_id,
+            f"这条消息包含唯一标记 {marker}",
+            idempotency_key="req-conv-search",
+        )
+        await self._wait_for_terminal(container, handle["runId"])
+
+        response = await client.post(
+            "/search",
+            json={"query": marker, "scopes": ["conversation"], "limit": 5},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        groups = response.json()["groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["scope"], "conversation")
+        hits = groups[0]["hits"]
+        self.assertTrue(hits, "v2 会话内容应可被 conversation scope 检索到")
+        self.assertEqual(hits[0]["conversationId"], conversation_id)
+        self.assertIn(marker, hits[0]["snippet"])
+
 if __name__ == "__main__":
     unittest.main()

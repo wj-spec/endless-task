@@ -3959,6 +3959,11 @@ def create_app(
                             "SELECT conversation_id FROM v2_transcript_entries WHERE id = ?",
                             (hit.ref_id,),
                         ).fetchone()
+                        if row is None:
+                            row = connection.execute(
+                                "SELECT conversation_id FROM turns WHERE id = ?",
+                                (hit.ref_id,),
+                            ).fetchone()
                     if row is None:
                         continue
                     entry["conversationId"] = row["conversation_id"]

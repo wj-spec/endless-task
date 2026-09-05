@@ -1100,6 +1100,37 @@ class RuntimeV2SessionGateway:
                 sibling_group_id=run.sibling_group_id,
             )
 
+    async def resend_run(self, run_id: str, content: str) -> RuntimeV2RegenerateResult:
+        """编辑消息重跑（P0-2b）：触发条目不变，仅覆盖该轮用户文案，
+        在相同 sibling group 下新建 run（与 regenerate 同链语义）。"""
+        content = content.strip()
+        if not content:
+            raise ConflictError("Resend content cannot be empty")
+        run = self._repository.get_run(run_id)
+        self.validate_session(run.conversation_id)
+        async with self._lock:
+            self._require_no_active_runs(run.conversation_id)
+            if run.status not in (
+                RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.CANCELLED,
+            ):
+                raise ConflictError("Only a terminal run can be resent")
+            new_run = await self._start_run(
+                conversation_id=run.conversation_id,
+                lane_id=run.lane_id,
+                trigger_entry_id=run.trigger_entry_id,
+                sibling_group_id=run.sibling_group_id,
+                user_content_override=content,
+            )
+        return RuntimeV2RegenerateResult(
+            old_run_id=run.id,
+            new_run_id=new_run.id,
+            lane_id=run.lane_id,
+            trigger_entry_id=run.trigger_entry_id,
+            sibling_group_id=run.sibling_group_id,
+        )
+
     async def select_run_variant(self, run_id: str) -> RunRecord:
         run = self._repository.get_run(run_id)
         self.validate_session(run.conversation_id)
@@ -1304,6 +1335,7 @@ class RuntimeV2SessionGateway:
         lane_id: str,
         trigger_entry_id: str,
         sibling_group_id: Optional[str] = None,
+        user_content_override: Optional[str] = None,
     ) -> RunRecord:
         run = self._repository.create_run(
             conversation_id=conversation_id,
@@ -1311,6 +1343,7 @@ class RuntimeV2SessionGateway:
             trigger_entry_id=trigger_entry_id,
             sibling_group_id=sibling_group_id,
             is_active_variant=True,
+            user_content_override=user_content_override,
         )
         return await self._launch_run(run)
 
