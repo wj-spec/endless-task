@@ -5,6 +5,11 @@ import unittest
 from endless_task.agent_platform import plain_json
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.files.read_tool import ReadTextFileTool
+from endless_task.delegation.legacy_tools import (
+    CancelAgentLegacyTool,
+    QueryAgentLegacyTool,
+    SpawnAgentLegacyTool,
+)
 from endless_task.runtime_v2.plan_tool import UpdatePlanTool
 from endless_task.tool_platform import (
     BUILTIN_LEGACY_TOOL_NAMES,
@@ -31,6 +36,10 @@ from endless_task.workspace_runtime.fs_tools import (
 )
 from endless_task.workspace_runtime.shell_tool import RunShellTool
 
+DELEGATION_TOOL_NAMES = frozenset(
+    {"spawn_agent", "query_agent", "cancel_agent"}
+)
+
 BUILTIN_TOOL_CLASSES = (
     ReadTextFileTool,
     ReadArtifactTool,
@@ -55,15 +64,24 @@ def real_names() -> frozenset[str]:
 class LegacyToolPolicyTableTest(unittest.TestCase):
     def test_policy_table_covers_exactly_the_builtin_tools(self) -> None:
         policy_names = frozenset(policy.tool_name for policy in BUILTIN_LEGACY_TOOL_POLICIES)
-        self.assertEqual(real_names(), policy_names)
-        self.assertEqual(9, len(BUILTIN_LEGACY_TOOL_POLICIES))
-        self.assertEqual(policy_names, frozenset(BUILTIN_LEGACY_TOOL_NAMES))
+        builtin_names = frozenset(
+            real_tool_definition(cls).name for cls in BUILTIN_TOOL_CLASSES
+        )
+        self.assertEqual(builtin_names | DELEGATION_TOOL_NAMES, policy_names)
+        self.assertEqual(12, len(BUILTIN_LEGACY_TOOL_POLICIES))
+        self.assertEqual(
+            policy_names,
+            frozenset(BUILTIN_LEGACY_TOOL_NAMES),
+        )
 
     def test_policy_names_match_the_real_registered_definitions(self) -> None:
         by_class = {
             real_tool_definition(cls).name: cls for cls in BUILTIN_TOOL_CLASSES
         }
         for policy in BUILTIN_LEGACY_TOOL_POLICIES:
+            if policy.tool_name in DELEGATION_TOOL_NAMES:
+                continue  # delegation tools are instance-defined; their
+                # definition/effect is asserted in test_delegation_legacy_tools
             definition = real_tool_definition(by_class[policy.tool_name])
             self.assertEqual(policy.tool_name, definition.name)
 
@@ -78,17 +96,23 @@ class LegacyToolPolicyTableTest(unittest.TestCase):
             "delete_workspace_file": ToolExecutionMode.PATH_SCOPED,
             "run_shell": ToolExecutionMode.EXCLUSIVE,
             "update_plan": ToolExecutionMode.SEQUENTIAL,
+            "spawn_agent": ToolExecutionMode.EXCLUSIVE,
+            "query_agent": ToolExecutionMode.PARALLEL,
+            "cancel_agent": ToolExecutionMode.EXCLUSIVE,
         }
         for policy in BUILTIN_LEGACY_TOOL_POLICIES:
+            if policy.tool_name in DELEGATION_TOOL_NAMES:
+                continue
             self.assertEqual(expected[policy.tool_name], policy.execution_mode)
 
     def test_idempotency_and_capability_audit_invariants(self) -> None:
+        by_class = {
+            real_tool_definition(cls).name: cls for cls in BUILTIN_TOOL_CLASSES
+        }
         for policy in BUILTIN_LEGACY_TOOL_POLICIES:
-            definition = real_tool_definition(
-                {real_tool_definition(cls).name: cls for cls in BUILTIN_TOOL_CLASSES}[
-                    policy.tool_name
-                ]
-            )
+            if policy.tool_name in DELEGATION_TOOL_NAMES:
+                continue
+            definition = real_tool_definition(by_class[policy.tool_name])
             read_only = definition.effect is LegacyToolEffect.READ_ONLY
             if read_only:
                 self.assertIn(
@@ -121,6 +145,18 @@ class LegacyToolPolicyTableTest(unittest.TestCase):
             frozenset({"workspace.read"}),
             by_name["list_workspace_dir"].required_capabilities,
         )
+        self.assertEqual(
+            frozenset({"agent.delegate"}),
+            by_name["spawn_agent"].required_capabilities,
+        )
+        self.assertEqual(
+            frozenset({"agent.delegate"}),
+            by_name["query_agent"].required_capabilities,
+        )
+        self.assertEqual(
+            frozenset({"agent.delegate"}),
+            by_name["cancel_agent"].required_capabilities,
+        )
 
     def test_legacy_approval_modes_are_all_represented(self) -> None:
         by_name = {policy.tool_name: policy for policy in BUILTIN_LEGACY_TOOL_POLICIES}
@@ -144,6 +180,8 @@ class LegacyToolAdapterPolicyTest(unittest.TestCase):
             policy.tool_name: policy for policy in BUILTIN_LEGACY_TOOL_POLICIES
         }
         for name, policy in policies_by_name.items():
+            if name in DELEGATION_TOOL_NAMES:
+                continue  # delegation adapter asserted in test_delegation_legacy_tools
             tool_class = classes_by_name[name]
             definition = real_tool_definition(tool_class)
             adapter = LegacyToolAdapter(tool_class)
@@ -182,10 +220,38 @@ class WorkspaceVisibilityParityTest(unittest.TestCase):
         granted = capability_grant_for_workspace_binding(False, allowed)
         by_name = {policy.tool_name: policy for policy in BUILTIN_LEGACY_TOOL_POLICIES}
         for tool_name, policy in by_name.items():
+            if tool_name in DELEGATION_TOOL_NAMES:
+                continue  # delegation visibility asserted separately
             visible = policy.required_capabilities <= granted
             self.assertEqual(
                 tool_name not in WORKSPACE_TOOLS,
                 visible,
+                tool_name,
+            )
+
+    def test_delegation_tools_need_bound_workspace_with_delegate_grant(self) -> None:
+        # M4A production-review gate: delegation children are workspace-bound
+        # research runs. Without a bound workspace, agent.delegate is denied,
+        # so spawn/query/cancel_agent are hidden from the model surface.
+        allowed = frozenset().union(
+            *(policy.required_capabilities for policy in BUILTIN_LEGACY_TOOL_POLICIES)
+        )
+        by_name = {policy.tool_name: policy for policy in BUILTIN_LEGACY_TOOL_POLICIES}
+        for tool_name in DELEGATION_TOOL_NAMES:
+            self.assertEqual(
+                frozenset({"agent.delegate"}),
+                by_name[tool_name].required_capabilities,
+            )
+        unbound_grant = capability_grant_for_workspace_binding(False, allowed)
+        for tool_name in DELEGATION_TOOL_NAMES:
+            self.assertFalse(
+                by_name[tool_name].required_capabilities <= unbound_grant,
+                tool_name,
+            )
+        bound_grant = capability_grant_for_workspace_binding(True, allowed)
+        for tool_name in DELEGATION_TOOL_NAMES:
+            self.assertTrue(
+                by_name[tool_name].required_capabilities <= bound_grant,
                 tool_name,
             )
 
@@ -201,9 +267,12 @@ class WorkspaceVisibilityParityTest(unittest.TestCase):
                 if policy.required_capabilities <= granted
             }
             if bound:
-                self.assertEqual(real_names(), visible)
+                self.assertEqual(real_names() | DELEGATION_TOOL_NAMES, visible)
             else:
-                self.assertEqual(real_names() - WORKSPACE_TOOLS, visible)
+                self.assertEqual(
+                    real_names() - WORKSPACE_TOOLS - DELEGATION_TOOL_NAMES,
+                    visible,
+                )
 
     def test_capability_mask_parity_with_legacy_conversation_predicate(self) -> None:
         class FakeResolver:
@@ -223,6 +292,8 @@ class WorkspaceVisibilityParityTest(unittest.TestCase):
                 binding is not None, allowed
             )
             for tool_name in sorted(real_names()):
+                if tool_name in DELEGATION_TOOL_NAMES:
+                    continue  # new capability; legacy predicate predates it
                 legacy_visible = (
                     legacy_filter(tool_name) if legacy_filter is not None else True
                 )
@@ -242,6 +313,7 @@ class WorkspaceVisibilityParityTest(unittest.TestCase):
                     "workspace.delete",
                     "process.spawn",
                     "process.signal",
+                    "agent.delegate",
                 }
             ),
             UNBOUND_WORKSPACE_DENIED_CAPABILITIES,

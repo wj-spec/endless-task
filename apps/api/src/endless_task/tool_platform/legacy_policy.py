@@ -39,6 +39,10 @@ from .protocol import (
 LEGACY_TOOL_POLICY_SCHEMA_VERSION = 1
 
 # Tool names of the production built-in set registered in api/app.py.
+# Delegation tools (spawn/query/cancel_agent) are part of the audited
+# policy table; they are only *registered* when ENDLESS_TASK_DELEGATION
+# enables them, and their agent.delegate requirement hides them from
+# unbound conversations (M4A production-review gate).
 BUILTIN_LEGACY_TOOL_NAMES = (
     "read_text_file",
     "read_artifact",
@@ -49,11 +53,18 @@ BUILTIN_LEGACY_TOOL_NAMES = (
     "delete_workspace_file",
     "run_shell",
     "update_plan",
+    "spawn_agent",
+    "query_agent",
+    "cancel_agent",
 )
 
 #: Capabilities an unbound (no local directory) conversation must lose.
 #: Mirrors workspace_runtime/visibility.WORKSPACE_TOOLS semantics: workspace
 #: file tools and the shell disappear when no workspace directory is bound.
+#: agent.delegate is denied for unbound conversations too: delegation
+#: children are workspace-bound research runs, so surfacing spawn tools
+#: without a bound workspace would only produce fail-closed escalations
+#: (M4A production-review gate).
 UNBOUND_WORKSPACE_DENIED_CAPABILITIES = frozenset(
     {
         "workspace.read",
@@ -61,6 +72,7 @@ UNBOUND_WORKSPACE_DENIED_CAPABILITIES = frozenset(
         "workspace.delete",
         "process.spawn",
         "process.signal",
+        "agent.delegate",
     }
 )
 
@@ -167,6 +179,24 @@ BUILTIN_LEGACY_TOOL_POLICIES = (
         execution_mode=ToolExecutionMode.SEQUENTIAL,
         idempotency=IdempotencyPolicy.UNKNOWN,
         required_capabilities=frozenset(),
+    ),
+    LegacyToolPolicy(
+        tool_name="spawn_agent",
+        execution_mode=ToolExecutionMode.EXCLUSIVE,
+        idempotency=IdempotencyPolicy.UNKNOWN,
+        required_capabilities=frozenset({"agent.delegate"}),
+    ),
+    LegacyToolPolicy(
+        tool_name="query_agent",
+        execution_mode=ToolExecutionMode.PARALLEL,
+        idempotency=IdempotencyPolicy.SAFE,
+        required_capabilities=frozenset({"agent.delegate"}),
+    ),
+    LegacyToolPolicy(
+        tool_name="cancel_agent",
+        execution_mode=ToolExecutionMode.EXCLUSIVE,
+        idempotency=IdempotencyPolicy.UNKNOWN,
+        required_capabilities=frozenset({"agent.delegate"}),
     ),
 )
 
