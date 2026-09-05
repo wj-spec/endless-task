@@ -60,6 +60,44 @@ def _default_backup_path(database_path: Path) -> Path:
     return database_path.parent / "backups" / f"endless-task-{timestamp}.db"
 
 
+def _trajectory_export_command(settings, arguments) -> int:
+    """显式导出 run 的 trajectory bundle（08 §OE-3 显式请求路径）。
+
+    ``RunTrajectoryExporter.export_run`` 对任意终态 run 写
+    ``v2_trajectory_exports/trajectory-<run-id>/`` 目录；失败 run 在
+    trace mode on 时已自动导出（W6-3），本命令提供按需入口。
+    """
+    from endless_task.runtime_v2.run_trajectory import (
+        RunTrajectoryExporter,
+        default_journal_reader,
+    )
+    from endless_task.storage import SqliteRuntimeV2Repository
+
+    database = Database(settings.database_path)
+    database.initialize()
+    repository = SqliteRuntimeV2Repository(database)
+    exporter = RunTrajectoryExporter(
+        export_root=settings.database_path.parent / "v2_trajectory_exports",
+        journal_reader=default_journal_reader(repository),
+        runtime_version=_trace_runtime_version(),
+        provider=settings.provider_name,
+        model=settings.model,
+        config_fingerprint=settings.system_prompt_version,
+    )
+    directory = exporter.export_run(arguments.run_id)
+    if directory is None:
+        print(f"failed to export run {arguments.run_id}")
+        return 1
+    print(directory)
+    return 0
+
+
+def _trace_runtime_version() -> str:
+    from endless_task import __version__
+
+    return __version__ or "0.0.0"
+
+
 def _print_runtime_v2_report(report) -> None:
     print(f"already_migrated={str(report.already_migrated).lower()}")
     print(f"conversations={report.conversation_count}")
@@ -211,6 +249,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="确认应用已停止，并允许替换当前数据库",
     )
+    trajectory_export = commands.add_parser(
+        "trajectory-export",
+        help="显式导出 run 的 trajectory bundle 到 v2_trajectory_exports/（08 §OE-3）",
+    )
+    trajectory_export.add_argument("run_id", help="v2 run id")
     embeddings = commands.add_parser("embeddings", help="R5.8 向量索引管理")
     embeddings_actions = embeddings.add_subparsers(dest="embeddings_command")
     embeddings_actions.add_parser("status", help="查看嵌入配置与索引计数")
@@ -336,6 +379,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from endless_task.eval.cli import run_eval_command
 
         return run_eval_command(settings, arguments)
+    if command == "trajectory-export":
+        return _trajectory_export_command(settings, arguments)
     if command == "restore":
         return _restore_command(settings, arguments)
 
