@@ -80,12 +80,19 @@ def aggregate(run_evaluations: Sequence[RunEvaluation | ScoreCard]) -> Aggregati
             pass_rate = pass_rates.get(key, 0) / count if count else None
         else:
             pass_rate = None
+        p95 = None
+        if not is_bool and values:
+            import math
+
+            ordered = sorted(values)
+            p95 = ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
         metrics[key] = MetricAggregation(
             key=key,
             count=count,
             mean=round(mean, 4) if mean is not None else None,
             min=round(min(values), 4) if values else None,
             max=round(max(values), 4) if values else None,
+            p95=round(p95, 4) if p95 is not None else None,
             pass_rate=round(pass_rate, 4) if pass_rate is not None else None,
             blocker_count=blocker_counts.get(key, 0),
             warning_count=warning_counts.get(key, 0),

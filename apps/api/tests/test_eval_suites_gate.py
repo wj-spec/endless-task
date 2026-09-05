@@ -818,6 +818,62 @@ class BudgetCliTest(unittest.TestCase):
         )
         self.assertIn("budget violation: trajectory_cost_usd_total", output)
 
+    def test_p95_budget_violation_fails(self) -> None:
+        # 07: percentile ceilings are honored (single run: p95 == value).
+        self._write_bundle("run_latent", cost_usd=0.09)
+        budget_path = self.root / "budget-p95.json"
+        budget_path.write_text(
+            json.dumps(
+                {
+                    "trajectory_cost_usd_total": {
+                        "ceiling": 0.05,
+                        "stat": "p95",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = self._run_cli(
+            [
+                "eval",
+                "bundle",
+                "--directory",
+                str(self.export_root),
+                "--budget",
+                str(budget_path),
+            ],
+            expected_exit_code=1,
+        )
+        self.assertIn("p95=0.090000", output)
+        self.assertIn("budget violation: trajectory_cost_usd_total", output)
+
+    def test_p95_budget_within_ceiling_passes(self) -> None:
+        self._write_bundle("run_fast", cost_usd=0.02)
+        budget_path = self.root / "budget-p95-ok.json"
+        budget_path.write_text(
+            json.dumps(
+                {
+                    "trajectory_cost_usd_total": {
+                        "ceiling": 0.05,
+                        "stat": "p95",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = self._run_cli(
+            [
+                "eval",
+                "bundle",
+                "--directory",
+                str(self.export_root),
+                "--budget",
+                str(budget_path),
+            ],
+            expected_exit_code=0,
+        )
+        self.assertNotIn("budget violation", output)
+
     def test_budget_within_ceiling_passes(self) -> None:
         self._write_bundle("run_cheap", cost_usd=0.02)
         budget_path = self.root / "budget.json"

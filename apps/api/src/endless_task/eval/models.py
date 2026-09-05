@@ -162,6 +162,7 @@ class MetricAggregation:
     mean: Optional[float] = None
     min: Optional[float] = None
     max: Optional[float] = None
+    p95: Optional[float] = None
     pass_rate: Optional[float] = None
     blocker_count: int = 0
     warning_count: int = 0

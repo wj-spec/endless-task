@@ -30,10 +30,15 @@ from .models import Aggregation
 
 @dataclass(frozen=True)
 class ApprovedBudget:
-    """One approved absolute ceiling for a metric (per-run mean)."""
+    """One approved absolute ceiling for a metric.
+
+    ``stat`` selects which aggregate the ceiling applies to: ``mean``
+    (default, back-compatible) or ``p95`` (latency budgets, 07).
+    """
 
     metric_key: str
     ceiling: float
+    stat: str = "mean"
 
     def __post_init__(self) -> None:
         if not isinstance(self.ceiling, (int, float)) or isinstance(
@@ -42,19 +47,23 @@ class ApprovedBudget:
             raise ValueError("budget ceiling must be numeric")
         if self.ceiling < 0:
             raise ValueError("budget ceiling must be non-negative")
+        if self.stat not in ("mean", "p95"):
+            raise ValueError("budget stat must be 'mean' or 'p95'")
 
 
 @dataclass(frozen=True)
 class BudgetViolation:
     metric_key: str
     ceiling: float
-    actual_mean: float
+    actual: float
+    stat: str = "mean"
 
     def to_dict(self) -> Mapping[str, Any]:
         return {
             "metric": self.metric_key,
             "ceiling": self.ceiling,
-            "actualMean": self.actual_mean,
+            "actual": self.actual,
+            "stat": self.stat,
         }
 
 
@@ -80,8 +89,19 @@ def load_budgets(path: Path) -> tuple[ApprovedBudget, ...]:
     if not isinstance(parsed, dict):
         raise ValueError("budget file must be a JSON object of metric -> ceiling")
     budgets = []
-    for key, ceiling in parsed.items():
-        budgets.append(ApprovedBudget(metric_key=str(key), ceiling=float(ceiling)))
+    for key, raw in parsed.items():
+        if isinstance(raw, dict):
+            budgets.append(
+                ApprovedBudget(
+                    metric_key=str(key),
+                    ceiling=float(raw.get("ceiling", 0)),
+                    stat=str(raw.get("stat", "mean")),
+                )
+            )
+        else:
+            budgets.append(
+                ApprovedBudget(metric_key=str(key), ceiling=float(raw))
+            )
     return tuple(budgets)
 
 
@@ -93,14 +113,21 @@ def check_budgets(
     violations: list[BudgetViolation] = []
     for budget in budgets:
         metric = aggregation.metrics.get(budget.metric_key)
-        if metric is None or metric.mean is None:
+        if metric is None:
             continue
-        if metric.mean > budget.ceiling:
+        if budget.stat == "p95":
+            actual = metric.p95
+        else:
+            actual = metric.mean
+        if actual is None:
+            continue
+        if actual > budget.ceiling:
             violations.append(
                 BudgetViolation(
                     metric_key=budget.metric_key,
                     ceiling=budget.ceiling,
-                    actual_mean=metric.mean,
+                    actual=actual,
+                    stat=budget.stat,
                 )
             )
     return BudgetResult(violations=tuple(violations))

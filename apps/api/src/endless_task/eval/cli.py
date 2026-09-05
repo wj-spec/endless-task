@@ -258,7 +258,7 @@ def _bundle(settings, arguments) -> int:
             for violation in budget_result.violations:
                 print(
                     f"budget violation: {violation.metric_key} "
-                    f"mean={violation.actual_mean:.6f} > "
+                    f"{violation.stat}={violation.actual:.6f} > "
                     f"ceiling={violation.ceiling:.6f}"
                 )
     if arguments.baseline:
