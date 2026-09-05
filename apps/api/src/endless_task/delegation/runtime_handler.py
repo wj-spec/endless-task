@@ -115,6 +115,25 @@ class CoordinatorDelegationHandler:
 
     # -- DelegationToolHandler ---------------------------------------------
 
+    def child_workspace_id_for(self, child_run_id: str) -> str:
+        """Isolated scratch workspace id of one completed child (P3)."""
+        for coordinator in self._coordinators.values():
+            try:
+                return coordinator.child_workspace_id(child_run_id)
+            except AgentPlatformError as error:
+                if error.code in (
+                    "delegation_child_not_isolated",
+                    "delegation_child_not_completed",
+                ):
+                    raise
+                continue
+        raise AgentPlatformError(
+            "delegation_unknown_child",
+            "No child run is tracked under this id",
+            retryable=False,
+            details={"child_run_id": child_run_id},
+        )
+
     async def spawn_child(self, request: ToolExecutionRequest) -> ToolOutcome:
         try:
             coordinator = self._coordinator_for(request)

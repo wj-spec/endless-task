@@ -177,7 +177,14 @@ from endless_task.storage.sqlite_skill_override_repository import (
 )
 from endless_task.storage.sqlite_knowledge_repository import scope_tier
 from endless_task.skills import Skill, SkillService, build_available_skills_prompt
-from endless_task.tooling import ApprovalStatus, ToolApprovalMode, ToolRegistry
+from endless_task.tooling import (
+    ApprovalStatus,
+    ToolApprovalMode,
+    ToolCall,
+    ToolCallStatus,
+    ToolError,
+    ToolRegistry,
+)
 
 from .serialization import (
     artifact_json,
@@ -2030,6 +2037,98 @@ def _build_container(
                     ),
                 }
             )
+    if settings.delegation_mode == "isolated_write" and tool_registry is None:
+        # M4B P3: explicit apply of an isolated child's scratch output.
+        import hashlib
+
+        from endless_task.delegation.apply_tool import (
+            ApplyChildPatchesTool,
+            ChildPatchFile,
+            ChildPatchSource,
+        )
+        _MAX_PATCH_TOTAL_BYTES = 4 * 1024 * 1024
+
+        def _delegation_child_patches(child_run_id: str) -> ChildPatchSource:
+            workspace_id = delegation_handler.child_workspace_id_for(child_run_id)
+            workspace = workspace_repository.get_workspace(workspace_id)
+            root = Path(workspace.root_path).expanduser().resolve()
+            files: list[ChildPatchFile] = []
+            total = 0
+            for path in sorted(root.rglob("*")):
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(root).as_posix()
+                data = path.read_bytes()
+                try:
+                    data.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise ToolError(
+                        "patch_binary_unsupported",
+                        f"子代理产出 {relative} 非 UTF-8 文本，暂不支持应用。",
+                        retryable=False,
+                    ) from error
+                total += len(data)
+                if total > _MAX_PATCH_TOTAL_BYTES:
+                    raise ToolError(
+                        "patch_too_large",
+                        "子代理产出超过应用上限（4 MiB）。",
+                        retryable=False,
+                    )
+                files.append(
+                    ChildPatchFile(
+                        relative=relative,
+                        content=data,
+                        sha256=hashlib.sha256(data).hexdigest(),
+                    )
+                )
+            return ChildPatchSource(files=tuple(files), total_bytes=total)
+
+        apply_write_tool = WriteWorkspaceFileTool(
+            workspace_resolver,
+            effect_log,
+            max_write_bytes=settings.workspace_max_write_bytes,
+            checkpoint_coordinator=run_checkpoint_coordinator,
+        )
+
+        async def _delegation_apply_writer(
+            call, relative: str, content: bytes
+        ) -> str:
+            from endless_task.runtime.cancellation import CancellationToken
+            from endless_task.workspace_runtime.path_safety import (
+                resolve_workspace_path,
+            )
+
+            binding = workspace_resolver.require_binding(call.conversation_id)
+            target = resolve_workspace_path(binding.root, relative).canonical
+            if target.exists():
+                if target.read_bytes() == content:
+                    return "equal"
+                raise ToolError(
+                    "path_exists_conflict",
+                    f"主工作区已有 {relative}（内容不同），不覆盖；请处理后再试。",
+                    retryable=False,
+                )
+            text = content.decode("utf-8")
+            write_call = ToolCall(
+                id=f"apply:{relative}",
+                conversation_id=call.conversation_id,
+                turn_id=call.turn_id,
+                response_variant_id=call.response_variant_id,
+                tool_name="write_workspace_file",
+                arguments={"path": relative, "content": text},
+                status=ToolCallStatus.RUNNING,
+                created_at="2026-09-05T00:00:00.000Z",
+            )
+            await apply_write_tool.execute(write_call, CancellationToken())
+            return "applied"
+
+        selected_tool_registry.register(
+            ApplyChildPatchesTool(
+                patches_provider=_delegation_child_patches,
+                writer=_delegation_apply_writer,
+            )
+        )
+
     system_prompt = settings.system_prompt
     system_prompt_version = settings.system_prompt_version
     if settings.artifact_proposals_enabled:

@@ -382,6 +382,35 @@ class InProcessChildCoordinator:
         self._children[prepared.child_run_id] = record
         return record
 
+    def child_workspace_id(self, child_run_id: str) -> Optional[str]:
+        """Isolated scratch workspace id for a completed child, if any (P3)."""
+        for record in self._children.values():
+            if getattr(record, "child_run_id", None) != child_run_id:
+                continue
+            spec = getattr(record, "spec", None)
+            if spec is None:
+                continue
+            if spec.workspace_mode is not WorkspaceMode.ISOLATED_SNAPSHOT:
+                raise AgentPlatformError(
+                    "delegation_child_not_isolated",
+                    "该子代理不是隔离写模式，无 scratch workspace。",
+                    retryable=False,
+                )
+            status_value = getattr(record.status, "value", record.status)
+            if status_value != "completed":
+                raise AgentPlatformError(
+                    "delegation_child_not_completed",
+                    "隔离写子代理未完成，暂不能产出 patch。",
+                    retryable=False,
+                )
+            return spec.child_workspace_id
+        raise AgentPlatformError(
+            "delegation_unknown_child",
+            "No child run is tracked under this id",
+            retryable=False,
+            details={"child_run_id": child_run_id},
+        )
+
     async def query(self, child_run_id: str) -> ChildOutcome:
         record = self._children.get(child_run_id)
         if record is None:
