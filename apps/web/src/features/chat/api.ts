@@ -18,6 +18,7 @@ import type { KnowledgeProposal,
   PermissionSettings,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
+  RuntimeV2RunUsageCost,
   RuntimeV2MemoryCreateResponse,
   RuntimeV2MemoryListResponse,
   RuntimeV2MemoryPromotionCreateResponse,
@@ -347,6 +348,10 @@ export const chatApi = {
       `/api/v2/conversations/${conversationId}/snapshot${query ? `?${query}` : ""}`,
     );
   },
+  getRuntimeV2RunUsageCost: (runId: string) =>
+    request<RuntimeV2RunUsageCost>(
+      `/api/v2/runs/${runId}/usage-cost`,
+    ),
   createRuntimeV2Message: (
     conversationId: string,
     content: string,

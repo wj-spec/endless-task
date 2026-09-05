@@ -326,6 +326,24 @@ export type CapabilityDelegationStatus = {
   mode: "readonly" | null;
 };
 
+export type RuntimeV2RunUsageCost = {
+  runId: string;
+  rows: {
+    provider: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    requestCount: number;
+    costUsd: number;
+  }[];
+  totals: {
+    inputTokens: number;
+    outputTokens: number;
+    requestCount: number;
+    costUsd: number;
+  };
+};
+
 export type RuntimeV2Metrics = {
   runs: {
     count: number;

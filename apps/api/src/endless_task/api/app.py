@@ -4697,6 +4697,36 @@ def create_app(
             "isActiveVariant": selected.is_active_variant,
         }
 
+    @app.get("/api/v2/runs/{run_id}/usage-cost")
+    async def get_runtime_v2_run_usage_cost(run_id: str) -> dict[str, object]:
+        # P1-1: diagnostic cost/usage for one run (trace ledger rows).
+        container.runtime_v2_repository.get_run(run_id)  # 404 if unknown
+        ledger = container.runtime_v2_span_recorder
+        rows: list[dict[str, object]] = []
+        totals = {
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "requestCount": 0,
+            "costUsd": 0.0,
+        }
+        if ledger is not None and hasattr(ledger, "usage_for_run"):
+            for usage in ledger.usage_for_run(run_id):
+                rows.append(
+                    {
+                        "provider": usage.provider,
+                        "model": usage.model,
+                        "inputTokens": usage.input_tokens,
+                        "outputTokens": usage.output_tokens,
+                        "requestCount": usage.request_count,
+                        "costUsd": usage.cost_usd,
+                    }
+                )
+                totals["inputTokens"] += usage.input_tokens or 0
+                totals["outputTokens"] += usage.output_tokens or 0
+                totals["requestCount"] += usage.request_count or 0
+                totals["costUsd"] += usage.cost_usd or 0.0
+        return {"runId": run_id, "rows": rows, "totals": totals}
+
     @app.get("/api/v2/conversations/{conversation_id}/memories")
     async def list_runtime_v2_memories(
         conversation_id: str,

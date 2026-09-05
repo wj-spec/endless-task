@@ -847,7 +847,39 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(existing.id, resolved.json()["promotion"]["resolvedMemoryId"])
         self.assertEqual(existing.id, resolved.json()["memory"]["id"])
 
+    async def test_run_usage_cost_endpoint(self) -> None:
+        # P1-1a: diagnostic cost/usage endpoint returns 200 for an existing run.
+        from endless_task.runtime_v2 import Actor, TranscriptEntryType
+
+        client, app = await self._client()
+        container = app.state.container
+        conversation = container.chat_repository.create_conversation()
+        repo = container.runtime_v2_repository
+        lane = repo.create_lane(conversation_id=conversation.id)
+        trigger = repo.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "用量诊断"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = repo.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        response = await client.get(
+            f"/api/v2/runs/{run.id}/usage-cost"
+        )
+        self.assertEqual(200, response.status_code)
+        payload = response.json()
+        self.assertEqual(run.id, payload["runId"])
+        self.assertIn("totals", payload)
+        self.assertIn("inputTokens", payload["totals"])
+
     async def test_approval_resolve_api_completes_run(self) -> None:
+
         provider = ScriptedProvider(
             [
                 (
