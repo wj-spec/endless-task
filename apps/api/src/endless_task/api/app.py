@@ -280,9 +280,7 @@ def runtime_environment() -> dict[str, str]:
 class AppSettings:
     database_path: Path
     config_version: int = CONFIG_VERSION
-    # 已废弃：v2 是唯一主线，本字段仅保留以兼容历史测试/调用方（总是强制 v2）。
-    runtime: str = "v2"
-    runtime_rollback: bool = False
+    # v2 是唯一 runtime（14-runtime-single-mode）：旧 v1 引擎已删，无运行时切换。
     provider_name: str = "fake"
     model: str = "fake-model"
     base_url: Optional[str] = None
