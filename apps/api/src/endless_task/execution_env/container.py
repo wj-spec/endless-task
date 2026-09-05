@@ -173,12 +173,11 @@ class ContainerExecutionBackend(ExecutionEnvironment):
                 pass
             stdout_bytes, stderr_bytes = b"", b""
             exit_code = None
-        if exit_code is not None and exit_code != 0:
-            raise AgentPlatformError(
-                "container_unavailable",
-                "容器运行时无法执行，已拒绝。",
-                retryable=False,
-            )
+        # RS-6: a non-zero exit is a command result, not a runtime failure.
+        # The container executed fine; the command failed (e.g. grep no
+        # match -> exit 1). Return it like the local backend so callers
+        # can surface business failures. Only real runtime problems (spawn
+        # failure / timeout) stay fail-closed below.
         stdout = _decode_output(stdout_bytes, request.policy.max_output_characters)
         stderr = _decode_output(stderr_bytes, request.policy.max_output_characters)
         committed = exit_code is not None

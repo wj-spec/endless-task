@@ -159,13 +159,11 @@ class ShellExecutionParityTest(unittest.IsolatedAsyncioTestCase):
 class ContainerShellParityTest(ShellExecutionParityTest):
     """Container-backed parity subset (live docker, success paths).
 
-    Container images (alpine) provide ``/bin/sh`` but no ``bash``, and the
-    container backend deliberately fails closed on any non-zero exit
-    (AP-307: ``container_unavailable`` — documented divergence, revisit at
-    RS-6 cutover). So this subset re-runs the *success* parity assertions
-    through the container backend: workspace-mounted execution and the
-    replaceability of the ExecutionEnvironment boundary. Skips without a
-    container runtime.
+    Container images (alpine) provide ``/bin/sh`` but no ``bash``, so the
+    subset covers the container-capable semantics through the container
+    backend: workspace-mounted execution, non-zero exit passthrough
+    (RS-6 slice 2a) and the replaceability of the ExecutionEnvironment
+    boundary. Skips without a container runtime.
     """
 
     async def asyncSetUp(self) -> None:
@@ -239,12 +237,13 @@ class ContainerShellParityTest(ShellExecutionParityTest):
             shutil.rmtree(ws_home, ignore_errors=True)
 
     async def test_nonzero_exit_matches(self) -> None:
-        # Documented divergence: container backend fails closed on non-zero
-        # exit (AP-307), so this parity is not applicable on the container.
-        self.skipTest(
-            "container backend fails closed on non-zero exit (AP-307); "
-            "divergence recorded, revisit at RS-6 cutover"
-        )
+        # RS-6 slice 2a: the container backend now returns non-zero exits
+        # like the local backend (a command failure is not a runtime
+        # failure); this parity now holds on the container too.
+        command = "echo oops >&2; exit 3"
+        via_backend = await self._via_backend(command)
+        self.assertEqual(3, via_backend.exit_code)
+        self.assertIn("oops", via_backend.stderr)
 
     async def test_backend_timeout_reports_unknown_like_runner_timeout(self) -> None:
         self.skipTest(
