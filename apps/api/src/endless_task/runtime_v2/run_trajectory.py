@@ -110,15 +110,21 @@ class RunTrajectoryExporter:
         provider: str,
         model: str,
         config_fingerprint: str,
+        usage_ledger=None,
     ) -> None:
         if not callable(journal_reader):
             raise ValueError("journal_reader must be callable")
+        if usage_ledger is not None and not callable(
+            getattr(usage_ledger, "usage_for_run", None)
+        ):
+            raise ValueError("usage_ledger must expose usage_for_run")
         self._export_root = export_root
         self._journal_reader = journal_reader
         self._runtime_version = runtime_version
         self._provider = provider
         self._model = model
         self._config_fingerprint = config_fingerprint
+        self._usage_ledger = usage_ledger
 
     def export_failed_run(self, run_id: str) -> Optional[str]:
         """Auto-export path: only terminal failed runs export a directory.
@@ -199,11 +205,25 @@ class RunTrajectoryExporter:
                 "finishedAt": view.finished_at,
             }
         )
+        usages = ()
+        if self._usage_ledger is not None:
+            usages = tuple(
+                {
+                    "provider": row.provider,
+                    "model": row.model,
+                    "inputTokens": row.input_tokens,
+                    "outputTokens": row.output_tokens,
+                    "requestCount": row.request_count,
+                    "costUsd": row.cost_usd,
+                }
+                for row in self._usage_ledger.usage_for_run(view.run_id)
+            )
         # Every record passes the same redaction pipeline as ledger
         # exports (08 §8), so journal payload secrets never reach disk.
         bundle = TrajectoryBundle(
             manifest=manifest,
             events=events,
+            usages=usages,
             expected=expected,
         )
         directory = self._export_root / f"trajectory-{view.run_id}"

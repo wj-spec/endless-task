@@ -669,3 +669,171 @@ class TrajectoryBundleCliTest(unittest.TestCase):
             expected_exit_code=2,
         )
         self.assertIn("no trajectory bundles", output)
+
+
+class BudgetTest(unittest.TestCase):
+    def test_load_and_check_budgets(self) -> None:
+        import tempfile
+
+        from endless_task.eval.budget import (
+            ApprovedBudget,
+            check_budgets,
+            load_budgets,
+        )
+
+        metrics = [
+            EvalMetric(
+                key="trajectory_cost_usd_total",
+                value=0.09,
+                unit=EvalUnit.SCORE,
+                severity=EvalSeverity.INFO,
+                source="trajectory_usage",
+            )
+        ]
+        aggregation = aggregate(
+            [ScoreCard(run_id="r1", metrics=tuple(metrics))]
+        )
+        budget = ApprovedBudget(
+            metric_key="trajectory_cost_usd_total", ceiling=0.05
+        )
+        result = check_budgets(aggregation, (budget,))
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            "trajectory_cost_usd_total", result.violations[0].metric_key
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budget.json"
+            path.write_text(
+                json.dumps({"trajectory_cost_usd_total": 0.05}),
+                encoding="utf-8",
+            )
+            loaded = load_budgets(path)
+            self.assertEqual(1, len(loaded))
+            self.assertEqual(0.05, loaded[0].ceiling)
+
+    def test_budget_within_ceiling_passes(self) -> None:
+        from endless_task.eval.budget import ApprovedBudget, check_budgets
+
+        metrics = [
+            EvalMetric(
+                key="trajectory_cost_usd_total",
+                value=0.03,
+                unit=EvalUnit.SCORE,
+                severity=EvalSeverity.INFO,
+                source="trajectory_usage",
+            )
+        ]
+        aggregation = aggregate(
+            [ScoreCard(run_id="r1", metrics=tuple(metrics))]
+        )
+        result = check_budgets(
+            aggregation,
+            (ApprovedBudget(metric_key="trajectory_cost_usd_total", ceiling=0.05),),
+        )
+        self.assertTrue(result.passed)
+
+
+class BudgetCliTest(unittest.TestCase):
+    """eval bundle --budget fails when a cost ceiling is exceeded."""
+
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary_directory.name)
+        self.export_root = self.root / "v2_trajectory_exports"
+        self.export_root.mkdir()
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _write_bundle(self, run_id: str, cost_usd: float) -> None:
+        from endless_task.runtime_ledger.trajectory import (
+            TrajectoryBundle,
+            TrajectoryManifest,
+            write_trajectory_bundle,
+        )
+
+        bundle = TrajectoryBundle(
+            manifest=TrajectoryManifest(
+                schema_version=1,
+                runtime_version="0.0.0",
+                provider="fake",
+                model="fake-model",
+                config_fingerprint="cfg",
+                redaction_policy_revision="r1",
+                source_run_id=run_id,
+            ),
+            events=(
+                {
+                    "eventId": "e1",
+                    "eventType": "run.completed",
+                    "occurredAt": "2026-09-05T00:00:00Z",
+                    "traceId": run_id,
+                    "runId": run_id,
+                    "safetyCritical": False,
+                    "data": {},
+                },
+            ),
+            usages=(
+                {"requestCount": 1, "costUsd": cost_usd},
+            ),
+        )
+        write_trajectory_bundle(
+            bundle, self.export_root / f"trajectory-{run_id}"
+        )
+
+    def _run_cli(self, argv, *, expected_exit_code: int) -> str:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from endless_task.api import AppSettings
+        from endless_task.cli import main
+
+        settings = AppSettings(database_path=self.root / "api.db")
+        output = io.StringIO()
+        with mock.patch.object(AppSettings, "from_environment", return_value=settings):
+            with redirect_stdout(output):
+                exit_code = main(argv)
+        self.assertEqual(expected_exit_code, exit_code)
+        return output.getvalue()
+
+    def test_budget_exceeded_fails_gate(self) -> None:
+        self._write_bundle("run_costly", cost_usd=0.09)
+        budget_path = self.root / "budget.json"
+        budget_path.write_text(
+            json.dumps({"trajectory_cost_usd_total": 0.05}),
+            encoding="utf-8",
+        )
+        output = self._run_cli(
+            [
+                "eval",
+                "bundle",
+                "--directory",
+                str(self.export_root),
+                "--budget",
+                str(budget_path),
+            ],
+            expected_exit_code=1,
+        )
+        self.assertIn("budget violation: trajectory_cost_usd_total", output)
+
+    def test_budget_within_ceiling_passes(self) -> None:
+        self._write_bundle("run_cheap", cost_usd=0.02)
+        budget_path = self.root / "budget.json"
+        budget_path.write_text(
+            json.dumps({"trajectory_cost_usd_total": 0.05}),
+            encoding="utf-8",
+        )
+        output = self._run_cli(
+            [
+                "eval",
+                "bundle",
+                "--directory",
+                str(self.export_root),
+                "--budget",
+                str(budget_path),
+            ],
+            expected_exit_code=0,
+        )
+        self.assertNotIn("budget violation", output)

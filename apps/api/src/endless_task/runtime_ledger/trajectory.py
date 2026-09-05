@@ -210,6 +210,10 @@ def write_trajectory_bundle(
     _write_json(directory / "manifest.json", bundle.manifest.to_json())
     _write_jsonl(directory / "events.jsonl", bundle.events)
     _write_jsonl(directory / "spans.jsonl", bundle.spans)
+    # usage.jsonl is a G1 extension over the 08 §8 layout: cost budgeting
+    # (08 §10.3) needs the ledger usage rows alongside the bundle so
+    # offline eval can enforce cost ceilings without the live ledger.
+    _write_jsonl(directory / "usage.jsonl", bundle.usages)
     _write_jsonl(directory / "messages.redacted.jsonl", bundle.messages)
     _write_jsonl(directory / "tool-outcomes.redacted.jsonl", bundle.tool_outcomes)
     _write_jsonl(directory / "context-segments.jsonl", bundle.context_segments)
@@ -241,9 +245,7 @@ def load_trajectory_bundle(directory: Path) -> TrajectoryBundle:
         manifest=manifest,
         events=tuple(_read_jsonl(directory / "events.jsonl")),
         spans=tuple(_read_jsonl(directory / "spans.jsonl")),
-        # The 08 §8 layout keeps no usage file (usage is ledger-derived and
-        # re-queryable); a loaded bundle carries no usage rows.
-        usages=(),
+        usages=tuple(_read_jsonl(directory / "usage.jsonl")),
         messages=tuple(_read_jsonl(directory / "messages.redacted.jsonl")),
         tool_outcomes=tuple(_read_jsonl(directory / "tool-outcomes.redacted.jsonl")),
         context_segments=tuple(_read_jsonl(directory / "context-segments.jsonl")),

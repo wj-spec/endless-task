@@ -240,6 +240,27 @@ def _bundle(settings, arguments) -> int:
     aggregation = aggregate(cards)
     for line in summary_lines(aggregation):
         print(line)
+    # Approved budget check is independent of any baseline: an absolute
+    # per-run cost/latency ceiling fails the gate on its own (08 §10.3).
+    budget_passed = True
+    if arguments.budget:
+        from endless_task.eval.budget import check_budgets, load_budgets
+
+        budget_path = _Path(arguments.budget)
+        try:
+            budgets = load_budgets(budget_path)
+        except (OSError, ValueError) as error:
+            print(f"cannot load budget {budget_path}: {error}")
+            return 2
+        budget_result = check_budgets(aggregation, budgets)
+        if not budget_result.passed:
+            budget_passed = False
+            for violation in budget_result.violations:
+                print(
+                    f"budget violation: {violation.metric_key} "
+                    f"mean={violation.actual_mean:.6f} > "
+                    f"ceiling={violation.ceiling:.6f}"
+                )
     if arguments.baseline:
         baseline_path = _Path(arguments.baseline)
         try:
@@ -258,8 +279,8 @@ def _bundle(settings, arguments) -> int:
             else (),
         )
         print(gate_to_markdown(result))
-        return 0 if result.passed else 1
-    return 0
+        return 0 if (result.passed and budget_passed) else 1
+    return 0 if budget_passed else 1
 
 
 def _suites(settings, arguments) -> int:

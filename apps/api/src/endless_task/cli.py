@@ -67,6 +67,7 @@ def _trajectory_export_command(settings, arguments) -> int:
     ``v2_trajectory_exports/trajectory-<run-id>/`` 目录；失败 run 在
     trace mode on 时已自动导出（W6-3），本命令提供按需入口。
     """
+    from endless_task.runtime_ledger.sqlite_recorder import SqliteRuntimeLedger
     from endless_task.runtime_v2.run_trajectory import (
         RunTrajectoryExporter,
         default_journal_reader,
@@ -76,6 +77,7 @@ def _trajectory_export_command(settings, arguments) -> int:
     database = Database(settings.database_path)
     database.initialize()
     repository = SqliteRuntimeV2Repository(database)
+    ledger = SqliteRuntimeLedger(database)
     exporter = RunTrajectoryExporter(
         export_root=settings.database_path.parent / "v2_trajectory_exports",
         journal_reader=default_journal_reader(repository),
@@ -83,6 +85,7 @@ def _trajectory_export_command(settings, arguments) -> int:
         provider=settings.provider_name,
         model=settings.model,
         config_fingerprint=settings.system_prompt_version,
+        usage_ledger=ledger,
     )
     directory = exporter.export_run(arguments.run_id)
     if directory is None:
@@ -462,6 +465,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--suite",
         default=None,
         help="gate 使用的 suite 名（--baseline 时有效）",
+    )
+    eval_bundle.add_argument(
+        "--budget",
+        default=None,
+        help="批准预算 JSON（metric -> 上限；超出即 fail，08 §10.3）",
     )
     eval_suites = eval_sub.add_parser(
         "suites", help="列出已注册的专题 suite 与 metric 覆盖"

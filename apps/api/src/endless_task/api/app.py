@@ -1401,6 +1401,9 @@ def _build_container(
             provider=settings.provider_name,
             model=settings.model,
             config_fingerprint=settings.system_prompt_version,
+            # usage_ledger: cost rows land in usage.jsonl so offline eval
+            # can enforce 08 §10.3 approved cost budgets on the bundle.
+            usage_ledger=trace_ledger,
         )
         trace_fanout_members.append(runtime_v2_trajectory_exporter)
     # M6 W6-4: optional OTLP export (08 §OE-5). Default off; when enabled
