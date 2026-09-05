@@ -97,6 +97,33 @@ class ContainerLiveTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual("container_unavailable", caught.exception.code)
 
+    async def test_live_container_executes_inside_mounted_workspace(self) -> None:
+        """Positive live check: a real container run works end to end.
+
+        Real-provider verification (2026-09-05, colima + docker on the dev
+        Mac): the process executes inside the mounted workspace with the
+        network denied by default. Skips when no runtime is present.
+        """
+        from endless_task.execution_env import ProcessRequest
+
+        backend = ContainerExecutionBackend(image="alpine:3.20", runtime=RUNTIME)
+        result = await backend.run_process(
+            ProcessRequest(
+                effect_id="live_pos",
+                tool_call_id="call_pos",
+                argv=("/bin/sh", "-c", "echo container-ok && pwd"),
+                cwd=".",
+                policy=self.policy,
+                trace=TRACE,
+                requested_at="2026-09-03T00:00:00Z",
+            )
+        )
+        self.assertEqual(0, result.exit_code)
+        output = result.stdout
+        self.assertIn("container-ok", output)
+        # The workspace root is mounted at /workspace inside the container.
+        self.assertIn("/workspace", output)
+
 
 class MissingRuntimeConstructionTest(unittest.TestCase):
     def test_construction_requires_an_image(self) -> None:
