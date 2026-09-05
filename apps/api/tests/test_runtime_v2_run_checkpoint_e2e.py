@@ -133,9 +133,17 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def _app(
-        self, provider=None, *, auto_restore: bool = True
+        self,
+        provider=None,
+        *,
+        auto_restore: bool = True,
+        database_index: int | None = None,
     ) -> tuple[httpx.AsyncClient, object, str]:
-        index = len(getattr(self, "_apps", []))
+        index = (
+            len(getattr(self, "_apps", []))
+            if database_index is None
+            else database_index
+        )
         swappable = SwappableProvider()
         if provider is not None:
             swappable.set(provider)
@@ -161,6 +169,14 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
         apps.append((client, lifespan))
         self._apps = apps
         return client, app, str(self._root)
+
+    async def _close_app(self, client: httpx.AsyncClient, app: object) -> None:
+        for pos, (registered_client, lifespan) in enumerate(self._apps):
+            if registered_client is client:
+                del self._apps[pos]
+                await client.aclose()
+                await lifespan.__aexit__(None, None, None)
+                return
 
     async def _bound_conversation(
         self, client: httpx.AsyncClient, *, workspace_id: str | None = None
@@ -391,6 +407,46 @@ class RunCheckpointRunE2ETest(unittest.IsolatedAsyncioTestCase):
             "agent-v1",
             (self._root / "task.txt").read_text(encoding="utf-8"),
         )
+
+
+    async def test_checkpoint_survives_restart_and_restores_afterwards(self) -> None:
+        # M3B slice C：checkpoint ref 落盘索引；"重启"（同数据目录的新 app）后仍能
+        # 对旧 run plan/apply restore。
+        (self._root / "task.txt").write_text("user-seed", encoding="utf-8")
+        provider = ScriptedWriteProvider(path="task.txt", content="agent-v1")
+        client, app, _ = await self._app(provider, database_index=0)
+        _, run_id = await self._run_once(client, app, provider, key="k-restart")
+        first_coordinator = app.state.container.run_checkpoint_coordinator
+        ref_before = first_coordinator.checkpoint_for(
+            run_id=run_id, workspace_root=str(self._root)
+        )
+        self.assertIsNotNone(ref_before)
+        self.assertEqual(
+            "agent-v1",
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
+        await self._close_app(client, app)
+
+        # Fresh app over the same data dir == process restart.
+        restarted, restarted_app, _ = await self._app(
+            None, database_index=0, auto_restore=False
+        )
+        coordinator = restarted_app.state.container.run_checkpoint_coordinator
+        self.assertEqual({run_id}, set(coordinator.tracked_run_ids()))
+        reloaded = coordinator.checkpoint_for(
+            run_id=run_id, workspace_root=str(self._root)
+        )
+        self.assertIsNotNone(reloaded)
+        self.assertEqual(ref_before.checkpoint_id, reloaded.checkpoint_id)
+        restored, _ = coordinator.apply_restore(
+            run_id=run_id, workspace_root=str(self._root)
+        )
+        self.assertIn("task.txt", restored)
+        self.assertEqual(
+            "user-seed",
+            (self._root / "task.txt").read_text(encoding="utf-8"),
+        )
+        await self._close_app(restarted, restarted_app)
 
 
 if __name__ == "__main__":

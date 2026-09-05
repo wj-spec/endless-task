@@ -143,5 +143,116 @@ class RunCheckpointCoordinatorTest(unittest.TestCase):
         self.assertEqual(2, len(self.coordinator._checkpoints["run_1"]))
 
 
+class RunCheckpointPersistenceTest(unittest.TestCase):
+    """M3B slice C: durable ref index survives coordinator/process restart."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.ws = self.base / "workspace"
+        self.ws.mkdir()
+        self.store = self.base / "checkpoints"
+        self.ledger_path = self.base / "ledger.jsonl"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _coordinator(self) -> RunCheckpointCoordinator:
+        return RunCheckpointCoordinator(
+            store_root=self.store,
+            ledger=FileMutationLedger(self.ledger_path),
+        )
+
+    def test_refs_reload_across_coordinators_and_restore_still_works(self) -> None:
+        (self.ws / "task.txt").write_text("original", encoding="utf-8")
+        first = self._coordinator()
+        ref = first.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+
+        # "Restart": a brand-new coordinator over the same store + ledger.
+        second = self._coordinator()
+        self.assertEqual((ref.run_id,), second.tracked_run_ids())
+        reloaded = second.checkpoint_for(
+            run_id="run_1", workspace_root=str(self.ws)
+        )
+        self.assertIsNotNone(reloaded)
+        self.assertEqual(ref.checkpoint_id, reloaded.checkpoint_id)
+
+        # Agent write after restart is recorded on the durable ledger and the
+        # reloaded ref restores it (cross-process semantics).
+        (self.ws / "task.txt").write_text("agent-changed", encoding="utf-8")
+        import hashlib
+
+        after = hashlib.sha256(b"agent-changed").hexdigest()
+        second.record_effect(
+            effect_id="fx_post_restart",
+            path="task.txt",
+            operation="file_write",
+            before_hash=hashlib.sha256(b"original").hexdigest(),
+            after_hash=after,
+        )
+        restored, skipped = second.apply_restore(
+            run_id="run_1", workspace_root=str(self.ws)
+        )
+        self.assertIn("task.txt", restored)
+        self.assertNotIn("task.txt", skipped)
+        self.assertEqual(
+            "original", (self.ws / "task.txt").read_text(encoding="utf-8")
+        )
+
+    def test_corrupt_index_rows_are_skipped(self) -> None:
+        first = self._coordinator()
+        r1 = first.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+        ws2 = self.base / "ws2"
+        ws2.mkdir()
+        r2 = first.ensure_checkpoint(run_id="run_2", workspace_root=str(ws2))
+        # Torn tail after a crash.
+        with open(self.store / RunCheckpointCoordinator._INDEX_NAME, "a", encoding="utf-8") as h:
+            h.write("{not-json\n")
+        second = self._coordinator()
+        self.assertEqual({"run_1", "run_2"}, set(second.tracked_run_ids()))
+        self.assertEqual(
+            r1.checkpoint_id,
+            second.checkpoint_for(run_id="run_1", workspace_root=str(self.ws)).checkpoint_id,
+        )
+        self.assertEqual(
+            r2.checkpoint_id,
+            second.checkpoint_for(run_id="run_2", workspace_root=str(ws2)).checkpoint_id,
+        )
+
+    def test_empty_store_loads_empty_index(self) -> None:
+        coordinator = self._coordinator()
+        self.assertEqual((), coordinator.tracked_run_ids())
+
+    def test_ensure_is_idempotent_in_index(self) -> None:
+        first = self._coordinator()
+        first.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+        first.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+        lines = [
+            line
+            for line in (
+                self.store / RunCheckpointCoordinator._INDEX_NAME
+            ).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(1, len(lines))
+
+    def test_store_under_workspace_is_never_snapshotted(self) -> None:
+        nested_store = self.ws / "cp-store"
+        nested_store.mkdir(parents=True, exist_ok=True)
+        (nested_store / "secret.txt").write_text("store-content", encoding="utf-8")
+        (self.ws / "user.txt").write_text("user-content", encoding="utf-8")
+        coordinator = RunCheckpointCoordinator(store_root=nested_store)
+        coordinator.ensure_checkpoint(run_id="run_1", workspace_root=str(self.ws))
+        manifest = coordinator._load_manifest(
+            coordinator.checkpoint_for(run_id="run_1", workspace_root=str(self.ws))
+        )
+        paths = {relative for relative, _ in manifest.entries}
+        self.assertIn("user.txt", paths)
+        self.assertFalse(
+            any(path.startswith("cp-store") for path in paths),
+            f"store dir leaked into snapshot: {sorted(paths)}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

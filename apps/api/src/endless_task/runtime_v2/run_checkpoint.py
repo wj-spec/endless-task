@@ -13,6 +13,11 @@
   checkpoint 后新建文件不动（绝不覆盖用户修改，05 退出门）。
 - **每 run 单 checkpoint**（05 line 517 记录），conversation 内多次 run
   各自独立 checkpoint id。
+- **重启持久化（M3B slice C）**：checkpoint ref 追加写盘（store 下
+  ``checkpoint-refs.jsonl``，run/workspace/checkpoint_id/created_at）；coordinator
+  构造时回读索引重建内存表——进程重启后仍可对旧 run plan/apply restore。
+  仅 slice C 起的 ref 入索引；更早的 manifest 仍留在磁盘但无 run→workspace
+  映射（边界记录见 05 M3B slice C）。
 
 coordinator 是**有状态协调层**，把「何时 checkpoint / 何时 restore / 从哪
 读账本」从执行引擎解耦；写工具/executor 只调 ensure/restore 两个方法。
@@ -20,6 +25,7 @@ coordinator 是**有状态协调层**，把「何时 checkpoint / 何时 restore
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,20 +74,28 @@ class RestoreRunOutcome:
 class RunCheckpointCoordinator:
     """Per-run workspace checkpoint/restore coordination (run-level A)."""
 
+    #: index file under the store: durable run->workspace->checkpoint refs.
+    _INDEX_NAME = "checkpoint-refs.jsonl"
+
     def __init__(
         self,
         *,
         store_root: Path,
         ledger: Optional[FileMutationLedger] = None,
         skip_prefixes: tuple[str, ...] = _DEFAULT_SKIP_PREFIXES,
+        persist_refs: bool = True,
     ) -> None:
         self._store_root = Path(store_root).expanduser().resolve(strict=False)
         self._store_root.mkdir(parents=True, exist_ok=True)
         self._ledger = ledger
         self._skip_prefixes = tuple(skip_prefixes)
+        self._persist_refs = persist_refs
+        self._index_path = self._store_root / self._INDEX_NAME
         # run_id -> (workspace_root, RunCheckpointRef); one checkpoint per
         # (run, workspace).
         self._checkpoints: dict[str, dict[str, RunCheckpointRef]] = {}
+        if self._persist_refs:
+            self._load_index()
 
     # -- checkpoint --------------------------------------------------------
 
@@ -116,11 +130,17 @@ class RunCheckpointCoordinator:
             field_name="checkpoint_id",
             max_length=256,
         )
+        skip_prefixes = self._skip_prefixes
+        if self._store_root.is_relative_to(root):
+            # Never snapshot the checkpoint store itself when it lives under
+            # the workspace (defensive; store is normally beside the db).
+            relative_store = self._store_root.relative_to(root).as_posix()
+            skip_prefixes = tuple(skip_prefixes) + (relative_store,)
         manifest = create_checkpoint(
             root,
             self._store_root,
             checkpoint_id=checkpoint_id,
-            skip_prefixes=self._skip_prefixes,
+            skip_prefixes=skip_prefixes,
         )
         ref = RunCheckpointRef(
             run_id=normalized_run,
@@ -129,6 +149,8 @@ class RunCheckpointCoordinator:
             created_at=ledger_timestamp(),
         )
         by_workspace[canonical_root] = ref
+        if self._persist_refs:
+            self._append_index_row(ref)
         logger.info(
             "Run workspace checkpoint created",
             extra={"run_id": run_id, "workspace": canonical_root},
@@ -266,6 +288,60 @@ class RunCheckpointCoordinator:
 
     def _load_manifest(self, ref: RunCheckpointRef) -> CheckpointManifest:
         return read_manifest(self._store_root, ref.checkpoint_id)
+
+    # -- durable ref index (M3B slice C) -----------------------------------
+
+    def _append_index_row(self, ref: RunCheckpointRef) -> None:
+        """Persist one ref row (append-only JSONL). Fail-open: an index
+        write failure only loses restart recovery for this checkpoint, never
+        blocks the run."""
+        row = {
+            "run_id": ref.run_id,
+            "workspace_root": ref.workspace_root,
+            "checkpoint_id": ref.checkpoint_id,
+            "created_at": ref.created_at,
+        }
+        try:
+            with open(self._index_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+        except OSError:
+            logger.exception(
+                "Checkpoint ref index append failed",
+                extra={"checkpoint_id": ref.checkpoint_id},
+            )
+
+    def _load_index(self) -> None:
+        """Rebuild the in-memory checkpoint map from durable refs.
+
+        Corrupt/partial trailing lines are skipped (append-only file may be
+        torn after a crash). Later rows for the same (run, workspace) win —
+        ensure_checkpoint is idempotent so they carry the same checkpoint_id.
+        """
+        try:
+            lines = self._index_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return
+        except OSError:
+            logger.exception("Checkpoint ref index read failed")
+            return
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                ref = RunCheckpointRef(
+                    run_id=require_identifier(row["run_id"], field_name="run_id"),
+                    workspace_root=str(row["workspace_root"]),
+                    checkpoint_id=require_identifier(
+                        row["checkpoint_id"], field_name="checkpoint_id"
+                    ),
+                    created_at=str(row["created_at"]),
+                )
+            except (ValueError, KeyError, TypeError):
+                logger.warning("Skipping corrupt checkpoint ref row", extra={"line": line})
+                continue
+            self._checkpoints.setdefault(ref.run_id, {})[ref.workspace_root] = ref
 
 
 __all__ = [
