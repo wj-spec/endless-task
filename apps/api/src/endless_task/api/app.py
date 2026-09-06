@@ -161,6 +161,7 @@ from endless_task.storage import (
     SqliteRetrievalEventRepository,
     SqliteTaskRunRepository,
     SqliteWorkspaceRepository,
+    SqliteHubEventRepository,
 )
 from endless_task.storage.sqlite_mcp_server_repository import (
     McpServerDraft,
@@ -203,6 +204,7 @@ from .serialization import (
     notification_json,
     reminder_json,
     task_run_json,
+    hub_event_json,
 )
 
 
@@ -711,6 +713,7 @@ class AppContainer:
     task_proposal_service: Optional[TaskProposalService]
     task_run_repository: SqliteTaskRunRepository
     notification_repository: SqliteNotificationRepository
+    hub_event_repository: SqliteHubEventRepository
     reminder_repository: SqliteReminderRepository
     knowledge_proposal_repository: SqliteKnowledgeProposalRepository
     knowledge_proposal_service: Optional[KnowledgeProposalService]
@@ -1071,6 +1074,15 @@ def _runtime_v2_product_sse(event: ProductRuntimeEventRecord) -> str:
     return f"id: {event.event_seq}\nevent: {event.event_type}\ndata: {payload}\n\n"
 
 
+def _hub_event_sse(event) -> str:
+    payload = json.dumps(
+        hub_event_json(event),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"id: {event.event_seq}\nevent: hub.{event.event_type}\ndata: {payload}\n\n"
+
+
 def _runtime_v2_lane_json(
     lane: LaneRecord,
     *,
@@ -1310,6 +1322,7 @@ def _build_container(
     task_proposal_repository = SqliteTaskProposalRepository(database)
     task_run_repository = SqliteTaskRunRepository(database)
     notification_repository = SqliteNotificationRepository(database)
+    hub_event_repository = SqliteHubEventRepository(database)
     reminder_repository = SqliteReminderRepository(database)
     knowledge_proposal_repository = SqliteKnowledgeProposalRepository(database)
     retrieval_event_repository = SqliteRetrievalEventRepository(database)
@@ -2394,7 +2407,8 @@ def _build_container(
     task_notification_service = None
     if settings.notifications_enabled:
         task_notification_service = TaskNotificationService(
-            notification_repository=notification_repository
+            notification_repository=notification_repository,
+            hub_events=hub_event_repository,
         )
     task_run_review_service = None
     if settings.task_run_review_enabled:
@@ -2440,6 +2454,7 @@ def _build_container(
         task_proposal_service=task_proposal_service,
         task_run_repository=task_run_repository,
         notification_repository=notification_repository,
+        hub_event_repository=hub_event_repository,
         reminder_repository=reminder_repository,
         knowledge_proposal_repository=knowledge_proposal_repository,
         knowledge_proposal_service=knowledge_proposal_service,
@@ -4427,12 +4442,26 @@ def create_app(
 
     @app.post("/notifications/read-all")
     async def read_all_notifications() -> dict[str, object]:
-        return {"count": container.notification_repository.mark_all_read()}
+        count = container.notification_repository.mark_all_read()
+        if count > 0:
+            container.hub_event_repository.append(
+                "notification.read_all",
+                data={"count": count},
+            )
+        return {"count": count}
 
     @app.post("/notifications/{notification_id}/read")
     async def read_notification(notification_id: str) -> dict[str, object]:
         notification = container.notification_repository.mark_read(
             notification_id
+        )
+        container.hub_event_repository.append(
+            "notification.read",
+            conversation_id=notification.conversation_id,
+            data={
+                "id": notification.id,
+                "conversationId": notification.conversation_id,
+            },
         )
         return {"notification": notification_json(notification)}
 
@@ -5229,6 +5258,64 @@ def create_app(
                         yield _runtime_v2_product_sse(event)
                     return
                 now = asyncio.get_running_loop().time()
+                if (
+                    not emitted
+                    and now - last_heartbeat >= container.settings.heartbeat_seconds
+                ):
+                    last_heartbeat = now
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(poll_interval)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/v2/hub/events")
+    async def get_hub_v2_events(
+        after_seq: int = Query(0, ge=0),
+        idle_seconds: float = Query(0.0, ge=0),
+    ) -> StreamingResponse:
+        """P1-2 hub 全局事件流（跨会话通知/提案变更）。
+
+        与 conversation-scoped 的 `/api/v2/conversations/{id}/events` 不同，hub
+        角标由 App 顶层全局消费；本端点以全库唯一 event_seq 为游标推送变更信号，
+        前端 `useAssistantHub` 订阅后降轮询为兜底。idle_seconds>0 时服务端在空转
+        超过该秒数后主动结束连接（客户端 EventSource 自动重连），便于保鲜与测试。
+        """
+        latest_seq = container.hub_event_repository.latest_seq()
+        if after_seq > latest_seq:
+            raise ApiRequestError(
+                "invalid_after_seq",
+                "after_seq 超过 hub 事件游标。",
+            )
+
+        async def stream() -> AsyncIterator[str]:
+            cursor = after_seq
+            last_activity = asyncio.get_running_loop().time()
+            last_heartbeat = last_activity
+            poll_interval = min(0.05, container.settings.heartbeat_seconds)
+            while True:
+                events = container.hub_event_repository.list_after(cursor)
+                emitted = False
+                for event in events:
+                    if event.event_seq <= cursor:
+                        continue
+                    cursor = event.event_seq
+                    emitted = True
+                    yield _hub_event_sse(event)
+                now = asyncio.get_running_loop().time()
+                if emitted:
+                    last_activity = now
+                    last_heartbeat = now
+                    continue
+                if idle_seconds > 0 and now - last_activity >= idle_seconds:
+                    return
                 if (
                     not emitted
                     and now - last_heartbeat >= container.settings.heartbeat_seconds

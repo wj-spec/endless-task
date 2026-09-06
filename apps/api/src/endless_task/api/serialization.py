@@ -498,3 +498,15 @@ def memory_record_json(
         "expiredReason": record.expired_reason,
         "supersededBy": record.superseded_by,
     }
+
+
+def hub_event_json(record) -> dict[str, object]:
+    """P1-2 hub 全局事件序列化（与 product_event_json 同构，供 SSE 推送）。"""
+    return {
+        "eventId": record.id,
+        "eventSeq": record.event_seq,
+        "type": record.event_type,
+        "conversationId": record.conversation_id,
+        "createdAt": record.occurred_at,
+        "data": record.data,
+    }

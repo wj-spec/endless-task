@@ -18,7 +18,10 @@ from endless_task.domain.models import (
     TaskRunStatus,
     TaskRunTrigger,
 )
-from endless_task.storage import SqliteNotificationRepository
+from endless_task.storage import (
+    SqliteHubEventRepository,
+    SqliteNotificationRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,50 @@ def _compact(text: Optional[str]) -> str:
 
 class TaskNotificationService:
     def __init__(
-        self, *, notification_repository: SqliteNotificationRepository
+        self,
+        *,
+        notification_repository: SqliteNotificationRepository,
+        hub_events: Optional[SqliteHubEventRepository] = None,
     ) -> None:
         self._repository = notification_repository
+        self._hub_events = hub_events
+
+    def _record_and_emit(
+        self,
+        *,
+        kind: NotificationKind,
+        task_id: str,
+        run_id: str,
+        conversation_id: str,
+        title: str,
+        body: str,
+    ) -> None:
+        created = self._repository.record(
+            kind=kind,
+            task_id=task_id,
+            run_id=run_id,
+            conversation_id=conversation_id,
+            title=title,
+            body=body,
+        )
+        if created and self._hub_events is not None:
+            try:
+                self._hub_events.append(
+                    "notification.created",
+                    conversation_id=conversation_id,
+                    data={
+                        "kind": kind.value,
+                        "taskId": task_id,
+                        "runId": run_id,
+                        "conversationId": conversation_id,
+                        "title": title,
+                    },
+                )
+            except Exception:  # noqa: BLE001 事件失败不阻断通知落库
+                logger.debug(
+                    "Hub event emit failed for notification",
+                    exc_info=True,
+                )
 
     def notify_run(
         self,
@@ -70,7 +114,7 @@ class TaskNotificationService:
             body = _compact(excerpt) or "本次执行已完成。"
         if run.attempt > 1:
             body = f"{body}（第 {run.attempt} 次尝试）"
-        self._repository.record(
+        self._record_and_emit(
             kind=kind,
             task_id=task.id,
             run_id=run.id,
@@ -102,7 +146,7 @@ class TaskNotificationService:
             body = _compact(run.error) or "提醒执行失败。"
         else:
             body = _compact(excerpt) or "提醒已执行完成。"
-        self._repository.record(
+        self._record_and_emit(
             kind=kind,
             task_id=reminder.id,
             run_id=run.id,

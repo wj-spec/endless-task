@@ -20,11 +20,13 @@ from .sqlite_reminder_repository import SqliteReminderRepository
 from .sqlite_retrieval_event_repository import SqliteRetrievalEventRepository
 from .sqlite_task_run_repository import SqliteTaskRunRepository
 from .sqlite_workspace_repository import SqliteWorkspaceRepository
+from .sqlite_hub_event_repository import SqliteHubEventRepository
 
 __all__ = [
     "Database",
     "SqliteEmbeddingRepository",
     "SqliteRetrievalEventRepository",
+    "SqliteHubEventRepository",
     "SqliteKnowledgeRepository",
     "SqliteWorkspaceRepository",
     "SqliteChatRepository",
