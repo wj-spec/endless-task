@@ -13,6 +13,7 @@ import httpx
 
 from endless_task.api import AppSettings, create_app
 from endless_task.domain.models import (
+    ArtifactKind,
     TaskRecord,
     TaskRun,
     TaskRunStatus,
@@ -20,13 +21,39 @@ from endless_task.domain.models import (
     TaskStatus,
 )
 from endless_task.domain.task_schedule import parse_task_schedule
-from endless_task.runtime import FakeProvider
+from endless_task.runtime import (
+    FakeProvider,
+    ProviderCompleted,
+    ProviderTextDelta,
+)
+from endless_task.runtime_v2 import RunStatus
 from endless_task.storage import (
     Database,
+    SqliteArtifactProposalRepository,
     SqliteHubEventRepository,
     SqliteNotificationRepository,
 )
 from endless_task.tasks import TaskNotificationService
+from tests.fixtures.v2_client import send_message, wait_for_run_terminal
+from tests.fixtures.workspace_client import create_bound_conversation
+
+
+class ScriptedProvider:
+    """Yields one scripted text completion per request (indexed by request)."""
+
+    name = "hub-events"
+
+    def __init__(self, texts=()) -> None:
+        self.texts = list(texts)
+        self.requests = []
+
+    async def stream(self, request, cancellation_token):
+        cancellation_token.raise_if_cancelled()
+        index = len(self.requests)
+        self.requests.append(request)
+        for chunk in self.texts[min(index, len(self.texts) - 1)]:
+            yield ProviderTextDelta(text=chunk)
+        yield ProviderCompleted()
 
 
 class HubEventRepositoryUnitTest(unittest.TestCase):
@@ -269,6 +296,157 @@ class HubEventsApiTest(unittest.IsolatedAsyncioTestCase):
             event_types = [event.event_type for event in events]
             self.assertIn("notification.created", event_types)
             self.assertIn("notification.read_all", event_types)
+
+
+@asynccontextmanager
+async def _proposals_client(database_path: Path, provider):
+    app = create_app(
+        settings=AppSettings(
+            database_path=database_path,
+            # memory + knowledge 提取在同一完成回调;artifact/task 均开,验证 4 类写点。
+            proposal_quiet_start="",
+            proposal_quiet_end="",
+        ),
+        provider=provider,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    try:
+        yield client, app
+    finally:
+        await client.aclose()
+        await lifespan.__aexit__(None, None, None)
+
+
+class HubEventsProposalWriteApiTest(unittest.IsolatedAsyncioTestCase):
+    """P1-2a-2: proposals create/resolve 写点 → hub 事件。"""
+
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.database_path = Path(self._temporary_directory.name) / "hub_prop.db"
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    async def _wait_for_proposals(self, client, conversation_id, kind, count):
+        endpoint = {
+            "memory": "memory-proposals",
+            "knowledge": "knowledge-proposals",
+            "artifact": "artifact-proposals",
+            "task": "task-proposals",
+        }[kind]
+        for _ in range(200):
+            response = await client.get(
+                f"/conversations/{conversation_id}/{endpoint}"
+            )
+            items = response.json()["items"]
+            if len(items) >= count:
+                return items
+            await asyncio.sleep(0.005)
+        raise AssertionError(f"{kind} proposals did not appear in time")
+
+    async def test_memory_run_completed_emits_pending_event(self) -> None:
+        extraction = json.dumps(
+            {
+                "proposals": [
+                    {
+                        "kind": "preference",
+                        "content": "用户偏好本地优先的方案。",
+                        "reason": "用户在对话中明确表达。",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        provider = ScriptedProvider(["好的，我了解你的偏好了。", extraction])
+        async with _proposals_client(self.database_path, provider) as (client, app):
+            container = app.state.container
+            conversation = await create_bound_conversation(client)
+            handle = await send_message(
+                client,
+                conversation["id"],
+                "请记住我喜欢本地优先的方案。",
+                idempotency_key="request-1",
+            )
+            status = await wait_for_run_terminal(container, handle["runId"])
+            self.assertIs(status, RunStatus.COMPLETED)
+            await self._wait_for_proposals(client, conversation["id"], "memory", 1)
+
+            events = container.hub_event_repository.list_after(0)
+            pending = [event for event in events if event.event_type == "proposal.pending"]
+            self.assertEqual(1, len(pending))
+            self.assertEqual("memory", pending[0].data["kind"])
+            self.assertEqual(conversation["id"], pending[0].conversation_id)
+            self.assertEqual(1, pending[0].data["count"])
+
+    async def test_artifact_resolve_emits_resolved_event(self) -> None:
+        async with _proposals_client(
+            self.database_path, ScriptedProvider(["好的。"])
+        ) as (client, app):
+            container = app.state.container
+            conversation = await create_bound_conversation(client)
+            proposal = container.artifact_proposal_repository.create_proposal(
+                conversation_id=conversation["id"],
+                turn_id="turn-seed",
+                title="发布计划",
+                kind=ArtifactKind.MARKDOWN,
+                content="下周发布 v1。",
+                reason="用户在对话中要求成文。",
+            )
+
+            response = await client.post(
+                f"/artifact-proposals/{proposal.id}/resolve",
+                json={"decision": "reject"},
+            )
+            self.assertEqual(200, response.status_code)
+
+            events = container.hub_event_repository.list_after(0)
+            resolved = [
+                event
+                for event in events
+                if event.event_type == "proposal.resolved"
+            ]
+            self.assertEqual(1, len(resolved))
+            self.assertEqual("artifact", resolved[0].data["kind"])
+            self.assertEqual(proposal.id, resolved[0].data["proposalId"])
+            self.assertEqual("reject", resolved[0].data["decision"])
+            self.assertEqual(conversation["id"], resolved[0].conversation_id)
+
+    async def test_task_accept_emits_resolved_event(self) -> None:
+        async with _proposals_client(
+            self.database_path, ScriptedProvider(["好的。"])
+        ) as (client, app):
+            container = app.state.container
+            conversation = await create_bound_conversation(client)
+            proposal = container.task_proposal_repository.create_proposal(
+                conversation_id=conversation["id"],
+                turn_id="turn-seed",
+                title="每周总结",
+                commitment="每周一 09:00 总结上周进展",
+                schedule={"kind": "weekly", "weekday": 1, "time": "09:00"},
+                reason="用户在对话中要求。",
+            )
+
+            response = await client.post(
+                f"/task-proposals/{proposal.id}/resolve",
+                json={"decision": "accept"},
+            )
+            self.assertEqual(200, response.status_code)
+
+            events = container.hub_event_repository.list_after(0)
+            resolved = [
+                event
+                for event in events
+                if event.event_type == "proposal.resolved"
+            ]
+            self.assertEqual(1, len(resolved))
+            self.assertEqual("task", resolved[0].data["kind"])
+            self.assertEqual(proposal.id, resolved[0].data["proposalId"])
+            self.assertEqual("accept", resolved[0].data["decision"])
 
 
 if __name__ == "__main__":

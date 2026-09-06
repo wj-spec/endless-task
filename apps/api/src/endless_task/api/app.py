@@ -1083,6 +1083,26 @@ def _hub_event_sse(event) -> str:
     return f"id: {event.event_seq}\nevent: hub.{event.event_type}\ndata: {payload}\n\n"
 
 
+def _hub_append_proposal_resolved(
+    container,
+    *,
+    kind: str,
+    proposal,
+    decision: str,
+) -> None:
+    """P1-2 resolve 写点：提案 accept/reject 后推 hub 事件（pending 集合变化）。"""
+    container.hub_event_repository.append(
+        "proposal.resolved",
+        conversation_id=proposal.conversation_id,
+        data={
+            "kind": kind,
+            "proposalId": proposal.id,
+            "conversationId": proposal.conversation_id,
+            "decision": decision,
+        },
+    )
+
+
 def _runtime_v2_lane_json(
     lane: LaneRecord,
     *,
@@ -2370,37 +2390,81 @@ def _build_container(
                                 exc_info=True,
                             )
 
-                    await memory_proposal_service.generate_for_turn(
-                        conversation_id=run.conversation_id,
-                        turn_id=run.id,
-                        user_message=user_message,
-                        assistant_message=assistant_message,
-                        auto_write_target=_write_v2_user_global_memory,
+                    created_memories = (
+                        await memory_proposal_service.generate_for_turn(
+                            conversation_id=run.conversation_id,
+                            turn_id=run.id,
+                            user_message=user_message,
+                            assistant_message=assistant_message,
+                            auto_write_target=_write_v2_user_global_memory,
+                        )
                     )
+                    if created_memories:
+                        hub_event_repository.append(
+                            "proposal.pending",
+                            conversation_id=run.conversation_id,
+                            data={
+                                "kind": "memory",
+                                "conversationId": run.conversation_id,
+                                "count": len(created_memories),
+                            },
+                        )
             if knowledge_proposal_service is not None and not ephemeral:
                 if proposal_budget is None or proposal_budget.allow(
                     run.conversation_id
                 ):
-                    await knowledge_proposal_service.generate_for_turn(
-                        conversation_id=run.conversation_id,
-                        turn_id=run.id,
-                        user_message=user_message,
-                        assistant_message=assistant_message,
+                    created = (
+                        await knowledge_proposal_service.generate_for_turn(
+                            conversation_id=run.conversation_id,
+                            turn_id=run.id,
+                            user_message=user_message,
+                            assistant_message=assistant_message,
+                        )
                     )
+                    if created:
+                        hub_event_repository.append(
+                            "proposal.pending",
+                            conversation_id=run.conversation_id,
+                            data={
+                                "kind": "knowledge",
+                                "conversationId": run.conversation_id,
+                                "count": len(created),
+                            },
+                        )
             if artifact_proposal_service is not None:
-                await artifact_proposal_service.generate_for_turn(
+                created = await artifact_proposal_service.generate_for_turn(
                     conversation_id=run.conversation_id,
                     turn_id=run.id,
                     user_message=user_message,
                     assistant_message=assistant_message,
                 )
+                if created:
+                    hub_event_repository.append(
+                        "proposal.pending",
+                        conversation_id=run.conversation_id,
+                        data={
+                            "kind": "artifact",
+                            "conversationId": run.conversation_id,
+                            "count": len(created),
+                        },
+                    )
             if task_proposal_service is not None:
-                await task_proposal_service.generate_for_turn(
+                created = await task_proposal_service.generate_for_turn(
                     conversation_id=run.conversation_id,
                     turn_id=run.id,
                     user_message=user_message,
                     assistant_message=assistant_message,
                 )
+                if created:
+                    hub_event_repository.append(
+                        "proposal.pending",
+                        conversation_id=run.conversation_id,
+                        data={
+                            "kind": "task",
+                            "conversationId": run.conversation_id,
+                            "count": len(created),
+                        },
+                    )
 
         runtime_v2_gateway.set_run_completion_callback(on_v2_run_completed)
 
@@ -4339,9 +4403,15 @@ def create_app(
     ) -> dict[str, object]:
         if body.decision == "reject":
             proposal = container.proposal_repository.reject_proposal(proposal_id)
+            _hub_append_proposal_resolved(
+                container, kind="memory", proposal=proposal, decision="reject"
+            )
             return {"proposal": memory_proposal_json(proposal)}
         proposal, memory = container.proposal_repository.accept_proposal(
             proposal_id
+        )
+        _hub_append_proposal_resolved(
+            container, kind="memory", proposal=proposal, decision="accept"
         )
         if container.memory_conflict_service is not None:
             await container.memory_conflict_service.resolve_conflicts_for(memory)
@@ -4379,12 +4449,18 @@ def create_app(
             proposal = container.knowledge_proposal_repository.reject_proposal(
                 proposal_id
             )
+            _hub_append_proposal_resolved(
+                container, kind="knowledge", proposal=proposal, decision="reject"
+            )
             return {"proposal": knowledge_proposal_json(proposal)}
         workspace_override = container.knowledge_proposal_repository._UNSET_WORKSPACE
         if body.workspaceId is not None:
             workspace_override = _resolve_workspace_reference(body.workspaceId)
         proposal, source = container.knowledge_proposal_repository.accept_proposal(
             proposal_id, workspace_override=workspace_override
+        )
+        _hub_append_proposal_resolved(
+            container, kind="knowledge", proposal=proposal, decision="accept"
         )
         if proposal.proposal_type is KnowledgeProposalType.ADD_SOURCE:
             _emit_knowledge_duplicates(source)
@@ -4547,6 +4623,9 @@ def create_app(
             proposal = container.task_proposal_repository.reject_proposal(
                 proposal_id
             )
+            _hub_append_proposal_resolved(
+                container, kind="task", proposal=proposal, decision="reject"
+            )
             return {"proposal": task_proposal_json(proposal)}
         peek = container.task_proposal_repository.get_proposal(proposal_id)
         if isinstance(peek.schedule, ReminderDue):
@@ -4555,12 +4634,18 @@ def create_app(
                     proposal_id
                 )
             )
+            _hub_append_proposal_resolved(
+                container, kind="task", proposal=proposal, decision="accept"
+            )
             return {
                 "proposal": task_proposal_json(proposal),
                 "reminder": reminder_json(reminder),
             }
         proposal, task = container.task_proposal_repository.accept_proposal(
             proposal_id
+        )
+        _hub_append_proposal_resolved(
+            container, kind="task", proposal=proposal, decision="accept"
         )
         return {
             "proposal": task_proposal_json(proposal),
@@ -5374,9 +5459,15 @@ def create_app(
             proposal = container.artifact_proposal_repository.reject_proposal(
                 proposal_id
             )
+            _hub_append_proposal_resolved(
+                container, kind="artifact", proposal=proposal, decision="reject"
+            )
             return {"proposal": artifact_proposal_json(proposal)}
         proposal, artifact = container.artifact_proposal_repository.accept_proposal(
             proposal_id
+        )
+        _hub_append_proposal_resolved(
+            container, kind="artifact", proposal=proposal, decision="accept"
         )
         return {
             "proposal": artifact_proposal_json(proposal),
