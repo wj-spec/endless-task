@@ -39,7 +39,7 @@ type SessionRailProps = {
   onClose: () => void;
   onDeleteConversation: (conversationId: string) => void;
   onDeleteWorkspace: (workspaceId: string) => Promise<void>;
-  onNewConversation: () => void;
+  onNewConversation: (workspaceId?: string) => void;
   onRenameConversation: (conversationId: string, title: string) => void;
   onSearchChange: (value: string) => void;
   onSelectConversation: (conversationId: string) => void;
@@ -222,6 +222,7 @@ export function SessionRail({
       const workspace = workspaces.find((item) => item.id === workspaceId);
       if (workspace) setDeleteWorkspaceTarget(workspace);
     },
+    onNewConversation: (workspaceId) => onNewConversation(workspaceId),
   };
 
   const railExpanded = open || !collapsed;
@@ -260,7 +261,7 @@ export function SessionRail({
         aria-label="新对话"
         className="new-chat-button"
         disabled={!workspaceCanCreate}
-        onClick={onNewConversation}
+        onClick={() => onNewConversation()}
         title={
           !workspaceCanCreate
             ? currentWorkspace
@@ -307,33 +308,16 @@ export function SessionRail({
       <section aria-label="工作区" className="workspace-navigation">
         <div className="workspace-navigation-header">
           <span>工作区</span>
-          <div className="workspace-header-actions">
-            <button
-              aria-disabled={!workspaceCanCreate}
-              aria-label="新建会话"
-              className="icon-button rail-create-conversation"
-              disabled={!workspaceCanCreate}
-              onClick={onNewConversation}
-              title={
-                !workspaceCanCreate
-                  ? "请先选择并绑定一个工作区目录，再新建会话"
-                  : "在当前工作区新建会话"
-              }
-              type="button"
-            >
-              <AddIcon size={18} />
-            </button>
-            <button
-              aria-label="新建工作区"
-              className="icon-button rail-create-workspace"
-              onClick={onCreateWorkspace}
-              ref={createWorkspaceButtonRef}
-              title="新建工作区"
-              type="button"
-            >
-              <AddIcon size={18} />
-            </button>
-          </div>
+          <button
+            aria-label="新建工作区"
+            className="icon-button rail-create-workspace"
+            onClick={onCreateWorkspace}
+            ref={createWorkspaceButtonRef}
+            title="新建工作区"
+            type="button"
+          >
+            <AddIcon size={18} />
+          </button>
         </div>
         <nav
           aria-label="会话列表"

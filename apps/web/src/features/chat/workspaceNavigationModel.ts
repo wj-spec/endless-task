@@ -18,6 +18,8 @@ export type SessionActions = {
   onBindWorkspace?: (workspaceId: string) => void;
   /** 删除工作区（有会话的工作区后端会拒绝；调用方负责确认/提示）。 */
   onDeleteWorkspace?: (workspaceId: string) => void;
+  /** 在指定工作区里新建会话（调用方负责选中该工作区并创建）。 */
+  onNewConversation?: (workspaceId: string) => void;
 };
 
 export type WorkspaceNavigationGroup = {

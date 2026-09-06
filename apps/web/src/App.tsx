@@ -250,8 +250,8 @@ export function App() {
           }
           setRailPreferredCollapsed((current) => !current);
         }}
-        onNewConversation={() => {
-          void chat.newConversation();
+        onNewConversation={(workspaceId) => {
+          void chat.newConversation(workspaceId);
           dispatchSurface({ type: "close" });
         }}
         onSearchChange={chat.setSearch}

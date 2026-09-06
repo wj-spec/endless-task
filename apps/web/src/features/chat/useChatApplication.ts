@@ -1107,20 +1107,28 @@ export function useChatApplication() {
     }
   };
 
-  const newConversation = async () => {
+  const newConversation = async (targetWorkspaceId?: string) => {
+    const targetId = targetWorkspaceId ?? workspaceId;
     setPendingAction("new");
     setError(null);
-    if (!workspaceCanCreate) {
+    const targetWorkspace = workspaces.find(
+      (item) => item.id === targetId,
+    ) ?? currentWorkspace;
+    const canCreate = Boolean(targetWorkspace?.rootPath);
+    if (!canCreate) {
       setError(
-        currentWorkspace
+        targetWorkspace
           ? "该工作区尚未绑定本地目录，请先绑定目录后再新建对话。"
           : "请先选择并绑定一个工作区目录，再新建对话。",
       );
       setPendingAction(null);
       return;
     }
+    if (targetWorkspaceId && targetWorkspaceId !== workspaceId) {
+      setWorkspaceId(targetWorkspaceId);
+    }
     try {
-      const conversation = await chatApi.createConversation(workspaceId!);
+      const conversation = await chatApi.createConversation(targetId!);
       setStatusFilter("active");
       setConversations((current) => [
         conversation,

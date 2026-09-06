@@ -1,4 +1,4 @@
-import { ChevronIcon, FolderIcon } from "../ui/Icons";
+import { AddIcon, ChevronIcon, FolderIcon } from "../ui/Icons";
 import { RowMenu } from "../ui/RowMenu";
 import type { SessionActions } from "./workspaceNavigationModel";
 import {
@@ -86,6 +86,17 @@ export function WorkspaceNavigationGroup({
           triggerAriaLabel={`管理工作区：${group.name}`}
           triggerClassName="workspace-menu-button"
         />
+        {isCurrent && actions.onNewConversation ? (
+          <button
+            aria-label="在当前工作区新建会话"
+            className="icon-button workspace-new-conversation"
+            onClick={() => actions.onNewConversation?.(group.id)}
+            title="在当前工作区新建会话"
+            type="button"
+          >
+            <AddIcon size={16} />
+          </button>
+        ) : null}
       </div>
       {open ? (
         <div className="workspace-conversations">
