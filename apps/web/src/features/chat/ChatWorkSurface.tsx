@@ -18,7 +18,17 @@ import { chatApi } from "./api";
 import type { RuntimeConnectionPhase } from "./runtimeController";
 import { CitationCard } from "./CitationCard";
 import { RuntimeTracePanel, RuntimeToolCard } from "./RuntimeTracePanel";
-import { buildRuntimeToolTrace, buildRunTimeline } from "./runtimeTrace";
+import {
+  buildRuntimeToolTrace,
+  buildRunTimeline,
+  extractWorkspaceSourceRefs,
+  type WorkspaceSourceRef,
+} from "./runtimeTrace";
+import {
+  WorkspaceFilePreviewDrawer,
+  WorkspaceRefList,
+  type WorkspacePreviewTarget,
+} from "./WorkspaceFilePreviewDrawer";
 import { ArtifactProposalCard } from "../proposals/ArtifactProposalCard";
 import { KnowledgeProposalCard } from "../proposals/KnowledgeProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
@@ -443,6 +453,12 @@ export function ChatWorkSurface({
   const runtimeTools = activeSnapshot
     ? buildRuntimeToolTrace(activeSnapshot.entries, activeSnapshot.toolStates)
     : [];
+  // 17 切片③：该次回答用到的工作区文件来源（read/search 工具 → path+行）。
+  const workspaceRefs = activeSnapshot
+    ? extractWorkspaceSourceRefs(runtimeTools)
+    : [];
+  const [previewTarget, setPreviewTarget] =
+    useState<WorkspacePreviewTarget | null>(null);
 
   const SurfaceRoot = variant === "side" ? "section" : "main";
 
@@ -892,6 +908,33 @@ export function ChatWorkSurface({
                         jumpDisabled={variant === "side"}
                         onClose={() => setOpenCitation(null)}
                         onJump={jumpCitation}
+                      />
+                    ) : null}
+                    {workspaceRefs.length > 0 &&
+                    isLatest &&
+                    variant === "main" ? (
+                      <WorkspaceRefList
+                        refs={workspaceRefs}
+                        workspaceId={
+                          conversation?.conversation.workspaceId ?? ""
+                        }
+                        onOpen={(ref: WorkspaceSourceRef) => {
+                          const workspaceId =
+                            conversation?.conversation.workspaceId ?? "";
+                          if (!workspaceId) return;
+                          setPreviewTarget({
+                            workspaceId,
+                            path: ref.path,
+                            startLine: ref.startLine,
+                            endLine: ref.endLine,
+                          });
+                        }}
+                      />
+                    ) : null}
+                    {previewTarget && isLatest && variant === "main" ? (
+                      <WorkspaceFilePreviewDrawer
+                        target={previewTarget}
+                        onClose={() => setPreviewTarget(null)}
                       />
                     ) : null}
                     {!timeline && activeSnapshot && isLatest ? (

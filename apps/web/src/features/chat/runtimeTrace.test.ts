@@ -7,7 +7,9 @@ import type {
 import {
   buildRunTimeline,
   buildRuntimeToolTrace,
+  extractWorkspaceSourceRefs,
   toolStatusToPhase,
+  type RuntimeToolItem,
 } from "./runtimeTrace";
 
 const toolState = (over: Partial<RuntimeV2ToolState>): RuntimeV2ToolState => ({
@@ -204,5 +206,95 @@ describe("buildRuntimeToolTrace", () => {
     expect(trace[0].phase).toBe("running");
     expect(trace[0].hasArgs).toBe(false);
     expect(trace[0].hasResult).toBe(false);
+  });
+});
+
+const traceTool = (over: Partial<RuntimeToolItem>): RuntimeToolItem => ({
+  key: "exec-1",
+  toolName: "read_workspace_file",
+  phase: "completed",
+  arguments: undefined,
+  result: "",
+  structuredContent: undefined,
+  errorCode: null,
+  isError: false,
+  hasArgs: false,
+  hasResult: false,
+  ...over,
+});
+
+describe("extractWorkspaceSourceRefs", () => {
+  it("从 read_workspace_file 结果提取 path 与行范围", () => {
+    const refs = extractWorkspaceSourceRefs([
+      traceTool({
+        toolName: "read_workspace_file",
+        structuredContent: {
+          path: "docs/plan.md",
+          startLine: 10,
+          endLine: 14,
+          totalLines: 50,
+          truncated: false,
+        },
+      }),
+    ]);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      toolName: "read_workspace_file",
+      path: "docs/plan.md",
+      startLine: 10,
+      endLine: 14,
+      totalLines: 50,
+      truncated: false,
+    });
+  });
+
+  it("合并连续工具结果的路径范围去重", () => {
+    const refs = extractWorkspaceSourceRefs([
+      traceTool({
+        structuredContent: {
+          path: "a.md",
+          startLine: 1,
+          endLine: 5,
+          totalLines: 10,
+        },
+      }),
+      traceTool({
+        structuredContent: {
+          path: "a.md",
+          startLine: 1,
+          endLine: 5,
+          totalLines: 10,
+        },
+      }),
+      traceTool({
+        structuredContent: {
+          path: "b.md",
+          startLine: 2,
+          endLine: 2,
+          totalLines: 20,
+        },
+      }),
+    ]);
+    expect(refs).toHaveLength(2);
+    expect(refs.map((ref) => ref.path)).toEqual(["a.md", "b.md"]);
+  });
+
+  it("忽略非 read/search 工具与无 path 结果", () => {
+    const refs = extractWorkspaceSourceRefs([
+      traceTool({ toolName: "run_shell", structuredContent: { path: "x" } }),
+      traceTool({ structuredContent: { startLine: 1, endLine: 2 } }),
+    ]);
+    expect(refs).toEqual([]);
+  });
+
+  it("workspace_search 无行范围时退化为第 1 行", () => {
+    const refs = extractWorkspaceSourceRefs([
+      traceTool({
+        toolName: "workspace_search",
+        structuredContent: { path: "notes.txt", zeroHit: false },
+      }),
+    ]);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ path: "notes.txt", startLine: 1, endLine: 1 });
   });
 });

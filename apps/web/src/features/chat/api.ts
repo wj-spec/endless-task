@@ -49,6 +49,7 @@ import type { KnowledgeProposal,
   McpServerInput,
   Skill,
   Workspace,
+  WorkspaceFilePreview,
   WorkspaceSnapshot,
   SkillPackagesResponse,
   TrajectoryMeta,
@@ -293,6 +294,16 @@ export const chatApi = {
     request<{ items: EffectLogEntry[] }>(
       `/workspaces/${workspaceId}/shell-log?limit=${limit}`,
     ).then((response) => response.items),
+  previewWorkspaceFile: (
+    workspaceId: string,
+    path: string,
+    startLine = 1,
+    lineCount = 200,
+  ) =>
+    request<WorkspaceFilePreview>(
+      `/workspaces/${workspaceId}/file-preview?path=${encodeURIComponent(path)}`
+        + `&start_line=${startLine}&line_count=${lineCount}`,
+    ),
   revealInFinder: (path: string) =>
     request<{ revealed: boolean }>("/filesystem/reveal", {
       method: "POST",

@@ -199,3 +199,76 @@ export const buildRuntimeToolTrace = (
     };
   });
 };
+
+/** 一个工作区文件来源（read_workspace_file / workspace_search 的可溯源引用）。 */
+export type WorkspaceSourceRef = {
+  key: string;
+  toolName: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number | null;
+  truncated: boolean;
+};
+
+const WORKSPACE_READ_TOOLS = new Set(["read_workspace_file", "workspace_search"]);
+
+function readRefFromStructured(raw: unknown): {
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number | null;
+  truncated?: boolean;
+} {
+  if (typeof raw !== "object" || raw === null) return {};
+  const value = raw as Record<string, unknown>;
+  const pick = (key: string) => {
+    const item = value[key];
+    return typeof item === "number" ? item : undefined;
+  };
+  const path = typeof value.path === "string" ? value.path : undefined;
+  return {
+    path,
+    startLine: pick("startLine"),
+    endLine: pick("endLine"),
+    totalLines:
+      value.totalLines === null || value.totalLines === undefined
+        ? null
+        : pick("totalLines"),
+    truncated: value.truncated === true,
+  };
+}
+
+/**
+ * 从某个 turn 的工具执行结果里提取工作区文件来源（read_workspace_file /
+ * workspace_search 的 path + 行范围），按出现顺序去重，供「回答使用了哪些
+ * 文件」溯源引用展示。只读来源不依赖模型是否在正文里写了 [K…]。
+ */
+export const extractWorkspaceSourceRefs = (
+  tools: RuntimeToolItem[],
+): WorkspaceSourceRef[] => {
+  const seen = new Set<string>();
+  const refs: WorkspaceSourceRef[] = [];
+  for (const tool of tools) {
+    if (!WORKSPACE_READ_TOOLS.has(tool.toolName)) continue;
+    const structured = tool.structuredContent;
+    const meta = readRefFromStructured(structured);
+    if (!meta.path) continue;
+    // workspace_search 不带行范围（命中行在 matches 里）；read 才有连续范围。
+    const startLine = meta.startLine ?? 1;
+    const endLine = meta.endLine ?? startLine;
+    const key = `${tool.toolName}:${meta.path}:${startLine}-${endLine}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({
+      key: `${tool.toolName}:${meta.path}`,
+      toolName: tool.toolName,
+      path: meta.path,
+      startLine,
+      endLine,
+      totalLines: meta.totalLines ?? null,
+      truncated: Boolean(meta.truncated),
+    });
+  }
+  return refs;
+};

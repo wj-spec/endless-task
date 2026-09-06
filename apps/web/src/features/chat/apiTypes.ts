@@ -12,6 +12,21 @@ export type Workspace = {
   updatedAt: string;
 };
 
+export type WorkspaceFilePreviewLine = {
+  line: number;
+  text: string;
+};
+
+export type WorkspaceFilePreview = {
+  path: string;
+  workspaceId: string;
+  totalLines: number;
+  startLine: number;
+  endLine: number;
+  variant: string;
+  lines: WorkspaceFilePreviewLine[];
+};
+
 export type BrowseItem = {
   name: string;
   path: string;

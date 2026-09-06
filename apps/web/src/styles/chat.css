@@ -1899,3 +1899,110 @@ button.citation-chip:focus-visible {
   background: var(--accent);
   animation: breathe 1.2s ease-in-out infinite;
 }
+
+/* 17 切片③：工作区来源引用列表 + 文件预览抽屉 */
+.workspace-refs {
+  margin: 6px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2, var(--surface));
+}
+.workspace-refs-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+.workspace-refs-count { font-weight: 600; color: var(--muted); }
+.workspace-refs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+.workspace-refs-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 10px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font-size: var(--fs-2);
+  text-align: left;
+  cursor: pointer;
+}
+.workspace-refs-item:hover { background: var(--surface-2, rgba(0,0,0,0.03)); }
+.workspace-refs-path { font-family: var(--font-mono, monospace); word-break: break-all; }
+.workspace-refs-lines { color: var(--muted); white-space: nowrap; font-size: var(--fs-1); }
+
+.workspace-preview-drawer {
+  margin: 6px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.workspace-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.workspace-preview-title {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-2);
+  word-break: break-all;
+}
+.workspace-preview-close {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.workspace-preview-empty,
+.workspace-preview-error {
+  padding: 10px;
+  color: var(--muted);
+  font-size: var(--fs-2);
+}
+.workspace-preview-error { color: var(--danger, #b3261e); }
+.workspace-preview-code {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-1);
+  line-height: 1.5;
+}
+.workspace-preview-line {
+  display: flex;
+  gap: 10px;
+  padding: 0 10px;
+  white-space: pre;
+}
+.workspace-preview-line.is-highlight {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.workspace-preview-lineno {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+.workspace-preview-text { flex: 1 1 auto; overflow: visible; }

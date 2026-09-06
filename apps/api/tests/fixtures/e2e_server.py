@@ -181,6 +181,41 @@ class E2EProvider:
             )
             return
 
+        if "[e2e:workspace-ref]" in user_content:
+            # 17 切片③：先 read_workspace_file 读 e2e-note.md，再回复，
+            # 制造「回答使用了工作区文件」的可溯源 run。
+            read_result = next(
+                (
+                    message
+                    for message in reversed(request.messages)
+                    if message.role == "tool"
+                    and message.name == "read_workspace_file"
+                ),
+                None,
+            )
+            if read_result is None:
+                yield ProviderTextDelta("我先查看工作区文件。")
+                yield ProviderToolCall(
+                    id=f"readws_{request.request_id}",
+                    name="read_workspace_file",
+                    arguments={"path": "e2e-note.md"},
+                )
+                yield ProviderCompleted(
+                    finish_reason="tool_calls",
+                    input_tokens=12,
+                    output_tokens=5,
+                )
+                return
+            yield ProviderTextDelta(
+                "工作区文件已读取（e2e-note.md），回答基于其内容。"
+            )
+            yield ProviderCompleted(
+                finish_reason="stop",
+                input_tokens=14,
+                output_tokens=6,
+            )
+            return
+
         yield ProviderTextDelta("E2E 确定性回复")
 
         if "[e2e:fail]" in user_content:
@@ -295,6 +330,21 @@ class _ContainerRuntimeProxy:
 
 
 tool_registry.register(UpdatePlanTool(_ContainerRuntimeProxy(app)))
+
+# 17 切片③：补注册 read_workspace_file（工作区来源溯源 E2E 用）。
+# 该工具注册在 app 之后以拿到 container 的 workspace_resolver；
+# 无绑定会话时按 workspace_tool_filter 语义被过滤（与生产一致）。
+from endless_task.workspace_runtime.fs_tools import (  # noqa: E402
+    ReadWorkspaceFileTool,
+)
+
+tool_registry.register(
+    ReadWorkspaceFileTool(
+        app.state.container.workspace_resolver,
+        max_file_bytes=1_000_000,
+    )
+)
+
 
 E2E_MODEL_CREDENTIALS = {
     "Bearer e2e-model-key-one": "key-one",
