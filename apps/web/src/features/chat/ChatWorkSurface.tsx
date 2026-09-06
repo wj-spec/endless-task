@@ -27,6 +27,7 @@ import type { TurnProposals } from "../proposals/useProposals";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { CopyButton } from "./CopyButton";
 import { PlanLine, type PlanPayload } from "./PlanLine";
+import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
@@ -830,6 +831,29 @@ export function ChatWorkSurface({
                     ∞
                   </div>
                   <div className="assistant-content">
+                    {(() => {
+                      if (!isLatest) return null;
+                      const runState = runtimeSnapshot?.runState;
+                      const running =
+                        runState?.runId === turnSnapshot.turn.id &&
+                        Boolean(runState.status) &&
+                        !["completed", "failed", "cancelled"].includes(
+                          runState.status,
+                        );
+                      const stage = runStageLabel({
+                        runId: turnSnapshot.turn.id,
+                        running,
+                        events: runtimeEvents,
+                        plan: isLatest
+                          ? latestPlanForRun(runtimeSnapshot, turnSnapshot.turn.id)
+                          : null,
+                      });
+                      return stage ? (
+                        <p aria-live="polite" className="activity-stage">
+                          {stage}
+                        </p>
+                      ) : null;
+                    })()}
                     {timeline ? (
                       <div
                         className="turn-timeline"

@@ -1878,3 +1878,24 @@ button.citation-chip:focus-visible {
 .plan-line-steps li.is-failed .plan-line-step-status {
   color: var(--danger);
 }
+
+/* S-A1 阶段活动行 */
+.activity-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: var(--fs-2);
+  line-height: 1.45;
+}
+
+.activity-stage::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: breathe 1.2s ease-in-out infinite;
+}

@@ -129,6 +129,8 @@ class E2EProvider:
                 )
                 return
             yield ProviderTextDelta("计划已制定，E2E 回复完成。")
+            # S-A1：给阶段活动行留出可观测窗口（计划处于 in_progress）
+            await asyncio.sleep(2.0)
             yield ProviderCompleted(
                 finish_reason="stop",
                 input_tokens=10,
