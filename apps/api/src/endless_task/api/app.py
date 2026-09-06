@@ -4089,6 +4089,83 @@ def create_app(
             )
         return Response(status_code=204)
 
+    @app.get("/workspaces/{workspace_id}/file-preview")
+    async def preview_workspace_file(
+        workspace_id: str,
+        path: str = Query(..., min_length=1, max_length=1024),
+        start_line: int = Query(1, ge=1),
+        line_count: int = Query(200, ge=1, le=2000),
+    ) -> dict[str, object]:
+        """17 切片③：工作区文件只读预览（引用溯源跳转落点）。
+
+        按相对工作区根的 path 返回行数组（含行号），供前端引用卡点击后在
+        抽屉中定位到具体行。路径安全与 read_workspace_file 同源
+        （resolve_read_path_with_variants + UTF-8 校验 + 大小上限）。
+        """
+        from endless_task.tooling import ToolError as _WsToolError
+        from endless_task.workspace_runtime.fs_tools import (
+            _decode_utf8 as _ws_decode_utf8,
+        )
+        from endless_task.workspace_runtime.path_safety import (
+            resolve_read_path_with_variants,
+        )
+
+        def _map_tool_error(error: _WsToolError) -> None:
+            status = 404 if error.code == "path_not_found" else 400
+            message = getattr(error, "safe_message", None) or str(error)
+            raise ApiRequestError(error.code, message, status_code=status) from None
+
+        try:
+            workspace = container.workspace_repository.get_workspace(workspace_id)
+        except NotFoundError:
+            raise ApiRequestError("workspace_not_found", "工作区不存在。", status_code=404) from None
+        if not workspace.root_path:
+            raise ApiRequestError(
+                "workspace_not_bound",
+                "该工作区未绑定本地目录。",
+            )
+        root = Path(workspace.root_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ApiRequestError(
+                "workspace_not_bound",
+                "该工作区绑定目录不可用。",
+            )
+        try:
+            resolved = resolve_read_path_with_variants(root, path)
+        except _WsToolError as error:
+            _map_tool_error(error)
+        canonical = resolved.canonical
+        if not canonical.exists():
+            raise ApiRequestError("path_not_found", "文件不存在。", status_code=404)
+        if not canonical.is_file():
+            raise ApiRequestError("path_is_directory", "路径指向目录。")
+        if canonical.stat().st_size > settings.max_file_bytes:
+            raise ApiRequestError(
+                "file_too_large",
+                f"文件超过读取上限（{settings.max_file_bytes} 字节）。",
+            )
+        raw = canonical.read_bytes()
+        try:
+            text = _ws_decode_utf8(raw)
+        except _WsToolError as error:
+            _map_tool_error(error)
+        lines = text.splitlines() or [""]
+        total = len(lines)
+        end_line = min(total, start_line + line_count - 1)
+        rows = [
+            {"line": index + 1, "text": lines[index]}
+            for index in range(start_line - 1, end_line)
+        ]
+        return {
+            "path": resolved.original_raw,
+            "workspaceId": workspace_id,
+            "totalLines": total,
+            "startLine": start_line,
+            "endLine": end_line,
+            "variant": resolved.variant,
+            "lines": rows,
+        }
+
     @app.get("/filesystem/browse")
     async def browse_filesystem(
         path: Optional[str] = Query(None),
