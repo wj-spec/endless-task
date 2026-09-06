@@ -20,6 +20,7 @@ import type {
   TurnStatus,
   Workspace,
 } from "./apiTypes";
+import { readableError } from "./apiErrorText";
 import {
   runtimeTargetKey,
   useConversationRuntimeController,
@@ -87,12 +88,6 @@ import {
 const requestId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-const readableError = (error: unknown) => {
-  if (error instanceof ApiClientError) return error.message;
-  if (error instanceof Error && error.name === "AbortError") return "";
-  return "无法连接本地服务，请确认 API 已启动。";
-};
 
 type SnapshotTarget = "main" | "side";
 
