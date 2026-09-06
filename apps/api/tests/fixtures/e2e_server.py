@@ -8,7 +8,12 @@ from pathlib import Path
 from fastapi import Header, HTTPException
 
 from endless_task.api.app import AppSettings, create_app
-from endless_task.domain.models import ArtifactKind, KnowledgeProposalType, MemoryKind
+from endless_task.domain.models import (
+    ArtifactKind,
+    KnowledgeProposalType,
+    MemoryKind,
+    NotificationKind,
+)
 from endless_task.runtime.cancellation import CancellationToken, RuntimeCancelled
 from endless_task.runtime.provider import (
     ProviderCompleted,
@@ -377,3 +382,30 @@ async def seed_proposal(body: dict[str, str]) -> dict[str, str]:
         raise ValueError(f"Unsupported E2E proposal kind: {kind}")
 
     return {"id": proposal.id, "kind": kind}
+
+@app.post("/__e2e/notifications", status_code=201)
+async def seed_notification(body: dict[str, str]) -> dict[str, str]:
+    """P1-2 通知推送 E2E fixture：按生产 TaskNotificationService 写点路径
+    落库一条未读通知并 append hub 事件（notification.created）。"""
+    conversation_id = body["conversationId"]
+    container = app.state.container
+    created = container.notification_repository.record(
+        kind=NotificationKind.RUN_COMPLETED,
+        task_id="e2e-task",
+        run_id=f"e2e-run-{conversation_id}",
+        conversation_id=conversation_id,
+        title="E2E 后台任务完成",
+        body="验证 hub SSE 推送：未读角标应即时出现。",
+    )
+    container.hub_event_repository.append(
+        "notification.created",
+        conversation_id=conversation_id,
+        data={
+            "kind": NotificationKind.RUN_COMPLETED.value,
+            "conversationId": conversation_id,
+            "title": "E2E 后台任务完成",
+        },
+    )
+    if not created:
+        raise HTTPException(status_code=409, detail="duplicate e2e notification")
+    return {"conversationId": conversation_id}
