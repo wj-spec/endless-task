@@ -1991,3 +1991,60 @@
   color: var(--muted);
   font-size: var(--fs-2);
 }
+
+/* S-P1-3b 执行时间线 */
+.spans-timeline {
+  display: grid;
+  gap: 1px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.spans-timeline li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-s);
+  font-size: var(--fs-2);
+}
+
+.spans-kind {
+  flex: none;
+  min-width: 44px;
+  color: var(--muted);
+  font-size: var(--fs-1);
+}
+
+.spans-name {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spans-status {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
+
+.spans-duration {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+}
+
+.spans-timeline li.is-failed .spans-status {
+  color: var(--danger);
+}
+
+.spans-timeline li.is-running .spans-status {
+  color: var(--accent);
+}

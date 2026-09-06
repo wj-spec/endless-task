@@ -14,6 +14,7 @@ import {
 import type { RuntimeConnectionPhase } from "../chat/runtimeController";
 import { StatusBadge } from "../ui/StatusBadge";
 import { TrajectoryViewer } from "./TrajectoryViewer";
+import { SpansTimeline } from "./SpansTimeline";
 import { EvalBatchesViewer } from "./EvalBatchesViewer";
 
 type RuntimeStatusPresentation = {
@@ -398,6 +399,7 @@ export function RuntimeV2Panel({
           {conversationId ? "正在等待共享 Runtime 快照。" : "请选择一个会话。"}
         </p>
       )}
+      <SpansTimeline runId={activeRun?.runId ?? null} />
       <TrajectoryViewer />
       <EvalBatchesViewer />
     </section>

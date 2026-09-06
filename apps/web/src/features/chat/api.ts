@@ -56,6 +56,7 @@ import type { KnowledgeProposal,
   TrajectoryListResponse,
   EvalBatchListResponse,
   EvalBatchDetail,
+  RuntimeV2SpansResponse,
   TaskProposal,
   TaskSummary,
   TaskRun,
@@ -645,6 +646,10 @@ export const chatApi = {
   },
   getTrajectoryMeta: async (runId: string) =>
     request<TrajectoryMeta>(`/api/v2/trajectory/${encodeURIComponent(runId)}`),
+  getRuntimeV2RunSpans: async (runId: string) =>
+    request<RuntimeV2SpansResponse>(
+      `/api/v2/runs/${encodeURIComponent(runId)}/spans`,
+    ),
   listSkillPackages: async (workspaceId?: string | null) => {
     const parameters = new URLSearchParams();
     if (workspaceId) parameters.set("workspaceId", workspaceId);

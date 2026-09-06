@@ -1063,3 +1063,22 @@ export type EvalBatchSummary = {
 export type EvalBatchListResponse = { items: EvalBatchSummary[] };
 
 export type EvalBatchDetail = EvalBatchSummary & { resultCount: number };
+
+export type RuntimeV2Span = {
+  spanId: string;
+  parentSpanId: string | null;
+  kind: string;
+  name: string;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  diagnosticCode: string | null;
+  diagnosticMessage: string | null;
+};
+
+export type RuntimeV2SpansResponse = {
+  runId: string;
+  available: boolean;
+  spans: RuntimeV2Span[];
+};

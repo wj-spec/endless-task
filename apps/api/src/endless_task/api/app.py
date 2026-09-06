@@ -5053,6 +5053,30 @@ def create_app(
                 totals["costUsd"] += usage.cost_usd or 0.0
         return {"runId": run_id, "rows": rows, "totals": totals}
 
+    @app.get("/api/v2/runs/{run_id}/spans")
+    async def get_runtime_v2_run_spans(run_id: str) -> dict[str, object]:
+        """S-P1-3b：run 的 span 只读列表（执行时间线事实源）。"""
+        container.runtime_v2_repository.get_run(run_id)  # 404 if unknown
+        recorder = container.runtime_v2_span_recorder
+        if recorder is None or not hasattr(recorder, "spans_for_run"):
+            return {"runId": run_id, "available": False, "spans": []}
+        spans = [
+            {
+                "spanId": span.span_id,
+                "parentSpanId": span.parent_span_id,
+                "kind": span.kind,
+                "name": span.name,
+                "status": span.status,
+                "startedAt": span.started_at,
+                "endedAt": span.ended_at,
+                "durationMs": span.monotonic_duration_ms,
+                "diagnosticCode": span.diagnostic_code,
+                "diagnosticMessage": span.diagnostic_message,
+            }
+            for span in recorder.spans_for_run(run_id)
+        ]
+        return {"runId": run_id, "available": True, "spans": spans}
+
     @app.get("/api/v2/conversations/{conversation_id}/memories")
     async def list_runtime_v2_memories(
         conversation_id: str,
