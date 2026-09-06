@@ -1789,3 +1789,92 @@ button.citation-chip:focus-visible {
   margin: 0;
   padding-left: 18px;
 }
+
+/* S-P1-3a 轮内计划行 */
+.plan-line {
+  margin: 12px 0 2px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent-faint);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+.plan-line-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.plan-line-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-line-summary {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--fs-1);
+}
+
+.plan-line-toggle {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  color: var(--accent);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.plan-line-toggle:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.plan-line-steps {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.plan-line-steps li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.plan-line-step-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--fs-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-line-step-status {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
+
+.plan-line-steps li.is-completed .plan-line-step-status {
+  color: var(--success);
+}
+
+.plan-line-steps li.is-in_progress .plan-line-step-status {
+  color: var(--accent);
+}
+
+.plan-line-steps li.is-failed .plan-line-step-status {
+  color: var(--danger);
+}

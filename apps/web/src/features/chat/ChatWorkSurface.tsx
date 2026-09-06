@@ -26,6 +26,7 @@ import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { CopyButton } from "./CopyButton";
+import { PlanLine, type PlanPayload } from "./PlanLine";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
@@ -183,6 +184,30 @@ const recoveryPresentation = (report: RuntimeV2RecoveryReport) => {
     message: "应用在运行完成前中断，可以重新尝试或结束这次运行。",
     canRetry:
       report.classification === "recoverable" && report.action === "resume",
+  };
+};
+
+const latestPlanForRun = (
+  runtimeSnapshot: RuntimeV2Snapshot | null | undefined,
+  runId: string,
+): PlanPayload | null => {
+  if (!runtimeSnapshot || !runId) return null;
+  const entries = runtimeSnapshot.entries ?? [];
+  const planEntries = entries.filter(
+    (entry) =>
+      entry.type === "plan" && entry.sourceRunId === runId,
+  );
+  if (planEntries.length === 0) return null;
+  const last = planEntries[planEntries.length - 1];
+  const reference = last.data.reference;
+  if (typeof reference !== "object" || reference === null) return null;
+  const payload = reference as Record<string, unknown>;
+  return {
+    title: payload.title,
+    steps: Array.isArray(payload.steps)
+      ? (payload.steps as PlanPayload["steps"])
+      : undefined,
+    currentStepIndex: payload.currentStepIndex,
   };
 };
 
@@ -922,6 +947,18 @@ export function ChatWorkSurface({
                       <div className="turn-notice">回答达到长度上限，内容可能不完整。</div>
                     ) : null}
 
+                    {(() => {
+                      const plan = isLatest
+                        ? latestPlanForRun(runtimeSnapshot, turnSnapshot.turn.id)
+                        : null;
+                      return plan ? (
+                        <PlanLine
+                          active={["created", "running"].includes(status)}
+                          busy={laneBusy}
+                          plan={plan}
+                        />
+                      ) : null;
+                    })()}
                     {turnSnapshot.turn.conversationId ===
                       conversation?.conversation.id &&
                     (status === "completed" ||

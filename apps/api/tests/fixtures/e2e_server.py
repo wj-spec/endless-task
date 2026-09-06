@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import Header, HTTPException
 
 from endless_task.api.app import AppSettings, create_app
+from endless_task.runtime_v2.plan_tool import UpdatePlanTool
 from endless_task.domain.models import (
     ArtifactKind,
     KnowledgeProposalType,
@@ -96,6 +97,44 @@ class E2EProvider:
             ),
             "",
         )
+
+        if "[e2e:plan]" in user_content:
+            # S-P1-3a：模型先声明计划（update_plan，READ_ONLY 免审批），
+            # 之后才给最终回复，制造 PLAN transcript 条目供前端 PlanLine 断言。
+            plan_tool_result = next(
+                (
+                    message
+                    for message in reversed(request.messages)
+                    if message.role == "tool" and message.name == "update_plan"
+                ),
+                None,
+            )
+            if plan_tool_result is None:
+                yield ProviderTextDelta("我先制定计划再执行。")
+                yield ProviderToolCall(
+                    id=f"plan_{request.request_id}",
+                    name="update_plan",
+                    arguments={
+                        "plan": "E2E 测试计划",
+                        "steps": [
+                            {"title": "步骤一：调研", "status": "pending"},
+                            {"title": "步骤二：起草", "status": "in_progress"},
+                        ],
+                    },
+                )
+                yield ProviderCompleted(
+                    finish_reason="tool_calls",
+                    input_tokens=14,
+                    output_tokens=6,
+                )
+                return
+            yield ProviderTextDelta("计划已制定，E2E 回复完成。")
+            yield ProviderCompleted(
+                finish_reason="stop",
+                input_tokens=10,
+                output_tokens=6,
+            )
+            return
 
         if "[e2e:approval]" in user_content:
             tool_result = next(
@@ -221,6 +260,39 @@ app = create_app(
     provider=provider,
     tool_registry=tool_registry,
 )
+
+
+class _ContainerRuntimeProxy:
+    """把生产 UpdatePlanTool 接到 e2e 容器 repo（S-P1-3a 需要真实 PLAN 条目）。"""
+
+    def __init__(self, target_app) -> None:
+        self._app = target_app
+
+    def _repo(self):
+        return self._app.state.container.runtime_v2_repository
+
+    def get_run(self, run_id):
+        try:
+            return self._repo().get_run(run_id)
+        except Exception as exc:  # pragma: no cover - debug
+            print(f"PROXYERR get_run {run_id}: {exc!r}", flush=True)
+            raise
+
+    def append_entry(self, **kwargs):
+        try:
+            return self._repo().append_entry(**kwargs)
+        except Exception as exc:  # pragma: no cover - debug
+            print(f"PROXYERR append_entry: {exc!r}", flush=True)
+            raise
+
+    def append_runtime_event(self, **kwargs):
+        return self._repo().append_runtime_event(**kwargs)
+
+    def list_lane_context_entries(self, lane_id):
+        return self._repo().list_lane_context_entries(lane_id)
+
+
+tool_registry.register(UpdatePlanTool(_ContainerRuntimeProxy(app)))
 
 E2E_MODEL_CREDENTIALS = {
     "Bearer e2e-model-key-one": "key-one",

@@ -61,7 +61,7 @@ test("移动端核心聊天操作保持 44px 触控热区", async ({ page, reque
 
   const controls: Array<[string, Locator]> = [
     ["展开侧栏", page.locator(".mobile-menu")],
-    ["搜索当前会话", page.getByRole("button", { name: "搜索当前会话" })],
+    ["全局搜索", page.getByRole("button", { name: "全局搜索" })],
     ["更多会话操作", page.getByRole("button", { name: "更多会话操作" })],
     ["添加文本文件", page.getByRole("button", { name: "添加文本文件" })],
     ["发送消息", page.getByRole("button", { name: "发送消息" })],
