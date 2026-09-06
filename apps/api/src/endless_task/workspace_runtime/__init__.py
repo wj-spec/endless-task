@@ -9,6 +9,7 @@ from .fs_tools import (
     WriteWorkspaceFileTool,
 )
 from .resolver import WorkspaceBinding, WorkspaceResolver
+from .search_tool import WorkspaceSearchTool
 from .shell_tool import RunShellTool
 from .visibility import WORKSPACE_TOOLS, workspace_tool_filter
 
@@ -20,6 +21,7 @@ __all__ = [
     "ReadSkillFileTool",
     "ReadWorkspaceFileTool",
     "RunShellTool",
+    "WorkspaceSearchTool",
     "WORKSPACE_TOOLS",
     "WorkspaceBinding",
     "WorkspaceResolver",

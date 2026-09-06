@@ -152,6 +152,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                     "run_shell",
                     "spawn_agent",
                     "update_plan",
+                    "workspace_search",
                     "write_workspace_file",
                 ),
                 tuple(tool.name for tool in provider.requests[0].tools),

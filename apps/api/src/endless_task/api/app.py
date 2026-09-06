@@ -117,6 +117,7 @@ from endless_task.workspace_runtime import (
     ReadWorkspaceFileTool,
     RunShellTool,
     WorkspaceResolver,
+    WorkspaceSearchTool,
     WriteWorkspaceFileTool,
 )
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
@@ -2033,6 +2034,12 @@ def _build_container(
             )
         )
         selected_tool_registry.register(ListWorkspaceDirTool(workspace_resolver))
+        selected_tool_registry.register(
+            WorkspaceSearchTool(
+                workspace_resolver,
+                max_file_bytes=settings.max_file_bytes,
+            )
+        )
         selected_tool_registry.register(
             ReadSkillFileTool(
                 skill_roots_for_conversation,

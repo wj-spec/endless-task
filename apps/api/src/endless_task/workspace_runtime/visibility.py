@@ -21,6 +21,7 @@ WORKSPACE_TOOLS: frozenset[str] = frozenset(
         "list_workspace_dir",
         "delete_workspace_file",
         "run_shell",
+        "workspace_search",
     }
 )
 
