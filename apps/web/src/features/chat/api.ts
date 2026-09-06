@@ -36,6 +36,7 @@ import type { KnowledgeProposal,
   RuntimeV2TemporaryConversationCreateResponse,
   RuntimeV2TemporaryConversationPromoteResponse,
   RuntimeV2ProductEvent,
+  HubV2Event,
   RuntimeV2RecoveryResponse,
   RuntimeV2RunSelectResponse,
   RuntimeV2RunVariantListResponse,
@@ -881,22 +882,72 @@ export async function streamRuntimeV2Events(options: {
     while (boundary >= 0) {
       const frame = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-      const eventName = frame
-        .split("\n")
-        .find((line) => line.startsWith("event:"))
-        ?.slice(6)
-        .trim();
-      const data = frame
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
-      if (eventName && data) {
-        const payload = JSON.parse(data);
-        if (eventName === "conversation.snapshot_ready") {
+      const parsed = parseSseFrame(frame);
+      if (parsed.eventName && parsed.data) {
+        const payload = JSON.parse(parsed.data);
+        if (parsed.eventName === "conversation.snapshot_ready") {
           options.onSnapshot(payload as RuntimeV2Snapshot);
         } else {
           options.onProductEvent(payload as RuntimeV2ProductEvent);
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) return;
+  }
+}
+
+/** 解析单条 SSE frame：返回 event 名与 data 文本（无则空串）。 */
+function parseSseFrame(frame: string): { eventName: string; data: string } {
+  const lines = frame.split("\n");
+  const eventName =
+    lines.find((line) => line.startsWith("event:"))?.slice(6).trim() ?? "";
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  return { eventName, data };
+}
+
+export async function streamHubV2Events(options: {
+  afterSequence: number;
+  signal: AbortSignal;
+  onEvent: (event: HubV2Event) => void;
+}): Promise<void> {
+  const streamParams = new URLSearchParams({
+    after_seq: String(options.afterSequence),
+  });
+  const response = await fetch(
+    url(`/api/v2/hub/events?${streamParams.toString()}`),
+    {
+      headers: { Accept: "text/event-stream" },
+      signal: options.signal,
+    },
+  );
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+  if (!response.body) {
+    throw new Error("浏览器无法读取流式响应。");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const parsed = parseSseFrame(frame);
+      if (parsed.eventName.startsWith("hub.") && parsed.data) {
+        try {
+          options.onEvent(JSON.parse(parsed.data) as HubV2Event);
+        } catch {
+          // 单帧损坏跳过，不中断流。
         }
       }
       boundary = buffer.indexOf("\n\n");

@@ -686,6 +686,26 @@ export type RuntimeV2ProductEvent = {
   };
 };
 
+export type HubV2Event = {
+  eventId: string;
+  eventSeq: number;
+  type: string;
+  conversationId: string | null;
+  createdAt: string;
+  data: {
+    kind?: string;
+    conversationId?: string;
+    count?: number;
+    proposalId?: string;
+    decision?: string;
+    id?: string;
+    title?: string;
+    taskId?: string;
+    runId?: string;
+    [key: string]: unknown;
+  };
+};
+
 export type RuntimeV2MessageResponse = {
   conversationId: string;
   laneId: string;
