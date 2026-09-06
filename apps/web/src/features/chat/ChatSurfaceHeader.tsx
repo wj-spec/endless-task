@@ -193,21 +193,13 @@ export function ChatSurfaceHeader({
                 <SearchIcon size={19} />
               </button>
             ) : null}
-            <button
-              aria-label="搜索当前会话"
-              className="icon-button conversation-icon-button"
-              onClick={onSearch}
-              title="搜索当前会话"
-              type="button"
-            >
-              <SearchIcon size={19} />
-            </button>
             <RowMenu
               trigger={<MoreIcon size={20} />}
               triggerAriaLabel="更多会话操作"
               triggerClassName="icon-button conversation-icon-button"
               items={[
                 { label: "重命名", onSelect: () => onSetRenaming(true) },
+                { label: "在当前会话中查找", onSelect: () => onSearch() },
                 ...(onOpenWorkspaceSettings
                   ? [
                       {

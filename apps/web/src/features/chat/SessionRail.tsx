@@ -307,16 +307,33 @@ export function SessionRail({
       <section aria-label="工作区" className="workspace-navigation">
         <div className="workspace-navigation-header">
           <span>工作区</span>
-          <button
-            aria-label="新建工作区"
-            className="icon-button rail-create-workspace"
-            onClick={onCreateWorkspace}
-            ref={createWorkspaceButtonRef}
-            title="新建工作区"
-            type="button"
-          >
-            <AddIcon size={18} />
-          </button>
+          <div className="workspace-header-actions">
+            <button
+              aria-disabled={!workspaceCanCreate}
+              aria-label="新建会话"
+              className="icon-button rail-create-conversation"
+              disabled={!workspaceCanCreate}
+              onClick={onNewConversation}
+              title={
+                !workspaceCanCreate
+                  ? "请先选择并绑定一个工作区目录，再新建会话"
+                  : "在当前工作区新建会话"
+              }
+              type="button"
+            >
+              <AddIcon size={18} />
+            </button>
+            <button
+              aria-label="新建工作区"
+              className="icon-button rail-create-workspace"
+              onClick={onCreateWorkspace}
+              ref={createWorkspaceButtonRef}
+              title="新建工作区"
+              type="button"
+            >
+              <AddIcon size={18} />
+            </button>
+          </div>
         </div>
         <nav
           aria-label="会话列表"
