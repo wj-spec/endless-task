@@ -2134,3 +2134,18 @@
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* B2 记忆巩固：已并入标记与巩固记录 */
+.memory-merged {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--warn-soft, var(--accent-soft));
+  color: var(--warn-deep, var(--accent));
+  font-size: 0.72rem;
+}
+.memory-consolidation-note {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}

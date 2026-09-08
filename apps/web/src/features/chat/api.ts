@@ -18,6 +18,8 @@ import type { KnowledgeProposal,
   PermissionSettings,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
+  MemoryConsolidationRecord,
+  MemoryConsolidationRunReport,
   MemoryForgettingReport,
   RuntimeV2RunUsageCost,
   RuntimeV2MemoryCreateResponse,
@@ -825,6 +827,14 @@ export const chatApi = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  consolidateMemories: () =>
+    request<MemoryConsolidationRunReport>("/memories/consolidate", {
+      method: "POST",
+    }),
+  listMemoryConsolidations: (includeResolved = true) =>
+    request<{ items: MemoryConsolidationRecord[] }>(
+      `/memories/consolidations?include_resolved=${includeResolved}`,
+    ),
   previewMemoryForgetting: () =>
     request<MemoryForgettingReport>("/memories/forgetting-preview"),
   runMemoryForgetting: () =>

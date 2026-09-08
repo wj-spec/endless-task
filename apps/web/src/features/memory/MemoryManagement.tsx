@@ -10,6 +10,13 @@ import {
   retentionHint,
   IMPORTANCE_LEVELS,
 } from "./memoryRetention";
+import {
+  consolidationSourcePreview,
+  consolidationStatusLabel,
+  consolidationSummary,
+  mergedIntoText,
+} from "./memoryConsolidation";
+import type { MemoryConsolidationRecord } from "../chat/apiTypes";
 
 type MemoryContentProps = {
   onOpenConversation: (conversationId: string) => void;
@@ -35,6 +42,12 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     null,
   );
   const [forgettingBusy, setForgettingBusy] = useState(false);
+  // B2：巩固记录与一次巩固扫描的反馈。
+  const [consolidations, setConsolidations] = useState<
+    MemoryConsolidationRecord[]
+  >([]);
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateNote, setConsolidateNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -47,9 +60,18 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     }
   }, []);
 
+  const loadConsolidations = useCallback(async () => {
+    try {
+      setConsolidations((await chatApi.listMemoryConsolidations()).items);
+    } catch {
+      // 巩固记录是附加信息，加载失败不打扰用户。
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadConsolidations();
+  }, [load, loadConsolidations]);
 
   const startEdit = (memory: MemoryRecord) => {
     setEditingId(memory.id);
@@ -70,6 +92,27 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
       setActionError("保存失败，请重试。");
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const runConsolidation = async () => {
+    setConsolidating(true);
+    setActionError(null);
+    setConsolidateNote(null);
+    try {
+      const report = await chatApi.consolidateMemories();
+      setConsolidateNote(
+        report.createdCount > 0
+          ? `发现 ${report.clusterCount} 组同类记忆，已生成 ${report.createdCount} 条合并提案，等待你确认。`
+          : report.clusterCount > 0
+            ? "这些同类记忆已经处理过，不会重复提合并。"
+            : "暂时没有可以合并的同类记忆。",
+      );
+      await loadConsolidations();
+    } catch {
+      setActionError("巩固失败，请重试。");
+    } finally {
+      setConsolidating(false);
     }
   };
 
@@ -169,6 +212,11 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
             </span>
             {memory.pinned ? (
               <span className="memory-pinned">已钉住</span>
+            ) : null}
+            {memory.supersededBy ? (
+              <span className="memory-merged" title="这条记忆已并入一条更高层的记忆">
+                已并入
+              </span>
             ) : null}
           </div>
           {memory.status === "active" ? (
@@ -296,6 +344,55 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
             );
           })
         : null}
+      {!loading && !loadError ? (
+        <section className="profile-group memory-consolidation">
+          <div className="memory-forgetting-head">
+            <h3 className="profile-group-title">记忆巩固</h3>
+            <button
+              className="memory-forgetting-toggle"
+              disabled={consolidating}
+              onClick={() => void runConsolidation()}
+              type="button"
+            >
+              {consolidating ? "整理中…" : "合并同类记忆"}
+            </button>
+          </div>
+          <p className="memory-forgetting-summary">
+            把重复、相近的记忆合并成一条更高层的记忆；
+            <strong>原记忆不会删除</strong>，只是标记为已并入并保留溯源。
+          </p>
+          {consolidateNote ? (
+            <p className="memory-consolidation-note" role="status">
+              {consolidateNote}
+            </p>
+          ) : null}
+          {consolidations.length > 0 ? (
+            <div className="memory-forgetting-list">
+              {consolidations.map((record) => (
+                <div className="memory-forgetting-item" key={record.id}>
+                  <span className="memory-forgetting-content">
+                    {consolidationSourcePreview(record).join("；")}
+                  </span>
+                  <span className="memory-forgetting-risk">
+                    {consolidationSummary(record)}
+                  </span>
+                  {record.status === "accepted" ? (
+                    <span className="memory-forgetting-risk">
+                      {mergedIntoText(record)}
+                    </span>
+                  ) : null}
+                  {record.status === "pending" ? (
+                    <span className="memory-forgetting-risk">
+                      {consolidationStatusLabel(record.status)}：请在提案卡确认
+                    </span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
       {!loading && !loadError ? (
         <section className="profile-group memory-forgetting">
           <div className="memory-forgetting-head">

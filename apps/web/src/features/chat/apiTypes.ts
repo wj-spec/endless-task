@@ -1158,6 +1158,38 @@ export type MemoryRecord = {
   pinned: boolean;
 };
 
+/** B2：一次记忆巩固记录（聚类 → 提案 → 并入）。 */
+export type MemoryConsolidationRecord = {
+  id: string;
+  proposalId: string;
+  kind: string;
+  status: "pending" | "accepted" | "rejected";
+  signature: string;
+  insightMemoryId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  sources: Array<{ id: string; content: string; status: string }>;
+};
+
+/** B2：一次巩固扫描的结果。 */
+export type MemoryConsolidationRunReport = {
+  clusterCount: number;
+  createdCount: number;
+  created: Array<{
+    kind: string;
+    memoryIds: string[];
+    contents: string[];
+    signature: string;
+    mergedContent: string;
+    conversationId: string;
+    turnId: string;
+    proposalId: string;
+    importance: number;
+    reason: string;
+  }>;
+  skipped: string[];
+};
+
 /** B3：一次遗忘巡检的结果。 */
 export type MemoryForgettingReport = {
   dryRun: boolean;

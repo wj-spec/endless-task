@@ -138,6 +138,7 @@ from endless_task.mcp_runtime import McpManager
 from endless_task.proposals.budget import ProposalBudget
 from endless_task.memory import (
     MemoryConflictService,
+    MemoryConsolidationService,
     MemoryForgettingService,
     MemoryProposalService,
 )
@@ -149,6 +150,7 @@ from endless_task.tasks import (
     TaskWorker,
 )
 from endless_task.storage import (
+    SqliteMemoryConsolidationRepository,
     Database,
     SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
@@ -386,6 +388,9 @@ class AppSettings:
     memory_forgetting_enabled: bool = False
     memory_forgetting_interval_hours: float = 24.0
     memory_forgetting_max_per_run: int = 10
+    # B2 记忆巩固：相似度阈值与每次最多产出的巩固提案数。
+    memory_consolidation_threshold: float = 0.5
+    memory_consolidation_max_per_run: int = 3
     hybrid_semantic_weight: float = 0.6
     proposal_daily_budget: int = 6
     proposal_cooldown_minutes: int = 30
@@ -477,6 +482,10 @@ class AppSettings:
             raise ValueError("ENDLESS_TASK_MEMORY_DECAY_TAU must be positive")
         if self.memory_forgetting_interval_hours <= 0:
             raise ValueError("ENDLESS_TASK_MEMORY_FORGETTING_INTERVAL_HOURS must be positive")
+        if not 0 < self.memory_consolidation_threshold <= 1:
+            raise ValueError("ENDLESS_TASK_MEMORY_CONSOLIDATION_THRESHOLD must be within (0, 1]")
+        if self.memory_consolidation_max_per_run < 1:
+            raise ValueError("ENDLESS_TASK_MEMORY_CONSOLIDATION_MAX_PER_RUN must be >= 1")
         if self.memory_forgetting_max_per_run < 1:
             raise ValueError("ENDLESS_TASK_MEMORY_FORGETTING_MAX_PER_RUN must be >= 1")
         if self.hybrid_literal_weight < 0 or self.hybrid_semantic_weight < 0:
@@ -665,6 +674,13 @@ class AppSettings:
             memory_forgetting_max_per_run=int(
                 env.get("ENDLESS_TASK_MEMORY_FORGETTING_MAX_PER_RUN", "10")
             ),
+            memory_consolidation_threshold=_parse_ratio(
+                env.get("ENDLESS_TASK_MEMORY_CONSOLIDATION_THRESHOLD", "0.5"),
+                name="ENDLESS_TASK_MEMORY_CONSOLIDATION_THRESHOLD",
+            ),
+            memory_consolidation_max_per_run=int(
+                env.get("ENDLESS_TASK_MEMORY_CONSOLIDATION_MAX_PER_RUN", "3")
+            ),
             proposal_daily_budget=int(
                 env.get("ENDLESS_TASK_PROPOSAL_DAILY_BUDGET", "6")
             ),
@@ -805,6 +821,7 @@ class AppContainer:
     artifact_file_store: ArtifactFileStore
     knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
     memory_forgetting_service: Optional[MemoryForgettingService]
+    memory_consolidation_service: Optional[MemoryConsolidationService]
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
     task_notification_service: Optional[TaskNotificationService]
@@ -1182,6 +1199,27 @@ def _hub_append_proposal_resolved(
     )
 
 
+def _hub_append_memory_consolidated(
+    container,
+    *,
+    proposal,
+    memory,
+    source_memory_ids,
+) -> None:
+    """B2：巩固落地后推 hub 事件（记忆面板/审计轨迹据此刷新）。"""
+    container.hub_event_repository.append(
+        "memory.consolidated",
+        conversation_id=proposal.conversation_id,
+        data={
+            "proposalId": proposal.id,
+            "conversationId": proposal.conversation_id,
+            "insightMemoryId": memory.id,
+            "sourceMemoryIds": list(source_memory_ids),
+            "sourceCount": len(source_memory_ids),
+        },
+    )
+
+
 def _runtime_v2_lane_json(
     lane: LaneRecord,
     *,
@@ -1459,6 +1497,7 @@ def _build_container(
         max_files_per_conversation=settings.max_files_per_conversation,
     )
     memory_repository = SqliteMemoryRepository(database)
+    memory_consolidation_repository = SqliteMemoryConsolidationRepository(database)
     proposal_repository = SqliteMemoryProposalRepository(database)
     preferences_repository = SqlitePreferencesRepository(database)
     artifact_repository = SqliteArtifactRepository(database)
@@ -2447,6 +2486,13 @@ def _build_container(
         tau_days=settings.memory_decay_tau_days,
         max_per_run=settings.memory_forgetting_max_per_run,
     )
+    memory_consolidation_service = MemoryConsolidationService(
+        memory_repository=memory_repository,
+        proposal_repository=proposal_repository,
+        consolidation_repository=memory_consolidation_repository,
+        threshold=settings.memory_consolidation_threshold,
+        max_clusters_per_run=settings.memory_consolidation_max_per_run,
+    )
     if settings.knowledge_feedback_enabled:
         def _resolve_feedback_chunk(ref_id: str):
             try:
@@ -2700,6 +2746,7 @@ def _build_container(
         artifact_file_store=artifact_file_store,
         knowledge_lifecycle_service=knowledge_lifecycle_service,
         memory_forgetting_service=memory_forgetting_service,
+        memory_consolidation_service=memory_consolidation_service,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
         task_notification_service=task_notification_service,
@@ -3533,6 +3580,63 @@ def create_app(
             return {"dryRun": dry_run, "forgottenCount": 0, "forgotten": [], "needsReview": []}
         report = service.preview() if dry_run else service.run()
         return report.as_json()
+
+    @app.post("/memories/consolidate")
+    async def consolidate_memories() -> dict[str, object]:
+        """B2：扫描同类冗余记忆并生成巩固提案（走确认流，不直接改写记忆）。"""
+        service = container.memory_consolidation_service
+        if service is None:
+            return {"clusterCount": 0, "createdCount": 0, "created": [], "skipped": []}
+        report = service.create_proposals()
+        if report.created:
+            container.hub_event_repository.append(
+                "proposal.pending",
+                conversation_id=report.created[0].proposal.conversation_id,
+                data={
+                    "kind": "memory",
+                    "conversationId": report.created[0].proposal.conversation_id,
+                    "count": len(report.created),
+                },
+            )
+        return report.as_json()
+
+    @app.get("/memories/consolidations")
+    async def list_memory_consolidations(
+        include_resolved: bool = True,
+    ) -> dict[str, object]:
+        """B2：巩固记录（含来源记忆内容），供面板展示溯源。"""
+        service = container.memory_consolidation_service
+        if service is None:
+            return {"items": []}
+        items: list[dict[str, object]] = []
+        for record in service.list_records(include_resolved=include_resolved):
+            sources: list[dict[str, object]] = []
+            for memory_id in record.source_memory_ids:
+                try:
+                    memory = container.memory_repository.get_memory(memory_id)
+                except NotFoundError:
+                    continue
+                sources.append(
+                    {
+                        "id": memory.id,
+                        "content": memory.content,
+                        "status": memory.status.value,
+                    }
+                )
+            items.append(
+                {
+                    "id": record.id,
+                    "proposalId": record.proposal_id,
+                    "kind": record.kind,
+                    "status": record.status,
+                    "signature": record.signature,
+                    "insightMemoryId": record.insight_memory_id,
+                    "createdAt": record.created_at,
+                    "resolvedAt": record.resolved_at,
+                    "sources": sources,
+                }
+            )
+        return {"items": items}
 
     @app.delete("/memories/{memory_id}", status_code=204)
     async def delete_memory(memory_id: str) -> Response:
@@ -4758,6 +4862,8 @@ def create_app(
     ) -> dict[str, object]:
         if body.decision == "reject":
             proposal = container.proposal_repository.reject_proposal(proposal_id)
+            if container.memory_consolidation_service is not None:
+                container.memory_consolidation_service.reject(proposal_id)
             _hub_append_proposal_resolved(
                 container, kind="memory", proposal=proposal, decision="reject"
             )
@@ -4765,6 +4871,19 @@ def create_app(
         proposal, memory = container.proposal_repository.accept_proposal(
             proposal_id
         )
+        consolidated_ids: list[str] = []
+        if container.memory_consolidation_service is not None:
+            merged = container.memory_consolidation_service.finalize(
+                proposal_id, memory
+            )
+            if merged:
+                consolidated_ids = list(merged)
+                _hub_append_memory_consolidated(
+                    container,
+                    proposal=proposal,
+                    memory=memory,
+                    source_memory_ids=merged,
+                )
         _hub_append_proposal_resolved(
             container, kind="memory", proposal=proposal, decision="accept"
         )
@@ -4774,6 +4893,7 @@ def create_app(
         return {
             "proposal": memory_proposal_json(proposal),
             "memory": memory_record_json(memory),
+            "consolidatedMemoryIds": consolidated_ids,
         }
 
     @app.get("/conversations/{conversation_id}/memory-proposals")

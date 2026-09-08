@@ -30,7 +30,10 @@ from endless_task.storage.sqlite_knowledge_proposal_repository import (
 )
 from endless_task.storage.sqlite_knowledge_repository import (
     SqliteKnowledgeRepository,
-    normalize_query,
+)
+from endless_task.text_similarity import (
+    char_trigrams as _char_trigrams,
+    trigram_jaccard as _trigram_jaccard,
 )
 from endless_task.storage.sqlite_retrieval_event_repository import (
     SqliteRetrievalEventRepository,
@@ -52,25 +55,9 @@ def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     return parsed
 
 
-def char_trigrams(text: str) -> frozenset[str]:
-    """归一化后按字符滑窗取三元组；短文本退化为整串。"""
-    normalized = normalize_query(text).replace(" ", "")
-    if not normalized:
-        return frozenset()
-    if len(normalized) < 3:
-        return frozenset({normalized})
-    return frozenset(
-        normalized[index : index + 3] for index in range(len(normalized) - 2)
-    )
-
-
-def trigram_jaccard(left: frozenset[str], right: frozenset[str]) -> float:
-    if not left or not right:
-        return 0.0
-    union = len(left | right)
-    if not union:
-        return 0.0
-    return len(left & right) / union
+#: 相似度工具统一放在 text_similarity（runtime 记忆巩固也用同一套，避免环）。
+char_trigrams = _char_trigrams
+trigram_jaccard = _trigram_jaccard
 
 
 class KnowledgeLifecycleService:
