@@ -441,6 +441,9 @@ export type RuntimeV2Approval = {
   toolName: string;
   summary: string;
   reason: string;
+  /** 风险等级（低/中/高），用于前端风险色提示。 */
+  effect?: string | null;
+  risk?: "low" | "medium" | "high" | null;
 };
 
 export type RuntimeV2RecoveryReport = {

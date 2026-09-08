@@ -201,11 +201,27 @@ const recoveryPresentation = (report: RuntimeV2RecoveryReport) => {
   };
 };
 
+const APPROVAL_RISK_LABELS: Record<"low" | "medium" | "high", string> = {
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+};
+
+// 审批风险等级：优先用后端下发的 risk；缺失时按工具名兜底推导。
+const approvalRisk = (
+  metadata?: Record<string, unknown>,
+): "low" | "medium" | "high" => {
+  const risk = metadata?.risk;
+  if (risk === "low" || risk === "medium" || risk === "high") return risk;
+  const name = String(metadata?.toolName ?? "").toLowerCase();
+  if (/(delete|remove|drop|truncate|wipe|unlink)/.test(name)) return "high";
+  return "medium";
+};
+
 const latestPlanForRun = (
   runtimeSnapshot: RuntimeV2Snapshot | null | undefined,
   runId: string,
-): PlanPayload | null => {
-  if (!runtimeSnapshot || !runId) return null;
+): PlanPayload | null => {  if (!runtimeSnapshot || !runId) return null;
   const entries = runtimeSnapshot.entries ?? [];
   const planEntries = entries.filter(
     (entry) =>
@@ -1021,11 +1037,35 @@ export function ChatWorkSurface({
                       </div>
                     ) : null}
                     {pendingApproval ? (
-                      <div className="approval-prompt" role="group" aria-label="操作确认">
-                        <strong>{pendingApproval.summary}</strong>
-                        <p>{pendingApproval.reason}</p>
+                      <div
+                        className={`approval-prompt is-${
+                          approvalRisk(pendingApproval.metadata)
+                        }`}
+                        role="group"
+                        aria-label="操作确认"
+                      >
+                        <div className="approval-head">
+                          <span className="approval-risk-badge">
+                            {APPROVAL_RISK_LABELS[approvalRisk(pendingApproval.metadata)]}
+                          </span>
+                          <strong className="approval-summary">
+                            {pendingApproval.summary}
+                          </strong>
+                        </div>
+                        <p className="approval-reason">{pendingApproval.reason}</p>
+                        <details className="approval-context">
+                          <summary>为什么？</summary>
+                          <div className="approval-context-body">
+                            工具：
+                            {String(pendingApproval.metadata?.toolName ?? "未知")}
+                            {pendingApproval.metadata?.effect
+                              ? ` · 影响范围：${String(pendingApproval.metadata.effect)}`
+                              : ""}
+                          </div>
+                        </details>
                         <div className="approval-actions">
                           <button
+                            className="approval-allow"
                             disabled={pendingAction !== null}
                             onClick={() =>
                               onResolveApproval(
@@ -1039,6 +1079,7 @@ export function ChatWorkSurface({
                             允许一次
                           </button>
                           <button
+                            className="approval-deny"
                             disabled={pendingAction !== null}
                             onClick={() =>
                               onResolveApproval(
@@ -1052,6 +1093,9 @@ export function ChatWorkSurface({
                             不允许
                           </button>
                         </div>
+                        <span className="approval-timeout">
+                          不响应则暂停，不会执行。
+                        </span>
                       </div>
                     ) : null}
                     {persistedVariant.variant.finishReason === "length" ? (

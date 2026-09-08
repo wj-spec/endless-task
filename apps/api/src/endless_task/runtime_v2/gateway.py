@@ -132,6 +132,24 @@ class PendingApproval:
     metadata: dict
 
 
+def derive_approval_risk(effect: str, tool_name: str) -> str:
+    """按可逆性/影响范围推导审批风险等级（低/中/高）。
+
+    只读不触发审批；本地写=中；外部动作/删除类=高。供前端做风险色提示。
+    """
+    name = (tool_name or "").lower()
+    if effect == ToolEffect.EXTERNAL_ACTION.value:
+        return "high"
+    if any(
+        token in name
+        for token in ("delete", "remove", "rm ", "drop", "unlink", "truncate", "wipe")
+    ):
+        return "high"
+    if effect == ToolEffect.LOCAL_WRITE.value:
+        return "medium"
+    return "low"
+
+
 @dataclass
 class _ActiveRun:
     run_id: str
@@ -169,6 +187,10 @@ class GatewayToolApprovalGate(ToolApprovalGate):
         approval_id = execution.id
         model_turn = self._repository.get_model_turn(execution.model_turn_id)
         prompt = self._approval_prompt(tool, call)
+        meta = dict(prompt.metadata)
+        meta.setdefault("toolName", tool.definition.name)
+        meta.setdefault("effect", tool.definition.effect.value)
+        meta["risk"] = derive_approval_risk(tool.definition.effect.value, tool.definition.name)
         pending = PendingApproval(
             approval_id=approval_id,
             run_id=model_turn.run_id,
@@ -177,7 +199,7 @@ class GatewayToolApprovalGate(ToolApprovalGate):
             tool_name=tool.definition.name,
             summary=prompt.summary,
             reason=prompt.reason,
-            metadata=dict(prompt.metadata),
+            metadata=meta,
         )
         future = asyncio.get_running_loop().create_future()
         async with self._lock:
@@ -512,12 +534,18 @@ class ProductRuntimeEventProjection:
                 "percent": payload.get("percent"),
             }
         if event_type == "approval_requested":
+            meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            effect = str(meta.get("effect") or "")
+            tool_name = str(meta.get("toolName") or "")
             return "approval.requested", {
                 "runId": event.run_id,
                 "approvalId": _string(payload, "approvalId"),
                 "toolExecutionId": _string(payload, "toolExecutionId"),
+                "toolName": tool_name,
                 "summary": _string(payload, "summary"),
                 "reason": _string(payload, "reason"),
+                "effect": effect,
+                "risk": str(meta.get("risk") or derive_approval_risk(effect, tool_name)),
             }
         if event_type == "approval_resolved":
             return "approval.resolved", {
@@ -1609,6 +1637,7 @@ def _tool_states_json(
 
 
 def _approval_json(approval: PendingApproval) -> dict[str, object]:
+    effect = str(approval.metadata.get("effect") or "")
     return {
         "id": approval.approval_id,
         "runId": approval.run_id,
@@ -1617,6 +1646,11 @@ def _approval_json(approval: PendingApproval) -> dict[str, object]:
         "toolName": approval.tool_name,
         "summary": approval.summary,
         "reason": approval.reason,
+        "effect": effect,
+        "risk": str(
+            approval.metadata.get("risk")
+            or derive_approval_risk(effect, approval.tool_name)
+        ),
     }
 
 

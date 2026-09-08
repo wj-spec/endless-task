@@ -735,19 +735,67 @@
   border-left: 2px solid var(--accent-muted);
 }
 
-.approval-prompt strong {
-  display: block;
+.approval-prompt.is-low { border-left-color: var(--success); }
+.approval-prompt.is-medium { border-left-color: var(--warn-mid); }
+.approval-prompt.is-high { border-left-color: var(--danger-mid); }
+
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-prompt strong.approval-summary {
+  display: inline;
   color: var(--ink-raise);
   font-size: var(--fs-3);
   font-weight: 650;
 }
 
-.approval-prompt p {
+.approval-risk-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--fs-1);
+  font-weight: 600;
+}
+.approval-prompt.is-low .approval-risk-badge {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+.approval-prompt.is-medium .approval-risk-badge {
+  color: var(--warn-mid);
+  background: color-mix(in srgb, var(--warn-mid) 14%, transparent);
+}
+.approval-prompt.is-high .approval-risk-badge {
+  color: var(--danger-deep);
+  background: color-mix(in srgb, var(--danger-deep) 12%, transparent);
+}
+
+.approval-prompt p.approval-reason {
   max-width: 580px;
   margin: 6px 0 0;
   color: var(--muted);
   font-size: var(--fs-2);
   line-height: 1.65;
+}
+
+.approval-context {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: var(--fs-2);
+}
+.approval-context summary {
+  color: var(--accent);
+  cursor: pointer;
+  user-select: none;
+}
+.approval-context-body {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--muted-strong);
 }
 
 .approval-actions {
@@ -765,13 +813,20 @@
   font-size: var(--fs-2);
 }
 
-.approval-actions button:first-child {
+.approval-actions button.approval-allow {
   border-bottom-color: var(--accent-deep);
   color: var(--accent);
 }
 
 .approval-actions button:hover:not(:disabled) {
   border-bottom-color: currentColor;
+}
+
+.approval-timeout {
+  display: block;
+  margin-top: 8px;
+  color: var(--faint);
+  font-size: var(--fs-1);
 }
 
 .response-actions {

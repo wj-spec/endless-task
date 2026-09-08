@@ -134,7 +134,11 @@ const pendingApprovalFromRuntime = (
     status: "pending",
     createdAt: runtime.lastEventSeq ? new Date().toISOString() : "",
     resolvedAt: null,
-    metadata: { toolName: approval.toolName },
+    metadata: {
+      toolName: approval.toolName,
+      effect: approval.effect ?? null,
+      risk: approval.risk ?? null,
+    },
   };
 };
 
@@ -373,7 +377,11 @@ export function useChatApplication() {
           status: "pending",
           createdAt: event.createdAt,
           resolvedAt: null,
-          metadata: {},
+          metadata: {
+            toolName: String(event.data.toolName ?? ""),
+            effect: String(event.data.effect ?? "") || null,
+            risk: (event.data.risk as "low" | "medium" | "high" | undefined) ?? null,
+          },
         };
       }
       if (event.type === "approval.resolved" && event.data.approvalId) {
