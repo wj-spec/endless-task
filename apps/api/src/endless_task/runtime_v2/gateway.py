@@ -1257,6 +1257,7 @@ class RuntimeV2SessionGateway:
                 ),
                 "toolStates": (),
                 "contextUsage": {"inputTokens": 0, "outputTokens": 0},
+                "contextBudget": _context_budget_json(0, self._context_window_tokens),
                 "interruptedRuns": self._recovery_reports_json(conversation_id),
                 "capabilities": V2_CAPABILITIES,
             }
@@ -1285,6 +1286,11 @@ class RuntimeV2SessionGateway:
                 "inputTokens": runtime_snapshot.input_tokens,
                 "outputTokens": runtime_snapshot.output_tokens,
             },
+            "contextBudget": _context_budget_json(
+                (runtime_snapshot.input_tokens or 0)
+                + (runtime_snapshot.output_tokens or 0),
+                self._context_window_tokens,
+            ),
             "interruptedRuns": self._recovery_reports_json(conversation_id),
             "capabilities": V2_CAPABILITIES,
         }
@@ -1634,6 +1640,17 @@ def _tool_states_json(
         for turn in snapshot.active_run.model_turns
         for tool in turn.tool_executions
     )
+
+
+def _context_budget_json(used: int, limit: Optional[int]) -> dict[str, object]:
+    limit = limit or 32_768
+    ratio = min(1.0, used / limit) if limit else 0.0
+    return {
+        "limitTokens": limit,
+        "usedTokens": used,
+        "usedRatio": round(ratio, 4),
+        "remainingTokens": max(0, limit - used),
+    }
 
 
 def _approval_json(approval: PendingApproval) -> dict[str, object]:

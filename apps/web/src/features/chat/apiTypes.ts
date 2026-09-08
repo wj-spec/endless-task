@@ -494,6 +494,12 @@ export type RuntimeV2Snapshot = {
     inputTokens: number;
     outputTokens: number;
   };
+  contextBudget?: {
+    limitTokens: number;
+    usedTokens: number;
+    usedRatio: number;
+    remainingTokens: number;
+  };
   interruptedRuns: RuntimeV2RecoveryReport[];
   capabilities: string[];
 };

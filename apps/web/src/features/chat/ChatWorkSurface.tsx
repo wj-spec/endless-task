@@ -37,6 +37,7 @@ import type { TurnProposals } from "../proposals/useProposals";
 import { CollapsibleMessage } from "./CollapsibleMessage";
 import { MessageContent } from "./MessageContent";
 import { ResponseFeedbackControl } from "./ResponseFeedbackControl";
+import { ContextBudgetMeter } from "./ContextBudgetMeter";
 import { CopyButton } from "./CopyButton";
 import { PlanLine, type PlanPayload } from "./PlanLine";
 import { runStageLabel } from "./runtimeStage";
@@ -543,6 +544,10 @@ export function ChatWorkSurface({
           onSwitchLane={onSwitchLane}
           onTitleDraftChange={setTitleDraft}
         />
+
+        {variant === "main" ? (
+          <ContextBudgetMeter budget={runtimeSnapshot?.contextBudget} />
+        ) : null}
 
         {conversation?.conversation.kind === "ephemeral" ? (
           <div className="branch-banner" role="note">
