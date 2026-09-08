@@ -2657,3 +2657,113 @@ button.citation-chip:focus-visible {
   color: var(--danger-deep, var(--danger));
   font-size: 0.78rem;
 }
+
+/* A8 决策解释 / 审计轨迹 */
+.audit-trail {
+  width: min(760px, 100%);
+  margin: 10px auto 0;
+}
+.audit-trail-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.audit-trail-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.audit-trail-count {
+  color: var(--muted);
+}
+.audit-trail-body {
+  margin-top: 8px;
+  padding: 10px var(--space-4, 14px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m, 10px);
+  background: var(--surface);
+}
+.audit-trail-hint,
+.audit-trail-error {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.audit-trail-error {
+  color: var(--danger-deep, var(--danger));
+}
+.audit-entry {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.audit-entry:last-child {
+  border-bottom: none;
+}
+.audit-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+.audit-entry-kind {
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+.audit-entry-title {
+  flex: 1 1 180px;
+  color: var(--text);
+}
+.audit-entry-severity {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.audit-critical .audit-entry-severity {
+  color: var(--danger-deep, var(--danger));
+}
+.audit-warning .audit-entry-severity {
+  color: var(--warn-deep, var(--accent));
+}
+.audit-entry-why {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.audit-entry-why:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.audit-entry-summary {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.audit-entry-why-body {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent-soft);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.audit-entry-why-body p {
+  margin: 0 0 4px;
+}
+.audit-entry-why-body p:last-child {
+  margin-bottom: 0;
+}

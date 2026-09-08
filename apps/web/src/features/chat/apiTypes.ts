@@ -1158,6 +1158,33 @@ export type MemoryRecord = {
   pinned: boolean;
 };
 
+/** A8 决策解释/审计轨迹：一条带"为什么"的运行事实。 */
+export type AuditTrailEntry = {
+  id: string;
+  kind: string;
+  title: string;
+  summary: string;
+  rationale: string;
+  counterfactual: string;
+  uncertainty: string;
+  /** info | warning | critical */
+  severity: string;
+  occurredAt: string;
+  toolName: string;
+  effect: string;
+  risk: string;
+  decision: string;
+  options: string[];
+  refs: Record<string, string>;
+};
+
+export type AuditTrailResponse = {
+  runId: string;
+  conversationId: string;
+  items: AuditTrailEntry[];
+  counts: Record<string, number>;
+};
+
 /** A5 撤销/回滚：一条可逆的工具副作用记录。 */
 export type UndoJournalEntry = {
   id: string;

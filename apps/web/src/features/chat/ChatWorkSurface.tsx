@@ -48,6 +48,7 @@ import { VerificationBadge } from "./VerificationBadge";
 import { deriveVerificationState } from "./verification";
 import { UsageMeter } from "./UsageMeter";
 import { UndoNotice } from "./UndoNotice";
+import { AuditTrailPanel } from "./AuditTrailPanel";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
@@ -712,6 +713,15 @@ export function ChatWorkSurface({
         />
 
         {usageState ? <UsageMeter usage={usageState} /> : null}
+
+        <AuditTrailPanel
+          refreshKey={runtimeSnapshot?.lastEventSeq ?? null}
+          runId={
+            runtimeSnapshot?.activeRunId ??
+            runtimeSnapshot?.runningRunId ??
+            null
+          }
+        />
 
         {verificationState ? (
           <VerificationBadge

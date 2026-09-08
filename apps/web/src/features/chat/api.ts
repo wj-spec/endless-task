@@ -18,6 +18,7 @@ import type { KnowledgeProposal,
   PermissionSettings,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
+  AuditTrailResponse,
   MemoryConsolidationRecord,
   UndoJournalEntry,
   MemoryConsolidationRunReport,
@@ -828,6 +829,8 @@ export const chatApi = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  getRunAuditTrail: (runId: string) =>
+    request<AuditTrailResponse>(`/api/v2/runs/${runId}/audit-trail`),
   listUndoJournal: (conversationId: string, limit = 10) =>
     request<{ items: UndoJournalEntry[]; latestAvailableId: string | null }>(
       `/conversations/${conversationId}/undo-journal?limit=${limit}`,
