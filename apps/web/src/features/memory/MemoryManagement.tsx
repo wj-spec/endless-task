@@ -117,7 +117,11 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
               >
                 来自「{memory.sourceConversationTitle}」
               </button>
-            ) : null}
+            ) : (
+              <span className="memory-source is-unattributed" title="这条记忆没有可溯源的来源">
+                未溯源
+              </span>
+            )}
             <span>更新于 {formatRelativeTime(memory.updatedAt)}</span>
           </div>
           {memory.status === "active" ? (
