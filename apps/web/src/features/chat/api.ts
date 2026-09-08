@@ -19,6 +19,7 @@ import type { KnowledgeProposal,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
   AuditTrailResponse,
+  MemoryReflectionRecord,
   MemoryConsolidationRecord,
   UndoJournalEntry,
   MemoryConsolidationRunReport,
@@ -829,6 +830,10 @@ export const chatApi = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  listMemoryReflections: (includeResolved = true, limit = 20) =>
+    request<{ items: MemoryReflectionRecord[] }>(
+      `/reflections?include_resolved=${includeResolved}&limit=${limit}`,
+    ),
   getRunAuditTrail: (runId: string) =>
     request<AuditTrailResponse>(`/api/v2/runs/${runId}/audit-trail`),
   listUndoJournal: (conversationId: string, limit = 10) =>

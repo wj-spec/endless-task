@@ -2149,3 +2149,9 @@
   font-size: 0.8rem;
   line-height: 1.5;
 }
+
+/* B4 反思洞见 */
+.memory-reflection {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}

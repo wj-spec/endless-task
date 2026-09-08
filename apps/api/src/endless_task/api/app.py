@@ -145,6 +145,8 @@ from endless_task.memory import (
     MemoryConsolidationService,
     MemoryForgettingService,
     MemoryProposalService,
+    MemoryReflectionService,
+    ReflectionTerminalObserver,
 )
 from endless_task.tasks import (
     TaskNotificationService,
@@ -155,6 +157,7 @@ from endless_task.tasks import (
 )
 from endless_task.storage import (
     SqliteMemoryConsolidationRepository,
+    SqliteMemoryReflectionRepository,
     SqliteUndoJournalRepository,
     Database,
     SqliteArtifactProposalRepository,
@@ -393,6 +396,8 @@ class AppSettings:
     memory_forgetting_enabled: bool = False
     memory_forgetting_interval_hours: float = 24.0
     memory_forgetting_max_per_run: int = 10
+    # B4 反思：终态运行（含失败）自动归纳洞见（走提案确认，默认开）。
+    reflection_enabled: bool = True
     # B2 记忆巩固：相似度阈值与每次最多产出的巩固提案数。
     memory_consolidation_threshold: float = 0.5
     memory_consolidation_max_per_run: int = 3
@@ -672,6 +677,9 @@ class AppSettings:
             memory_forgetting_enabled=_parse_flag(
                 env.get("ENDLESS_TASK_MEMORY_FORGETTING", "0")
             ),
+            reflection_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_MEMORY_REFLECTION", "1")
+            ),
             memory_forgetting_interval_hours=_parse_positive_float(
                 env.get("ENDLESS_TASK_MEMORY_FORGETTING_INTERVAL_HOURS", "24"),
                 name="ENDLESS_TASK_MEMORY_FORGETTING_INTERVAL_HOURS",
@@ -828,6 +836,7 @@ class AppContainer:
     memory_forgetting_service: Optional[MemoryForgettingService]
     memory_consolidation_service: Optional[MemoryConsolidationService]
     undo_service: Optional[WorkspaceUndoService]
+    memory_reflection_service: Optional[MemoryReflectionService]
     undo_journal_repository: SqliteUndoJournalRepository
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
@@ -1204,6 +1213,22 @@ def _hub_append_proposal_resolved(
             "decision": decision,
         },
     )
+
+
+def _memory_reflection_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "conversationId": record.conversation_id,
+        "runId": record.run_id,
+        "trigger": record.trigger,
+        "status": record.status,
+        "insight": record.insight_content,
+        "proposalId": record.proposal_id,
+        "insightMemoryId": record.insight_memory_id,
+        "createdAt": record.created_at,
+        "resolvedAt": record.resolved_at,
+        "sources": [dict(item) for item in record.source_refs],
+    }
 
 
 def _audit_fact_from_event(container, event) -> Optional[AuditFact]:
@@ -1707,6 +1732,7 @@ def _build_container(
         max_files_per_conversation=settings.max_files_per_conversation,
     )
     memory_repository = SqliteMemoryRepository(database)
+    memory_reflection_repository = SqliteMemoryReflectionRepository(database)
     undo_journal_repository = SqliteUndoJournalRepository(database)
     memory_consolidation_repository = SqliteMemoryConsolidationRepository(database)
     proposal_repository = SqliteMemoryProposalRepository(database)
@@ -1906,6 +1932,26 @@ def _build_container(
                     )
                 ),
             )
+        )
+    # B4 反思：任何终态运行（含失败）都走 fanout 触发一次反思（fail-open）。
+    memory_reflection_service = MemoryReflectionService(
+        runtime_repository=runtime_v2_repository,
+        memory_repository=memory_repository,
+        proposal_repository=proposal_repository,
+        reflection_repository=memory_reflection_repository,
+        hub_event_sink=lambda conversation_id, count: hub_event_repository.append(
+            "proposal.pending",
+            conversation_id=conversation_id,
+            data={
+                "kind": "memory",
+                "conversationId": conversation_id,
+                "count": count,
+            },
+        ),
+    )
+    if settings.reflection_enabled:
+        trace_fanout_members.append(
+            ReflectionTerminalObserver(memory_reflection_service)
         )
     if trace_fanout_members:
         runtime_v2_trace_observer = FanoutTraceObserver(trace_fanout_members)
@@ -2968,6 +3014,7 @@ def _build_container(
         memory_forgetting_service=memory_forgetting_service,
         memory_consolidation_service=memory_consolidation_service,
         undo_service=undo_service,
+        memory_reflection_service=memory_reflection_service,
         undo_journal_repository=undo_journal_repository,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
@@ -5086,6 +5133,8 @@ def create_app(
             proposal = container.proposal_repository.reject_proposal(proposal_id)
             if container.memory_consolidation_service is not None:
                 container.memory_consolidation_service.reject(proposal_id)
+            if container.memory_reflection_service is not None:
+                container.memory_reflection_service.reject(proposal_id)
             _hub_append_proposal_resolved(
                 container, kind="memory", proposal=proposal, decision="reject"
             )
@@ -5106,6 +5155,8 @@ def create_app(
                     memory=memory,
                     source_memory_ids=merged,
                 )
+        if container.memory_reflection_service is not None:
+            container.memory_reflection_service.finalize(proposal_id, memory)
         _hub_append_proposal_resolved(
             container, kind="memory", proposal=proposal, decision="accept"
         )
@@ -5116,6 +5167,45 @@ def create_app(
             "proposal": memory_proposal_json(proposal),
             "memory": memory_record_json(memory),
             "consolidatedMemoryIds": consolidated_ids,
+        }
+
+    @app.get("/reflections")
+    async def list_all_memory_reflections(
+        include_resolved: bool = True,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """B4：跨会话的反思记录（记忆面板用）。"""
+        service = container.memory_reflection_service
+        if service is None:
+            return {"items": []}
+        return {
+            "items": [
+                _memory_reflection_json(record)
+                for record in service.list_records(
+                    include_resolved=include_resolved, limit=limit
+                )
+            ]
+        }
+
+    @app.get("/conversations/{conversation_id}/reflections")
+    async def list_memory_reflections(
+        conversation_id: str,
+        include_resolved: bool = True,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """B4：反思记录（洞见 + 来源 Episode），供面板溯源。"""
+        service = container.memory_reflection_service
+        if service is None:
+            return {"items": []}
+        return {
+            "items": [
+                _memory_reflection_json(record)
+                for record in service.list_records(
+                    conversation_id=conversation_id,
+                    include_resolved=include_resolved,
+                    limit=limit,
+                )
+            ]
         }
 
     @app.get("/conversations/{conversation_id}/undo-journal")

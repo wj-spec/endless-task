@@ -11,6 +11,12 @@ from .forgetting_service import (
     MemoryForgettingService,
 )
 from .proposal_service import MemoryProposalService
+from .reflection_service import (
+    MemoryReflectionService,
+    ReflectionCandidate,
+    ReflectionRunReport,
+    ReflectionTerminalObserver,
+)
 
 __all__ = [
     "CONSOLIDATED_REASON",
@@ -22,4 +28,8 @@ __all__ = [
     "MemoryForgettingReport",
     "MemoryForgettingService",
     "MemoryProposalService",
+    "MemoryReflectionService",
+    "ReflectionCandidate",
+    "ReflectionRunReport",
+    "ReflectionTerminalObserver",
 ]

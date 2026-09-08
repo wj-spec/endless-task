@@ -16,7 +16,15 @@ import {
   consolidationSummary,
   mergedIntoText,
 } from "./memoryConsolidation";
-import type { MemoryConsolidationRecord } from "../chat/apiTypes";
+import type {
+  MemoryConsolidationRecord,
+  MemoryReflectionRecord,
+} from "../chat/apiTypes";
+import {
+  reflectionSourceText,
+  reflectionStatusLabel,
+  reflectionTriggerLabel,
+} from "./memoryReflection";
 
 type MemoryContentProps = {
   onOpenConversation: (conversationId: string) => void;
@@ -47,6 +55,8 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     MemoryConsolidationRecord[]
   >([]);
   const [consolidating, setConsolidating] = useState(false);
+  // B4 反思：从失败中归纳出的洞见及其来源。
+  const [reflections, setReflections] = useState<MemoryReflectionRecord[]>([]);
   const [consolidateNote, setConsolidateNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -68,10 +78,19 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     }
   }, []);
 
+  const loadReflections = useCallback(async () => {
+    try {
+      setReflections((await chatApi.listMemoryReflections()).items);
+    } catch {
+      // 反思记录是附加信息，加载失败不打扰用户。
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     void loadConsolidations();
-  }, [load, loadConsolidations]);
+    void loadReflections();
+  }, [load, loadConsolidations, loadReflections]);
 
   const startEdit = (memory: MemoryRecord) => {
     setEditingId(memory.id);
@@ -390,6 +409,29 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
               ))}
             </div>
           ) : null}
+        </section>
+      ) : null}
+
+      {!loading && !loadError && reflections.length > 0 ? (
+        <section className="profile-group memory-reflection">
+          <h3 className="profile-group-title">反思洞见（{reflections.length}）</h3>
+          <p className="memory-forgetting-summary">
+            助手从失败中归纳出的教训；确认后会作为重要记忆长期保留。
+          </p>
+          <div className="memory-forgetting-list">
+            {reflections.map((record) => (
+              <div className="memory-forgetting-item" key={record.id}>
+                <span className="memory-forgetting-content">{record.insight}</span>
+                <span className="memory-forgetting-risk">
+                  {reflectionTriggerLabel(record.trigger)} ·{" "}
+                  {reflectionStatusLabel(record.status)}
+                </span>
+                <span className="memory-forgetting-risk">
+                  {reflectionSourceText(record)}
+                </span>
+              </div>
+            ))}
+          </div>
         </section>
       ) : null}
 

@@ -1158,6 +1158,22 @@ export type MemoryRecord = {
   pinned: boolean;
 };
 
+/** B4 反思：一条从失败中归纳出的洞见及其来源。 */
+export type MemoryReflectionRecord = {
+  id: string;
+  conversationId: string;
+  runId: string | null;
+  trigger: string;
+  /** pending | accepted | rejected */
+  status: string;
+  insight: string;
+  proposalId: string;
+  insightMemoryId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  sources: Array<Record<string, unknown>>;
+};
+
 /** A8 决策解释/审计轨迹：一条带"为什么"的运行事实。 */
 export type AuditTrailEntry = {
   id: string;

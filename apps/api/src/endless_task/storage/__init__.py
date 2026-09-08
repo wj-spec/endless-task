@@ -12,6 +12,10 @@ from .sqlite_memory_consolidation_repository import (
     MemoryConsolidationRecord,
     SqliteMemoryConsolidationRepository,
 )
+from .sqlite_memory_reflection_repository import (
+    MemoryReflectionRecord,
+    SqliteMemoryReflectionRepository,
+)
 from .sqlite_memory_repository import SqliteMemoryRepository
 from .sqlite_preferences_repository import SqlitePreferencesRepository
 from .sqlite_memory_proposal_repository import SqliteMemoryProposalRepository
@@ -42,6 +46,8 @@ __all__ = [
     "FILE_DELETE",
     "FILE_WRITE",
     "MemoryConsolidationRecord",
+    "MemoryReflectionRecord",
+    "SqliteMemoryReflectionRepository",
     "UNDONE",
     "SqliteUndoJournalRepository",
     "UndoJournalEntry",
