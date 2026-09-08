@@ -8,6 +8,7 @@ import {
   buildRunTimeline,
   buildRuntimeToolTrace,
   extractWorkspaceSourceRefs,
+  groupTimeline,
   toolStatusToPhase,
   type RuntimeToolItem,
 } from "./runtimeTrace";
@@ -353,5 +354,52 @@ describe("extractWorkspaceSourceRefs", () => {
     ]);
     expect(refs).toHaveLength(1);
     expect(refs[0]).toMatchObject({ path: "notes.txt", startLine: 1, endLine: 1 });
+  });
+});
+
+describe("groupTimeline（工具组默认折叠）", () => {
+  const tool = (id: string, over: Partial<RuntimeToolItem> = {}): RuntimeToolItem => ({
+    key: id,
+    toolName: "read_text_file",
+    phase: "completed",
+    isError: false,
+    hasArgs: false,
+    hasResult: true,
+    ...over,
+  });
+
+  it("连续工具卡合并为一组，文本片段独立保留", () => {
+    const groups = groupTimeline([
+      { id: "t1", kind: "text", text: "先看一下。" },
+      { id: "c1", kind: "tool", tool: tool("e1") },
+      { id: "c2", kind: "tool", tool: tool("e2") },
+      { id: "t2", kind: "text", text: "结论如下。" },
+      { id: "c3", kind: "tool", tool: tool("e3") },
+    ]);
+    expect(groups.map((group) => group.kind)).toEqual([
+      "text",
+      "tools",
+      "text",
+      "tools",
+    ]);
+    expect(groups[1]).toMatchObject({ kind: "tools" });
+    expect(
+      groups[1].kind === "tools" ? groups[1].tools.map((item) => item.key) : [],
+    ).toEqual(["e1", "e2"]);
+    expect(groups[3].kind === "tools" ? groups[3].tools.length : 0).toBe(1);
+  });
+
+  it("只有工具时合并成单组", () => {
+    const groups = groupTimeline([
+      { id: "c1", kind: "tool", tool: tool("e1") },
+      { id: "c2", kind: "tool", tool: tool("e2") },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].kind).toBe("tools");
+  });
+
+  it("空时间线返回空数组", () => {
+    expect(groupTimeline(null)).toEqual([]);
+    expect(groupTimeline([])).toEqual([]);
   });
 });

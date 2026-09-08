@@ -71,6 +71,38 @@ const terminalRunTypes = new Set(["run.finished", "run.failed", "run.cancelled"]
  * 事件里没有的字段（如 name/status）作为兜底。仅当能拿到该 run 的事件序列且
  * 确实出现工具时返回交错时间线，否则返回 null（调用方回退到现有布局）。
  */
+/** 时间线渲染分组：文本片段照常展示，连续的工具卡合并成一组（默认折叠）。 */
+export type TimelineRenderGroup =
+  | { kind: "text"; key: string; text: string }
+  | { kind: "tools"; key: string; tools: RuntimeToolItem[] };
+
+/**
+ * 把交错时间线折成"文本 / 工具组"序列：连续的工具卡合成一组，便于 UI 默认折叠，
+ * 同时保证回答正文（text 项）始终可见。
+ */
+export const groupTimeline = (
+  items: LiveTimelineItem[] | null | undefined,
+): TimelineRenderGroup[] => {
+  if (!items?.length) return [];
+  const groups: TimelineRenderGroup[] = [];
+  let buffer: RuntimeToolItem[] = [];
+  const flush = (index: number) => {
+    if (!buffer.length) return;
+    groups.push({ kind: "tools", key: `tools-${index}`, tools: buffer });
+    buffer = [];
+  };
+  items.forEach((item, index) => {
+    if (item.kind === "tool") {
+      buffer.push(item.tool);
+      return;
+    }
+    flush(index);
+    groups.push({ kind: "text", key: item.id, text: item.text });
+  });
+  flush(items.length);
+  return groups;
+};
+
 export const buildRunTimeline = (
   events: RuntimeV2ProductEvent[] | undefined,
   tools: RuntimeToolItem[],

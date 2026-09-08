@@ -219,12 +219,35 @@ function renderResult(tool: RuntimeToolItem) {
  * badge so this list never competes as a second live region.
  */
 export function RuntimeTracePanel({ tools }: { tools: RuntimeToolItem[] }) {
+  const [open, setOpen] = useState(false);
   if (!tools.length) return null;
+  // 回退路径（没有交错时间线时）：与时间线一致，默认折叠为一行摘要。
+  const failed = tools.filter((tool) => tool.isError).length;
+  const tone = failed > 0 ? "danger" : "ok";
   return (
-    <div className="runtime-trace" aria-label="工具执行过程">
-      {tools.map((tool) => (
-        <RuntimeToolCard key={tool.key} tool={tool} />
-      ))}
+    <div className="runtime-trace">
+      <button
+        aria-expanded={open}
+        className={`tool-trace-head is-${tone}`}
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <span className="tool-trace-label">工具执行</span>
+        <span className="tool-trace-count">{tools.length} 步</span>
+        <span className={`tool-trace-status is-${tone}`}>
+          {failed > 0 ? `${failed} 个失败` : "全部完成"}
+        </span>
+        <span className="tool-trace-chevron">
+          <ChevronIcon direction={open ? "up" : "down"} size={14} />
+        </span>
+      </button>
+      {open ? (
+        <div className="tool-trace-body" aria-label="工具执行过程">
+          {tools.map((tool) => (
+            <RuntimeToolCard key={tool.key} tool={tool} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

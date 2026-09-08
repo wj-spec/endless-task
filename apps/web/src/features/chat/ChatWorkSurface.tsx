@@ -17,10 +17,12 @@ import type {
 import { chatApi } from "./api";
 import type { RuntimeConnectionPhase } from "./runtimeController";
 import { CitationCard } from "./CitationCard";
-import { RuntimeTracePanel, RuntimeToolCard } from "./RuntimeTracePanel";
+import { RuntimeTracePanel } from "./RuntimeTracePanel";
+import { ToolTraceGroup } from "./ToolTraceGroup";
 import {
   buildRuntimeToolTrace,
   buildRunTimeline,
+  groupTimeline,
   extractWorkspaceSourceRefs,
   type WorkspaceSourceRef,
 } from "./runtimeTrace";
@@ -34,7 +36,6 @@ import { KnowledgeProposalCard } from "../proposals/KnowledgeProposalCard";
 import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
 import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
-import { CollapsibleMessage } from "./CollapsibleMessage";
 import { MessageContent } from "./MessageContent";
 import { ResponseFeedbackControl } from "./ResponseFeedbackControl";
 import { CopyButton } from "./CopyButton";
@@ -999,31 +1000,39 @@ export function ChatWorkSurface({
                         aria-label="执行时间流"
                         aria-live={status === "created" || status === "running" ? "polite" : undefined}
                       >
-                        {timeline.map((item) =>
-                          item.kind === "text" ? (
-                            <div className="timeline-text" key={item.id}>
+                        {groupTimeline(timeline).map((group) =>
+                          group.kind === "text" ? (
+                            <div className="timeline-text" key={group.key}>
                               <MessageContent
-                                content={item.text}
+                                content={group.text}
                                 resolvableCitationLabels={resolvableCitationLabels}
                               />
                             </div>
                           ) : (
-                            <RuntimeToolCard key={item.id} tool={item.tool} />
+                            <ToolTraceGroup
+                              active={status === "created" || status === "running"}
+                              key={group.key}
+                              tools={group.tools}
+                            />
                           ),
                         )}
                       </div>
                     ) : content ? (
-                      <CollapsibleMessage
-                        content={content}
-                        forceExpand={search.forceExpandTurnIds.has(
-                          turnSnapshot.turn.id,
-                        )}
-                        onCitationClick={(label) =>
-                          void handleCitationClick(turnSnapshot.turn.id, label)
+                      <div
+                        className={
+                          status === "created" || status === "running"
+                            ? "message-streaming"
+                            : undefined
                         }
-                        resolvableCitationLabels={resolvableCitationLabels}
-                        streaming={status === "created" || status === "running"}
-                      />
+                      >
+                        <MessageContent
+                          content={content}
+                          onCitationClick={(label) =>
+                            void handleCitationClick(turnSnapshot.turn.id, label)
+                          }
+                          resolvableCitationLabels={resolvableCitationLabels}
+                        />
+                      </div>
                     ) : null}
                     {openCitation?.turnId === turnSnapshot.turn.id ? (
                       <CitationCard

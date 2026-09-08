@@ -1424,26 +1424,8 @@
   color: var(--accent);
 }
 
-/* Phase 1：长输出折叠 */
-.collapsible-message {
-  min-width: 0;
-}
-
-.expand-toggle {
-  border: 0;
-  background: transparent;
-  padding: var(--space-0) 0;
-  margin-top: var(--space-1);
-  color: var(--accent);
-  font-size: var(--fs-2);
-  cursor: pointer;
-}
-
-.expand-toggle:hover {
-  text-decoration: underline;
-}
-
-.collapsible-message.is-streaming .message-copy > *:last-child::after {
+/* 流式输出光标（长输出不再折叠，保留"正在输出"的视觉反馈） */
+.message-streaming .message-copy > *:last-child::after {
   content: "▍";
   margin-left: var(--space-0);
   color: var(--accent-deep);
@@ -2925,4 +2907,67 @@ button.citation-chip:focus-visible {
   background: var(--surface);
   color: var(--muted);
   font-weight: 600;
+}
+
+/* 工具执行轨迹分组：默认折叠为一行摘要（状态展示默认收敛） */
+.tool-trace-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-trace-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-faint);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  text-align: left;
+}
+
+.tool-trace-head:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tool-trace-label {
+  flex: none;
+  font-weight: 600;
+}
+
+.tool-trace-count {
+  flex: none;
+  color: var(--muted);
+}
+
+.tool-trace-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.tool-trace-status.is-warn {
+  color: var(--warn-deep);
+}
+
+.tool-trace-status.is-danger {
+  color: var(--danger-deep);
+}
+
+.tool-trace-chevron {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  color: var(--muted);
+}
+
+.tool-trace-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }

@@ -13,7 +13,7 @@ import type {
 } from "./apiTypes";
 
 const EXCLUDE_SELECTOR =
-  ".expand-toggle, .activity-line, .approval-prompt, .turn-notice, .response-actions, .thinking-line";
+  ".activity-line, .approval-prompt, .turn-notice, .response-actions, .thinking-line";
 
 function findActiveVariant(
   variants: ResponseVariantSnapshot[],
