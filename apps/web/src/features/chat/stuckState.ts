@@ -112,8 +112,10 @@ export const repeatedFailureText = (
 ): string =>
   `${item.toolName} · ${item.errorCode} · 连续 ${item.count} 次`;
 
-/** "换路径"要注入的纠偏指令（复用运行中 steer 通道）。 */
-export const stuckSteerMessage = (state: RuntimeV2StuckState): string => {
+/** "换路径"要注入的纠偏指令（复用运行中 steer 通道；C4 升级视图同样复用）。 */
+export const stuckSteerMessage = (state: {
+  repeatedFailures: RuntimeV2StuckState["repeatedFailures"];
+}): string => {
   const failures = state.repeatedFailures
     .map((item) => `${item.toolName}(${item.errorCode}×${item.count})`)
     .join("、");

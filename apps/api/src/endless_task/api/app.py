@@ -407,6 +407,8 @@ class AppSettings:
     # thresholds approved (remind=1/restrict=2/stop=3 consecutive signals).
     # "1" turns on the safety stop for runs that make no progress.
     stop_policy_enforcement: bool = False
+    # C4: 上下文预算用掉多少比例就升级人工（无进展升级与阈值无关）。
+    escalation_budget_ratio: float = 0.85
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -417,6 +419,8 @@ class AppSettings:
             raise ValueError("Timeout values must be positive")
         if self.context_window_tokens <= self.max_output_tokens:
             raise ValueError("Context window must be larger than max output tokens")
+        if not 0 < self.escalation_budget_ratio <= 1:
+            raise ValueError("Escalation budget ratio must be within (0, 1]")
         if self.summary_token_limit < 0:
             raise ValueError("Summary token limit cannot be negative")
         if self.max_concurrent_model_calls <= 0:
@@ -530,6 +534,10 @@ class AppSettings:
             stop_policy_enforcement=_parse_strict_flag(
                 env.get("ENDLESS_TASK_STOP_POLICY_V2", "0"),
                 name="ENDLESS_TASK_STOP_POLICY_V2",
+            ),
+            escalation_budget_ratio=_parse_ratio(
+                env.get("ENDLESS_TASK_ESCALATION_BUDGET_RATIO", "0.85"),
+                name="ENDLESS_TASK_ESCALATION_BUDGET_RATIO",
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -1217,6 +1225,17 @@ def _parse_strict_flag(value: str, *, name: str) -> bool:
     raise ValueError(f"{name} 只允许 0 或 1")
 
 
+def _parse_ratio(value: str, *, name: str) -> float:
+    """Strict (0, 1] ratio parsing: illegal env values fail startup."""
+    try:
+        parsed = float(value.strip())
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} 必须是 (0, 1] 之间的小数") from error
+    if not 0 < parsed <= 1:
+        raise ValueError(f"{name} 必须是 (0, 1] 之间的小数")
+    return parsed
+
+
 def _parse_delegation_mode(value: str) -> str:
     """Strict delegation mode parsing (06 §9): 0 | readonly | isolated_write.
 
@@ -1731,6 +1750,7 @@ def _build_container(
         span_recorder=runtime_v2_span_recorder,
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
         no_progress_enforcement_enabled=settings.stop_policy_enforcement,
+        escalation_budget_ratio=settings.escalation_budget_ratio,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1767,6 +1787,7 @@ def _build_container(
         span_recorder=runtime_v2_span_recorder,
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
         no_progress_enforcement_enabled=settings.stop_policy_enforcement,
+        escalation_budget_ratio=settings.escalation_budget_ratio,
         provider_retry_observer=(
             # Task/reminder runs are one-shot; the process-level metrics
             # summary aggregates retry decisions (not per-run), so the
@@ -1850,6 +1871,7 @@ def _build_container(
                 span_recorder=runtime_v2_span_recorder,
                 provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
                 no_progress_enforcement_enabled=settings.stop_policy_enforcement,
+                escalation_budget_ratio=settings.escalation_budget_ratio,
                 provider_retry_observer=(
                     # Child run ids are assigned by the coordinator after the
                     # executor is built; the metrics summary is aggregate,

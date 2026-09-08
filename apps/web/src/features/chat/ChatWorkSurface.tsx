@@ -42,6 +42,8 @@ import { CopyButton } from "./CopyButton";
 import { PlanLine, type PlanPayload } from "./PlanLine";
 import { StuckNotice } from "./StuckNotice";
 import { deriveStuckState } from "./stuckState";
+import { EscalationNotice } from "./EscalationNotice";
+import { deriveEscalationState } from "./escalation";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
@@ -332,6 +334,8 @@ export function ChatWorkSurface({
       : null;
   // C2 失败记忆：卡住态 = 快照 + 实时 run.stuck / run.progress_resumed 折叠。
   const stuckState = deriveStuckState(runtimeSnapshot, runtimeEvents);
+  // C4 终止与升级：无进展/预算将尽时优先展示升级视图（含三条出路）。
+  const escalationState = deriveEscalationState(runtimeSnapshot, runtimeEvents);
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -693,7 +697,15 @@ export function ChatWorkSurface({
           </div>
         ) : null}
 
-        {stuckState ? (
+        {escalationState ? (
+          <EscalationNotice
+            onChangeApproach={onSteerRun}
+            onContinue={onSteerRun}
+            onTakeOver={onCancelRunningRun}
+            pending={pendingAction !== null}
+            state={escalationState}
+          />
+        ) : stuckState ? (
           <StuckNotice
             onSteer={onSteerRun}
             onTakeOver={onCancelRunningRun}

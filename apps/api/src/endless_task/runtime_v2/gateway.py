@@ -39,6 +39,7 @@ from .domain import (
     TranscriptEntryRecord,
     TranscriptEntryType,
 )
+from .escalation import DEFAULT_BUDGET_RATIO
 from .lane import RuntimeV2LaneCreationResult, RuntimeV2LaneService
 from .memory import RuntimeV2MemoryService
 from .execution import (
@@ -621,6 +622,19 @@ class ProductRuntimeEventProjection:
             }
         if event_type == "run_progress_resumed":
             return "run.progress_resumed", {"runId": event.run_id}
+        if event_type == "run_awaiting_user":
+            return "run.awaiting_user", {
+                "runId": event.run_id,
+                "reason": _string(payload, "reason"),
+                "summary": _string(payload, "summary"),
+                "options": list(payload.get("options") or ()),
+                "progress": payload.get("progress") or {},
+                "budget": payload.get("budget") or {},
+                "repeatedFailures": list(payload.get("repeatedFailures") or ()),
+                "failures": list(payload.get("failures") or ()),
+                "guidance": _string(payload, "guidance"),
+                "willStop": payload.get("willStop", False),
+            }
         if event_type == "safety_stop":
             return "run.status_changed", {
                 "runId": event.run_id,
@@ -732,6 +746,8 @@ class RuntimeV2SessionGateway:
         span_recorder: Optional[object] = None,
         # G1 item 5: no-progress StopPolicy enforcement flag passthrough.
         no_progress_enforcement_enabled: bool = False,
+        # C4: 升级（无进展/预算将尽）的上下文预算阈值。
+        escalation_budget_ratio: float = DEFAULT_BUDGET_RATIO,
         provider_retry_evaluator: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
@@ -756,6 +772,7 @@ class RuntimeV2SessionGateway:
         self._no_progress_enforcement_enabled = bool(
             no_progress_enforcement_enabled
         )
+        self._escalation_budget_ratio = float(escalation_budget_ratio)
         # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
         # legacy behavior. The observer is bound per run at launch so
         # retry decisions attribute to the correct run.
@@ -1298,6 +1315,7 @@ class RuntimeV2SessionGateway:
                 "contextBudget": _context_budget_json(0, self._context_window_tokens),
                 "interruptedRuns": self._recovery_reports_json(conversation_id),
                 "stuck": None,
+                "escalation": None,
                 "capabilities": V2_CAPABILITIES,
             }
 
@@ -1332,6 +1350,10 @@ class RuntimeV2SessionGateway:
             ),
             "interruptedRuns": self._recovery_reports_json(conversation_id),
             "stuck": _stuck_json(
+                product_events,
+                running_run_id=runtime_snapshot.running_run_id,
+            ),
+            "escalation": _escalation_json(
                 product_events,
                 running_run_id=runtime_snapshot.running_run_id,
             ),
@@ -1483,6 +1505,7 @@ class RuntimeV2SessionGateway:
         executor = AgentRunExecutor(
             repository=self._repository,
             no_progress_enforcement_enabled=self._no_progress_enforcement_enabled,
+            escalation_budget_ratio=self._escalation_budget_ratio,
             provider=selected_provider,
             tool_registry=self._tool_registry,
             model=selected_model,
@@ -1729,6 +1752,37 @@ def _stuck_json(
         elif event.event_type == "run.progress_resumed":
             stuck = None
     return stuck
+
+
+def _escalation_json(
+    product_events: tuple[ProductRuntimeEventRecord, ...],
+    *,
+    running_run_id: Optional[str],
+) -> Optional[dict[str, object]]:
+    """C4：把最近一条 ``run.awaiting_user`` 投影成快照里的升级报告。"""
+    if running_run_id is None:
+        return None
+    escalation: Optional[dict[str, object]] = None
+    for event in product_events:
+        if event.run_id != running_run_id:
+            continue
+        if event.event_type == "run.awaiting_user":
+            data = event.data
+            escalation = {
+                "runId": running_run_id,
+                "reason": data.get("reason") or "no_progress",
+                "summary": data.get("summary") or "",
+                "options": list(data.get("options") or ()),
+                "progress": data.get("progress") or {},
+                "budget": data.get("budget") or {},
+                "repeatedFailures": list(data.get("repeatedFailures") or ()),
+                "failures": list(data.get("failures") or ()),
+                "guidance": data.get("guidance") or "",
+                "willStop": bool(data.get("willStop")),
+            }
+        elif event.event_type == "run.progress_resumed":
+            escalation = None
+    return escalation
 
 
 def _approval_json(approval: PendingApproval) -> dict[str, object]:

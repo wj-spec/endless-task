@@ -32,6 +32,18 @@ from .domain import (
 )
 from .context import ContextPolicy, ContextProjection, ContextProjectionResult
 from .compaction import RuntimeV2ContextCompactionService
+from .escalation import (
+    BUDGET_REASON,
+    NO_PROGRESS_REASON,
+    OPTION_CHANGE_APPROACH,
+    OPTION_CONTINUE,
+    OPTION_TAKE_OVER,
+    EscalationBudget,
+    EscalationProgress,
+    EscalationReport,
+    build_escalation_report,
+    budget_exhausted,
+)
 from .failure_memory import (
     FailedAttempt,
     FailureMemory,
@@ -128,6 +140,16 @@ __all__ = [
     "StaticToolApprovalGate",
     "ToolApprovalDecision",
     "ToolApprovalGate",
+    "BUDGET_REASON",
+    "EscalationBudget",
+    "EscalationProgress",
+    "EscalationReport",
+    "NO_PROGRESS_REASON",
+    "OPTION_CHANGE_APPROACH",
+    "OPTION_CONTINUE",
+    "OPTION_TAKE_OVER",
+    "budget_exhausted",
+    "build_escalation_report",
     "FailedAttempt",
     "FailureMemory",
     "FailureMemoryAccumulator",

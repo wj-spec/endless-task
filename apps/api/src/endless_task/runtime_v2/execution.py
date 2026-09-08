@@ -47,6 +47,15 @@ from .domain import (
     ToolExecutionRecord,
     ToolExecutionStatus,
 )
+from .escalation import (
+    BUDGET_REASON,
+    DEFAULT_BUDGET_RATIO,
+    NO_PROGRESS_REASON,
+    EscalationBudget,
+    EscalationProgress,
+    build_escalation_report,
+    budget_exhausted,
+)
 from .failure_memory import FailureMemoryAccumulator
 from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
@@ -1846,6 +1855,7 @@ class AgentRunExecutor:
         provider_retry_observer: Optional[object] = None,
         no_progress_observer: Optional[object] = None,
         no_progress_enforcement_enabled: bool = False,
+        escalation_budget_ratio: float = DEFAULT_BUDGET_RATIO,
         context_shadow_observer: Optional[object] = None,
         context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -1877,6 +1887,9 @@ class AgentRunExecutor:
         self._injected_failure_keys: set[tuple[str, str]] = set()
         # 已通过 no-progress 评估发出的卡住级别（避免每轮重复发事件）。
         self._no_progress_stuck_level: Optional[str] = None
+        # C4 升级：预算阈值与已升级原因（同一原因只提请注意一次）。
+        self._escalation_budget_ratio = float(escalation_budget_ratio)
+        self._escalated_reasons: set[str] = set()
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
@@ -2017,6 +2030,9 @@ class AgentRunExecutor:
         input_tokens = 0
         output_tokens = 0
         pending_approval_ids: tuple[str, ...] = ()
+        # C4 升级报告所需的运行进展计数（局部累计，无需回查数据库）。
+        tool_calls_total = 0
+        produced_characters = 0
 
         try:
             while True:
@@ -2055,6 +2071,8 @@ class AgentRunExecutor:
                 content_parts.append(outcome.content)
                 input_tokens += outcome.input_tokens or 0
                 output_tokens += outcome.output_tokens or 0
+                tool_calls_total += len(outcome.tool_calls)
+                produced_characters += len(outcome.content)
                 pending_approval_ids = outcome.pending_approval_execution_ids
                 if pending_approval_ids:
                     return self._result(
@@ -2069,6 +2087,20 @@ class AgentRunExecutor:
 
                 provider_messages.extend(outcome.messages)
                 self._observe_failure_memory(run)
+                # C4：无进展（连续同因失败）或预算将尽 → 提请人工决策。
+                self._maybe_escalate(
+                    run,
+                    progress=EscalationProgress(
+                        model_turns=len(model_turn_ids),
+                        tool_calls=tool_calls_total,
+                        tool_failures=self._failure_memory.snapshot.total,
+                        produced_characters=produced_characters,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    ),
+                    used_tokens=(outcome.input_tokens or 0)
+                    + (outcome.output_tokens or 0),
+                )
                 delivered = not outcome.tool_calls and bool(outcome.content.strip())
                 # 工具级「提前终止」：本批所有工具结果都请求 terminate → 停循环。
                 if outcome.tool_calls and outcome.terminate:
@@ -2117,6 +2149,20 @@ class AgentRunExecutor:
                     )
                     self._observe_no_progress_stuck(run, evaluation)
                     if evaluation is not None and evaluation.level is StopLevel.STOP:
+                        self._maybe_escalate(
+                            run,
+                            progress=EscalationProgress(
+                                model_turns=len(model_turn_ids),
+                                tool_calls=tool_calls_total,
+                                tool_failures=self._failure_memory.snapshot.total,
+                                produced_characters=produced_characters,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                            ),
+                            used_tokens=input_tokens + output_tokens,
+                            reason=NO_PROGRESS_REASON,
+                            will_stop=True,
+                        )
                         guidance = no_progress_guidance(evaluation.level, evaluation.reasons)
                         content_parts.append("\n\n" + guidance)
                         final_run, assistant_entry = self._repository.finalize_run(
@@ -2330,6 +2376,8 @@ class AgentRunExecutor:
                 self._stuck_emitted = False
                 self._stuck_signature = None
                 self._injected_failure_keys.clear()
+                # 恢复后允许下一次卡住重新升级。
+                self._escalated_reasons.clear()
             return
         signature = tuple(
             (
@@ -2404,6 +2452,58 @@ class AgentRunExecutor:
                 "guidance": memory.guidance(),
             },
         )
+
+    def _maybe_escalate(
+        self,
+        run: RunRecord,
+        *,
+        progress: EscalationProgress,
+        used_tokens: int,
+        reason: Optional[str] = None,
+        will_stop: bool = False,
+    ) -> None:
+        """C4：无进展或预算将尽时发 ``run_awaiting_user``（同一原因只提一次）。
+
+        升级不是暂停运行：报告给出进展/卡点/可选项，运行继续推进；若安全停止
+        策略将结束本次运行，报告里 ``willStop`` 会说明。
+        """
+        memory = self._failure_memory.snapshot
+        if reason is None:
+            if NO_PROGRESS_REASON not in self._escalated_reasons and any(
+                item.count >= 3 for item in memory.repeated
+            ):
+                reason = NO_PROGRESS_REASON
+            elif BUDGET_REASON not in self._escalated_reasons and budget_exhausted(
+                used_tokens=used_tokens,
+                limit_tokens=self._escalation_limit_tokens(),
+                ratio=self._escalation_budget_ratio,
+            ):
+                reason = BUDGET_REASON
+        if reason is None or reason in self._escalated_reasons:
+            return
+        self._escalated_reasons.add(reason)
+        report = build_escalation_report(
+            reason=reason,
+            progress=progress,
+            budget=EscalationBudget(
+                used_tokens=used_tokens,
+                limit_tokens=self._escalation_limit_tokens(),
+            ),
+            memory=memory,
+            will_stop=will_stop,
+        )
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_awaiting_user",
+            payload=report.as_json(),
+        )
+
+    def _escalation_limit_tokens(self) -> Optional[int]:
+        """可用上下文上限：窗口减去必须留给输出的配额。"""
+        if self._context_window_tokens is None:
+            return None
+        limit = self._context_window_tokens - self._max_output_tokens
+        return limit if limit > 0 else None
 
     def _append_progress_resumed(self, run: RunRecord) -> None:
         """C2：卡住态解除（失败记忆清零或 no-progress 级别回落）。"""

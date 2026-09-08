@@ -502,7 +502,47 @@ export type RuntimeV2Snapshot = {
   };
   interruptedRuns: RuntimeV2RecoveryReport[];
   stuck?: RuntimeV2StuckState | null;
+  escalation?: RuntimeV2Escalation | null;
   capabilities: string[];
+};
+
+/** C4 终止与升级：无进展/预算将尽时提请人工决策的报告。 */
+export type RuntimeV2Escalation = {
+  runId: string;
+  /** no_progress | budget_exhausted */
+  reason: string;
+  summary: string;
+  /** continue | change_approach | take_over */
+  options: string[];
+  progress: {
+    modelTurns?: number;
+    toolCalls?: number;
+    toolFailures?: number;
+    producedCharacters?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+  };
+  budget: {
+    usedTokens?: number;
+    limitTokens?: number | null;
+    usedRatio?: number | null;
+  };
+  repeatedFailures: Array<{
+    toolName: string;
+    errorCode: string;
+    count: number;
+    safeMessage?: string;
+  }>;
+  failures: Array<{
+    toolName: string;
+    errorCode: string;
+    safeMessage?: string;
+    attempt: number;
+    toolExecutionId?: string | null;
+  }>;
+  guidance: string;
+  /** 安全停止策略是否已经/将要结束本次运行。 */
+  willStop: boolean;
 };
 
 /** C2 失败记忆：运行期"卡住"状态（快照 + 实时事件都能给出）。 */
