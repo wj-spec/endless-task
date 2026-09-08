@@ -335,8 +335,11 @@ class AppSettings:
     provider_timeout_seconds: float = 60.0
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     system_prompt_version: str = "p1-v2"
-    context_window_tokens: int = 32_768
-    max_output_tokens: int = 2_048
+    # 生产默认：128K 窗口 / 4K 输出。DeepSeek V4 系列实测窗口 1,048,576 tokens，
+    # 但个人助手用 128K 已可容纳 40+ 轮工具调用；长任务可通过环境变量上调
+    # （推荐 262144；极限 524288 需配合成本上限与上下文缓存）。
+    context_window_tokens: int = 131_072
+    max_output_tokens: int = 4_096
     summary_token_limit: int = 1_024
     max_concurrent_model_calls: int = 2
     max_concurrent_task_runs: int = 1
@@ -771,10 +774,10 @@ class AppSettings:
                 "p1-v2",
             ),
             context_window_tokens=int(
-                env.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "32768")
+                env.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "131072")
             ),
             max_output_tokens=int(
-                env.get("ENDLESS_TASK_MAX_OUTPUT_TOKENS", "2048")
+                env.get("ENDLESS_TASK_MAX_OUTPUT_TOKENS", "4096")
             ),
             summary_token_limit=int(
                 env.get("ENDLESS_TASK_SUMMARY_TOKEN_LIMIT", "1024")

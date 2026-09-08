@@ -885,44 +885,6 @@
   color: var(--muted);
 }
 
-/* --- A2 上下文/Token 预算指示 --- */
-.context-budget {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: min(var(--reading-w, 760px), 100%);
-  margin: 0 auto;
-  padding: 4px var(--space-3);
-  color: var(--muted);
-  font-size: var(--fs-1);
-}
-.context-budget-label {
-  flex: none;
-  font-weight: 600;
-}
-.context-budget-bar {
-  flex: 1 1 auto;
-  min-width: 60px;
-  height: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--line-soft);
-}
-.context-budget-fill {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--success);
-  transition: width 240ms ease, background 240ms ease;
-}
-.context-budget.is-warn .context-budget-fill { background: var(--warn-mid); }
-.context-budget.is-high .context-budget-fill { background: var(--danger-mid); }
-.context-budget-hint {
-  flex: none;
-  color: var(--muted-strong);
-}
-.context-budget.is-high .context-budget-hint { color: var(--danger-deep); }
-
 .response-actions {
   display: flex;
   flex-wrap: wrap;

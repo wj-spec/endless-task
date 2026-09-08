@@ -496,9 +496,12 @@ export type RuntimeV2Snapshot = {
   };
   contextBudget?: {
     limitTokens: number;
+    /** 当前占用（最近一轮请求的上下文大小）。 */
     usedTokens: number;
     usedRatio: number;
     remainingTokens: number;
+    /** 本 run 所有轮次累计消耗（成本参考）。 */
+    cumulativeTokens?: number;
   };
   interruptedRuns: RuntimeV2RecoveryReport[];
   stuck?: RuntimeV2StuckState | null;

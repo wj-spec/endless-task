@@ -265,6 +265,72 @@
   gap: 6px;
 }
 
+/* --- A2 上下文预算环形指示器（输入框左下角常驻） --- */
+.context-ring {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  cursor: default;
+  transition: transform 160ms ease;
+}
+
+.context-ring:hover {
+  transform: scale(1.06);
+}
+
+.context-ring-track {
+  stroke: var(--line-soft);
+}
+
+.context-ring-fill {
+  stroke: var(--accent);
+  transition: stroke-dashoffset 240ms ease, stroke 240ms ease;
+}
+
+.context-ring.is-warn .context-ring-fill {
+  stroke: var(--warn-mid);
+}
+
+.context-ring.is-high .context-ring-fill {
+  stroke: var(--danger-mid);
+}
+
+.context-ring-value {
+  position: absolute;
+  color: var(--muted-strong);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.context-ring.is-warn .context-ring-value {
+  color: var(--warn-deep);
+}
+
+.context-ring.is-high .context-ring-value {
+  color: var(--danger-deep);
+}
+
+.context-ring-hint {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  background: var(--danger-soft);
+  color: var(--danger-deep);
+  font-size: 10px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 .composer-tool-button {
   flex: none;
 }

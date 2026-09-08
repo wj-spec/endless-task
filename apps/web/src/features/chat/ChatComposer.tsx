@@ -3,7 +3,9 @@ import type {
   ConversationSnapshot,
   HealthSnapshot,
   ProviderProfile,
+  RuntimeV2Snapshot,
 } from "./apiTypes";
+import { ContextBudgetMeter } from "./ContextBudgetMeter";
 import { AddIcon, CloseIcon, FileIcon, SendIcon } from "../ui/Icons";
 
 type ChatComposerProps = {
@@ -29,6 +31,8 @@ type ChatComposerProps = {
   onRemoveFile: (fileId: string) => void;
   onSend: () => void;
   onUploadFile: (file: File) => void;
+  /** A2：上下文预算（环形指示器，输入框左下角）。 */
+  contextBudget?: RuntimeV2Snapshot["contextBudget"];
 };
 
 export function ChatComposer({
@@ -51,6 +55,7 @@ export function ChatComposer({
   onRemoveFile,
   onSend,
   onUploadFile,
+  contextBudget,
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -183,6 +188,9 @@ export function ChatComposer({
         </div>
         <div className="composer-toolbar">
           <div className="composer-tools">
+            {contextBudget ? (
+              <ContextBudgetMeter budget={contextBudget} />
+            ) : null}
             {variant === "side" ? null : (
               <>
                 <input

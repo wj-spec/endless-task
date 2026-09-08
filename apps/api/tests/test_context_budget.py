@@ -19,5 +19,12 @@ class ContextBudgetJsonTest(unittest.TestCase):
         self.assertEqual(32768, b["limitTokens"])
         self.assertEqual(0, b["usedRatio"])
 
+    def test_cumulative_is_separate_from_occupancy(self):
+        # usedTokens 是"当前占用"，累计值单独给出，避免进度条被累计值推高。
+        b = _context_budget_json(9000, 131072, cumulative=45000)
+        self.assertEqual(9000, b["usedTokens"])
+        self.assertEqual(45000, b["cumulativeTokens"])
+        self.assertAlmostEqual(9000 / 131072, b["usedRatio"], places=4)
+
 if __name__ == "__main__":
     unittest.main()

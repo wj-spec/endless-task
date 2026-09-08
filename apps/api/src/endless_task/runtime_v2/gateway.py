@@ -1382,9 +1382,10 @@ class RuntimeV2SessionGateway:
                 "outputTokens": runtime_snapshot.output_tokens,
             },
             "contextBudget": _context_budget_json(
-                (runtime_snapshot.input_tokens or 0)
-                + (runtime_snapshot.output_tokens or 0),
+                _last_turn_tokens(runtime_snapshot),
                 self._context_window_tokens,
+                cumulative=(runtime_snapshot.input_tokens or 0)
+                + (runtime_snapshot.output_tokens or 0),
             ),
             "interruptedRuns": self._recovery_reports_json(conversation_id),
             "stuck": _stuck_json(
@@ -1767,15 +1768,38 @@ def _tool_states_json(
     )
 
 
-def _context_budget_json(used: int, limit: Optional[int]) -> dict[str, object]:
+def _context_budget_json(
+    used: int,
+    limit: Optional[int],
+    *,
+    cumulative: Optional[int] = None,
+) -> dict[str, object]:
+    """上下文预算。
+
+    ``usedTokens`` 是**当前占用**（最近一轮请求的 input+output），也就是"离窗口
+    上限还差多少"；``cumulativeTokens`` 是本 run 所有轮次累计消耗，用于成本参考。
+    早先 usedTokens 用的是累计值，导致几轮工具调用就把进度条推到 60%（误导）。
+    """
     limit = limit or 32_768
+    used = max(0, int(used))
     ratio = min(1.0, used / limit) if limit else 0.0
     return {
         "limitTokens": limit,
         "usedTokens": used,
         "usedRatio": round(ratio, 4),
         "remainingTokens": max(0, limit - used),
+        "cumulativeTokens": max(0, int(cumulative)) if cumulative is not None else used,
     }
+
+
+def _last_turn_tokens(snapshot) -> int:
+    """最近一轮的上下文占用（input+output）；没有轮次时为 0。"""
+    active_run = getattr(snapshot, "active_run", None)
+    turns = getattr(active_run, "model_turns", None) or ()
+    if not turns:
+        return 0
+    last = turns[-1].record
+    return int(last.input_tokens or 0) + int(last.output_tokens or 0)
 
 
 def _stuck_json(
