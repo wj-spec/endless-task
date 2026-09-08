@@ -272,7 +272,7 @@ class SqliteRuntimeV2MemoryRepository:
                     WHEN 'workspace' THEN 5
                     WHEN 'user_global' THEN 6
                     ELSE 7
-                END, updated_at, id
+                END, updated_at DESC, id DESC
                 """,
                 (now, *parameters),
             ).fetchall()

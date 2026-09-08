@@ -375,6 +375,9 @@ class AppSettings:
     embedding_batch_size: int = 8
     embedding_sqlite_vec: bool = False
     hybrid_literal_weight: float = 0.4
+    # B1 近期性偏置：0 = 纯相关性（默认，行为不变）；τ 单位天。
+    memory_recency_weight: float = 0.0
+    memory_decay_tau_days: float = 30.0
     hybrid_semantic_weight: float = 0.6
     proposal_daily_budget: int = 6
     proposal_cooldown_minutes: int = 30
@@ -460,6 +463,10 @@ class AppSettings:
             raise ValueError("Scheduler tick must be positive")
         if self.embedding_max_chars <= 0 or self.embedding_batch_size <= 0:
             raise ValueError("Embedding limits must be positive")
+        if not 0 <= self.memory_recency_weight <= 1:
+            raise ValueError("ENDLESS_TASK_MEMORY_RECENCY_WEIGHT must be within [0, 1]")
+        if self.memory_decay_tau_days <= 0:
+            raise ValueError("ENDLESS_TASK_MEMORY_DECAY_TAU must be positive")
         if self.hybrid_literal_weight < 0 or self.hybrid_semantic_weight < 0:
             raise ValueError("Hybrid weights cannot be negative")
         if not 0 < self.knowledge_duplicate_threshold <= 1:
@@ -628,6 +635,14 @@ class AppSettings:
             hybrid_semantic_weight=_parse_hybrid_weights(
                 env.get("ENDLESS_TASK_KNOWLEDGE_HYBRID_WEIGHTS", "")
             )[1],
+            memory_recency_weight=_parse_unit_ratio(
+                env.get("ENDLESS_TASK_MEMORY_RECENCY_WEIGHT", "0"),
+                name="ENDLESS_TASK_MEMORY_RECENCY_WEIGHT",
+            ),
+            memory_decay_tau_days=_parse_positive_float(
+                env.get("ENDLESS_TASK_MEMORY_DECAY_TAU", "30"),
+                name="ENDLESS_TASK_MEMORY_DECAY_TAU",
+            ),
             proposal_daily_budget=int(
                 env.get("ENDLESS_TASK_PROPOSAL_DAILY_BUDGET", "6")
             ),
@@ -1248,6 +1263,25 @@ def _parse_strict_flag(value: str, *, name: str) -> bool:
     raise ValueError(f"{name} 只允许 0 或 1")
 
 
+def _parse_positive_float(value: str, *, name: str) -> float:
+    """Strict positive float parsing (B1 decay tau)."""
+    try:
+        parsed = float(value.strip())
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} 必须是正数") from error
+    if parsed <= 0:
+        raise ValueError(f"{name} 必须是正数")
+    return parsed
+
+
+def _parse_unit_ratio(value: str, *, name: str) -> float:
+    """Strict [0, 1] ratio parsing (0 = feature off)."""
+    parsed = _parse_non_negative_float(value, name=name)
+    if parsed > 1:
+        raise ValueError(f"{name} 必须在 [0, 1] 之间")
+    return parsed
+
+
 def _parse_non_negative_float(value: str, *, name: str) -> float:
     """Strict non-negative float parsing (0 disables the limit)."""
     try:
@@ -1432,6 +1466,8 @@ def _build_container(
         synonym_map=settings.knowledge_synonym_map or None,
         hybrid_literal_weight=settings.hybrid_literal_weight,
         hybrid_semantic_weight=settings.hybrid_semantic_weight,
+        recency_weight=settings.memory_recency_weight,
+        decay_tau_days=settings.memory_decay_tau_days,
     )
     embedding_indexer: Optional[EmbeddingIndexer] = None
     embedder: Optional[Embedder] = None

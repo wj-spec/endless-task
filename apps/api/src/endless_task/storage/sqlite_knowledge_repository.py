@@ -7,6 +7,13 @@ import unicodedata
 from dataclasses import replace
 from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
+from endless_task.runtime.recency import (
+    DEFAULT_DECAY_TAU_DAYS,
+    DEFAULT_RECENCY_WEIGHT,
+    blend_score,
+    decay_score,
+)
+
 from endless_task.domain.models import (
     KnowledgeHit,
     KnowledgeScope,
@@ -74,6 +81,8 @@ class SqliteKnowledgeRepository:
         synonym_map: Optional[Mapping[str, Sequence[str]]] = None,
         hybrid_literal_weight: float = 0.4,
         hybrid_semantic_weight: float = 0.6,
+        recency_weight: float = DEFAULT_RECENCY_WEIGHT,
+        decay_tau_days: float = DEFAULT_DECAY_TAU_DAYS,
     ) -> None:
         self._database = database
         self._clock = clock
@@ -90,6 +99,13 @@ class SqliteKnowledgeRepository:
             raise ValidationError("Hybrid weights cannot be negative.")
         self._hybrid_literal_weight = float(hybrid_literal_weight)
         self._hybrid_semantic_weight = float(hybrid_semantic_weight)
+        # B1 近期性偏置：recency_weight=0（默认）时排序与过去完全一致。
+        if not 0 <= float(recency_weight) <= 1:
+            raise ValidationError("Recency weight must be within [0, 1].")
+        if float(decay_tau_days) <= 0:
+            raise ValidationError("Decay tau must be positive.")
+        self._recency_weight = float(recency_weight)
+        self._decay_tau_days = float(decay_tau_days)
         self._semantic_searcher = None
         self._embedding_hook = None
         self._feedback_provider = None
@@ -380,20 +396,21 @@ class SqliteKnowledgeRepository:
     _MAX_FRAGMENTS = 24
 
     _SCOPE_QUERIES = {
+        # B1：每个分支都带上 updated_at，供近期性加权使用（分块取父源时间）。
         "source": (
             "SELECT ks.id AS ref_id, ks.title, ks.content AS body, "
-            "NULL AS parent_id, NULL AS chunk_seq "
+            "NULL AS parent_id, NULL AS chunk_seq, ks.updated_at AS updated_at "
             "FROM knowledge_sources ks "
             "WHERE ks.status = 'active' AND ks.kind = 'note' AND ({match}){ws} "
             "UNION ALL "
             "SELECT kc.id AS ref_id, ks.title, kc.content AS body, "
-            "ks.id AS parent_id, kc.seq AS chunk_seq "
+            "ks.id AS parent_id, kc.seq AS chunk_seq, ks.updated_at AS updated_at "
             "FROM knowledge_chunks kc "
             "JOIN knowledge_sources ks ON ks.id = kc.source_id "
             "WHERE ks.status = 'active' AND ks.kind = 'file' AND ({match}){ws} "
             "UNION ALL "
             "SELECT ks.id AS ref_id, ks.title, ks.content AS body, "
-            "NULL AS parent_id, NULL AS chunk_seq "
+            "NULL AS parent_id, NULL AS chunk_seq, ks.updated_at AS updated_at "
             "FROM knowledge_sources ks "
             "WHERE ks.status = 'active' AND ks.kind = 'file' "
             "AND NOT EXISTS ("
@@ -402,12 +419,12 @@ class SqliteKnowledgeRepository:
         ),
         "memory": (
             "SELECT id AS ref_id, '记忆' AS title, content AS body, "
-            "NULL AS parent_id, NULL AS chunk_seq "
+            "NULL AS parent_id, NULL AS chunk_seq, updated_at AS updated_at "
             "FROM memories WHERE status = 'active' AND ({match})"
         ),
         "artifact": (
             "SELECT a.id AS ref_id, a.title, v.content AS body, "
-            "NULL AS parent_id, NULL AS chunk_seq "
+            "NULL AS parent_id, NULL AS chunk_seq, a.updated_at AS updated_at "
             "FROM artifacts a "
             "JOIN artifact_versions v ON v.artifact_id = a.id "
             "AND v.ordinal = a.current_version_ordinal "
@@ -418,7 +435,7 @@ class SqliteKnowledgeRepository:
             # 镜像/索引；runtime 唯一 v2，历史 v1 无归档需求）。
             "SELECT e.id AS ref_id, c.title, "
             "json_extract(e.payload_json, '$.content') AS body, "
-            "NULL AS parent_id, NULL AS chunk_seq "
+            "NULL AS parent_id, NULL AS chunk_seq, e.updated_at AS updated_at "
             "FROM v2_transcript_entries e "
             "JOIN conversations c ON c.id = e.conversation_id "
             "WHERE c.kind = 'normal' AND c.status = 'active' "
@@ -526,7 +543,9 @@ class SqliteKnowledgeRepository:
             template.format(match=clause, ws=ws_clause), params
         ).fetchall()
         weight = self._scope_weights.get(scope, 1.0)
-        best: Dict[str, tuple[int, str, str, str, Optional[str], Optional[int]]] = {}
+        best: Dict[
+            str, tuple[int, str, str, str, Optional[str], Optional[int], Optional[str]]
+        ] = {}
         for row in rows:
             body = row["body"] or ""
             title = row["title"] or ""
@@ -543,6 +562,7 @@ class SqliteKnowledgeRepository:
                     body,
                     row["parent_id"],
                     row["chunk_seq"],
+                    row["updated_at"],
                 )
         if query_vector is not None and self._semantic_searcher is not None:
             semantic_scores, visible_map = self._semantic_scores(
@@ -556,7 +576,7 @@ class SqliteKnowledgeRepository:
                         visible_map,
                     ),
                 )
-        ordered = sorted(best.values(), key=lambda item: item[0], reverse=True)[:limit]
+        ordered = self._rank_literal(best, fragments, limit)
         hits = [
             KnowledgeHit(
                 scope=scope,
@@ -570,6 +590,44 @@ class SqliteKnowledgeRepository:
             for raw_score, ref_id, title, body, parent_id, chunk_seq in ordered
         ]
         return self._apply_feedback(scope, hits)
+
+    def _rank_literal(
+        self,
+        best: Dict[
+            str, tuple[int, str, str, str, Optional[str], Optional[int], Optional[str]]
+        ],
+        fragments: Sequence[str],
+        limit: int,
+    ) -> List[tuple[float, str, str, str, Optional[str], Optional[int]]]:
+        """字面命中的排序：默认按命中次数；启用近期性后按 λ·相关 + (1-λ)·新近。"""
+        if self._recency_weight <= 0:
+            ordered = sorted(
+                best.values(), key=lambda item: item[0], reverse=True
+            )[:limit]
+            return [
+                (float(raw), ref_id, title, body, parent_id, chunk_seq)
+                for raw, ref_id, title, body, parent_id, chunk_seq, _ in ordered
+            ]
+        max_score = max((item[0] for item in best.values()), default=0)
+        now = self._clock()
+        scored: List[tuple[float, str, str, str, Optional[str], Optional[int]]] = []
+        for raw, ref_id, title, body, parent_id, chunk_seq, updated_at in best.values():
+            relevance = (raw / max_score) if max_score > 0 else 0.0
+            recency = decay_score(
+                now=now,
+                timestamp=updated_at,
+                tau_days=self._decay_tau_days,
+            )
+            blended = blend_score(
+                relevance=relevance,
+                recency=recency,
+                recency_weight=self._recency_weight,
+            )
+            scored.append(
+                (blended * max_score, ref_id, title, body, parent_id, chunk_seq)
+            )
+        ordered = sorted(scored, key=lambda item: item[0], reverse=True)[:limit]
+        return ordered
 
     def _apply_feedback(self, scope: KnowledgeScope, hits: List[KnowledgeHit]):
         """R5.10：source 作用域命中乘以引用反馈因子并重排（仅局部序）。"""
@@ -605,7 +663,9 @@ class SqliteKnowledgeRepository:
             template.format(match="1=1", ws=ws_clause)
         ).fetchall()
         ref_ids: List[str] = []
-        visible_map: Dict[str, tuple[str, str, Optional[str], Optional[int]]] = {}
+        visible_map: Dict[
+            str, tuple[str, str, Optional[str], Optional[int], Optional[str]]
+        ] = {}
         for row in visible:
             ref_id = row["ref_id"]
             if ref_id not in visible_map:
@@ -614,6 +674,7 @@ class SqliteKnowledgeRepository:
                     row["body"] or "",
                     row["parent_id"],
                     row["chunk_seq"],
+                    row["updated_at"],
                 )
                 ref_ids.append(ref_id)
         if not ref_ids:
@@ -632,12 +693,20 @@ class SqliteKnowledgeRepository:
         weight: float,
         fragments: Sequence[str],
         limit: int,
-        best: Dict[str, tuple[int, str, str, str, Optional[str], Optional[int]]],
+        best: Dict[
+            str, tuple[int, str, str, str, Optional[str], Optional[int], Optional[str]]
+        ],
         semantic_scores: Dict[str, float],
-        visible_map: Dict[str, tuple[str, str, Optional[str], Optional[int]]],
+        visible_map: Dict[
+            str, tuple[str, str, Optional[str], Optional[int], Optional[str]]
+        ],
     ) -> List[KnowledgeHit]:
-        """加权融合：字面分归一化后与余弦分线性组合（默认 0.4/0.6）。"""
+        """加权融合：字面分归一化后与余弦分线性组合（默认 0.4/0.6）。
+
+        B1：启用近期性后，融合分再按 ``recency_weight`` 与时间衰减混合。
+        """
         max_literal = max((item[0] for item in best.values()), default=0)
+        now = self._clock()
         scored: List[tuple[float, str, str, str, Optional[str], Optional[int]]] = []
         for ref_id in set(best) | set(semantic_scores):
             literal_entry = best.get(ref_id)
@@ -652,10 +721,20 @@ class SqliteKnowledgeRepository:
             if fused <= 0:
                 continue
             if literal_entry is not None:
-                _, _, title, body, parent_id, chunk_seq = literal_entry
+                _, _, title, body, parent_id, chunk_seq, updated_at = literal_entry
             else:
-                title, body, parent_id, chunk_seq = visible_map.get(
-                    ref_id, ("", "", None, None)
+                title, body, parent_id, chunk_seq, updated_at = visible_map.get(
+                    ref_id, ("", "", None, None, None)
+                )
+            if self._recency_weight > 0:
+                fused = blend_score(
+                    relevance=fused,
+                    recency=decay_score(
+                        now=now,
+                        timestamp=updated_at,
+                        tau_days=self._decay_tau_days,
+                    ),
+                    recency_weight=self._recency_weight,
                 )
             scored.append(
                 (
