@@ -1,5 +1,14 @@
 import { useState } from "react";
-import { ChevronIcon } from "../ui/Icons";
+import {
+  BookIcon,
+  ChevronIcon,
+  FileIcon,
+  FolderIcon,
+  GlobeIcon,
+  SparkleIcon,
+  TerminalIcon,
+  WrenchIcon,
+} from "../ui/Icons";
 import type { RuntimeToolItem, RuntimeToolPhase } from "./runtimeTrace";
 
 const phaseLabel: Record<RuntimeToolPhase, string> = {
@@ -58,10 +67,63 @@ const readTerminal = (
   return { exitCode, output };
 };
 
+// 按工具名归类到一个可辨识的图标，便于快速扫视（第 27 章：工具图标与品牌）。
+const toolIcon = (toolName: string) => {
+  const name = toolName.toLowerCase();
+  if (/(shell|bash|terminal|exec|command|python|run_)/.test(name)) {
+    return TerminalIcon;
+  }
+  if (/(search|query|web|fetch|browse|http)/.test(name)) {
+    return GlobeIcon;
+  }
+  if (/(list|read|write|append|delete|mkdir|file|workspace_)/.test(name)) {
+    return name.includes("list") ? FolderIcon : FileIcon;
+  }
+  if (/(memory|remember|recall|knowledge|source)/.test(name)) {
+    return BookIcon;
+  }
+  if (/(plan|artifact|task|reminder|summar)/.test(name)) {
+    return SparkleIcon;
+  }
+  return WrenchIcon;
+};
+
+// 生成一行可读的工具输入摘要（避免把大 JSON 平铺在卡片头部）。
+const inputSummary = (tool: RuntimeToolItem): string => {
+  const args = tool.arguments as Record<string, unknown> | null | undefined;
+  if (!args || typeof args !== "object") return "";
+  const val = (key: string) => {
+    const item = args[key];
+    return typeof item === "string" || typeof item === "number"
+      ? String(item)
+      : "";
+  };
+  const label =
+    val("path") ||
+    val("query") ||
+    val("cmd") ||
+    val("command") ||
+    val("name") ||
+    val("file") ||
+    val("url") ||
+    val("folder") ||
+    val("clause") ||
+    "";
+  if (label) return label;
+  // 兜底：把原始参数压缩成一行。
+  try {
+    return JSON.stringify(args).replace(/\s+/g, " ");
+  } catch {
+    return "";
+  }
+};
+
 export function RuntimeToolCard({ tool }: { tool: RuntimeToolItem }) {
   const [open, setOpen] = useState(false);
   const hasBody = tool.hasArgs || tool.hasResult || tool.isError;
   const errorText = describeError(tool);
+  const Icon = toolIcon(tool.toolName);
+  const summary = inputSummary(tool);
 
   return (
     <div className={`runtime-tool-card is-${tool.phase}`}>
@@ -73,7 +135,15 @@ export function RuntimeToolCard({ tool }: { tool: RuntimeToolItem }) {
         type="button"
       >
         <span aria-hidden="true" className="runtime-tool-dot" />
+        <span aria-hidden="true" className="runtime-tool-icon">
+          <Icon size={15} />
+        </span>
         <span className="runtime-tool-name">{tool.toolName}</span>
+        {summary ? (
+          <span className="runtime-tool-summary" title={summary}>
+            {summary}
+          </span>
+        ) : null}
         <span className={`runtime-tool-status is-${tool.phase}`}>
           {phaseLabel[tool.phase] ?? tool.phase}
         </span>

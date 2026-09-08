@@ -121,6 +121,39 @@ class SqliteRetrievalEventRepository:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def list_citations_by_turn(
+        self,
+        conversation_id: str,
+    ) -> Dict[str, List[dict]]:
+        """按会话聚合每次「知识注入」的引用编号列表（`turn_id -> citations`）。
+
+        前端据此：把 `[K1] [K2]…` 角标与"真实注入的引用"对齐——命中则渲染为
+        可点击引用，未命中（模型杜撰/未依据知识）则不渲染成可点击引用，避免误导。
+        对同一 turn 只保留最近一次注入。
+        """
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT turn_id, detail, created_at FROM retrieval_events "
+                "WHERE conversation_id = ? AND kind = 'injection' AND detail IS NOT NULL "
+                "ORDER BY created_at DESC, rowid DESC",
+                (conversation_id,),
+            ).fetchall()
+        result: Dict[str, List[dict]] = {}
+        for row in rows:
+            turn_id = str(row["turn_id"] or "")
+            if not turn_id or turn_id in result:
+                continue
+            try:
+                detail = json.loads(row["detail"]) if isinstance(row["detail"], str) else row["detail"]
+            except (json.JSONDecodeError, TypeError):
+                continue
+            citations = detail.get("citations") if isinstance(detail, dict) else None
+            if isinstance(citations, list):
+                result[turn_id] = [
+                    c for c in citations if isinstance(c, dict) and c.get("label")
+                ]
+        return result
+
     def list_recent(
         self,
         limit: int = 50,

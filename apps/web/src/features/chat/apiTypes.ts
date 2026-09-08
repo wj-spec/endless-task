@@ -981,6 +981,32 @@ export type KnowledgeCitation = {
   chunkSeq?: number;
 };
 
+export type ConversationCitationsResponse = {
+  turnCitations: Record<string, KnowledgeCitation[]>;
+};
+
+export type FeedbackRating = "up" | "down";
+
+export type ResponseFeedback = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  variantId: string | null;
+  rating: FeedbackRating;
+  reason: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ResponseFeedbackInput = {
+  rating: FeedbackRating;
+  reason?: string;
+  note?: string;
+  variantId?: string;
+  conversationId?: string;
+};
+
 export type MemoryRecord = {
   id: string;
   kind: string;

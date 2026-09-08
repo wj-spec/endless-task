@@ -63,6 +63,8 @@ import type { KnowledgeProposal,
   TaskRun,
   TaskNotification,
   Reminder,
+  ConversationCitationsResponse,
+  ResponseFeedback,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -214,8 +216,10 @@ export const chatApi = {
       body: JSON.stringify({ workspaceId }),
     }),
   listWorkspaces: async () => {
-    const response = await request<{ items: Workspace[] }>("/workspaces");
-    return response.items;
+    const response = await request<{ items: Workspace[]; homePath: string }>(
+      "/workspaces",
+    );
+    return { items: response.items, homePath: response.homePath };
   },
   createWorkspace: async (name: string, rootPath?: string | null) => {
     const response = await request<{ workspace: Workspace }>("/workspaces", {
@@ -758,6 +762,23 @@ export const chatApi = {
     request<{ id: string }>("/retrieval-events", {
       method: "POST",
       body: JSON.stringify({ kind: "citation_click", ...body }),
+    }),
+  getConversationCitations: async (conversationId: string) => {
+    const response = await request<ConversationCitationsResponse>(
+      `/conversations/${conversationId}/citations`,
+    );
+    return response.turnCitations ?? {};
+  },
+  recordFeedback: (turnId: string, body: {
+    rating: "up" | "down";
+    reason?: string;
+    note?: string;
+    variantId?: string;
+    conversationId?: string;
+  }) =>
+    request<ResponseFeedback>(`/turns/${turnId}/feedback`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   listKnowledgeProposals: async (conversationId: string, includeResolved = false) => {
     const response = await request<{ items: KnowledgeProposal[] }>(

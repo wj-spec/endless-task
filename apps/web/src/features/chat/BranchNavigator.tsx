@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RuntimeV2Lane } from "./apiTypes";
 import { RowMenu } from "../ui/RowMenu";
+import { friendlyLaneName } from "./laneLabel";
 
 type BranchNavigatorProps = {
   conversationId: string;
@@ -22,10 +23,7 @@ type LaneRow = {
 };
 
 const laneTitle = (lane: RuntimeV2Lane) =>
-  lane.displayName ??
-  lane.title ??
-  lane.baseEntryExcerpt ??
-  (lane.isMain ? "当前主线" : "未命名分支");
+  friendlyLaneName(lane, lane.isMain ? "当前主线" : "未命名分支");
 
 const isLaneArchived = (lane: RuntimeV2Lane) =>
   lane.status === "archived" || lane.archived;

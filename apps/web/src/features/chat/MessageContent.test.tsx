@@ -2,9 +2,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MessageContent } from "./MessageContent";
 
-const render = (content: string, onCitationClick?: (label: string) => void) =>
+const render = (
+  content: string,
+  onCitationClick?: (label: string) => void,
+  resolvableCitationLabels?: Set<string>,
+) =>
   renderToStaticMarkup(
-    <MessageContent content={content} onCitationClick={onCitationClick} />,
+    <MessageContent
+      content={content}
+      onCitationClick={onCitationClick}
+      resolvableCitationLabels={resolvableCitationLabels}
+    />,
   );
 
 describe("MessageContent（react-markdown P0-1 渲染）", () => {
@@ -78,6 +86,25 @@ describe("MessageContent（react-markdown P0-1 渲染）", () => {
     const html = render("见 [K1] 来源");
     expect(html).toContain("citation-chip");
     expect(html).not.toContain("citation-chip-button");
+  });
+
+  it("resolvableCitationLabels 命中时渲染为可点引用角标", () => {
+    const html = render("见 [K1]", (label) => label, new Set(["K1"]));
+    expect(html).toContain("citation-chip-button");
+    expect(html).toContain('aria-label="查看引用 K1 的来源"');
+  });
+
+  it("resolvableCitationLabels 未命中时渲染为弱化占位引用（不可点）", () => {
+    const html = render("见 [K2]", (label) => label, new Set(["K3"]));
+    expect(html).toContain("citation-chip-unresolved");
+    expect(html).not.toContain("citation-chip-button");
+    expect(html).toContain("K2");
+  });
+
+  it("未提供 resolvableCitationLabels 时保持乐观可点（数据未就绪）", () => {
+    const html = render("见 [K1]", (label) => label, undefined);
+    expect(html).toContain("citation-chip-button");
+    expect(html).not.toContain("citation-chip-unresolved");
   });
 
   it("行内代码中的 [K1] 不触发引用角标", () => {

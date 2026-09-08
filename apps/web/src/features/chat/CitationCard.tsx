@@ -28,21 +28,26 @@ export function CitationCard({
 }) {
   return (
     <div className="citation-card" role="note">
+      <div className="citation-card-head">
+        {citation ? (
+          <span className={`citation-card-scope is-${citation.scope}`}>
+            [{citation.label}] {SCOPE_LABELS[citation.scope]}
+          </span>
+        ) : (
+          <span className="citation-card-scope">引用</span>
+        )}
+        <button
+          aria-label="关闭引用卡片"
+          className="citation-card-close"
+          onClick={onClose}
+          type="button"
+        >
+          <CloseIcon size={16} />
+        </button>
+      </div>
+
       {citation ? (
         <>
-          <div className="citation-card-head">
-            <span className="citation-card-scope">
-              [{citation.label}] {SCOPE_LABELS[citation.scope]}
-            </span>
-            <button
-              aria-label="关闭引用卡片"
-              className="citation-card-close"
-              onClick={onClose}
-              type="button"
-            >
-              <CloseIcon size={16} />
-            </button>
-          </div>
           <div className="citation-card-title">
             {citation.title}
             {typeof citation.chunkSeq === "number"
@@ -53,6 +58,7 @@ export function CitationCard({
             <p className="citation-card-snippet">{citation.snippet}</p>
           ) : null}
           <button
+            className="citation-card-jump"
             disabled={jumpDisabled}
             onClick={() => onJump(citation)}
             type="button"
@@ -61,20 +67,9 @@ export function CitationCard({
           </button>
         </>
       ) : (
-        <>
-          <div className="citation-card-head">
-            <span className="citation-card-scope">引用来源</span>
-            <button
-              aria-label="关闭引用卡片"
-              className="citation-card-close"
-              onClick={onClose}
-              type="button"
-            >
-              <CloseIcon size={16} />
-            </button>
-          </div>
-          <p className="citation-card-snippet">未找到这条引用的来源记录。</p>
-        </>
+        <p className="citation-card-unresolved">
+          这条引用没有匹配到本轮真正注入的来源，可能是模型未依据真实知识生成的占位引用。
+        </p>
       )}
     </div>
   );

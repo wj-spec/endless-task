@@ -84,6 +84,10 @@ export const buildRunTimeline = (
   );
 
   const items: LiveTimelineItem[] = [];
+  // execId -> 时间线中工具卡的下标。后端一次工具执行会下发多个
+  // `tool_execution.*` 产品事件（created/status_changed/started/completed 等），
+  // 必须按 execId 合并成一张卡，否则会出现重复工具卡（见 issue：#问题一）。
+  const toolCardIndex = new Map<string, number>();
   let text = "";
   const flush = (force: boolean) => {
     if (text.trim() || force) {
@@ -92,36 +96,50 @@ export const buildRunTimeline = (
     }
   };
 
+  // 卡片内容优先用快照 toolStates 的权威最终态（避免把“跳过的事件状态”误画成中间色），
+  // 快照没有时再退化为事件字段（运行中的实时展示）。
+  const resolveTool = (execId: string, event: RuntimeV2ProductEvent): RuntimeToolItem => {
+    const snapshotTool = toolByExec.get(execId);
+    if (snapshotTool) return snapshotTool;
+    const status = String(event.data.status ?? "running");
+    return {
+      key: execId,
+      toolName: String(event.data.toolName ?? "工具"),
+      phase: toolStatusToPhase(status),
+      arguments: event.data.arguments,
+      result: String(event.data.content ?? ""),
+      structuredContent: undefined,
+      errorCode: event.data.errorCode ?? null,
+      isError:
+        Boolean(event.data.errorCode) || status === "failed",
+      hasArgs: event.data.arguments !== undefined,
+      hasResult:
+        Boolean(event.data.content) || Boolean(event.data.errorCode),
+    };
+  };
+
   for (const event of runEvents) {
     if (event.type === "message.updated") {
       text += event.data.delta ?? "";
-    } else if (
-      event.type.startsWith("tool_execution.") &&
-      event.data.toolExecutionId
-    ) {
-      flush(false);
+    } else if (event.type.startsWith("tool_execution.")) {
+      // 纯进度事件不该新起一张卡（可能高频、无状态语义），只参与已有卡的合并。
+      if (event.type === "tool_execution.progress") continue;
+      if (!event.data.toolExecutionId) continue;
       const execId = String(event.data.toolExecutionId);
-      const existing = toolByExec.get(execId);
-      const status = String(event.data.status ?? "running");
-      items.push({
-        id: `tool-${execId}`,
-        kind: "tool",
-        tool:
-          existing ?? {
-            key: execId,
-            toolName: String(event.data.toolName ?? "工具"),
-            phase: toolStatusToPhase(status),
-            arguments: event.data.arguments,
-            result: String(event.data.content ?? ""),
-            structuredContent: undefined,
-            errorCode: event.data.errorCode ?? null,
-            isError:
-              Boolean(event.data.errorCode) || status === "failed",
-            hasArgs: event.data.arguments !== undefined,
-            hasResult:
-              Boolean(event.data.content) || Boolean(event.data.errorCode),
-          },
-      });
+      const existingIndex = toolCardIndex.get(execId);
+      if (existingIndex === undefined) {
+        flush(false);
+        items.push({
+          id: `tool-${execId}`,
+          kind: "tool",
+          tool: resolveTool(execId, event),
+        });
+        toolCardIndex.set(execId, items.length - 1);
+      } else {
+        // 同一次工具执行的后续事件原地更新（用快照终态覆盖中间态），不再新增卡片。
+        const item = items[existingIndex];
+        if (item.kind === "tool") item.tool = resolveTool(execId, event);
+      }
     } else if (terminalRunTypes.has(event.type)) {
       flush(false);
     }

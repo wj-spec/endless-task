@@ -30,6 +30,7 @@ from endless_task.domain.models import (
     KnowledgeSourceStatus,
     PermissionMode,
     RetrievalEventKind,
+    FeedbackRating,
     TurnStatus,
 )
 from endless_task.domain.models import TaskRunTrigger
@@ -160,6 +161,7 @@ from endless_task.storage import (
     SqliteNotificationRepository,
     SqliteReminderRepository,
     SqliteRetrievalEventRepository,
+    SqliteResponseFeedbackRepository,
     SqliteTaskRunRepository,
     SqliteWorkspaceRepository,
     SqliteHubEventRepository,
@@ -755,6 +757,7 @@ class AppContainer:
     # unattended executors + configured mode.
     unattended_tool_registry: Optional[ToolRegistry] = None
     execution_backend_mode: str = ""
+    response_feedback_repository: Optional[SqliteResponseFeedbackRepository] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1347,6 +1350,7 @@ def _build_container(
     reminder_repository = SqliteReminderRepository(database)
     knowledge_proposal_repository = SqliteKnowledgeProposalRepository(database)
     retrieval_event_repository = SqliteRetrievalEventRepository(database)
+    response_feedback_repository = SqliteResponseFeedbackRepository(database)
     scope_weights = None
     if settings.knowledge_scope_weights:
         scope_weights = {
@@ -2531,6 +2535,7 @@ def _build_container(
         knowledge_proposal_service=knowledge_proposal_service,
         knowledge_repository=knowledge_repository,
         retrieval_event_repository=retrieval_event_repository,
+        response_feedback_repository=response_feedback_repository,
         workspace_repository=workspace_repository,
         workspace_resolver=workspace_resolver,
         skill_service=skill_service,
@@ -2630,6 +2635,16 @@ class RetrievalEventBody(BaseModel):
     refId: Optional[str] = None
     query: Optional[str] = None
     turnId: Optional[str] = None
+    conversationId: Optional[str] = None
+
+
+class ResponseFeedbackBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rating: str
+    reason: Optional[str] = None
+    note: Optional[str] = None
+    variantId: Optional[str] = None
     conversationId: Optional[str] = None
 
 
@@ -4028,7 +4043,11 @@ def create_app(
     @app.get("/workspaces")
     async def list_workspaces() -> dict[str, object]:
         workspaces = container.workspace_repository.list_workspaces()
-        return {"items": [workspace_json(item) for item in workspaces]}
+        return {
+            "items": [workspace_json(item) for item in workspaces],
+            # 前端用它把工作区本地路径显示为 ~ 开头（根目录简写）。
+            "homePath": str(Path.home()),
+        }
 
     @app.post("/workspaces", status_code=201)
     async def create_workspace(body: WorkspaceBody) -> dict[str, object]:
@@ -4336,6 +4355,48 @@ def create_app(
     @app.get("/retrieval-stats")
     async def get_retrieval_stats() -> dict[str, object]:
         return {"stats": container.retrieval_event_repository.summarize()}
+
+    @app.post("/turns/{turn_id}/feedback")
+    async def record_response_feedback(
+        turn_id: str,
+        body: ResponseFeedbackBody,
+    ) -> dict[str, object]:
+        try:
+            rating = FeedbackRating(body.rating)
+        except ValueError:
+            raise ApiRequestError(
+                "invalid_rating",
+                "rating 只能是 up 或 down。",
+                status_code=422,
+            )
+        record = container.response_feedback_repository.upsert(
+            conversation_id=body.conversationId or "",
+            turn_id=turn_id,
+            variant_id=body.variantId,
+            rating=rating,
+            reason=body.reason,
+            note=body.note,
+        )
+        return {
+            "id": record.id,
+            "conversationId": record.conversation_id,
+            "turnId": record.turn_id,
+            "variantId": record.variant_id,
+            "rating": record.rating.value,
+            "reason": record.reason,
+            "note": record.note,
+            "createdAt": record.created_at,
+            "updatedAt": record.updated_at,
+        }
+
+    @app.get("/conversations/{conversation_id}/citations")
+    async def get_conversation_citations(
+        conversation_id: str,
+    ) -> dict[str, object]:
+        turn_citations = container.retrieval_event_repository.list_citations_by_turn(
+            conversation_id,
+        )
+        return {"turnCitations": turn_citations}
 
     @app.post("/knowledge-lifecycle/decay-check")
     async def run_knowledge_decay_check() -> dict[str, object]:

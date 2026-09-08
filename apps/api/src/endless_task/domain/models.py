@@ -497,6 +497,30 @@ class RetrievalEvent:
     detail: Optional[Dict[str, object]] = None
 
 
+class FeedbackRating(str, Enum):
+    UP = "up"
+    DOWN = "down"
+
+
+@dataclass(frozen=True)
+class ResponseFeedback:
+    """用户对某条回答（一个 response variant）的满意度反馈。
+
+    作为偏好/RLHF 信号，供用户模型（B5）、记忆反思（B4）与评估（D1）复用。
+    幂等键：(turn_id, variant_id)；无 variant 时退回 (turn_id)。
+    """
+
+    id: str
+    conversation_id: str
+    turn_id: str
+    variant_id: Optional[str]
+    rating: FeedbackRating
+    reason: Optional[str]
+    note: Optional[str]
+    created_at: str
+    updated_at: str
+
+
 class KnowledgeProposalType(str, Enum):
     ADD_SOURCE = "add_source"
     EXPIRE_SOURCE = "expire_source"

@@ -35,12 +35,15 @@ import { MemoryProposalCard } from "../proposals/MemoryProposalCard";
 import { TaskProposalCard } from "../proposals/TaskProposalCard";
 import type { TurnProposals } from "../proposals/useProposals";
 import { CollapsibleMessage } from "./CollapsibleMessage";
+import { MessageContent } from "./MessageContent";
+import { ResponseFeedbackControl } from "./ResponseFeedbackControl";
 import { CopyButton } from "./CopyButton";
 import { PlanLine, type PlanPayload } from "./PlanLine";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
 import { useConversationSearch } from "./useConversationSearch";
+import { friendlyLaneName } from "./laneLabel";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { RowMenu } from "../ui/RowMenu";
 import { BranchIcon, ChevronIcon } from "../ui/Icons";
@@ -370,8 +373,7 @@ export function ChatWorkSurface({
   const currentLane = branchLanes.find((lane) => lane.id === currentLaneId) ?? null;
   const mainLane = branchLanes.find((lane) => lane.isMain) ?? null;
   const viewingBranch = variant === "main" && currentLane !== null && !currentLane.isMain;
-  const currentLaneLabel =
-    currentLane?.displayName ?? currentLane?.title ?? currentLane?.summary ?? "未命名分支";
+  const currentLaneLabel = friendlyLaneName(currentLane);
   const currentLaneHasActiveRun = Boolean(
     runtimeSnapshot?.runningRunId &&
       runtimeSnapshot.runningLaneId &&
@@ -419,6 +421,27 @@ export function ChatWorkSurface({
     setInheritedHistoryOpen(false);
   }, [conversationId, conversation?.conversation.title]);
 
+  // 拉取本轮会话「真正注入」的引用列表（turn_id -> citations）。
+  // 前端据此把 [K1]/[K2]… 角标分为「真实引用」与「无法溯源的占位引用」。
+  useEffect(() => {
+    if (!conversationId) {
+      setCitationsByTurn({});
+      return;
+    }
+    let cancelled = false;
+    void chatApi
+      .getConversationCitations(conversationId)
+      .then((map) => {
+        if (!cancelled) setCitationsByTurn(map);
+      })
+      .catch(() => {
+        // 引用加载失败不阻断交互（此时角标保持乐观可点击）。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
   useEffect(() => {
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
       ? "auto"
@@ -444,8 +467,7 @@ export function ChatWorkSurface({
       currentLaneId &&
       runtimeSnapshot.runningLaneId !== currentLaneId,
   );
-  const runningLaneLabel =
-    runningLane?.displayName ?? runningLane?.title ?? runningLane?.summary ?? "另一分支";
+  const runningLaneLabel = friendlyLaneName(runningLane, "另一分支");
 
   const activeSnapshot = runtimeSnapshot?.activeRunId && runtimeSnapshot.runState
     ? runtimeSnapshot
@@ -528,7 +550,19 @@ export function ChatWorkSurface({
         {viewingBranch ? (
           <div className="branch-banner" role="note">
             <span className="branch-banner-text">
-              正在查看分支「{currentLaneLabel}」；查看不会改变主线。
+              <span aria-hidden="true" className="branch-banner-glyph">⑂</span>
+              <span
+                className="branch-banner-label"
+                title={
+                  currentLane?.displayName ??
+                  currentLane?.title ??
+                  currentLane?.summary ??
+                  ""
+                }
+              >
+                正在查看分支「{currentLaneLabel}」
+              </span>
+              <span className="branch-banner-hint">查看不会改变主线。</span>
             </span>
             <div className="branch-banner-actions">
               {mainLane && onSwitchLane ? (
@@ -712,6 +746,12 @@ export function ChatWorkSurface({
               ? live.content
               : persistedVariant.assistantMessage.content;
             const status = useLive ? live.status : turnSnapshot.turn.status;
+            // 该轮次真实注入的引用标签集合：命中 → 可点击引用；未命中 → 占位/无法溯源。
+            const resolvableCitationLabels = new Set(
+              (citationsByTurn[turnSnapshot.turn.id] ?? []).map(
+                (citation) => citation.label,
+              ),
+            );
             // 兜底：run 已进入终态时，不让「正在回答」徽章因快照/事件同步滞后而卡住。
             const runState = runtimeSnapshot?.runState;
             const terminalRunStatus = runState
@@ -878,9 +918,12 @@ export function ChatWorkSurface({
                       >
                         {timeline.map((item) =>
                           item.kind === "text" ? (
-                            <p className="timeline-text" key={item.id}>
-                              {item.text}
-                            </p>
+                            <div className="timeline-text" key={item.id}>
+                              <MessageContent
+                                content={item.text}
+                                resolvableCitationLabels={resolvableCitationLabels}
+                              />
+                            </div>
                           ) : (
                             <RuntimeToolCard key={item.id} tool={item.tool} />
                           ),
@@ -895,6 +938,7 @@ export function ChatWorkSurface({
                         onCitationClick={(label) =>
                           void handleCitationClick(turnSnapshot.turn.id, label)
                         }
+                        resolvableCitationLabels={resolvableCitationLabels}
                         streaming={status === "created" || status === "running"}
                       />
                     ) : null}
@@ -1033,6 +1077,16 @@ export function ChatWorkSurface({
                       <div className="response-actions">
                         {content.length > 0 ? (
                           <CopyButton ariaLabel="复制这段回答" text={content} />
+                        ) : null}
+                        {status === "completed" && content.length > 0 ? (
+                          <ResponseFeedbackControl
+                            conversationId={conversation?.conversation.id ?? null}
+                            disabled={
+                              pendingAction !== null || laneBusy || isGenerating
+                            }
+                            turnId={turnSnapshot.turn.id}
+                            variantId={persistedVariant.variant.id}
+                          />
                         ) : null}
                         {isLatest && (status === "failed" || status === "cancelled") ? (
                           <button

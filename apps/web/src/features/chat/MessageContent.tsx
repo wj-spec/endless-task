@@ -34,33 +34,51 @@ const CITATION_PATTERN = /\[K\d+\]/;
 
 type CitationClickHandler = (label: string) => void;
 
-// 将容器（段落/列表项/表元/标题）顶层的文本串按 [K\d+] 切成引用角标；
-// 只处理顶层文本，不进入 bold/code/link 等内联节点（与旧解析器语义一致）。
+/**
+ * 把容器顶层的文本串按 [K\d+] 切成引用角标。
+ *
+ * 区分"真实引用"与"占位引用"：
+ * - `resolvableLabels` 提供且命中 → 渲染为可点击的真实引用角标。
+ * - `resolvableLabels` 提供但未命中（模型杜撰/未依据真实知识）→ 渲染为弱化的不可点占位角标，避免误导。
+ * - `resolvableLabels` 未提供（数据未就绪/旧数据）→ 保持乐观可点击。
+ */
 const splitCitationText = (
   text: string,
   onCitationClick: CitationClickHandler | undefined,
+  resolvableLabels?: Set<string>,
 ): ReactNode[] => {
   const segments = text.split(/(\[K\d+\])/g);
   return segments.map((segment, index) => {
     if (CITATION_PATTERN.test(segment)) {
       const label = segment.slice(1, -1);
-      if (!onCitationClick) {
+      if (resolvableLabels && !resolvableLabels.has(label)) {
         return (
-          <sup className="citation-chip" key={`${index}-${segment}`} title="来自相关知识">
+          <sup
+            className="citation-chip citation-chip-unresolved"
+            key={`${index}-${segment}`}
+            title={`引用 ${label} 无法溯源（可能未依据真实来源）`}
+          >
             {label}
           </sup>
         );
       }
+      if (onCitationClick) {
+        return (
+          <sup key={`${index}-${segment}`}>
+            <button
+              type="button"
+              aria-label={`查看引用 ${label} 的来源`}
+              className="citation-chip citation-chip-button"
+              onClick={() => onCitationClick(label)}
+            >
+              {label}
+            </button>
+          </sup>
+        );
+      }
       return (
-        <sup key={`${index}-${segment}`}>
-          <button
-            type="button"
-            aria-label={`查看引用 ${label} 的来源`}
-            className="citation-chip citation-chip-button"
-            onClick={() => onCitationClick(label)}
-          >
-            {label}
-          </button>
+        <sup className="citation-chip" key={`${index}-${segment}`} title="来自相关知识">
+          {label}
         </sup>
       );
     }
@@ -71,9 +89,12 @@ const splitCitationText = (
 const textifiedChildren = (
   children: ReactNode,
   onCitationClick: CitationClickHandler | undefined,
+  resolvableLabels?: Set<string>,
 ): ReactNode =>
   Children.map(children, (child) =>
-    typeof child === "string" ? splitCitationText(child, onCitationClick) : child,
+    typeof child === "string"
+      ? splitCitationText(child, onCitationClick, resolvableLabels)
+      : child,
   );
 
 // 带引用角标的行内容器集合：段落、列表项、表元、引用、标题。
@@ -97,9 +118,15 @@ const isSafeExternalUrl = (href: string | undefined): boolean =>
 type MessageContentProps = {
   content: string;
   onCitationClick?: CitationClickHandler;
+  /** 该轮次真正注入的引用标签集合；提供后用于区分"真实引用"与"无法溯源的占位引用"。 */
+  resolvableCitationLabels?: Set<string>;
 };
 
-export function MessageContent({ content, onCitationClick }: MessageContentProps) {
+export function MessageContent({
+  content,
+  onCitationClick,
+  resolvableCitationLabels,
+}: MessageContentProps) {
   const components: Components = {
     // 外链新窗口打开并禁止 opener 回指；相对/同页链接保持默认行为。
     a({ href, children: linkChildren, node: _node, ...rest }) {
@@ -150,7 +177,7 @@ export function MessageContent({ content, onCitationClick }: MessageContentProps
       createElement(
         tag,
         rest,
-        textifiedChildren(children as ReactNode, onCitationClick),
+        textifiedChildren(children as ReactNode, onCitationClick, resolvableCitationLabels),
       );
   for (const tag of TEXT_CONTAINERS) {
     (components as Record<string, unknown>)[tag] = container(tag);

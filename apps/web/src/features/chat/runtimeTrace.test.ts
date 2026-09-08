@@ -163,6 +163,63 @@ describe("buildRunTimeline", () => {
     const tool = timeline!.find((item) => item.kind === "tool");
     expect(tool && tool.kind === "tool" && tool.tool.isError).toBe(true);
   });
+
+  it("同一 toolExecutionId 的多个事件只渲染一张卡（去重，问题一）", () => {
+    const timeline = buildRunTimeline(
+      [
+        event({
+          eventSeq: 1,
+          type: "tool_execution.updated",
+          data: { toolExecutionId: "exec-x", status: "created", toolName: "list_workspace_dir" },
+        }),
+        event({
+          eventSeq: 2,
+          type: "tool_execution.started",
+          data: { toolExecutionId: "exec-x", status: "running", toolName: "list_workspace_dir" },
+        }),
+        event({
+          eventSeq: 3,
+          type: "tool_execution.completed",
+          data: { toolExecutionId: "exec-x", status: "completed", toolName: "list_workspace_dir" },
+        }),
+        event({
+          eventSeq: 4,
+          type: "tool_execution.updated",
+          data: { toolExecutionId: "exec-y", status: "completed", toolName: "read_text_file" },
+        }),
+      ],
+      [],
+      "run-1",
+    );
+    const tools = timeline!.filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools[0].kind === "tool" && tools[0].id).toBe("tool-exec-x");
+    expect(tools[1].kind === "tool" && tools[1].id).toBe("tool-exec-y");
+    // 去重后每张卡 id（React key）唯一
+    const ids = tools.map((item) => (item.kind === "tool" ? item.id : ""));
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("tool_execution.progress 不新起工具卡", () => {
+    const timeline = buildRunTimeline(
+      [
+        event({
+          eventSeq: 1,
+          type: "tool_execution.started",
+          data: { toolExecutionId: "exec-z", status: "running", toolName: "run_shell" },
+        }),
+        event({
+          eventSeq: 2,
+          type: "tool_execution.progress",
+          data: { toolExecutionId: "exec-z", message: "50%" },
+        }),
+      ],
+      [],
+      "run-1",
+    );
+    const tools = timeline!.filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(1);
+  });
 });
 
 describe("buildRuntimeToolTrace", () => {

@@ -9,6 +9,7 @@ type CollapsibleMessageProps = {
   forceExpand?: boolean;
   streaming: boolean;
   onCitationClick?: (label: string) => void;
+  resolvableCitationLabels?: Set<string>;
 };
 
 /**
@@ -64,6 +65,7 @@ export function CollapsibleMessage({
   forceExpand = false,
   streaming,
   onCitationClick,
+  resolvableCitationLabels,
 }: CollapsibleMessageProps) {
   const [expanded, setExpanded] = useState(false);
   const collapsible = !streaming && content.length > COLLAPSE_THRESHOLD;
@@ -78,7 +80,11 @@ export function CollapsibleMessage({
         streaming ? "collapsible-message is-streaming" : "collapsible-message"
       }
     >
-      <MessageContent content={shown} onCitationClick={onCitationClick} />
+      <MessageContent
+        content={shown}
+        onCitationClick={onCitationClick}
+        resolvableCitationLabels={resolvableCitationLabels}
+      />
       {collapsible ? (
         <button
           className="expand-toggle"

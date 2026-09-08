@@ -73,7 +73,6 @@
   align-items: center;
   gap: 12px;
 }
-
 .conversation-heading h1,
 .conversation-heading h2 {
   min-width: 0;
@@ -553,8 +552,37 @@
 }
 
 .branch-banner-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
   color: var(--warn-deep);
   font-size: var(--fs-2);
+}
+
+/* 分支图标：便于扫视当前处于旁支 */
+.branch-banner-glyph {
+  flex: none;
+  color: var(--warn-mid);
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* 分支名：单行省略，避免把整段正文塞进横幅 */
+.branch-banner-label {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-banner-hint {
+  flex: none;
+  color: var(--warn-deep);
+  opacity: 0.9;
+  white-space: nowrap;
 }
 
 .branch-banner-actions {

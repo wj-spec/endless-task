@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -67,13 +68,22 @@ class RuntimeV2LaneService:
                 "Branch base must be a final assistant response boundary"
             )
         base_excerpt = self._entry_excerpt(base_entry)
+        resolved_display_name = (display_name or "").strip() or None
+        if resolved_display_name is None:
+            lanes = self._repository.list_lanes(conversation_id)
+            branch_count = sum(
+                1 for lane in lanes if lane.kind is LaneKind.PERSISTENT_BRANCH
+            )
+            resolved_display_name = self._derive_display_name(
+                base_excerpt, f"分支 {branch_count + 1}"
+            )
 
         lane = self._repository.create_lane(
             conversation_id=conversation_id,
             kind=LaneKind.PERSISTENT_BRANCH,
             base_entry_id=base_entry_id,
             metadata={"sourceLaneId": source.id},
-            display_name=display_name,
+            display_name=resolved_display_name,
             summary=base_excerpt,
             source_lane_id=source.id,
             created_from_entry_id=base_entry_id,
@@ -177,3 +187,30 @@ class RuntimeV2LaneService:
         if len(normalized) <= 80:
             return normalized
         return normalized[:79] + "…"
+
+    @staticmethod
+    def _strip_markdown(content: str) -> str:
+        """去掉 Markdown 语法符号（强调/代码/标题/引用/链接/图片/表格竖线）。
+        链接与图片各自收敛为文本，避免把 `**`、`[a](url)` 之类的原始符号带进名称。"""
+        if not content:
+            return ""
+        value = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", content)
+        value = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", value)
+        value = re.sub(r"[*_`~#>]|\n", "", value)
+        value = value.replace("|", " ")
+        return " ".join(value.split()).strip()
+
+    @classmethod
+    def _derive_display_name(cls, base_excerpt: str, fallback: str) -> str | None:
+        """未显式命名时，从来源助手消息摘要派生一个友好、简短的分支名。
+
+        默认分支名原本回退到 `summary`（来源助手消息的原始内容，常含 Markdown 符号且
+        很长），会把整段正文塞进 header / 横幅。这里清洗 Markdown 并按位截断，让前端
+        （ChatWorkSurface / BranchNavigator）直接得到一个干净、可读的标签。
+        """
+        text = cls._strip_markdown(base_excerpt)
+        if not text:
+            return fallback or None
+        if len(text) > 20:
+            text = text[:20].rstrip() + "…"
+        return text

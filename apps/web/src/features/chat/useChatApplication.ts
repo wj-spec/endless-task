@@ -28,6 +28,7 @@ import {
 
 const WORKSPACE_STORAGE_KEY = "endless-task.workspace";
 const ACTIVE_CONVERSATION_STORAGE_KEY = "endless-task.active-conversation";
+const VIEW_LANE_STORAGE_KEY = "endless-task.view-lanes";
 const conversationIdFromHash = (): string | null => {
   try {
     const match = /^#\/conversation\/([^/]+)/.exec(globalThis.location?.hash ?? "");
@@ -68,6 +69,29 @@ const readStoredActiveConversation = (): {
     };
   } catch {
     return null;
+  }
+};
+
+// 刷新后仍停留在上次查看的车道：持久化「conversationId -> 当前查看的车道 id」。
+// 这样在分支上刷新（或临时对话对照刷新）后，主视图不会跳回主线，避免排版突变。
+const readStoredViewLanes = (): Record<string, string> => {
+  try {
+    const raw = globalThis.localStorage?.getItem(VIEW_LANE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === "string"),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+};
+
+const writeStoredViewLanes = (value: Record<string, string>): void => {
+  try {
+    globalThis.localStorage?.setItem(VIEW_LANE_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // 持久化失败不影响交互。
   }
 };
 
@@ -167,6 +191,7 @@ export function useChatApplication() {
   const [statusFilter, setStatusFilter] = useState<ConversationStatus>("active");
   const [search, setSearch] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [homePath, setHomePath] = useState("");
   const [workspaceId, setWorkspaceId] = useState<string | null>(
     readStoredWorkspace,
   );
@@ -184,7 +209,9 @@ export function useChatApplication() {
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [capabilities, setCapabilities] = useState<CapabilitySnapshot | null>(null);
   const [mainLaneIds, setMainLaneIds] = useState<Record<string, string>>({});
-  const [viewLaneIds, setViewLaneIds] = useState<Record<string, string>>({});
+  const [viewLaneIds, setViewLaneIds] = useState<Record<string, string>>(() =>
+    readStoredViewLanes(),
+  );
   const [laneTrees, setLaneTrees] = useState<Record<string, RuntimeV2Lane[]>>({});
   const streams = useRef(new Map<string, AbortController>());
   const hasOpenedConversationRef = useRef(false);
@@ -456,14 +483,32 @@ export function useChatApplication() {
           (item: RuntimeV2Lane) => item.id === laneList.activeLaneId,
         ) ??
         null;
+      // 刷新后恢复上次查看的车道：若该车道仍存在且未归档，则停留在它上面，
+      // 否则回退主线。这样在分支/对照上刷新不会跳回主线导致排版突变。
+      // viewLaneIds 以存档惰性初始化，这里用当前状态值（而非重新读 storage，避免
+      // 被挂载时的持久化 effect 清掉）。
+      const viewLaneId = viewLaneIds[legacy.conversation.id];
+      const storedViewLane =
+        viewLaneId && viewLaneId !== mainLane?.id
+          ? (laneList.items.find(
+              (item) =>
+                item.id === viewLaneId &&
+                !item.isMain &&
+                item.status !== "archived",
+            ) ?? null)
+          : null;
+      const resolvedViewLane = storedViewLane ?? mainLane;
       if (mainLane) {
         setMainLaneIds((current) => ({
           ...current,
           [legacy.conversation.id]: mainLane.id,
         }));
+      }
+      const resolvedViewLaneId = resolvedViewLane?.id ?? mainLane?.id ?? null;
+      if (resolvedViewLaneId) {
         setViewLaneIds((current) => ({
           ...current,
-          [legacy.conversation.id]: mainLane.id,
+          [legacy.conversation.id]: resolvedViewLaneId,
         }));
       }
       setLaneTrees((current) => ({
@@ -472,7 +517,7 @@ export function useChatApplication() {
       }));
       const runtime = await runtimeController.loadSnapshot({
         conversationId: legacy.conversation.id,
-        laneId: mainLane?.id ?? null,
+        laneId: resolvedViewLane?.id ?? mainLane?.id ?? null,
       });
       if (!isCurrent()) return;
       applyRuntimeSnapshot(legacy, runtime, target);
@@ -480,13 +525,18 @@ export function useChatApplication() {
         followRuntimeConversation(
           legacy.conversation.id,
           runtime.lastEventSeq,
-          mainLane?.id,
+          resolvedViewLane?.id ?? mainLane?.id,
           target,
         );
       }
     },
-    [applyRuntimeSnapshot, followRuntimeConversation],
+    [applyRuntimeSnapshot, followRuntimeConversation, viewLaneIds],
   );
+
+  // 持久化「当前查看的车道」，使刷新后能恢复（见 hydrateActiveTurn 的恢复逻辑）。
+  useEffect(() => {
+    writeStoredViewLanes(viewLaneIds);
+  }, [viewLaneIds]);
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
@@ -764,8 +814,9 @@ export function useChatApplication() {
       .catch(() => setCapabilities(null));
     void chatApi
       .listWorkspaces()
-      .then((items) => {
+      .then(({ items, homePath }) => {
         setWorkspaces(items);
+        setHomePath(homePath);
         // 刷新恢复上次会话：优先切到上次激活会话所在工作区；
         // 否则无已存上下文时默认落到第一个已绑定目录的工作区。
         const restoredConversation = readStoredActiveConversation();
@@ -1926,8 +1977,9 @@ export function useChatApplication() {
 
   const refreshWorkspaces = async () => {
     try {
-      const items = await chatApi.listWorkspaces();
+      const { items, homePath } = await chatApi.listWorkspaces();
       setWorkspaces(items);
+      setHomePath(homePath);
     } catch {
       // 列表刷新失败保持现有状态，忽略。
     }
@@ -1953,6 +2005,7 @@ export function useChatApplication() {
     createWorkspace,
     currentWorkspace,
     deleteWorkspace,
+    homePath,
     refreshWorkspaces,
     selectWorkspace,
     workspaceCanCreate,

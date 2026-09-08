@@ -68,7 +68,7 @@
 }
 
 .turn {
-  padding: 30px 0 28px;
+  padding: 20px 0 16px;
   border-bottom: 1px solid var(--line-soft);
   position: relative;
 }
@@ -85,7 +85,7 @@
 }
 
 .message-row + .message-row {
-  margin-top: var(--space-6);
+  margin-top: 16px;
 }
 
 .speaker-mark {
@@ -116,12 +116,13 @@
 .user-copy {
   color: var(--ink);
   font-size: var(--fs-4);
-  line-height: 1.72;
+  line-height: 1.62;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  white-space: normal;
 }
 
-/* 用户轮次：轻微中性 surface + 短左标记，受控宽度而非聊天气泡 */
+/* 用户轮次：轻微中性 surface + 短左标记，受控宽度而非聊天气泡。
+   白名单：保留用户输入里的换行（pre-wrap）；助手消息用 normal，塌陷块间空白。 */
 .user-copy {
   max-width: 720px;
   padding: var(--space-3) var(--space-4);
@@ -129,12 +130,13 @@
   border-radius: 0 var(--radius-s) var(--radius-s) 0;
   background: var(--surface-2);
   color: var(--ink-raise);
-  line-height: 1.68;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .message-copy p,
 .message-copy ul {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 10px;
 }
 
 .message-copy p:last-child,
@@ -532,9 +534,29 @@
 }
 
 .runtime-tool-name {
+  flex: none;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: var(--fs-2);
   font-weight: 600;
+}
+
+.runtime-tool-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--muted);
+}
+
+/* 一行输入摘要：占用剩余空间、单行省略，避免把大 JSON/cmd 平铺在头部。 */
+.runtime-tool-summary {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: var(--fs-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .runtime-tool-status {
@@ -646,11 +668,11 @@
 
 .timeline-text {
   margin: 0;
-  white-space: pre-wrap;
+}
+
+/* 时间流里的文本段也走 Markdown 渲染（与普通消息一致），避免把 `**`/`-`/`[K]` 裸露成纯文本 */
+.turn-timeline .timeline-text .message-copy {
   color: var(--ink-raise);
-  font-size: var(--fs-3);
-  line-height: 1.65;
-  overflow-wrap: anywhere;
 }
 
 .turn-timeline .runtime-tool-card {
@@ -777,6 +799,132 @@
 .copy-button:focus-visible {
   color: var(--accent);
   outline: none;
+}
+
+/* --- A3 回答反馈（👍/👎 + 理由） --- */
+.response-feedback {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.feedback-btn:hover:not(:disabled),
+.feedback-btn:focus-visible {
+  border-color: var(--line-accent);
+  color: var(--accent);
+  outline: none;
+}
+.feedback-btn.is-active {
+  border-color: var(--line-accent);
+  background: var(--sheen-soft);
+  color: var(--accent);
+}
+
+.feedback-panel {
+  position: absolute;
+  z-index: calc(var(--z-pop, 20) + 1);
+  top: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: min(300px, 70vw);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--paper);
+  box-shadow: var(--shadow-pop, 0 8px 24px rgba(0, 0, 0, 0.12));
+}
+
+.feedback-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-2);
+  font-weight: 600;
+}
+.feedback-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.feedback-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.feedback-reason {
+  padding: var(--space-0) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+.feedback-reason.is-selected {
+  border-color: var(--accent);
+  background: var(--sheen-soft);
+  color: var(--accent);
+}
+
+.feedback-note {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 8px;
+}
+.feedback-submit,
+.feedback-cancel {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-s);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+.feedback-submit {
+  background: var(--sheen-soft);
+  color: var(--accent);
+}
+.feedback-cancel {
+  background: transparent;
+  color: var(--muted);
+}
+
+.feedback-confirm {
+  color: var(--success);
+  font-size: var(--fs-1);
+}
+.feedback-error {
+  color: var(--danger-deep);
+  font-size: var(--fs-1);
 }
 
 .user-row-body {
@@ -1349,6 +1497,50 @@ button.citation-chip:focus-visible {
   font-size: var(--fs-3, 13px);
 }
 
+/* 无法溯源的占位引用：弱化、不可点击，避免误导 */
+.citation-chip-unresolved {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+/* 引用类型徽标：按 scope 给一点区分色 */
+.citation-card-scope.is-source {
+  color: var(--accent);
+}
+.citation-card-scope.is-memory {
+  color: var(--success);
+}
+.citation-card-scope.is-artifact {
+  color: var(--warn-mid);
+}
+.citation-card-scope.is-conversation {
+  color: var(--muted-strong);
+}
+
+.citation-card-jump {
+  margin-top: var(--space-1, var(--space-1));
+  padding: var(--space-1, var(--space-1)) var(--space-3, 12px);
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-md, 8px);
+  background: var(--paper);
+  color: var(--accent);
+  font-size: var(--fs-2, 13px);
+  cursor: pointer;
+}
+.citation-card-jump:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.citation-card-unresolved {
+  margin: var(--space-1, var(--space-1)) 0 0;
+  color: var(--faint);
+  font-size: var(--fs-2, 13px);
+  line-height: 1.6;
+}
+
 /* R5.11 提案卡归属行 */
 .proposal-scope {
   display: flex;
@@ -1376,13 +1568,14 @@ button.citation-chip:focus-visible {
 
 .branch-navigator {
   position: relative;
-  flex: none;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
 .branch-navigator-trigger {
   display: flex;
   max-width: 280px;
+  width: 100%;
   align-items: center;
   gap: 7px;
   padding: var(--space-1) var(--space-2);
@@ -1393,18 +1586,24 @@ button.citation-chip:focus-visible {
   font-size: var(--fs-1);
 }
 
-.branch-navigator-trigger:hover {
-  border-color: var(--line-accent);
-  color: var(--accent);
+.branch-navigator-trigger span {
+  flex: none;
 }
 
 .branch-navigator-trigger strong {
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--ink-raise);
   font-size: var(--fs-2);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.branch-navigator-trigger:hover {
+  border-color: var(--line-accent);
+  color: var(--accent);
 }
 
 .branch-navigator-popover {
