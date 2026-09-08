@@ -51,6 +51,17 @@ class SqliteVecSearchTest(unittest.TestCase):
         self.search.upsert("b", "y", "m", 4, blob(1, 0, 0, 0))
         self.assertEqual(["x"], [r[0] for r in self.search.knn("a", "m", 4, blob(1, 0, 0, 0), k=2)])
 
+    def test_scores_for_refs(self) -> None:
+        self.search.upsert("kb", "a", "m", 4, blob(1, 0, 0, 0))
+        self.search.upsert("kb", "b", "m", 4, blob(0, 1, 0, 0))
+        scores = self.search.scores_for_refs("kb", "m", 4, blob(1, 0, 0, 0), ["a", "b"])
+        self.assertIn("a", scores)
+        self.assertIn("b", scores)
+        self.assertLess(scores["a"], scores["b"])  # a 更近 → 距离更小
+
+    def test_scores_for_refs_empty(self) -> None:
+        self.assertEqual({}, self.search.scores_for_refs("kb", "m", 4, blob(1, 0, 0, 0), []))
+
 
 if __name__ == "__main__":
     unittest.main()

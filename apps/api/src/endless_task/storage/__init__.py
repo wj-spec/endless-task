@@ -19,6 +19,7 @@ from .sqlite_notification_repository import SqliteNotificationRepository
 from .sqlite_reminder_repository import SqliteReminderRepository
 from .sqlite_retrieval_event_repository import SqliteRetrievalEventRepository
 from .sqlite_response_feedback_repository import SqliteResponseFeedbackRepository
+from .sqlite_vec_search import SqliteVecSearch
 from .sqlite_task_run_repository import SqliteTaskRunRepository
 from .sqlite_workspace_repository import SqliteWorkspaceRepository
 from .sqlite_hub_event_repository import SqliteHubEventRepository
@@ -28,6 +29,7 @@ __all__ = [
     "SqliteEmbeddingRepository",
     "SqliteRetrievalEventRepository",
     "SqliteResponseFeedbackRepository",
+    "SqliteVecSearch",
     "SqliteHubEventRepository",
     "SqliteKnowledgeRepository",
     "SqliteWorkspaceRepository",

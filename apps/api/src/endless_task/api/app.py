@@ -162,6 +162,7 @@ from endless_task.storage import (
     SqliteReminderRepository,
     SqliteRetrievalEventRepository,
     SqliteResponseFeedbackRepository,
+    SqliteVecSearch,
     SqliteTaskRunRepository,
     SqliteWorkspaceRepository,
     SqliteHubEventRepository,
@@ -371,6 +372,7 @@ class AppSettings:
     embedding_local_url_base: str = "https://huggingface.co"
     embedding_max_chars: int = 1500
     embedding_batch_size: int = 8
+    embedding_sqlite_vec: bool = False
     hybrid_literal_weight: float = 0.4
     hybrid_semantic_weight: float = 0.6
     proposal_daily_budget: int = 6
@@ -588,6 +590,7 @@ class AppSettings:
                 env.get("ENDLESS_TASK_EMBEDDING_MAX_CHARS", "1500")
             ),
             embedding_batch_size=int(env.get("ENDLESS_TASK_EMBEDDING_BATCH", "8")),
+            embedding_sqlite_vec=_parse_flag(env.get("ENDLESS_TASK_SQLITE_VEC", "0")),
             hybrid_literal_weight=_parse_hybrid_weights(
                 env.get("ENDLESS_TASK_KNOWLEDGE_HYBRID_WEIGHTS", "")
             )[0],
@@ -1385,6 +1388,11 @@ def _build_container(
                 knowledge_repository,
                 max_chars=settings.embedding_max_chars,
                 batch_size=settings.embedding_batch_size,
+                vec_search=(
+                    SqliteVecSearch(database)
+                    if settings.embedding_sqlite_vec
+                    else None
+                ),
             )
             knowledge_repository.set_semantic_searcher(embedding_indexer)
             knowledge_repository.set_embedding_hook(embedding_indexer)

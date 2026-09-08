@@ -105,3 +105,12 @@ class SqliteEmbeddingRepository:
                 "SELECT DISTINCT model FROM embeddings ORDER BY model"
             ).fetchall()
         return [row["model"] for row in rows]
+
+    def list_ref_ids(self, scope: str, model: str) -> List[str]:
+        """列出某 scope+model 下全部 ref_id（用于重建 sqlite-vec 索引）。"""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT ref_id FROM embeddings WHERE scope = ? AND model = ? ORDER BY ref_id",
+                (scope, model),
+            ).fetchall()
+        return [row["ref_id"] for row in rows]

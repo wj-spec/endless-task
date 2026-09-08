@@ -19,6 +19,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Union
 
 from endless_task.domain.models import KnowledgeScope
 from endless_task.storage.sqlite_embedding_repository import SqliteEmbeddingRepository
+from endless_task.storage.sqlite_vec_search import SqliteVecSearch
 from endless_task.storage.vector_math import cosine_similarity, pack_vector, unpack_vector
 
 from .embeddings import Embedder, EmbeddingError
@@ -32,6 +33,11 @@ def _scope_value(scope: Scopes) -> str:
     return scope.value if isinstance(scope, KnowledgeScope) else str(scope)
 
 
+def _distance_to_similarity(distance: float) -> float:
+    """L2 距离 → 归一化点积（对单位向量：cos = 1 - d²/2），切到 [0,1]。"""
+    return max(0.0, 1.0 - (distance * distance) / 2.0)
+
+
 class EmbeddingIndexer:
     def __init__(
         self,
@@ -42,9 +48,11 @@ class EmbeddingIndexer:
         max_chars: int = 1500,
         batch_size: int = 8,
         clock=None,
+        vec_search: Optional[SqliteVecSearch] = None,
     ) -> None:
         kwargs = {"clock": clock} if clock is not None else {}
         self._embeddings = SqliteEmbeddingRepository(database, **kwargs)
+        self._vec_search = vec_search
         self._embedder = embedder
         self._knowledge_repository = knowledge_repository
         self._max_chars = max(1, int(max_chars))
@@ -232,6 +240,23 @@ class EmbeddingIndexer:
     ) -> Mapping[str, float]:
         if not ref_ids:
             return {}
+        # A4/vec：sqlite-vec 可用时优先用其向量 KNN（C 层算距离），缺失则重建索引。
+        if self._vec_search is not None and self._vec_search.available():
+            scope_value = _scope_value(scope)
+            model = self._embedder.model_name
+            try:
+                self._ensure_vec_index(scope_value, model, len(query_vector))
+                dists = self._vec_search.scores_for_refs(
+                    scope_value, model, len(query_vector),
+                    pack_vector(query_vector), list(ref_ids),
+                )
+                if dists:
+                    return {
+                        ref_id: _distance_to_similarity(distance)
+                        for ref_id, distance in dists.items()
+                    }
+            except Exception:  # noqa: BLE001 vec 失败 → 回退暴力
+                logger.warning("sqlite-vec score_refs failed; falling back")
         blobs = self._embeddings.fetch_blobs(
             _scope_value(scope), list(ref_ids), self._embedder.model_name
         )
@@ -242,6 +267,21 @@ class EmbeddingIndexer:
             except ValueError:
                 continue
         return scores
+
+    def _ensure_vec_index(self, scope: str, model: str, dim: int) -> None:
+        """幂等地把某 (scope, model) 的全部向量回填到 sqlite-vec 索引。"""
+        key = (scope, model)
+        if key in getattr(self, "_vec_indexed", set()):
+            return
+        ref_ids = self._embeddings.list_ref_ids(scope, model)
+        if ref_ids:
+            blobs = self._embeddings.fetch_blobs(scope, ref_ids, model)
+            self._vec_search.rebuild_from_embeddings(
+                scope, model, dim, [(ref_id, blobs[ref_id]) for ref_id in ref_ids if ref_id in blobs],
+            )
+        if not hasattr(self, "_vec_indexed"):
+            self._vec_indexed = set()
+        self._vec_indexed.add(key)
 
     # ---------- 观测 ----------
 

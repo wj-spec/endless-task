@@ -126,6 +126,38 @@ class SqliteVecSearch:
             ).fetchall()
         return [(row["ref_id"], float(row["distance"])) for row in rows]
 
+    def scores_for_refs(
+        self,
+        scope: str,
+        model: str,
+        dim: int,
+        query_blob: bytes,
+        ref_ids: Sequence[str],
+    ) -> dict[str, float]:
+        """给定一组 ref_ids，返回各自到 query 的 L2 距离（KNN 用）。
+
+        sqlite-vec 的 MATCH 会高效算全量距离，用较大的 LIMIT 覆盖候选集后再按
+        ref_ids 过滤；候选少时即接近全量，但仍由 C 层计算，快于 Python 循环。
+        """
+        if not self.available() or not query_blob or not ref_ids:
+            return {}
+        result: dict[str, float] = {}
+        with self._database.connect() as connection:
+            self._ensure_schema(connection, dim)
+            placeholders = ", ".join("?" for _ in ref_ids)
+            rows = connection.execute(
+                f"SELECT i.ref_id, v.distance FROM ("
+                f"SELECT rowid, distance FROM {self._VEC_TABLE} "
+                "WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
+                f") v JOIN {self._INDEX_TABLE} i ON i.id = v.rowid "
+                f"WHERE i.scope = ? AND i.model = ? AND i.ref_id IN ({placeholders})",
+                # k 上限 4096；个人规模足够覆盖候选集，超出部分按文档取近似。
+                (query_blob, 4096, scope, model, *ref_ids),
+            ).fetchall()
+        for row in rows:
+            result[str(row["ref_id"])] = float(row["distance"])
+        return result
+
     # ---- 重建（从 embeddings 表回填） ----
     def rebuild_from_embeddings(
         self,
