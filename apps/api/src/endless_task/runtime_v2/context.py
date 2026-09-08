@@ -91,9 +91,20 @@ class ContextProjection:
                 if isinstance(covered, (list, tuple)):
                     skip_ids.update(str(item) for item in covered)
 
+        # tool_call 条目默认不进上下文（省 token），但 tool 消息在 OpenAI 兼容协议里
+        # **必须**跟在一个带 tool_calls 的 assistant 消息后面；否则请求非法（400）。
+        # 因此按 callId 建索引，投影 tool_result 时按需补一条合成的 assistant 消息。
+        tool_call_index: dict[str, TranscriptEntryRecord] = {}
+        for entry in ordered:
+            if entry.type is TranscriptEntryType.TOOL_CALL:
+                call_id = _optional_string(entry.payload, "callId")
+                if call_id is not None:
+                    tool_call_index.setdefault(call_id, entry)
+
         messages: list[ProviderMessage] = list(prefix_messages)
         included: list[str] = []
         skipped: list[str] = []
+        emitted_call_ids: set[str] = set()
 
         for entry in ordered:
             if entry.id in skip_ids:
@@ -106,10 +117,34 @@ class ContextProjection:
             if not self._is_allowed(entry, policy):
                 skipped.append(entry.id)
                 continue
+            if entry.type is TranscriptEntryType.TOOL_RESULT:
+                call_id = _optional_string(entry.payload, "callId")
+                message = self._convert(entry)
+                if call_id is None or message is None:
+                    skipped.append(entry.id)
+                    continue
+                if call_id not in emitted_call_ids:
+                    source = tool_call_index.get(call_id)
+                    synthetic = self._convert(source) if source is not None else None
+                    if synthetic is None or not synthetic.tool_calls:
+                        # 连配对来源都没有：保留会破坏请求合法性，只能丢弃。
+                        skipped.append(entry.id)
+                        continue
+                    messages.append(synthetic)
+                    included.append(source.id)
+                    # 该条目先被策略跳过、又因配对需要补进上下文：两者不能同时出现。
+                    if source.id in skipped:
+                        skipped.remove(source.id)
+                    emitted_call_ids.add(call_id)
+                messages.append(message)
+                included.append(entry.id)
+                continue
             message = self._convert(entry)
             if message is None:
                 skipped.append(entry.id)
                 continue
+            if entry.type is TranscriptEntryType.TOOL_CALL and message.tool_calls:
+                emitted_call_ids.update(call.id for call in message.tool_calls)
             messages.append(message)
             included.append(entry.id)
 

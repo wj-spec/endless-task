@@ -1472,6 +1472,13 @@ class ContextProjectionTest(unittest.TestCase):
                     {"include_in_llm": False, "transform": "none"},
                 ),
                 entry(
+                    "tool_call",
+                    TranscriptEntryType.TOOL_CALL,
+                    Actor.TOOL,
+                    {"callId": "call_1", "toolName": "read_file", "arguments": {}},
+                    {"include_in_llm": False, "transform": "none"},
+                ),
+                entry(
                     "tool",
                     TranscriptEntryType.TOOL_RESULT,
                     Actor.TOOL,
@@ -1485,8 +1492,15 @@ class ContextProjectionTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(("user", "tool"), result.included_entry_ids)
+        # tool_call 条目本身被策略排除，但 tool 消息必须配对 → 投影补一条合成
+        # assistant(tool_calls)，因此它也算"进入上下文"。
+        self.assertEqual(
+            ("user", "tool_call", "tool"), result.included_entry_ids
+        )
         self.assertEqual(("artifact",), result.skipped_entry_ids)
-        self.assertEqual(("user", "tool"), tuple(message.role for message in result.messages))
-        self.assertEqual("tool", result.messages[1].role)
-        self.assertEqual("call_1", result.messages[1].tool_call_id)
+        self.assertEqual(
+            ("user", "assistant", "tool"),
+            tuple(message.role for message in result.messages),
+        )
+        self.assertEqual("call_1", result.messages[1].tool_calls[0].id)
+        self.assertEqual("call_1", result.messages[2].tool_call_id)

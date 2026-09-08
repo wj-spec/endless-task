@@ -239,10 +239,12 @@ class OpenAICompatibleProvider:
                     await self._close_stream(stream)
 
             if provider_error is None:
+                # 流正常结束但没有 finish_reason：响应被截断（多为连接中断），
+                # 这种情况重试是有意义的，不再伪装成"未识别的 provider 错误"。
                 raise ProviderError(
-                    "provider_error",
-                    "模型服务返回错误，可以重试。",
-                    retryable=False,
+                    "incomplete_stream",
+                    "模型服务没有返回完整结果（连接可能被中断），可以重试。",
+                    retryable=True,
                 )
             if not (
                 retryable_stream_error
@@ -456,6 +458,30 @@ class OpenAICompatibleProvider:
                 retryable=False,
                 provider_request_id=provider_request_id,
             )
+        if status_code in (400, 422):
+            detail = cls._provider_error_message(error)
+            return ProviderError(
+                "invalid_request",
+                (
+                    f"模型服务拒绝了本次请求：{detail}"
+                    if detail
+                    else "模型服务拒绝了本次请求（请求格式或参数不被支持）。"
+                ),
+                retryable=False,
+                provider_request_id=provider_request_id,
+            )
+        if status_code == 404:
+            detail = cls._provider_error_message(error)
+            return ProviderError(
+                "model_not_found",
+                (
+                    f"模型不存在或未开通：{detail}"
+                    if detail
+                    else "模型不存在或未开通，请检查模型名称。"
+                ),
+                retryable=False,
+                provider_request_id=provider_request_id,
+            )
         if isinstance(status_code, int) and status_code >= 500:
             return ProviderError(
                 "provider_unavailable",
@@ -471,12 +497,34 @@ class OpenAICompatibleProvider:
                 retryable=True,
                 provider_request_id=provider_request_id,
             )
+        detail = cls._provider_error_message(error)
         return ProviderError(
             "provider_error",
-            "模型服务返回错误，可以重试。",
+            (
+                f"模型服务返回错误：{detail}"
+                if detail
+                else "模型服务返回错误（原因未识别），请检查模型配置。"
+            ),
             retryable=False,
             provider_request_id=provider_request_id,
         )
+
+    @staticmethod
+    def _provider_error_message(error: Exception) -> Optional[str]:
+        """取服务端返回的人类可读错误信息（用于告诉用户真正的原因）。"""
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            nested = body.get("error")
+            if isinstance(nested, dict):
+                message = nested.get("message")
+            else:
+                message = body.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:400]
+        message = getattr(error, "message", None)
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:400]
+        return None
 
     @staticmethod
     def _provider_error_code(error: Exception) -> Optional[str]:
