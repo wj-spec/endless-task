@@ -504,7 +504,26 @@ export type RuntimeV2Snapshot = {
   stuck?: RuntimeV2StuckState | null;
   escalation?: RuntimeV2Escalation | null;
   verification?: RuntimeV2Verification | null;
+  usage?: RuntimeV2UsageSummary | null;
   capabilities: string[];
+};
+
+/** C5 成本/延迟可见：当前 run 的用量与成本估算。 */
+export type RuntimeV2UsageSummary = {
+  runId: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** 估算成本（USD）；null = 模型未定价（不给假估算）。 */
+  costUsd: number | null;
+  /** 所有轮次都已定价时为 true。 */
+  costPriced: boolean;
+  unpricedTurns: number;
+  priceRevision: string | null;
+  models: string[];
+  durationMs: number | null;
+  firstTokenLatencyMs: number | null;
 };
 
 /** C1 制造者—检查者分离：独立验证结论。 */
@@ -559,6 +578,12 @@ export type RuntimeV2Escalation = {
   guidance: string;
   /** 安全停止策略是否已经/将要结束本次运行。 */
   willStop: boolean;
+  /** C5：成本超限时的成本信息。 */
+  cost?: {
+    usedUsd?: number | null;
+    capUsd?: number | null;
+    priced?: boolean;
+  } | null;
   /** C1：验证不通过时的验证结论。 */
   verdict?: {
     verdict: string;

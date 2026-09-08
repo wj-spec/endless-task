@@ -168,6 +168,13 @@ class RuntimeV2MetricsCollector:
             if record.conversation_id == conversation_id
         )
 
+    def first_token_latency_for_run(self, run_id: str) -> Optional[int]:
+        """C5：该 run 的首个已观测首 token 延迟（无观测时 None）。"""
+        for turn in self._turns:
+            if turn.run_id == run_id and turn.first_token_latency_ms is not None:
+                return turn.first_token_latency_ms
+        return None
+
     # ---------- 汇总 ----------
 
     def summary(self) -> dict[str, object]:

@@ -414,6 +414,8 @@ class AppSettings:
     # 关键运行；verifier_model 为空时用主模型（上下文与 prompt 仍完全独立）。
     verifier_mode: str = "0"
     verifier_model: Optional[str] = None
+    # C5: 单次运行的估算成本上限（USD，0 = 不限制）；超限走 C4 升级提示。
+    cost_cap_usd: float = 0.0
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -424,6 +426,8 @@ class AppSettings:
             raise ValueError("Timeout values must be positive")
         if self.context_window_tokens <= self.max_output_tokens:
             raise ValueError("Context window must be larger than max output tokens")
+        if self.cost_cap_usd < 0:
+            raise ValueError("ENDLESS_TASK_COST_CAP_USD 不能为负数")
         if self.verifier_mode not in VERIFIER_MODES:
             raise ValueError(
                 "ENDLESS_TASK_VERIFIER 只允许 0 | 1 | side_effects"
@@ -553,6 +557,10 @@ class AppSettings:
             ),
             verifier_model=(
                 env.get("ENDLESS_TASK_VERIFIER_MODEL", "").strip() or None
+            ),
+            cost_cap_usd=_parse_non_negative_float(
+                env.get("ENDLESS_TASK_COST_CAP_USD", "0"),
+                name="ENDLESS_TASK_COST_CAP_USD",
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -1240,6 +1248,17 @@ def _parse_strict_flag(value: str, *, name: str) -> bool:
     raise ValueError(f"{name} 只允许 0 或 1")
 
 
+def _parse_non_negative_float(value: str, *, name: str) -> float:
+    """Strict non-negative float parsing (0 disables the limit)."""
+    try:
+        parsed = float(value.strip())
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} 必须是非负数字") from error
+    if parsed < 0:
+        raise ValueError(f"{name} 必须是非负数字")
+    return parsed
+
+
 def _parse_verifier_mode(value: str) -> str:
     """Strict verifier mode parsing (C1): 0 | 1 | side_effects."""
     normalized = value.strip().lower()
@@ -1780,6 +1799,7 @@ def _build_container(
         escalation_budget_ratio=settings.escalation_budget_ratio,
         verifier_mode=settings.verifier_mode,
         verifier_model=settings.verifier_model,
+        cost_cap_usd=settings.cost_cap_usd,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1819,6 +1839,7 @@ def _build_container(
         escalation_budget_ratio=settings.escalation_budget_ratio,
         verifier_mode=settings.verifier_mode,
         verifier_model=settings.verifier_model,
+        cost_cap_usd=settings.cost_cap_usd,
         provider_retry_observer=(
             # Task/reminder runs are one-shot; the process-level metrics
             # summary aggregates retry decisions (not per-run), so the
@@ -1905,6 +1926,7 @@ def _build_container(
                 escalation_budget_ratio=settings.escalation_budget_ratio,
                 verifier_mode=settings.verifier_mode,
                 verifier_model=settings.verifier_model,
+                cost_cap_usd=settings.cost_cap_usd,
                 provider_retry_observer=(
                     # Child run ids are assigned by the coordinator after the
                     # executor is built; the metrics summary is aggregate,

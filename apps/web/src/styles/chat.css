@@ -2592,3 +2592,34 @@ button.citation-chip:focus-visible {
   font-size: 0.8rem;
   line-height: 1.5;
 }
+
+/* C5 成本/延迟可见：一行轻量用量摘要 */
+.usage-meter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  width: min(760px, 100%);
+  margin: 10px auto 0;
+  padding: 4px 12px;
+  border-radius: var(--radius-m, 10px);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+.usage-meter-label {
+  color: var(--muted);
+}
+.usage-meter-value {
+  color: var(--text);
+}
+.usage-meter-unpriced .usage-meter-value {
+  color: var(--muted);
+}
+.usage-meter-note {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--warn-soft, var(--accent-soft));
+  color: var(--warn-deep, var(--accent));
+  font-size: 0.72rem;
+}

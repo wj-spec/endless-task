@@ -46,6 +46,7 @@ import { EscalationNotice } from "./EscalationNotice";
 import { deriveEscalationState } from "./escalation";
 import { VerificationBadge } from "./VerificationBadge";
 import { deriveVerificationState } from "./verification";
+import { UsageMeter } from "./UsageMeter";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
@@ -340,6 +341,8 @@ export function ChatWorkSurface({
   const escalationState = deriveEscalationState(runtimeSnapshot, runtimeEvents);
   // C1 独立验证：制造者产出后的检查者结论（验证中/通过/不确定/未通过）。
   const verificationState = deriveVerificationState(runtimeSnapshot, runtimeEvents);
+  // C5 成本/延迟可见：当前 run 的 token/成本/耗时（成本为估算）。
+  const usageState = runtimeSnapshot?.usage ?? null;
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -700,6 +703,8 @@ export function ChatWorkSurface({
             </span>
           </div>
         ) : null}
+
+        {usageState ? <UsageMeter usage={usageState} /> : null}
 
         {verificationState ? (
           <VerificationBadge

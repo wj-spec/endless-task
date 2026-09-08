@@ -34,6 +34,7 @@ from .context import ContextPolicy, ContextProjection, ContextProjectionResult
 from .compaction import RuntimeV2ContextCompactionService
 from .escalation import (
     BUDGET_REASON,
+    COST_REASON,
     NO_PROGRESS_REASON,
     OPTION_CHANGE_APPROACH,
     OPTION_CONTINUE,
@@ -43,6 +44,13 @@ from .escalation import (
     EscalationReport,
     build_escalation_report,
     budget_exhausted,
+)
+from .usage_cost import (
+    RunUsageSummary,
+    build_run_usage_summary,
+    cost_cap_exceeded,
+    estimate_cost_usd,
+    format_cost_usd,
 )
 from .verification import (
     VERDICT_FAIL,
@@ -151,6 +159,12 @@ __all__ = [
     "ToolApprovalDecision",
     "ToolApprovalGate",
     "BUDGET_REASON",
+    "COST_REASON",
+    "RunUsageSummary",
+    "build_run_usage_summary",
+    "cost_cap_exceeded",
+    "estimate_cost_usd",
+    "format_cost_usd",
     "VERDICT_FAIL",
     "VERDICT_PASS",
     "VERDICT_UNCERTAIN",

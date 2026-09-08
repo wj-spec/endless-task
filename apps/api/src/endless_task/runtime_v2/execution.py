@@ -49,6 +49,7 @@ from .domain import (
 )
 from .escalation import (
     BUDGET_REASON,
+    COST_REASON,
     DEFAULT_BUDGET_RATIO,
     NO_PROGRESS_REASON,
     VERIFICATION_REASON,
@@ -58,6 +59,7 @@ from .escalation import (
     budget_exhausted,
 )
 from .failure_memory import FailureMemoryAccumulator
+from .usage_cost import cost_cap_exceeded, estimate_cost_usd
 from .verification import (
     VERIFICATION_PROTOCOL_VERSION,
     VerificationVerdict,
@@ -69,6 +71,7 @@ from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
 from .trace_observer import MIRROR_TIMEOUT_SECONDS, RunTraceObserver
 # runtime_ledger span protocol types (imported by path; no storage at top).
+from endless_task.runtime_ledger.pricing import PricingCatalog, make_default_catalog
 from endless_task.runtime_ledger.protocol import (
     SpanKind,
     SpanSpec,
@@ -1866,6 +1869,8 @@ class AgentRunExecutor:
         escalation_budget_ratio: float = DEFAULT_BUDGET_RATIO,
         verifier_mode: str = "0",
         verifier_model: Optional[str] = None,
+        cost_cap_usd: float = 0.0,
+        pricing_catalog: Optional[PricingCatalog] = None,
         context_shadow_observer: Optional[object] = None,
         context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -1903,6 +1908,9 @@ class AgentRunExecutor:
         # C1 制造者—检查者分离：独立验证模式（0 关 / 1 全部 / side_effects 仅关键运行）。
         self._verifier_mode = verifier_mode
         self._verifier_model = verifier_model
+        # C5 成本可见：累计成本估算（按定价表）与可选的成本上限。
+        self._cost_cap_usd = float(cost_cap_usd)
+        self._pricing_catalog = pricing_catalog or make_default_catalog()
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
@@ -2655,8 +2663,15 @@ class AgentRunExecutor:
         策略将结束本次运行，报告里 ``willStop`` 会说明。
         """
         memory = self._failure_memory.snapshot
+        cost = self._cumulative_cost(progress)
+        cost_exceeded = cost_cap_exceeded(
+            cost_usd=cost,
+            cap_usd=self._cost_cap_usd,
+        )
         if reason is None:
-            if NO_PROGRESS_REASON not in self._escalated_reasons and any(
+            if COST_REASON not in self._escalated_reasons and cost_exceeded:
+                reason = COST_REASON
+            elif NO_PROGRESS_REASON not in self._escalated_reasons and any(
                 item.count >= 3 for item in memory.repeated
             ):
                 reason = NO_PROGRESS_REASON
@@ -2678,11 +2693,30 @@ class AgentRunExecutor:
             ),
             memory=memory,
             will_stop=will_stop,
+            cost=(
+                {
+                    "usedUsd": cost,
+                    "capUsd": self._cost_cap_usd,
+                    "priced": cost is not None,
+                }
+                if reason == COST_REASON
+                else None
+            ),
         )
         self._repository.append_runtime_event(
             run_id=run.id,
             event_type="run_awaiting_user",
             payload=report.as_json(),
+        )
+
+    def _cumulative_cost(self, progress: EscalationProgress) -> Optional[float]:
+        """按定价表估算本次运行累计成本（未定价模型返回 None）。"""
+        return estimate_cost_usd(
+            self._pricing_catalog,
+            provider=getattr(self._provider, "name", None),
+            model=self._model,
+            input_tokens=progress.input_tokens,
+            output_tokens=progress.output_tokens,
         )
 
     def _escalation_limit_tokens(self) -> Optional[int]:

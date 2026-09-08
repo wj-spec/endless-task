@@ -87,6 +87,14 @@ export const escalationFromPayload = (
     })),
     guidance: asString(payload.guidance),
     willStop: payload.willStop === true,
+    cost:
+      typeof payload.cost === "object" && payload.cost !== null
+        ? {
+            usedUsd: asNumber((payload.cost as Record<string, unknown>).usedUsd),
+            capUsd: asNumber((payload.cost as Record<string, unknown>).capUsd),
+            priced: (payload.cost as Record<string, unknown>).priced === true,
+          }
+        : null,
     verdict:
       typeof payload.verdict === "object" && payload.verdict !== null
         ? {
@@ -131,8 +139,12 @@ export const deriveEscalationState = (
   return current;
 };
 
-export const escalationReasonLabel = (reason: string): string =>
-  reason === "budget_exhausted" ? "上下文预算将尽" : "连续无进展";
+export const escalationReasonLabel = (reason: string): string => {
+  if (reason === "budget_exhausted") return "上下文预算将尽";
+  if (reason === "cost_cap_exceeded") return "成本达到上限";
+  if (reason === "verification_failed") return "独立验证未通过";
+  return "连续无进展";
+};
 
 export const escalationHeadline = (state: RuntimeV2Escalation): string =>
   state.willStop

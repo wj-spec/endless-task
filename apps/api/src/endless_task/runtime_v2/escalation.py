@@ -34,7 +34,10 @@ BUDGET_REASON = "budget_exhausted"
 #: C1 独立验证不通过触发的升级。
 VERIFICATION_REASON = "verification_failed"
 
-_REASONS = (NO_PROGRESS_REASON, BUDGET_REASON, VERIFICATION_REASON)
+#: C5 成本达到上限触发的升级。
+COST_REASON = "cost_cap_exceeded"
+
+_REASONS = (NO_PROGRESS_REASON, BUDGET_REASON, VERIFICATION_REASON, COST_REASON)
 
 OPTION_CONTINUE = "continue"
 OPTION_CHANGE_APPROACH = "change_approach"
@@ -163,6 +166,8 @@ class EscalationReport:
     will_stop: bool = False
     #: C1：验证结论（仅 VERIFICATION_REASON 时非空）。
     verdict: Optional[dict[str, object]] = None
+    #: C5：成本信息（仅 COST_REASON 时非空）。
+    cost: Optional[dict[str, object]] = None
     schema_version: int = ESCALATION_PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -184,6 +189,7 @@ class EscalationReport:
             "guidance": self.guidance,
             "willStop": self.will_stop,
             "verdict": self.verdict,
+            "cost": self.cost,
         }
 
 
@@ -195,6 +201,7 @@ def build_escalation_report(
     memory: Any = None,
     will_stop: bool = False,
     verdict: Any = None,
+    cost: Optional[dict[str, object]] = None,
 ) -> EscalationReport:
     """按原因生成升级报告（摘要/失败记忆/引导语都在这里定稿）。"""
     if reason not in _REASONS:
@@ -217,6 +224,8 @@ def build_escalation_report(
         summary = _budget_summary(budget)
     elif reason == VERIFICATION_REASON:
         summary = _verification_summary(verdict)
+    elif reason == COST_REASON:
+        summary = _cost_summary(cost)
     else:
         summary = _no_progress_summary(progress, repeated)
     verdict_json = (
@@ -232,6 +241,7 @@ def build_escalation_report(
         guidance=guidance,
         will_stop=will_stop,
         verdict=verdict_json,
+        cost=cost,
     )
 
 
@@ -242,6 +252,19 @@ def _budget_summary(budget: EscalationBudget) -> str:
     return (
         f"上下文预算将尽：已用 {budget.used_tokens} / "
         f"{budget.limit_tokens} tokens（{percent}%），继续推进可能需要压缩或换策略。"
+    )
+
+
+def _cost_summary(cost: Optional[dict[str, object]]) -> str:
+    if not cost:
+        return "本次运行的成本已达到配置上限。"
+    used = cost.get("usedUsd")
+    cap = cost.get("capUsd")
+    used_text = f"${used:.4f}" if isinstance(used, (int, float)) else "未知"
+    cap_text = f"${cap:.4f}" if isinstance(cap, (int, float)) else "未配置"
+    return (
+        f"本次运行成本已达约 {used_text}（上限 {cap_text}），"
+        "继续推进会继续消耗预算。"
     )
 
 
@@ -281,6 +304,7 @@ __all__ = [
     "EscalationProgress",
     "EscalationReport",
     "NO_PROGRESS_REASON",
+    "COST_REASON",
     "VERIFICATION_REASON",
     "OPTION_CHANGE_APPROACH",
     "OPTION_CONTINUE",

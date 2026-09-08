@@ -40,6 +40,7 @@ from .domain import (
     TranscriptEntryType,
 )
 from .escalation import DEFAULT_BUDGET_RATIO
+from .usage_cost import build_run_usage_summary
 from .lane import RuntimeV2LaneCreationResult, RuntimeV2LaneService
 from .memory import RuntimeV2MemoryService
 from .execution import (
@@ -52,7 +53,9 @@ from .execution import (
 )
 from .metrics import ApprovalMetric, RuntimeV2MetricsCollector
 from .trace_observer import RunTraceObserver
+from endless_task.runtime_ledger.pricing import PricingCatalog, make_default_catalog
 from .replay import (
+    RunReplayResult,
     CrashRecoveryReport,
     ConversationRuntimeSnapshot,
     RuntimeV2ReplayService,
@@ -768,6 +771,9 @@ class RuntimeV2SessionGateway:
         # C1: 独立验证模式（0 关 / 1 全部 / side_effects 仅关键运行）与验证模型。
         verifier_mode: str = "0",
         verifier_model: Optional[str] = None,
+        # C5: 成本可见（定价表）与可选的单次运行成本上限。
+        cost_cap_usd: float = 0.0,
+        pricing_catalog: Optional[PricingCatalog] = None,
         provider_retry_evaluator: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
@@ -795,6 +801,8 @@ class RuntimeV2SessionGateway:
         self._escalation_budget_ratio = float(escalation_budget_ratio)
         self._verifier_mode = verifier_mode
         self._verifier_model = verifier_model
+        self._cost_cap_usd = float(cost_cap_usd)
+        self._pricing_catalog = pricing_catalog or make_default_catalog()
         # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
         # legacy behavior. The observer is bound per run at launch so
         # retry decisions attribute to the correct run.
@@ -1339,6 +1347,7 @@ class RuntimeV2SessionGateway:
                 "stuck": None,
                 "escalation": None,
                 "verification": None,
+                "usage": None,
                 "capabilities": V2_CAPABILITIES,
             }
 
@@ -1384,6 +1393,17 @@ class RuntimeV2SessionGateway:
                 product_events,
                 run_id=runtime_snapshot.active_run_id
                 or runtime_snapshot.running_run_id,
+            ),
+            "usage": _usage_json(
+                runtime_snapshot.active_run,
+                catalog=self._pricing_catalog,
+                first_token_latency_ms=(
+                    self._metrics.first_token_latency_for_run(
+                        runtime_snapshot.active_run_id
+                    )
+                    if runtime_snapshot.active_run_id is not None
+                    else None
+                ),
             ),
             "capabilities": V2_CAPABILITIES,
         }
@@ -1536,6 +1556,8 @@ class RuntimeV2SessionGateway:
             escalation_budget_ratio=self._escalation_budget_ratio,
             verifier_mode=self._verifier_mode,
             verifier_model=self._verifier_model,
+            cost_cap_usd=self._cost_cap_usd,
+            pricing_catalog=self._pricing_catalog,
             provider=selected_provider,
             tool_registry=self._tool_registry,
             model=selected_model,
@@ -1851,6 +1873,24 @@ def _verification_json(
                 "outputTokens": data.get("outputTokens"),
             }
     return verification
+
+
+def _usage_json(
+    active_run: Optional[RunReplayResult],
+    *,
+    catalog: PricingCatalog,
+    first_token_latency_ms: Optional[int],
+) -> Optional[dict[str, object]]:
+    """C5：当前 run 的用量/成本/耗时（成本按定价表估算，未定价明确标注）。"""
+    if active_run is None:
+        return None
+    summary = build_run_usage_summary(
+        run=active_run.record,
+        model_turns=tuple(turn.record for turn in active_run.model_turns),
+        catalog=catalog,
+        first_token_latency_ms=first_token_latency_ms,
+    )
+    return summary.as_json()
 
 
 def _approval_json(approval: PendingApproval) -> dict[str, object]:
