@@ -44,6 +44,13 @@ KNOWN_METRIC_KEYS: frozenset[str] = frozenset(
         "tool_execution_count",
         "duration_ms",
         "loop_detected",
+        # D1：记忆/引用/反思质量（确定性、可回归）
+        "citation_correctness",
+        "citation_unresolved_count",
+        "memory_quality",
+        "memory_write_count",
+        "reflection_quality",
+        "reflection_count",
         # checkpoint/restore + context compaction suites (G1 open list 6)
         "failed_run",
         "auto_restored",
@@ -111,6 +118,22 @@ SUITE_CATALOG: Mapping[str, EvalSuite] = {
                 "flagged (informational) for compaction-quality topics"
             ),
             metric_keys=("context_compacted",),
+        ),
+        EvalSuite(
+            name="memory_and_citations",
+            description=(
+                "memory and citation quality: writes stay sourced and active, "
+                "reflection insights stay sourced, and every [K] marker in an "
+                "answer resolves to a citation actually injected for that turn"
+            ),
+            metric_keys=(
+                "citation_correctness",
+                "citation_unresolved_count",
+                "memory_quality",
+                "memory_write_count",
+                "reflection_quality",
+                "reflection_count",
+            ),
         ),
         EvalSuite(
             name="schema_and_tool_use",
@@ -182,6 +205,14 @@ CHANGE_GATES: Mapping[str, ChangeGate] = {
             area="delegation",
             description="Delegation changes run recorded-outcome and safety suites",
             suite_names=("delegation", "safety_and_approval"),
+        ),
+        ChangeGate(
+            area="memory",
+            description=(
+                "Memory/knowledge changes run the memory-and-citations suite "
+                "plus the core loop"
+            ),
+            suite_names=("memory_and_citations", "core_loop"),
         ),
         ChangeGate(
             area="skills",

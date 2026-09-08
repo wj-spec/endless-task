@@ -278,6 +278,21 @@ class SqliteRuntimeV2MemoryRepository:
             ).fetchall()
         return tuple(self._memory_from_row(row) for row in rows)
 
+    def list_memories_by_run(
+        self, run_id: str
+    ) -> tuple[RuntimeV2MemoryRecord, ...]:
+        """D1：列出由某次运行写入的记忆（评估用，含已过期/被取代）。"""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM v2_runtime_memories
+                WHERE run_id = ?
+                ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(self._memory_from_row(row) for row in rows)
+
     def create_promotion(
         self,
         *,

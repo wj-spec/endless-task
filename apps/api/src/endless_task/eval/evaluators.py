@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Optional, Protocol, Sequence
+from typing import Iterable, Mapping, Optional, Protocol, Sequence
 
 from endless_task.runtime_v2 import (
     CrashRecoveryClassification,
@@ -38,6 +39,26 @@ DEFAULT_WRITE_TOOLS = frozenset(
 
 
 @dataclass(frozen=True)
+class MemoryWriteFact:
+    """D1：一次记忆写入的可判定事实（来源/状态）。"""
+
+    memory_id: str
+    has_source: bool = True
+    status: str = "active"
+
+
+@dataclass(frozen=True)
+class ReflectionFact:
+    """D1：一条反思洞见的可判定事实（来源/长度）。"""
+
+    reflection_id: str
+    trigger: str = ""
+    has_sources: bool = True
+    insight_length: int = 0
+    status: str = "pending"
+
+
+@dataclass(frozen=True)
 class RunEvaluationContext:
     run: RunRecord
     replay: RunReplayResult
@@ -47,6 +68,14 @@ class RunEvaluationContext:
     read_only_tools: frozenset[str] = DEFAULT_READ_ONLY_TOOLS
     auto_write_tools: frozenset[str] = DEFAULT_AUTO_WRITE_TOOLS
     write_tools: frozenset[str] = DEFAULT_WRITE_TOOLS
+    #: D1：本轮真实注入的引用编号（turn_id -> {"K1", ...}），用于引用正确性。
+    citation_labels_by_turn: Mapping[str, frozenset[str]] = field(
+        default_factory=dict
+    )
+    #: D1：本轮写入的记忆（来源/状态）。
+    memory_writes: tuple[MemoryWriteFact, ...] = ()
+    #: D1：本轮产出的反思洞见。
+    reflections: tuple[ReflectionFact, ...] = ()
 
 
 class Evaluator(Protocol):
@@ -324,6 +353,118 @@ class LoopDetectorEvaluator:
         )
 
 
+class CitationCorrectnessEvaluator:
+    """D1 引用正确性：回答里的 `[K1]` 必须命中本轮真实注入的引用。
+
+    误标（模型杜撰或指向上文其他轮）会被计数；有任何未命中即判否，并按
+    BLOCKER 处理——引用错配比"没有引用"更容易误导用户。
+    """
+
+    key = "citation_correctness"
+
+    _MARKER_RE = re.compile(r"\[K(\d+)\]")
+
+    def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
+        markers = 0
+        unresolved = 0
+        for turn in context.replay.model_turns:
+            content = turn.partial_content or ""
+            if not content:
+                continue
+            injected = context.citation_labels_by_turn.get(
+                turn.record.id, frozenset()
+            )
+            for match in self._MARKER_RE.finditer(content):
+                markers += 1
+                if f"K{match.group(1)}" not in injected:
+                    unresolved += 1
+        passed = unresolved == 0
+        yield EvalMetric(
+            key=self.key,
+            value=passed,
+            unit=EvalUnit.BOOL,
+            severity=EvalSeverity.INFO if passed else EvalSeverity.BLOCKER,
+            source="deterministic",
+            notes=f"markers={markers}, unresolved={unresolved}",
+        )
+        yield EvalMetric(
+            key="citation_unresolved_count",
+            value=unresolved,
+            unit=EvalUnit.COUNT,
+            severity=EvalSeverity.INFO,
+            source="deterministic",
+        )
+
+
+class MemoryQualityEvaluator:
+    """D1 记忆质量：本轮写入的记忆是否可溯源、是否仍有效（参考指标）。"""
+
+    key = "memory_quality"
+
+    def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
+        writes = context.memory_writes
+        bad = [
+            write
+            for write in writes
+            if not write.has_source or write.status != "active"
+        ]
+        passed = not bad
+        yield EvalMetric(
+            key=self.key,
+            value=passed,
+            unit=EvalUnit.BOOL,
+            severity=EvalSeverity.INFO if passed else EvalSeverity.WARNING,
+            source="deterministic",
+            notes=(
+                f"writes={len(writes)}, unsourced_or_inactive={len(bad)}"
+            ),
+        )
+        yield EvalMetric(
+            key="memory_write_count",
+            value=len(writes),
+            unit=EvalUnit.COUNT,
+            severity=EvalSeverity.INFO,
+            source="deterministic",
+        )
+
+
+class ReflectionQualityEvaluator:
+    """D1 反思质量：洞见是否可溯源、是否有实质内容。"""
+
+    key = "reflection_quality"
+
+    #: 少于该长度的"洞见"视为没有实质内容。
+    MIN_INSIGHT_LENGTH = 8
+
+    def evaluate(self, context: RunEvaluationContext) -> Iterable[EvalMetric]:
+        reflections = context.reflections
+        bad = [
+            reflection
+            for reflection in reflections
+            if not reflection.has_sources
+            or reflection.insight_length < self.MIN_INSIGHT_LENGTH
+        ]
+        passed = not bad
+        yield EvalMetric(
+            key=self.key,
+            value=passed,
+            unit=EvalUnit.BOOL,
+            severity=EvalSeverity.INFO if passed else EvalSeverity.WARNING,
+            source="deterministic",
+            notes=(
+                f"reflections={len(reflections)}, "
+                f"unsourced_or_thin={len(bad)}"
+            ),
+        )
+        yield EvalMetric(
+            key="reflection_count",
+            value=len(reflections),
+            unit=EvalUnit.COUNT,
+            severity=EvalSeverity.INFO,
+            source="deterministic",
+        )
+
+
 def _all_tool_executions(replay: RunReplayResult) -> tuple[ToolExecutionRecord, ...]:
     records: list[ToolExecutionRecord] = []
     for turn in replay.model_turns:
@@ -409,6 +550,9 @@ DEFAULT_EVALUATORS: tuple[Evaluator, ...] = (
     RobustnessEvaluator(),
     EfficiencyEvaluator(),
     LoopDetectorEvaluator(),
+    CitationCorrectnessEvaluator(),
+    MemoryQualityEvaluator(),
+    ReflectionQualityEvaluator(),
 )
 
 

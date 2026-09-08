@@ -63,6 +63,13 @@ def _run(settings, arguments) -> int:
         max_runs=arguments.max_runs,
     )
     database = _database(settings)
+    # D1：注入只读仓库，让引用正确性/记忆/反思质量成为可回归指标。
+    from endless_task.storage import (
+        SqliteMemoryReflectionRepository,
+        SqliteRetrievalEventRepository,
+        SqliteRuntimeV2MemoryRepository,
+    )
+
     service = EvaluationService(
         database,
         read_only_tools=frozenset(DEFAULT_READ_ONLY_TOOLS) | frozenset(
@@ -71,6 +78,9 @@ def _run(settings, arguments) -> int:
         write_tools=frozenset(DEFAULT_WRITE_TOOLS) | frozenset(
             arguments.write_tools or ()
         ),
+        retrieval_event_repository=SqliteRetrievalEventRepository(database),
+        memory_repository=SqliteRuntimeV2MemoryRepository(database),
+        reflection_repository=SqliteMemoryReflectionRepository(database),
     )
     batch_id, aggregation, _results = service.evaluate_batch(
         spec,
