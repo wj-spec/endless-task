@@ -26,6 +26,7 @@ export type WorkspaceNavigationGroup = {
   id: string;
   name: string;
   rootPath: string | null;
+  createdAt: string;
   conversations: Conversation[];
   totalCount: number;
 };
@@ -67,6 +68,7 @@ export function buildWorkspaceNavigationModel({
       id: workspace.id,
       name: workspace.name,
       rootPath: workspace.rootPath,
+      createdAt: workspace.createdAt,
       conversations,
       totalCount: conversations.length,
     };

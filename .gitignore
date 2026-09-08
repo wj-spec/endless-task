@@ -17,8 +17,8 @@ apps/*/dist/
 apps/web/test-results/
 apps/web/playwright-report/
 docs/*
-!docs/agent-platform/
-!docs/agent-platform/**
+# !docs/agent-platform/
+# !docs/agent-platform/**
 PRODUCT_BLUEPRINT.md
 ui-ux-evolution-report.md
 产品功能与需求.md

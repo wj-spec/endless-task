@@ -25,6 +25,7 @@ type SessionRailProps = {
   statusFilter: ConversationStatus;
   workspaceId: string | null;
   workspaces: Workspace[];
+  homePath: string;
   workspaceCanCreate: boolean;
   currentWorkspace: Workspace | null;
   pendingTotal: number;
@@ -54,6 +55,7 @@ export function SessionRail({
   statusFilter,
   workspaceId,
   workspaces,
+  homePath,
   workspaceCanCreate,
   currentWorkspace,
   pendingTotal,
@@ -330,6 +332,7 @@ export function SessionRail({
               activeConversationId={activeConversationId}
               currentWorkspaceId={currentWorkspaceId}
               group={group}
+              homePath={homePath}
               key={group.id}
               onToggleOpen={() => toggleGroupOpen(group.id)}
               onToggleShowAll={() => toggleGroupShowAll(group.id)}

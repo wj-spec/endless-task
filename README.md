@@ -67,7 +67,7 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 
 | 主界面 | 会话分支 / 临时探索 | 评估报告 |
 |---|---|---|
-| ![主界面](.images/screenshot-main.png) | ![会话分支](docs/images/screenshot-branch.png) | ![评估报告](docs/images/screenshot-eval.png) |
+| ![主界面](.images/screenshot-main.png) | ![会话分支](.images/screenshot-branch.png) | ![评估报告](docs/images/screenshot-eval.png) |
 
 > 图片待补充 —— 当前可以本地运行后自行截图，或用 `endless-task eval report` 导出评估报告截图。
 
