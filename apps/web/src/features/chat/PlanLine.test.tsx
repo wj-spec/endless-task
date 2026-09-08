@@ -14,7 +14,7 @@ describe("PlanLine（S-P1-3a）", () => {
   it("终态默认折叠：显示标题/摘要/展开按钮，不渲染步骤列表", () => {
     const html = renderToStaticMarkup(<PlanLine plan={plan} />);
     expect(html).toContain("调研计划");
-    expect(html).toContain("已完成 1/2");
+    expect(html).toContain("剩余 1 步");
     expect(html).toContain('aria-label="展开计划"');
     expect(html).not.toContain("plan-line-steps");
   });
@@ -32,5 +32,22 @@ describe("PlanLine（S-P1-3a）", () => {
     const html = renderToStaticMarkup(<PlanLine plan={{ title: "空计划" }} />);
     expect(html).not.toContain("plan-line-toggle");
     expect(html).toContain("已记录 0 步");
+  });
+
+  it("步骤缺 status 时按 currentStepIndex 推导（完成/进行中/待办标记）", () => {
+    const html = renderToStaticMarkup(
+      <PlanLine
+        active
+        plan={{
+          title: "推导计划",
+          currentStepIndex: 1,
+          steps: [{ title: "A" }, { title: "B" }, { title: "C" }],
+        }}
+      />,
+    );
+    expect(html).toContain("plan-line-step-marker");
+    expect(html).toContain("✓");
+    expect(html).toContain("●");
+    expect(html).toContain("○");
   });
 });

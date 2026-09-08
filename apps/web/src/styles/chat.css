@@ -2227,6 +2227,29 @@ button.citation-chip:focus-visible {
   color: var(--danger);
 }
 
+/* A6 步骤状态标记（✓完成 / ●进行中 / ○待办 / ✗失败 / ⤳跳过） */
+.plan-line-step-marker {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--faint);
+  font-size: var(--fs-2);
+  line-height: 1;
+}
+.plan-line-steps li.is-completed .plan-line-step-marker {
+  color: var(--success);
+}
+.plan-line-steps li.is-in_progress .plan-line-step-marker {
+  color: var(--accent);
+  animation: breathe 1.2s ease-in-out infinite;
+}
+.plan-line-steps li.is-failed .plan-line-step-marker {
+  color: var(--danger);
+}
+.plan-line-steps li.is-skipped .plan-line-step-marker {
+  color: var(--faint);
+}
+
 /* S-A1 阶段活动行 */
 .activity-stage {
   display: flex;
