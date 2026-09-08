@@ -32,6 +32,14 @@ TRACE_ATTRIBUTE_ALLOWLIST = frozenset(
         "retry_count",
         "status",
         "tool_name",
+        # GenAI semantic conventions (D2): standard span attributes so the
+        # OTLP exporter emits spec-conformant gen_ai.* on model spans.
+        "gen_ai.system",
+        "gen_ai.model.name",
+        "gen_ai.operation.name",
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "gen_ai.response.finish_reason",
     }
 )
 

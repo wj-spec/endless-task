@@ -163,6 +163,29 @@ class PayloadBuilderTest(unittest.TestCase):
         self.assertNotIn("api_key", keys)
         self.assertNotIn("payload", keys)
 
+    def test_gen_ai_semconv_attributes_are_exported(self) -> None:
+        exporter = OtelExporter(_config())
+        span = _stored_span(
+            attributes={
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "gen_ai.system": "deepseek",
+                "gen_ai.model.name": "deepseek-chat",
+                "gen_ai.usage.input_tokens": 100,
+                "gen_ai.usage.output_tokens": 50,
+            }
+        )
+        payload = exporter.build_payload(spans=[span])
+        attrs = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
+        keys = {item["key"] for item in attrs}
+        for key in (
+            "gen_ai.system",
+            "gen_ai.model.name",
+            "gen_ai.usage.input_tokens",
+            "gen_ai.usage.output_tokens",
+        ):
+            self.assertIn(key, keys)
+
     def test_event_data_default_dropped_unknown_keys(self) -> None:
         exporter = OtelExporter(_config())
         event = _stored_event(

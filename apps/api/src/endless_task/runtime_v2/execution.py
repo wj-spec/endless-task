@@ -1414,6 +1414,9 @@ class ModelTurnRunner:
                     attributes={
                         "provider": self._provider.name,
                         "model": self._model,
+                        "gen_ai.system": self._provider.name,
+                        "gen_ai.model.name": self._model,
+                        "gen_ai.operation.name": "generate",
                     },
                 )
             )
