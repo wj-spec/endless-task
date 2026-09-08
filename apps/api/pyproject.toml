@@ -27,6 +27,11 @@ dependencies = [
 dev = [
     "httpx>=0.27,<1",
 ]
+# 可选：SQLite 原生向量 KNN（sqlite-vec）。未安装时 SqliteVecSearch 优雅回退
+# 到现有"读 BLOB 暴力算距离"路径，不影响主链路。
+vec = [
+    "sqlite-vec>=0.1.9,<1",
+]
 
 [project.scripts]
 endless-task = "endless_task.cli:main"
