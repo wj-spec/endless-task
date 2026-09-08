@@ -15,6 +15,19 @@ const JUMP_LABELS: Record<KnowledgeCitation["scope"], string> = {
   conversation: "打开来源会话",
 };
 
+type SourceQuality = NonNullable<KnowledgeCitation["sourceQuality"]>;
+
+const sourceQualityText = (q: SourceQuality): string => {
+  const parts: string[] = [];
+  if (q.recencyDays === 0) parts.push("最新");
+  else if (typeof q.recencyDays === "number" && q.recencyDays <= 7) parts.push(`${q.recencyDays} 天内`);
+  else if (typeof q.recencyDays === "number" && q.recencyDays <= 30) parts.push(`${q.recencyDays} 天前`);
+  else if (typeof q.recencyDays === "number") parts.push("较早");
+  if (q.authority) parts.push(`${q.authority}权威`);
+  if (typeof q.relevance === "number") parts.push(`相关 ${q.relevance}`);
+  return parts.join(" · ") || "来源质量未知";
+};
+
 export function CitationCard({
   citation,
   jumpDisabled,
@@ -56,6 +69,11 @@ export function CitationCard({
           </div>
           {citation.snippet ? (
             <p className="citation-card-snippet">{citation.snippet}</p>
+          ) : null}
+          {citation.sourceQuality ? (
+            <p className="citation-card-quality">
+              {sourceQualityText(citation.sourceQuality)}
+            </p>
           ) : null}
           <button
             className="citation-card-jump"

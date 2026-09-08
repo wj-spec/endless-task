@@ -988,6 +988,11 @@ export type KnowledgeCitation = {
   conversationId?: string;
   sourceId?: string;
   chunkSeq?: number;
+  sourceQuality?: {
+    recencyDays: number | null;
+    authority: "高" | "中" | "低";
+    relevance: number | null;
+  };
 };
 
 export type ConversationCitationsResponse = {

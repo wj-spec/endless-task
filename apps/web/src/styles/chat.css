@@ -1646,6 +1646,13 @@ button.citation-chip:focus-visible {
   font-size: var(--fs-3, 13px);
 }
 
+/* A4 来源质量（新近度/权威/相关性） */
+.citation-card-quality {
+  margin: 0 0 var(--space-2, var(--space-2));
+  color: var(--muted);
+  font-size: var(--fs-1);
+}
+
 /* 无法溯源的占位引用：弱化、不可点击，避免误导 */
 .citation-chip-unresolved {
   border-color: var(--line);

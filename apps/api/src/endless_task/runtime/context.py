@@ -19,6 +19,31 @@ from endless_task.files import TextFileRepository
 from .provider import ProviderMessage
 
 
+def _source_quality(hit) -> dict[str, object]:
+    """A4：推导一条知识引用的来源质量（新近度/权威/相关性），供前端置信度/核实提示。"""
+    recency_days: Optional[int] = None
+    raw = getattr(hit, "updated_at", None)
+    if isinstance(raw, str) and raw:
+        try:
+            from datetime import datetime
+
+            updated = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            recency_days = max(0, (datetime.now(updated.tzinfo) - updated).days)
+        except Exception:
+            recency_days = None
+    scope_value = getattr(getattr(hit, "scope", None), "value", "") or ""
+    authority = (
+        "低" if scope_value == "conversation" else "中" if scope_value in ("memory", "artifact") else "高"
+    )
+    score = getattr(hit, "score", None)
+    relevance = round(float(score), 3) if isinstance(score, (int, float)) else None
+    return {
+        "recencyDays": recency_days,
+        "authority": authority,
+        "relevance": relevance,
+    }
+
+
 @dataclass(frozen=True)
 class IncludedTurn:
     turn_ordinal: int
@@ -568,7 +593,6 @@ class P0ContextBuilder:
         "artifact": "成果",
         "conversation": "历史对话",
     }
-
     def _knowledge_block(
         self,
         user_content: str,
@@ -633,6 +657,8 @@ class P0ContextBuilder:
                 "refId": hit.ref_id,
                 "title": hit.title or label,
                 "snippet": snippet[:200],
+                # A4：来源质量（新近度/权威/相关性），供前端做置信度/核实提示。
+                "sourceQuality": _source_quality(hit),
             }
             if hit.source_id is not None:
                 citation_entry["sourceId"] = hit.source_id
