@@ -47,6 +47,7 @@ import { deriveEscalationState } from "./escalation";
 import { VerificationBadge } from "./VerificationBadge";
 import { deriveVerificationState } from "./verification";
 import { UsageMeter } from "./UsageMeter";
+import { UndoNotice } from "./UndoNotice";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
@@ -703,6 +704,12 @@ export function ChatWorkSurface({
             </span>
           </div>
         ) : null}
+
+        <UndoNotice
+          conversationId={conversationId ?? null}
+          pending={pendingAction !== null}
+          refreshKey={runtimeSnapshot?.lastEventSeq ?? null}
+        />
 
         {usageState ? <UsageMeter usage={usageState} /> : null}
 

@@ -1158,6 +1158,23 @@ export type MemoryRecord = {
   pinned: boolean;
 };
 
+/** A5 撤销/回滚：一条可逆的工具副作用记录。 */
+export type UndoJournalEntry = {
+  id: string;
+  conversationId: string;
+  workspaceId: string | null;
+  runId: string | null;
+  /** file_write | file_delete */
+  kind: string;
+  target: string;
+  description: string;
+  /** available | undone */
+  status: string;
+  undoable: boolean;
+  createdAt: string;
+  undoneAt: string | null;
+};
+
 /** B2：一次记忆巩固记录（聚类 → 提案 → 并入）。 */
 export type MemoryConsolidationRecord = {
   id: string;

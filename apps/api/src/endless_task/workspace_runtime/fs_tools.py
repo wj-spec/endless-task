@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -37,6 +38,8 @@ from .path_safety import (
     resolve_workspace_path,
 )
 from .resolver import WorkspaceBinding
+
+logger = logging.getLogger(__name__)
 
 MAX_LIST_ITEMS = 200
 MAX_READ_LINES = 500
@@ -490,6 +493,7 @@ class WriteWorkspaceFileTool:
         max_write_bytes: int = 512_000,
         checkpoint_coordinator=None,
         execution_backend=None,
+        undo_service=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
@@ -501,6 +505,8 @@ class WriteWorkspaceFileTool:
         # M3B enforcement (slice F): when set, mutations run through an
         # ExecutionEnvironment backend instead of direct host writes.
         self._execution_backend = execution_backend
+        # A5 撤销：记录变更前内容，供用户一键回滚（None = 不记录）。
+        self._undo_service = undo_service
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -548,6 +554,7 @@ class WriteWorkspaceFileTool:
         self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
+            before_content = _read_text_or_none(resolved.canonical)
             before_hash = (
                 _sha256_bytes(resolved.canonical.read_bytes())
                 if resolved.canonical.exists()
@@ -556,6 +563,14 @@ class WriteWorkspaceFileTool:
             resolved.canonical.parent.mkdir(parents=True, exist_ok=True)
             resolved.canonical.write_text(content, encoding="utf-8")
         after_hash = sha256_text(content)
+        _record_undo_write(
+            self._undo_service,
+            call,
+            binding,
+            resolved,
+            before_content=before_content,
+            after_hash=after_hash,
+        )
         _record_mutation(
             self._checkpoint_coordinator,
             call,
@@ -612,6 +627,7 @@ class WriteWorkspaceFileTool:
         )
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
+            before_content = _read_text_or_none(resolved.canonical)
             receipt = await self._execution_backend.mutate_file(
                 Request(
                     effect_id=f"enforced_write:{relative}:{run_id}",
@@ -629,6 +645,14 @@ class WriteWorkspaceFileTool:
             path=str(resolved.canonical),
             sha256=sha256_text(content),
             executed_at=_now_iso(),
+        )
+        _record_undo_write(
+            self._undo_service,
+            call,
+            binding,
+            resolved,
+            before_content=before_content,
+            after_hash=audit_receipt.sha256,
         )
         _log_effect(
             self._effect_log,
@@ -770,11 +794,14 @@ class DeleteWorkspaceFileTool:
         *,
         checkpoint_coordinator=None,
         execution_backend=None,
+        undo_service=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
         self._checkpoint_coordinator = checkpoint_coordinator
         self._execution_backend = execution_backend
+        # A5 撤销：删除前内容入撤销日志，支持"恢复刚删掉的文件"。
+        self._undo_service = undo_service
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -823,8 +850,16 @@ class DeleteWorkspaceFileTool:
         self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
+            before_content = _read_text_or_none(resolved.canonical)
             before_hash = _sha256_bytes(resolved.canonical.read_bytes())
             resolved.canonical.unlink()
+        _record_undo_delete(
+            self._undo_service,
+            call,
+            binding,
+            resolved,
+            before_content=before_content,
+        )
         _record_mutation(
             self._checkpoint_coordinator,
             call,
@@ -869,6 +904,7 @@ class DeleteWorkspaceFileTool:
         )
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
+            before_content = _read_text_or_none(resolved.canonical)
             receipt = await self._execution_backend.mutate_file(
                 Request(
                     effect_id=f"enforced_delete:{relative}:{run_id}",
@@ -884,6 +920,13 @@ class DeleteWorkspaceFileTool:
             kind="file_delete",
             path=str(resolved.canonical),
             executed_at=_now_iso(),
+        )
+        _record_undo_delete(
+            self._undo_service,
+            call,
+            binding,
+            resolved,
+            before_content=before_content,
         )
         _log_effect(
             self._effect_log,
@@ -976,6 +1019,71 @@ def _backend_policy_and_trace(binding: WorkspaceBinding, run_id: str):
     )
     trace = TraceContext(trace_id=run_id, run_id=run_id, correlation_id=run_id)
     return policy, trace, FileMutationRequest, FileMutationOperation
+
+
+def _read_text_or_none(path) -> Optional[str]:
+    """读取文本内容用于撤销；不存在/二进制/过大 → None（该次操作不可撤销）。"""
+    try:
+        if not path.exists() or not path.is_file():
+            return None
+        if path.stat().st_size > 512_000:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _undo_context(call: ToolCall, binding: WorkspaceBinding, resolved):
+    """撤销日志需要的公共字段。"""
+    return {
+        "conversation_id": call.conversation_id,
+        "target": resolved.original_raw,
+        "workspace_root": str(binding.root),
+        "workspace_id": getattr(binding, "workspace_id", None),
+        "run_id": call.response_variant_id or call.id,
+        "tool_execution_id": None,
+    }
+
+
+def _record_undo_write(
+    service,
+    call: ToolCall,
+    binding: WorkspaceBinding,
+    resolved,
+    *,
+    before_content: Optional[str],
+    after_hash: Optional[str],
+) -> None:
+    if service is None:
+        return
+    try:
+        service.record_file_write(
+            before_exists=before_content is not None,
+            before_content=before_content,
+            after_hash=after_hash,
+            **_undo_context(call, binding, resolved),
+        )
+    except Exception:  # noqa: BLE001 撤销记录失败不影响写入结果
+        logger.debug("Undo write record failed", exc_info=True)
+
+
+def _record_undo_delete(
+    service,
+    call: ToolCall,
+    binding: WorkspaceBinding,
+    resolved,
+    *,
+    before_content: Optional[str],
+) -> None:
+    if service is None or before_content is None:
+        return
+    try:
+        service.record_file_delete(
+            before_content=before_content,
+            **_undo_context(call, binding, resolved),
+        )
+    except Exception:  # noqa: BLE001 撤销记录失败不影响删除结果
+        logger.debug("Undo delete record failed", exc_info=True)
 
 
 def _log_effect(

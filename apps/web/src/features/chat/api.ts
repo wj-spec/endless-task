@@ -19,6 +19,7 @@ import type { KnowledgeProposal,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
   MemoryConsolidationRecord,
+  UndoJournalEntry,
   MemoryConsolidationRunReport,
   MemoryForgettingReport,
   RuntimeV2RunUsageCost,
@@ -827,6 +828,16 @@ export const chatApi = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  listUndoJournal: (conversationId: string, limit = 10) =>
+    request<{ items: UndoJournalEntry[]; latestAvailableId: string | null }>(
+      `/conversations/${conversationId}/undo-journal?limit=${limit}`,
+    ),
+  undoJournalEntry: (entryId: string) =>
+    request<{
+      entry: UndoJournalEntry;
+      performed: boolean;
+      alreadyUndone: boolean;
+    }>(`/undo-journal/${entryId}/undo`, { method: "POST" }),
   consolidateMemories: () =>
     request<MemoryConsolidationRunReport>("/memories/consolidate", {
       method: "POST",

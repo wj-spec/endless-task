@@ -11,6 +11,7 @@ from .fs_tools import (
 from .resolver import WorkspaceBinding, WorkspaceResolver
 from .search_tool import WorkspaceSearchTool
 from .shell_tool import RunShellTool
+from .undo_service import UndoUnavailableError, WorkspaceUndoService
 from .visibility import WORKSPACE_TOOLS, workspace_tool_filter
 
 __all__ = [
@@ -21,7 +22,9 @@ __all__ = [
     "ReadSkillFileTool",
     "ReadWorkspaceFileTool",
     "RunShellTool",
+    "UndoUnavailableError",
     "WorkspaceSearchTool",
+    "WorkspaceUndoService",
     "WORKSPACE_TOOLS",
     "WorkspaceBinding",
     "WorkspaceResolver",

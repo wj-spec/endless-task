@@ -112,6 +112,8 @@ from endless_task.artifacts.export_service import (
 )
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.workspace_runtime import (
+    UndoUnavailableError,
+    WorkspaceUndoService,
     ReadSkillFileTool,
     DeleteWorkspaceFileTool,
     EffectLog,
@@ -151,6 +153,7 @@ from endless_task.tasks import (
 )
 from endless_task.storage import (
     SqliteMemoryConsolidationRepository,
+    SqliteUndoJournalRepository,
     Database,
     SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
@@ -822,6 +825,8 @@ class AppContainer:
     knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
     memory_forgetting_service: Optional[MemoryForgettingService]
     memory_consolidation_service: Optional[MemoryConsolidationService]
+    undo_service: Optional[WorkspaceUndoService]
+    undo_journal_repository: SqliteUndoJournalRepository
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
     task_notification_service: Optional[TaskNotificationService]
@@ -1199,6 +1204,22 @@ def _hub_append_proposal_resolved(
     )
 
 
+def _undo_entry_json(entry) -> dict[str, object]:
+    return {
+        "id": entry.id,
+        "conversationId": entry.conversation_id,
+        "workspaceId": entry.workspace_id,
+        "runId": entry.run_id,
+        "kind": entry.kind,
+        "target": entry.target,
+        "description": entry.description,
+        "status": entry.status,
+        "undoable": entry.undoable,
+        "createdAt": entry.created_at,
+        "undoneAt": entry.undone_at,
+    }
+
+
 def _hub_append_memory_consolidated(
     container,
     *,
@@ -1497,6 +1518,7 @@ def _build_container(
         max_files_per_conversation=settings.max_files_per_conversation,
     )
     memory_repository = SqliteMemoryRepository(database)
+    undo_journal_repository = SqliteUndoJournalRepository(database)
     memory_consolidation_repository = SqliteMemoryConsolidationRepository(database)
     proposal_repository = SqliteMemoryProposalRepository(database)
     preferences_repository = SqlitePreferencesRepository(database)
@@ -2199,6 +2221,10 @@ def _build_container(
         )
 
     effect_log = EffectLog(settings.database_path.parent / "logs")
+    undo_service = WorkspaceUndoService(
+        repository=undo_journal_repository,
+        effect_log=effect_log,
+    )
     mcp_manager = McpManager(
         repository=mcp_server_repository,
         tool_registry=selected_tool_registry,
@@ -2221,6 +2247,7 @@ def _build_container(
                 effect_log,
                 max_write_bytes=settings.workspace_max_write_bytes,
                 checkpoint_coordinator=run_checkpoint_coordinator,
+                undo_service=undo_service,
             )
         )
         selected_tool_registry.register(ListWorkspaceDirTool(workspace_resolver))
@@ -2242,6 +2269,7 @@ def _build_container(
                 workspace_resolver,
                 effect_log,
                 checkpoint_coordinator=run_checkpoint_coordinator,
+                undo_service=undo_service,
             )
         )
         selected_tool_registry.register(
@@ -2269,12 +2297,14 @@ def _build_container(
                         max_write_bytes=settings.workspace_max_write_bytes,
                         checkpoint_coordinator=run_checkpoint_coordinator,
                         execution_backend=enforcement_backend,
+                        undo_service=undo_service,
                     ),
                     "delete_workspace_file": DeleteWorkspaceFileTool(
                         workspace_resolver,
                         effect_log,
                         checkpoint_coordinator=run_checkpoint_coordinator,
                         execution_backend=enforcement_backend,
+                        undo_service=undo_service,
                     ),
                 }
             )
@@ -2329,6 +2359,7 @@ def _build_container(
             effect_log,
             max_write_bytes=settings.workspace_max_write_bytes,
             checkpoint_coordinator=run_checkpoint_coordinator,
+            undo_service=undo_service,
         )
 
         async def _delegation_apply_writer(
@@ -2747,6 +2778,8 @@ def _build_container(
         knowledge_lifecycle_service=knowledge_lifecycle_service,
         memory_forgetting_service=memory_forgetting_service,
         memory_consolidation_service=memory_consolidation_service,
+        undo_service=undo_service,
+        undo_journal_repository=undo_journal_repository,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
         task_notification_service=task_notification_service,
@@ -4894,6 +4927,51 @@ def create_app(
             "proposal": memory_proposal_json(proposal),
             "memory": memory_record_json(memory),
             "consolidatedMemoryIds": consolidated_ids,
+        }
+
+    @app.get("/conversations/{conversation_id}/undo-journal")
+    async def list_undo_journal(
+        conversation_id: str, limit: int = 10
+    ) -> dict[str, object]:
+        """A5：最近可撤销的工具副作用（文件写/删）。"""
+        entries = container.undo_journal_repository.list_for_conversation(
+            conversation_id, limit=limit
+        )
+        return {
+            "items": [_undo_entry_json(entry) for entry in entries],
+            "latestAvailableId": (
+                entries[0].id
+                if entries and entries[0].undoable
+                else None
+            ),
+        }
+
+    @app.post("/undo-journal/{entry_id}/undo")
+    async def undo_journal_entry(entry_id: str) -> dict[str, object]:
+        """A5：撤销一次可逆的文件操作（幂等）。"""
+        service = container.undo_service
+        if service is None:
+            raise NotFoundError("Undo service is not available.")
+        try:
+            entry, performed = service.undo(entry_id)
+        except UndoUnavailableError as error:
+            raise ValidationError(error.message) from error
+        if performed:
+            container.hub_event_repository.append(
+                "effect.undone",
+                conversation_id=entry.conversation_id,
+                data={
+                    "entryId": entry.id,
+                    "conversationId": entry.conversation_id,
+                    "kind": entry.kind,
+                    "target": entry.target,
+                    "description": entry.description,
+                },
+            )
+        return {
+            "entry": _undo_entry_json(entry),
+            "performed": performed,
+            "alreadyUndone": not performed,
         }
 
     @app.get("/conversations/{conversation_id}/memory-proposals")

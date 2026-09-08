@@ -138,7 +138,7 @@ class SqliteRuntimeV2RepositoryTest(unittest.TestCase):
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(63, row["count"])
+        self.assertEqual(64, row["count"])
 
     def test_nested_write_raises_instead_of_deadlocking(self) -> None:
         # 06 §30.5: same-thread nested _write would block the inner BEGIN

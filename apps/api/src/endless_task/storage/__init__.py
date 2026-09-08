@@ -17,6 +17,14 @@ from .sqlite_preferences_repository import SqlitePreferencesRepository
 from .sqlite_memory_proposal_repository import SqliteMemoryProposalRepository
 from .sqlite_runtime_v2_repository import SqliteRuntimeV2Repository
 from .sqlite_runtime_v2_memory_repository import SqliteRuntimeV2MemoryRepository
+from .sqlite_undo_journal_repository import (
+    AVAILABLE,
+    FILE_DELETE,
+    FILE_WRITE,
+    UNDONE,
+    SqliteUndoJournalRepository,
+    UndoJournalEntry,
+)
 from .sqlite_task_repository import SqliteTaskRepository
 from .sqlite_task_proposal_repository import SqliteTaskProposalRepository
 from .sqlite_notification_repository import SqliteNotificationRepository
@@ -30,7 +38,13 @@ from .sqlite_hub_event_repository import SqliteHubEventRepository
 
 __all__ = [
     "Database",
+    "AVAILABLE",
+    "FILE_DELETE",
+    "FILE_WRITE",
     "MemoryConsolidationRecord",
+    "UNDONE",
+    "SqliteUndoJournalRepository",
+    "UndoJournalEntry",
     "SqliteMemoryConsolidationRepository",
     "SqliteEmbeddingRepository",
     "SqliteRetrievalEventRepository",
