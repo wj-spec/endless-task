@@ -137,12 +137,14 @@ class MemoryInjectionTest(unittest.TestCase):
         self.assertEqual(len(lines), 20)
 
     def test_injection_respects_char_limit(self) -> None:
-        self.memory_repository.create_memory(
+        # B3：字符预算只放得下一条时，优先注入"更该留"的那条（钉住 > 重要 > 常用 > 新近）。
+        long_memory = self.memory_repository.create_memory(
             kind=MemoryKind.FACT,
             content="长" * 1000,
             source_conversation_id="conv_1",
             source_turn_id="turn_1",
         )
+        self.memory_repository.set_memory_pinned(long_memory.id, True)
         self.memory_repository.create_memory(
             kind=MemoryKind.FACT,
             content="短条目。",
@@ -154,6 +156,23 @@ class MemoryInjectionTest(unittest.TestCase):
         content = built.messages[0].content
         self.assertIn("- (fact) " + "长" * 1000, content)
         self.assertNotIn("短条目", content)
+
+    def test_injection_drops_the_rest_when_char_limit_is_tight(self) -> None:
+        for index in range(3):
+            self.memory_repository.create_memory(
+                kind=MemoryKind.FACT,
+                content=f"条目{index}。" + "补" * 400,
+                source_conversation_id="conv_1",
+                source_turn_id="turn_1",
+            )
+        snapshot = self._new_turn()
+        built = self._builder(max_memory_chars=600).build(snapshot.turn.id)
+        lines = [
+            line
+            for line in built.messages[0].content.splitlines()
+            if line.startswith("- (")
+        ]
+        self.assertEqual(1, len(lines))
 
 
 class MemoryInjectionGateTest(unittest.IsolatedAsyncioTestCase):

@@ -136,7 +136,11 @@ from endless_task.knowledge import (
 from endless_task.knowledge.ingestion import IngestionError, ingest_file_bytes
 from endless_task.mcp_runtime import McpManager
 from endless_task.proposals.budget import ProposalBudget
-from endless_task.memory import MemoryConflictService, MemoryProposalService
+from endless_task.memory import (
+    MemoryConflictService,
+    MemoryForgettingService,
+    MemoryProposalService,
+)
 from endless_task.tasks import (
     TaskNotificationService,
     TaskProposalService,
@@ -378,6 +382,10 @@ class AppSettings:
     # B1 近期性偏置：0 = 纯相关性（默认，行为不变）；τ 单位天。
     memory_recency_weight: float = 0.0
     memory_decay_tau_days: float = 30.0
+    # B3 重要性加权遗忘：默认关闭（不自动遗忘用户记忆），打开后按间隔巡检。
+    memory_forgetting_enabled: bool = False
+    memory_forgetting_interval_hours: float = 24.0
+    memory_forgetting_max_per_run: int = 10
     hybrid_semantic_weight: float = 0.6
     proposal_daily_budget: int = 6
     proposal_cooldown_minutes: int = 30
@@ -467,6 +475,10 @@ class AppSettings:
             raise ValueError("ENDLESS_TASK_MEMORY_RECENCY_WEIGHT must be within [0, 1]")
         if self.memory_decay_tau_days <= 0:
             raise ValueError("ENDLESS_TASK_MEMORY_DECAY_TAU must be positive")
+        if self.memory_forgetting_interval_hours <= 0:
+            raise ValueError("ENDLESS_TASK_MEMORY_FORGETTING_INTERVAL_HOURS must be positive")
+        if self.memory_forgetting_max_per_run < 1:
+            raise ValueError("ENDLESS_TASK_MEMORY_FORGETTING_MAX_PER_RUN must be >= 1")
         if self.hybrid_literal_weight < 0 or self.hybrid_semantic_weight < 0:
             raise ValueError("Hybrid weights cannot be negative")
         if not 0 < self.knowledge_duplicate_threshold <= 1:
@@ -643,6 +655,16 @@ class AppSettings:
                 env.get("ENDLESS_TASK_MEMORY_DECAY_TAU", "30"),
                 name="ENDLESS_TASK_MEMORY_DECAY_TAU",
             ),
+            memory_forgetting_enabled=_parse_flag(
+                env.get("ENDLESS_TASK_MEMORY_FORGETTING", "0")
+            ),
+            memory_forgetting_interval_hours=_parse_positive_float(
+                env.get("ENDLESS_TASK_MEMORY_FORGETTING_INTERVAL_HOURS", "24"),
+                name="ENDLESS_TASK_MEMORY_FORGETTING_INTERVAL_HOURS",
+            ),
+            memory_forgetting_max_per_run=int(
+                env.get("ENDLESS_TASK_MEMORY_FORGETTING_MAX_PER_RUN", "10")
+            ),
             proposal_daily_budget=int(
                 env.get("ENDLESS_TASK_PROPOSAL_DAILY_BUDGET", "6")
             ),
@@ -782,6 +804,7 @@ class AppContainer:
     effect_log: EffectLog
     artifact_file_store: ArtifactFileStore
     knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
+    memory_forgetting_service: Optional[MemoryForgettingService]
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
     task_notification_service: Optional[TaskNotificationService]
@@ -906,7 +929,9 @@ class RuntimeV2RecoveryBody(BaseModel):
 class UpdateMemoryBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    content: str
+    content: Optional[str] = None
+    importance: Optional[float] = None
+    pinned: Optional[bool] = None
 
 
 class ResolveMemoryProposalBody(BaseModel):
@@ -2417,6 +2442,11 @@ def _build_container(
         decay_min_age_days=settings.knowledge_decay_min_age_days,
         decay_recheck_days=settings.knowledge_decay_recheck_days,
     )
+    memory_forgetting_service = MemoryForgettingService(
+        memory_repository=memory_repository,
+        tau_days=settings.memory_decay_tau_days,
+        max_per_run=settings.memory_forgetting_max_per_run,
+    )
     if settings.knowledge_feedback_enabled:
         def _resolve_feedback_chunk(ref_id: str):
             try:
@@ -2669,6 +2699,7 @@ def _build_container(
         effect_log=effect_log,
         artifact_file_store=artifact_file_store,
         knowledge_lifecycle_service=knowledge_lifecycle_service,
+        memory_forgetting_service=memory_forgetting_service,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
         task_notification_service=task_notification_service,
@@ -2785,6 +2816,22 @@ async def _run_knowledge_decay_loop(container: "AppContainer") -> None:
         await asyncio.sleep(interval_seconds)
 
 
+async def _run_memory_forgetting_loop(container: "AppContainer") -> None:
+    """B3：周期性遗忘巡检。默认关闭；重要记忆只会进入待确认，不会静默删除。"""
+    interval_seconds = (
+        max(container.settings.memory_forgetting_interval_hours, 0.25) * 3600.0
+    )
+    await asyncio.sleep(min(300.0, interval_seconds))
+    while True:
+        try:
+            service = container.memory_forgetting_service
+            if service is not None:
+                service.run()
+        except Exception:  # noqa: BLE001 周期巡检失败不影响服务
+            logger.debug("Memory forgetting run failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
+
+
 def create_app(
     *,
     settings: Optional[AppSettings] = None,
@@ -2865,6 +2912,14 @@ def create_app(
             lifespan_tasks.spawn(
                 container.task_scheduler.run(),
                 name="task-scheduler",
+            )
+        if (
+            container.settings.memory_forgetting_enabled
+            and container.memory_forgetting_service is not None
+        ):
+            lifespan_tasks.spawn(
+                _run_memory_forgetting_loop(container),
+                name="memory-forgetting",
             )
         if (
             container.settings.knowledge_decay_enabled
@@ -3441,10 +3496,43 @@ def create_app(
     async def update_memory(
         memory_id: str, body: UpdateMemoryBody
     ) -> dict[str, object]:
-        record = container.memory_repository.update_memory_content(
-            memory_id, body.content
-        )
+        if (
+            body.content is None
+            and body.importance is None
+            and body.pinned is None
+        ):
+            raise ValidationError("Nothing to update.")
+        record = container.memory_repository.get_memory(memory_id)
+        if body.content is not None:
+            record = container.memory_repository.update_memory_content(
+                memory_id, body.content
+            )
+        if body.importance is not None:
+            record = container.memory_repository.set_memory_importance(
+                memory_id, body.importance
+            )
+        if body.pinned is not None:
+            record = container.memory_repository.set_memory_pinned(
+                memory_id, body.pinned
+            )
         return {"memory": memory_record_json(record)}
+
+    @app.get("/memories/forgetting-preview")
+    async def preview_memory_forgetting() -> dict[str, object]:
+        """B3：只读预览——哪些记忆会被忘、哪些重要记忆需要确认。"""
+        service = container.memory_forgetting_service
+        if service is None:
+            return {"dryRun": True, "forgottenCount": 0, "forgotten": [], "needsReview": []}
+        return service.preview().as_json()
+
+    @app.post("/memories/forget")
+    async def run_memory_forgetting(dry_run: bool = False) -> dict[str, object]:
+        """B3：执行一次遗忘巡检（重要记忆只报告、不删除）。"""
+        service = container.memory_forgetting_service
+        if service is None:
+            return {"dryRun": dry_run, "forgottenCount": 0, "forgotten": [], "needsReview": []}
+        report = service.preview() if dry_run else service.run()
+        return report.as_json()
 
     @app.delete("/memories/{memory_id}", status_code=204)
     async def delete_memory(memory_id: str) -> Response:

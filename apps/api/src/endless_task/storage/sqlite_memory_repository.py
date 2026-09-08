@@ -9,6 +9,8 @@ from endless_task.domain.repositories import (
     ValidationError,
 )
 
+from endless_task.runtime.memory_forgetting import clamp_importance
+
 from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
 
@@ -17,6 +19,22 @@ Clock = Callable[[], str]
 
 CONFIRMED_PROPOSAL_ORIGIN = "confirmed_proposal"
 AUTO_FACT_ORIGIN = "auto_fact"
+
+
+def _shift_seconds(timestamp: str, seconds: int) -> str:
+    """在 ISO 时间戳上做整数秒位移（解析失败则原样返回）。"""
+    from datetime import datetime, timedelta, timezone
+
+    text = timestamp.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return timestamp
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (parsed + timedelta(seconds=seconds)).isoformat()
 
 
 def insert_memory_row(
@@ -71,6 +89,10 @@ def memory_record_from_row(row) -> MemoryRecord:
         source_proposal_id=row["source_proposal_id"],
         expired_reason=row["expired_reason"],
         superseded_by=row["superseded_by"],
+        importance=float(row["importance"]),
+        access_count=int(row["access_count"]),
+        last_accessed_at=row["last_accessed_at"],
+        pinned=bool(row["pinned"]),
     )
 
 
@@ -160,6 +182,26 @@ class SqliteMemoryRepository:
         query += " ORDER BY updated_at, id"
         with self._database.connect() as connection:
             rows = connection.execute(query, params).fetchall()
+        return tuple(memory_record_from_row(row) for row in rows)
+
+    def list_memories_for_context(self, limit: int) -> Sequence[MemoryRecord]:
+        """按"该留"的顺序取记忆：钉住 > 重要 > 常用 > 新近。
+
+        B3：上下文预算有限时，先注入最该记住的那些，而不是最早写入的那些。
+        """
+        if limit <= 0:
+            return ()
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memories
+                WHERE status = ?
+                ORDER BY pinned DESC, importance DESC, access_count DESC,
+                         updated_at DESC, id
+                LIMIT ?
+                """,
+                (MemoryStatus.ACTIVE.value, int(limit)),
+            ).fetchall()
         return tuple(memory_record_from_row(row) for row in rows)
 
     def update_memory_content(self, memory_id: str, content: str) -> MemoryRecord:
@@ -254,6 +296,67 @@ class SqliteMemoryRepository:
                 ),
             )
         self._notify_hook("remove", memory_id)
+        return self.get_memory(memory_id)
+
+    # ---------- B3 重要性 / 访问 / 遗忘 ----------
+
+    def record_access(
+        self,
+        memory_ids: Sequence[str],
+        *,
+        min_interval_seconds: int = 3600,
+    ) -> int:
+        """记录记忆被注入/使用：access_count +1、last_accessed_at 更新。
+
+        间隔重复的关键是"被反复用到"而非"每次读取都算"，因此同一记忆在
+        ``min_interval_seconds`` 内只计一次（默认 1 小时）。
+        """
+        unique_ids = tuple(dict.fromkeys(memory_id for memory_id in memory_ids if memory_id))
+        if not unique_ids:
+            return 0
+        now = self._clock()
+        cutoff = _shift_seconds(now, -int(min_interval_seconds))
+        placeholders = ", ".join("?" for _ in unique_ids)
+        with self._database.transaction() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE memories
+                SET access_count = access_count + 1, last_accessed_at = ?
+                WHERE id IN ({placeholders})
+                  AND status = ?
+                  AND (last_accessed_at IS NULL OR last_accessed_at <= ?)
+                """,
+                (now, *unique_ids, MemoryStatus.ACTIVE.value, cutoff),
+            )
+        return int(cursor.rowcount or 0)
+
+    def set_memory_importance(
+        self, memory_id: str, importance: float
+    ) -> MemoryRecord:
+        normalized = clamp_importance(importance)
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Memory not found: {memory_id}")
+            connection.execute(
+                "UPDATE memories SET importance = ?, updated_at = ? WHERE id = ?",
+                (normalized, self._clock(), memory_id),
+            )
+        return self.get_memory(memory_id)
+
+    def set_memory_pinned(self, memory_id: str, pinned: bool) -> MemoryRecord:
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Memory not found: {memory_id}")
+            connection.execute(
+                "UPDATE memories SET pinned = ?, updated_at = ? WHERE id = ?",
+                (1 if pinned else 0, self._clock(), memory_id),
+            )
         return self.get_memory(memory_id)
 
     def _validate_kind(self, kind: MemoryKind) -> MemoryKind:

@@ -176,6 +176,11 @@ class MemoryRecord:
     source_proposal_id: Optional[str] = None
     expired_reason: Optional[str] = None
     superseded_by: Optional[str] = None
+    # B3 重要性加权遗忘：重要性 0~1、被注入次数、最近一次被用到的时间、钉住。
+    importance: float = 0.5
+    access_count: int = 0
+    last_accessed_at: Optional[str] = None
+    pinned: bool = False
 
 
 class MemoryProposalStatus(str, Enum):

@@ -2054,3 +2054,83 @@
 .spans-timeline li.is-running .spans-status {
   color: var(--accent);
 }
+
+/* B3 重要性加权遗忘：记忆保留信息与遗忘预览 */
+.memory-retention {
+  color: var(--muted);
+}
+.memory-pinned {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+.memory-forgetting {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.memory-forgetting-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.memory-forgetting-toggle {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.memory-forgetting-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.memory-forgetting-summary {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.memory-forgetting-list {
+  margin-top: 8px;
+}
+.memory-forgetting-list h4 {
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+.memory-forgetting-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 0.8rem;
+}
+.memory-forgetting-content {
+  flex: 1 1 220px;
+  color: var(--text);
+}
+.memory-forgetting-risk {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.memory-forgetting-item button {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.memory-forgetting-item button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}

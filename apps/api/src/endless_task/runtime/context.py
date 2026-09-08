@@ -712,9 +712,16 @@ class P0ContextBuilder:
     def _memory_block(self) -> str:
         if self._memory_repository is None:
             return ""
+        # B3：优先注入"该留"的记忆（钉住 > 重要 > 常用 > 新近）；旧仓储退回原顺序。
+        ordered = getattr(self._memory_repository, "list_memories_for_context", None)
+        if callable(ordered):
+            records = ordered(self._max_memories_in_context)
+        else:
+            records = self._memory_repository.list_memories()
         lines: list[str] = []
         used = 0
-        for record in self._memory_repository.list_memories():
+        injected: list[str] = []
+        for record in records:
             if len(lines) >= self._max_memories_in_context:
                 break
             line = f"- ({record.kind.value}) {record.content}"
@@ -722,8 +729,16 @@ class P0ContextBuilder:
                 break
             lines.append(line)
             used += len(line)
+            injected.append(record.id)
         if not lines:
             return ""
+        # 间隔重复：被真正注入过的记忆才计一次访问（仓储内部按小时去重）。
+        recorder = getattr(self._memory_repository, "record_access", None)
+        if callable(recorder):
+            try:
+                recorder(injected)
+            except Exception:  # noqa: BLE001 访问计数失败不阻断上下文构建
+                pass
         return (
             "以下是用户确认后写入的长期记忆，跨会话有效；"
             "可以直接使用，不要向用户重复确认。\n" + "\n".join(lines)

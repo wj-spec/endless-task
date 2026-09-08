@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
-import type { MemoryRecord } from "../chat/apiTypes";
+import type { MemoryForgettingReport, MemoryRecord } from "../chat/apiTypes";
 import { formatRelativeTime } from "../artifacts/time";
+import {
+  forgetRiskLabel,
+  importanceLabel,
+  isImportant,
+  retentionHint,
+  IMPORTANCE_LEVELS,
+} from "./memoryRetention";
 
 type MemoryContentProps = {
   onOpenConversation: (conversationId: string) => void;
@@ -23,6 +30,11 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(false);
+  // B3：遗忘预览（按需加载，避免每次打开面板都跑一遍巡检）。
+  const [forgetting, setForgetting] = useState<MemoryForgettingReport | null>(
+    null,
+  );
+  const [forgettingBusy, setForgettingBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -51,11 +63,40 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     setBusyId(memoryId);
     setActionError(null);
     try {
-      await chatApi.updateMemory(memoryId, content);
+      await chatApi.updateMemory(memoryId, { content });
       setEditingId(null);
       await load();
     } catch {
       setActionError("保存失败，请重试。");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const loadForgettingPreview = async () => {
+    setForgettingBusy(true);
+    setActionError(null);
+    try {
+      setForgetting(await chatApi.previewMemoryForgetting());
+    } catch {
+      setActionError("无法读取遗忘预览，请重试。");
+    } finally {
+      setForgettingBusy(false);
+    }
+  };
+
+  const updateRetention = async (
+    memoryId: string,
+    patch: { importance?: number; pinned?: boolean },
+  ) => {
+    setBusyId(memoryId);
+    setActionError(null);
+    try {
+      await chatApi.updateMemory(memoryId, patch);
+      await load();
+      if (forgetting) await loadForgettingPreview();
+    } catch {
+      setActionError("更新失败，请重试。");
     } finally {
       setBusyId(null);
     }
@@ -123,6 +164,12 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
               </span>
             )}
             <span>更新于 {formatRelativeTime(memory.updatedAt)}</span>
+            <span className="memory-retention" title="重要性越高、用得越多，越不容易被遗忘">
+              {importanceLabel(memory.importance)} · {retentionHint(memory)}
+            </span>
+            {memory.pinned ? (
+              <span className="memory-pinned">已钉住</span>
+            ) : null}
           </div>
           {memory.status === "active" ? (
             <div className="memory-actions">
@@ -133,6 +180,33 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
               >
                 编辑
               </button>
+              <button
+                disabled={busyId === memory.id}
+                onClick={() =>
+                  void updateRetention(memory.id, {
+                    pinned: !memory.pinned,
+                  })
+                }
+                type="button"
+              >
+                {memory.pinned ? "取消钉住" : "钉住"}
+              </button>
+              {IMPORTANCE_LEVELS.filter(
+                (level) => isImportant(level.value) !== isImportant(memory.importance),
+              ).map((level) => (
+                <button
+                  disabled={busyId === memory.id}
+                  key={level.value}
+                  onClick={() =>
+                    void updateRetention(memory.id, {
+                      importance: level.value,
+                    })
+                  }
+                  type="button"
+                >
+                  {isImportant(level.value) ? "标记重要" : "降为普通"}
+                </button>
+              ))}
               <button
                 className="danger-action"
                 disabled={busyId === memory.id}
@@ -222,6 +296,85 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
             );
           })
         : null}
+      {!loading && !loadError ? (
+        <section className="profile-group memory-forgetting">
+          <div className="memory-forgetting-head">
+            <h3 className="profile-group-title">遗忘预览</h3>
+            <button
+              className="memory-forgetting-toggle"
+              disabled={forgettingBusy}
+              onClick={() => void loadForgettingPreview()}
+              type="button"
+            >
+              {forgettingBusy ? "检查中…" : "检查哪些记忆可能被忘"}
+            </button>
+          </div>
+          {forgetting ? (
+            <>
+              <p className="memory-forgetting-summary">
+                不重要且久未使用的记忆会被忘掉；
+                <strong>重要记忆不会被静默删除</strong>，只会在这里请你确认。
+              </p>
+              {forgetting.needsReview.length > 0 ? (
+                <div className="memory-forgetting-list">
+                  <h4>需要你确认（{forgetting.needsReview.length}）</h4>
+                  {forgetting.needsReview.map((item) => (
+                    <div className="memory-forgetting-item" key={item.memoryId}>
+                      <span className="memory-forgetting-content">
+                        {item.content}
+                      </span>
+                      <span className="memory-forgetting-risk">
+                        {importanceLabel(item.importance)} ·{" "}
+                        {forgetRiskLabel(item.probability)}
+                      </span>
+                      <button
+                        disabled={busyId === item.memoryId}
+                        onClick={() =>
+                          void updateRetention(item.memoryId, { pinned: true })
+                        }
+                        type="button"
+                      >
+                        钉住保留
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {forgetting.forgotten.length > 0 ? (
+                <div className="memory-forgetting-list">
+                  <h4>可能被忘（{forgetting.forgotten.length}）</h4>
+                  {forgetting.forgotten.map((item) => (
+                    <div className="memory-forgetting-item" key={item.memoryId}>
+                      <span className="memory-forgetting-content">
+                        {item.content}
+                      </span>
+                      <span className="memory-forgetting-risk">
+                        {importanceLabel(item.importance)}
+                      </span>
+                      <button
+                        disabled={busyId === item.memoryId}
+                        onClick={() =>
+                          void updateRetention(item.memoryId, { pinned: true })
+                        }
+                        type="button"
+                      >
+                        钉住保留
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {forgetting.needsReview.length === 0 &&
+              forgetting.forgotten.length === 0 ? (
+                <p className="memory-forgetting-summary">
+                  目前没有记忆面临被忘，也没有需要确认的。
+                </p>
+              ) : null}
+            </>
+          ) : null}
+        </section>
+      ) : null}
+
       {!loading && !loadError && expired.length > 0 ? (
         <section className="profile-group">
           <button

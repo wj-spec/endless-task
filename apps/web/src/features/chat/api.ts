@@ -18,6 +18,7 @@ import type { KnowledgeProposal,
   PermissionSettings,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
+  MemoryForgettingReport,
   RuntimeV2RunUsageCost,
   RuntimeV2MemoryCreateResponse,
   RuntimeV2MemoryListResponse,
@@ -816,11 +817,18 @@ export const chatApi = {
     );
     return response.items;
   },
-  updateMemory: (memoryId: string, content: string) =>
+  updateMemory: (
+    memoryId: string,
+    patch: { content?: string; importance?: number; pinned?: boolean },
+  ) =>
     request<{ memory: MemoryRecord }>(`/memories/${memoryId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(patch),
     }),
+  previewMemoryForgetting: () =>
+    request<MemoryForgettingReport>("/memories/forgetting-preview"),
+  runMemoryForgetting: () =>
+    request<MemoryForgettingReport>("/memories/forget", { method: "POST" }),
   deleteMemory: (memoryId: string) =>
     request<void>(`/memories/${memoryId}`, { method: "DELETE" }),
   rollbackArtifact: (

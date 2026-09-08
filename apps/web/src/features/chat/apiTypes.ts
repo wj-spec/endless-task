@@ -1149,6 +1149,35 @@ export type MemoryRecord = {
   sourceProposalId: string | null;
   expiredReason: string | null;
   supersededBy: string | null;
+  /** B3：重要性 0~1（越高越不容易被遗忘）。 */
+  importance: number;
+  /** B3：被注入使用的次数（间隔重复）。 */
+  accessCount: number;
+  lastAccessedAt: string | null;
+  /** B3：钉住的记忆永不自动遗忘。 */
+  pinned: boolean;
+};
+
+/** B3：一次遗忘巡检的结果。 */
+export type MemoryForgettingReport = {
+  dryRun: boolean;
+  forgottenCount: number;
+  forgotten: Array<{
+    memoryId: string;
+    content: string;
+    importance: number;
+    accessCount: number;
+    pinned: boolean;
+  }>;
+  needsReview: Array<{
+    memoryId: string;
+    content: string;
+    importance: number;
+    accessCount: number;
+    pinned: boolean;
+    probability: number;
+    needsReview?: boolean;
+  }>;
 };
 
 export type PermissionMode = "confirm_every_time" | "trust_local_writes" | "trust_all";

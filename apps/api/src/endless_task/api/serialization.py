@@ -497,6 +497,11 @@ def memory_record_json(
         "sourceProposalId": record.source_proposal_id,
         "expiredReason": record.expired_reason,
         "supersededBy": record.superseded_by,
+        # B3：重要性 / 访问 / 钉住（遗忘判定与用户干预都靠这几项）。
+        "importance": record.importance,
+        "accessCount": record.access_count,
+        "lastAccessedAt": record.last_accessed_at,
+        "pinned": record.pinned,
     }
 
 
