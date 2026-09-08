@@ -2767,3 +2767,200 @@ button.citation-chip:focus-visible {
 .audit-entry-why-body p:last-child {
   margin-bottom: 0;
 }
+
+/* A7 生成式 UI：结构化块与表格卡片 */
+.structured-block {
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m, 10px);
+  background: var(--surface);
+  overflow: hidden;
+}
+.structured-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--accent-soft);
+}
+.structured-block-kind {
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+.structured-block-title {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.structured-block-action {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.structured-block-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.structured-block-body {
+  padding: 8px 12px;
+}
+.structured-chart {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.structured-chart li {
+  display: grid;
+  grid-template-columns: minmax(80px, 30%) 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 0.8rem;
+}
+.structured-chart-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.structured-chart-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.structured-chart-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.structured-chart-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.structured-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.structured-metrics li {
+  display: flex;
+  flex-direction: column;
+  min-width: 96px;
+  padding: 8px 12px;
+  border-radius: var(--radius-m, 10px);
+  background: var(--accent-soft);
+}
+.structured-metric-value {
+  color: var(--text);
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.structured-metric-label {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.structured-metric-hint {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.structured-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.structured-steps li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 0.82rem;
+}
+.structured-step-mark {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.structured-steps li.is-done .structured-step-mark {
+  color: var(--ok-deep, var(--accent));
+}
+.structured-steps li.is-done .structured-step-title {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.structured-step-detail {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.table-card {
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m, 10px);
+  background: var(--surface);
+  overflow: hidden;
+}
+.table-card-head {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--accent-soft);
+}
+.table-card-label {
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+.table-card-copy {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.table-card-copy:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.table-card-scroll {
+  overflow-x: auto;
+  padding: 0 12px 8px;
+}
+.table-card-scroll table {
+  margin: 0;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.82rem;
+}
+.table-card-scroll th,
+.table-card-scroll td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+.table-card-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+}

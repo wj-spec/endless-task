@@ -83,6 +83,11 @@ export function ArtifactDetail({
   const [confirmingOrdinal, setConfirmingOrdinal] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
   const [rollbackError, setRollbackError] = useState<string | null>(null);
+  // A7：原位编辑 → 保存为新版本（与右侧版本时间线/回滚联动）。
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -106,6 +111,34 @@ export function ArtifactDetail({
     setRollbackError(null);
     void load();
   }, [load]);
+
+  const startEditing = () => {
+    setDraft(detail?.currentVersion.content ?? "");
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const saveVersion = async () => {
+    if (!detail || latestTurnId === null) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await chatApi.createArtifactVersion(
+        artifactId,
+        draft,
+        conversationId,
+        latestTurnId,
+        "用户在界面编辑",
+      );
+      setEditing(false);
+      await load();
+      onChanged();
+    } catch {
+      setSaveError("保存失败，请重试。");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleExport = async (format: ExportFormat) => {
     setExporting(format);
@@ -188,6 +221,48 @@ export function ArtifactDetail({
                 })}
               </div>
             ) : null}
+            <div className="artifact-toolbar" aria-label="编辑">
+              <span className="artifact-toolbar-label">编辑</span>
+              {editing ? (
+                <>
+                  <button
+                    disabled={saving}
+                    onClick={() => void saveVersion()}
+                    type="button"
+                  >
+                    {saving ? "保存中…" : "保存为新版本"}
+                  </button>
+                  <button
+                    disabled={saving}
+                    onClick={() => {
+                      setEditing(false);
+                      setSaveError(null);
+                    }}
+                    type="button"
+                  >
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button
+                  disabled={latestTurnId === null}
+                  onClick={startEditing}
+                  title={
+                    latestTurnId === null
+                      ? "需要会话中至少有一条消息才能保存版本"
+                      : undefined
+                  }
+                  type="button"
+                >
+                  编辑内容
+                </button>
+              )}
+            </div>
+            {saveError ? (
+              <div className="proposal-error" role="alert">
+                {saveError}
+              </div>
+            ) : null}
             <div className="artifact-toolbar" aria-label="导出">
               <span className="artifact-toolbar-label">导出</span>
               {EXPORT_FORMATS.map(({ format, label }) => (
@@ -246,7 +321,17 @@ export function ArtifactDetail({
         {!detail && !loadError ? (
           <div className="workspace-detail-state">正在加载…</div>
         ) : null}
-        {detail ? <MessageContent content={detail.currentVersion.content} /> : null}
+        {detail && editing ? (
+          <textarea
+            aria-label="编辑 Artifact 内容"
+            className="artifact-edit"
+            onChange={(event) => setDraft(event.target.value)}
+            value={draft}
+          />
+        ) : null}
+        {detail && !editing ? (
+          <MessageContent content={detail.currentVersion.content} />
+        ) : null}
 
         {detail && versions.length > 0 ? (
           <details className="version-timeline" open={versions.length > 1}>

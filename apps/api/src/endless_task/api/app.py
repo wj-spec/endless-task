@@ -20,6 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from endless_task.domain.task_schedule import ReminderDue
 from endless_task.domain.models import (
+    ArtifactVersionOperation,
     ConversationKind,
     ConversationSnapshot,
     ConversationStatus,
@@ -232,6 +233,24 @@ from .serialization import (
 
 logger = logging.getLogger(__name__)
 TERMINAL_TURN_STATUSES = {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED}
+#: 默认系统提示词。A7：引导模型对"多项对比/指标/步骤"用带语言标记的围栏块输出，
+#: 前端会渲染成图表/指标卡/步骤清单（无法结构化时照常写 Markdown）。
+DEFAULT_SYSTEM_PROMPT = (
+    "你是 Endless Task，一个可靠、简洁的个人助手。\n"
+    "- 能直接回答的问题用自然语言直接回答，不要调用工具。\n"
+    "- 信息不足时先向用户追问关键信息，不要猜测。\n"
+    "- 只有问题确实需要会话附件内容时才调用文件工具。\n"
+    "- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。\n"
+    "- 用户要求产出文档/文件（如写 README、报告、脚本）时，读完所需材料后应立即调用"
+    "写入工具或直接给出完整结果，不要无休止地继续收集资料；读完即动手。\n"
+    "- 当回答包含多项数值对比、指标汇总或步骤清单时，用带语言标记的围栏代码块给出"
+    "结构化结果（前端会渲染成图表/指标卡/步骤清单），JSON 必须合法：\n"
+    "  chart: {\"title\": \"\", \"unit\": \"\", \"series\": [{\"label\": \"\", \"value\": 0}]}\n"
+    "  metrics: {\"title\": \"\", \"items\": [{\"label\": \"\", \"value\": \"\", \"hint\": \"\"}]}\n"
+    "  steps: {\"title\": \"\", \"steps\": [{\"title\": \"\", \"detail\": \"\", \"done\": false}]}\n"
+    "  其余内容照常写 Markdown；结构化块只是补充，不要用它替代解释。"
+)
+
 CONFIG_VERSION = 1
 
 ARTIFACT_AWARENESS_PROMPT_VERSION = "p3.1-v1"
@@ -314,8 +333,8 @@ class AppSettings:
     base_url: Optional[str] = None
     api_key: Optional[str] = field(default=None, repr=False)
     provider_timeout_seconds: float = 60.0
-    system_prompt: str = "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。\n- 用户要求产出文档/文件（如写 README、报告、脚本）时，读完所需材料后应立即调用写入工具或直接给出完整结果，不要无休止地继续收集资料；读完即动手。"
-    system_prompt_version: str = "p1-v1"
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    system_prompt_version: str = "p1-v2"
     context_window_tokens: int = 32_768
     max_output_tokens: int = 2_048
     summary_token_limit: int = 1_024
@@ -745,11 +764,11 @@ class AppSettings:
             ),
             system_prompt=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT",
-                "你是 Endless Task，一个可靠、简洁的个人助手。\n- 能直接回答的问题用自然语言直接回答，不要调用工具。\n- 信息不足时先向用户追问关键信息，不要猜测。\n- 只有问题确实需要会话附件内容时才调用文件工具。\n- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。\n- 用户要求产出文档/文件（如写 README、报告、脚本）时，读完所需材料后应立即调用写入工具或直接给出完整结果，不要无休止地继续收集资料；读完即动手。",
+                DEFAULT_SYSTEM_PROMPT,
             ),
             system_prompt_version=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT_VERSION",
-                "p1-v1",
+                "p1-v2",
             ),
             context_window_tokens=int(
                 env.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "32768")
@@ -961,6 +980,15 @@ class RuntimeV2RecoveryBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["mark_failed", "retry"]
+
+
+class CreateArtifactVersionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    sourceConversationId: str
+    sourceTurnId: str
+    note: Optional[str] = None
 
 
 class UserProfileBody(BaseModel):
@@ -5581,6 +5609,38 @@ def create_app(
             "currentVersion": artifact_version_json(
                 version, source_references=references
             ),
+        }
+
+    @app.post("/artifacts/{artifact_id}/versions", status_code=201)
+    async def create_artifact_version(
+        artifact_id: str, body: CreateArtifactVersionBody
+    ) -> dict[str, object]:
+        """A7：在聊天/面板里原位编辑产物 → 保存为新版本（可回溯、可回滚）。"""
+        snapshot = container.artifact_repository.append_version(
+            artifact_id=artifact_id,
+            content=body.content,
+            operation=ArtifactVersionOperation.UPDATE,
+            source_conversation_id=body.sourceConversationId,
+            source_turn_id=body.sourceTurnId,
+            note=body.note or "用户在界面编辑",
+        )
+        artifact = snapshot.artifact
+        if artifact.storage_path and body.sourceConversationId:
+            binding = container.artifact_file_store.binding_for(
+                body.sourceConversationId
+            )
+            if binding is not None:
+                try:
+                    container.artifact_file_store.restore(
+                        binding,
+                        artifact.storage_path,
+                        snapshot.current_version.content,
+                    )
+                except Exception:  # noqa: BLE001 文件同步失败不阻断 DB
+                    pass
+        return {
+            "artifact": artifact_json(snapshot.artifact),
+            "currentVersion": artifact_version_json(snapshot.current_version),
         }
 
     @app.get("/artifacts/{artifact_id}/versions")

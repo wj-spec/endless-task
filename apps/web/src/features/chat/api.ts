@@ -646,6 +646,25 @@ export const chatApi = {
     request<WorkspaceSnapshot>(`/conversations/${conversationId}/workspace`),
   getArtifact: (artifactId: string) =>
     request<ArtifactDetailSnapshot>(`/artifacts/${artifactId}`),
+  createArtifactVersion: (
+    artifactId: string,
+    content: string,
+    sourceConversationId: string,
+    sourceTurnId: string,
+    note?: string,
+  ) =>
+    request<{ artifact: ArtifactRecordSummary; currentVersion: ArtifactVersionRecord }>(
+      `/artifacts/${artifactId}/versions`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          content,
+          sourceConversationId,
+          sourceTurnId,
+          note: note ?? null,
+        }),
+      },
+    ),
   listArtifactVersions: async (artifactId: string) => {
     const response = await request<{ items: ArtifactVersionRecord[] }>(
       `/artifacts/${artifactId}/versions`,

@@ -2167,3 +2167,18 @@
   font-size: 0.82rem;
   line-height: 1.6;
 }
+
+/* A7 原位编辑产物 */
+.artifact-edit {
+  width: 100%;
+  min-height: 320px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m, 10px);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  resize: vertical;
+}

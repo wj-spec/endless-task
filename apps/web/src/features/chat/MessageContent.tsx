@@ -3,6 +3,9 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { CodeBlock } from "./CodeBlock";
+import { StructuredBlock } from "./StructuredBlock";
+import { isStructuredLanguage, isWideTable } from "./structuredBlocks";
+import { TableCard } from "./TableCard";
 
 // 渲染策略（P0-1）：
 // - 标准库渲染：react-markdown + remark-gfm（表格/任务列表/删除线）。
@@ -153,14 +156,25 @@ export function MessageContent({
       if (isValidElement<ExtraContentProps & { className?: string }>(child)) {
         const language =
           /language-([^\s]+)/.exec(child.props.className ?? "")?.[1] ?? "";
-        return (
-          <CodeBlock
-            code={String(child.props.children ?? "").replace(/\n$/, "")}
-            language={language}
-          />
-        );
+        const code = String(child.props.children ?? "").replace(/\n$/, "");
+        if (isStructuredLanguage(language)) {
+          // A7：结构化块 → 专用组件；解析失败回退普通代码块。
+          return (
+            <StructuredBlock
+              code={code}
+              fallback={<CodeBlock code={code} language={language} />}
+              language={language}
+            />
+          );
+        }
+        return <CodeBlock code={code} language={language} />;
       }
       return <pre>{children}</pre>;
+    },
+    // A7：表格用卡片承载（横向滚动 + 复制），列/行多时尤其明显。
+    table({ children }) {
+      const rows = Children.count(children);
+      return <TableCard rowCount={rows}>{children}</TableCard>;
     },
     // 行内 code：保持字面显示（[K\d+] 不触发引用角标）
     code({ children, className, node: _node, ...rest }) {
