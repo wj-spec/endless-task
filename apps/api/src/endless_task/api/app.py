@@ -1010,7 +1010,8 @@ class ResolveTaskProposalBody(BaseModel):
 class ResolveApprovalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: Literal["approve", "deny"]
+    decision: Literal["approve", "deny", "modify"]
+    arguments: Optional[dict] = None
 
 
 class SetPermissionBody(BaseModel):
@@ -5612,11 +5613,14 @@ def create_app(
         decision = (
             ToolApprovalDecision.APPROVE
             if body.decision == "approve"
+            else ToolApprovalDecision.MODIFY
+            if body.decision == "modify"
             else ToolApprovalDecision.DENY
         )
         resolved = await container.runtime_v2_gateway.resolve_approval(
             approval_id,
             decision,
+            modified_arguments=body.arguments,
         )
         return {"approvalId": approval_id, "resolved": resolved}
 

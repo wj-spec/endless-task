@@ -156,6 +156,7 @@ class ToolApprovalDecision(str, Enum):
     APPROVE = "approve"
     DENY = "deny"
     EXPIRE = "expired"
+    MODIFY = "modify"
 
 
 class ToolApprovalGate(Protocol):
@@ -195,6 +196,10 @@ class WaitingToolApprovalGate:
     ) -> ToolApprovalDecision:
         del execution, tool, call, cancellation_token
         return ToolApprovalDecision.WAIT
+
+    def modified_arguments_for(self, approval_id: str):
+        del approval_id
+        return None
 
 
 class StaticToolApprovalGate:
@@ -981,6 +986,56 @@ class ToolExecutionCoordinator:
                     ),
                 )
                 return
+            if decision is ToolApprovalDecision.MODIFY:
+                modified = self._approval_gate.modified_arguments_for(
+                    item.record_id,
+                )
+                if modified is None:
+                    self._fail_item(
+                        item,
+                        ToolCallError(
+                            code="invalid_modified_arguments",
+                            safe_message="用户修改后的参数为空。",
+                            retryable=False,
+                        ),
+                        status=ToolExecutionStatus.REJECTED,
+                        content=(
+                            "用户修改后的参数为空，未执行该操作。请说明未执行。"
+                        ),
+                    )
+                    return
+                try:
+                    self._validate_arguments(tool, modified)
+                except ToolValidationError as error:
+                    self._fail_item(
+                        item,
+                        ToolCallError(
+                            code=error.code,
+                            safe_message="用户修改后的参数不符合要求。",
+                            retryable=error.retryable,
+                        ),
+                        status=ToolExecutionStatus.REJECTED,
+                        content=(
+                            "用户修改后的参数不符合要求，未执行该操作。"
+                            "请说明未执行或改用其它方式。"
+                        ),
+                    )
+                    return
+                # A1-modify：写回修正参数（重放一致），并用修正参数构建新的 call。
+                self._repository.update_tool_execution_arguments(
+                    item.record_id,
+                    modified,
+                )
+                call = ToolCall(
+                    id=call.id,
+                    conversation_id=call.conversation_id,
+                    turn_id=call.turn_id,
+                    response_variant_id=call.response_variant_id,
+                    tool_name=call.tool_name,
+                    arguments=modified,
+                    status=call.status,
+                    created_at=call.created_at,
+                )
 
         async with self._execution_slots:
             await self._execute_approved_item(

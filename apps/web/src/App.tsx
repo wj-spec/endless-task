@@ -235,6 +235,7 @@ export function App() {
         statusFilter={chat.statusFilter}
         workspaceId={chat.workspaceId}
         workspaces={chat.workspaces}
+        homePath={chat.homePath}
         workspaceCanCreate={chat.workspaceCanCreate}
         currentWorkspace={chat.currentWorkspace}
         onCreateWorkspace={() => dispatchSurface({ type: "open-workspace-create" })}
@@ -332,8 +333,8 @@ export function App() {
         onRegenerate={(turnId) => void chat.regenerate(turnId)}
         onEditResendMessage={(turnId, content) => void chat.resend(turnId, content)}
         editedUserMessages={chat.editedUserMessages}
-        onResolveApproval={(turnId, approvalId, decision) =>
-          void chat.resolveApproval(turnId, approvalId, decision)
+        onResolveApproval={(turnId, approvalId, decision, args) =>
+          void chat.resolveApproval(turnId, approvalId, decision, args)
         }
         onResolveRuntimeRecovery={(runId, action) =>
           void chat.resolveRuntimeRecovery(runId, action)
@@ -479,8 +480,8 @@ export function App() {
                 "side",
               )
             }
-            onResolveApproval={(turnId, approvalId, decision) =>
-              void chat.resolveApproval(turnId, approvalId, decision, "side")
+            onResolveApproval={(turnId, approvalId, decision, args) =>
+              void chat.resolveApproval(turnId, approvalId, decision, args, "side")
             }
             onResolveRuntimeRecovery={(runId, action) =>
               void chat.resolveRuntimeRecovery(runId, action, "side")

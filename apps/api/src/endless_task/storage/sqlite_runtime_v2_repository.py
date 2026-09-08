@@ -2727,6 +2727,45 @@ class SqliteRuntimeV2Repository:
 
         return self._write(operation)
 
+    def update_tool_execution_arguments(
+        self,
+        execution_id: str,
+        arguments: Mapping[str, Any],
+    ) -> ToolExecutionRecord:
+        """A1-modify：审批"修改参数"后，把用户修正的参数写回执行记录。
+
+        保持单次执行在重放/恢复时参数一致（执行记录是执行时参数的真源）。
+        """
+        now = self._clock()
+
+        def operation(connection: sqlite3.Connection) -> ToolExecutionRecord:
+            current = self._get_tool_execution_row(connection, execution_id)
+            if current["status"] in (
+                ToolExecutionStatus.COMPLETED.value,
+                ToolExecutionStatus.FAILED.value,
+                ToolExecutionStatus.CANCELLED.value,
+                ToolExecutionStatus.REJECTED.value,
+                ToolExecutionStatus.EXPIRED.value,
+            ):
+                raise InvalidStateError(
+                    "Terminal tool execution arguments cannot change"
+                )
+            arguments_json = _dump(arguments)
+            arguments_hash = hashlib.sha256(
+                arguments_json.encode("utf-8")
+            ).hexdigest()
+            connection.execute(
+                "UPDATE v2_tool_executions SET "
+                "arguments_json = ?, arguments_hash = ?, updated_at = ? "
+                "WHERE id = ?",
+                (arguments_json, arguments_hash, now, execution_id),
+            )
+            return self._tool_execution_from_row(self._get_tool_execution_row(
+                connection, execution_id,
+            ))
+
+        return self._write(operation)
+
     def append_runtime_event(
         self,
         *,

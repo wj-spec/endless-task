@@ -79,7 +79,8 @@ type ChatWorkSurfaceProps = {
   onResolveApproval: (
     turnId: string,
     approvalId: string,
-    decision: "approve" | "deny",
+    decision: "approve" | "deny" | "modify",
+    args?: Record<string, unknown>,
   ) => void;
   onResolveRuntimeRecovery?: (
     runId: string,
@@ -332,6 +333,9 @@ export function ChatWorkSurface({
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
+  const [modifyApprovalId, setModifyApprovalId] = useState<string | null>(null);
+  const [modifyDraft, setModifyDraft] = useState("");
+  const [modifyError, setModifyError] = useState<string | null>(null);
   const search = useConversationSearch(conversation, liveTurns, streamRef);
   const [citationsByTurn, setCitationsByTurn] = useState<
     Record<string, KnowledgeCitation[]>
@@ -1097,7 +1101,80 @@ export function ChatWorkSurface({
                           >
                             不允许
                           </button>
+                          {approvalRisk(pendingApproval.metadata) !== "high" ? (
+                            <button
+                              className="approval-modify"
+                              disabled={pendingAction !== null}
+                              onClick={() => {
+                                setModifyApprovalId(pendingApproval.id);
+                                setModifyDraft("{}");
+                                setModifyError(null);
+                              }}
+                              type="button"
+                            >
+                              修改参数
+                            </button>
+                          ) : null}
                         </div>
+                        {modifyApprovalId === pendingApproval.id ? (
+                          <div
+                            className="approval-modify-panel"
+                            role="group"
+                            aria-label="修改工具参数"
+                          >
+                            <span className="approval-modify-label">修改参数（JSON）</span>
+                            <textarea
+                              aria-label="修改工具参数"
+                              className="approval-modify-input"
+                              onChange={(event) => setModifyDraft(event.target.value)}
+                              rows={4}
+                              spellCheck={false}
+                              value={modifyDraft}
+                            />
+                            {modifyError ? (
+                              <span className="approval-modify-error">{modifyError}</span>
+                            ) : null}
+                            <div className="approval-modify-actions">
+                              <button
+                                className="approval-modify-submit"
+                                disabled={pendingAction !== null}
+                                onClick={() => {
+                                  try {
+                                    const parsed = JSON.parse(modifyDraft);
+                                    if (
+                                      !parsed ||
+                                      typeof parsed !== "object" ||
+                                      Array.isArray(parsed)
+                                    ) {
+                                      setModifyError("参数必须是 JSON 对象。");
+                                      return;
+                                    }
+                                    onResolveApproval(
+                                      turnSnapshot.turn.id,
+                                      pendingApproval.id,
+                                      "modify",
+                                      parsed,
+                                    );
+                                    setModifyApprovalId(null);
+                                  } catch {
+                                    setModifyError("JSON 解析失败，请检查格式。");
+                                  }
+                                }}
+                                type="button"
+                              >
+                                确认修改并执行
+                              </button>
+                              <button
+                                className="approval-modify-cancel"
+                                disabled={pendingAction !== null}
+                                onClick={() => setModifyApprovalId(null)}
+                                type="button"
+                              >
+                                取消
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                         <span className="approval-timeout">
                           不响应则暂停，不会执行。
                         </span>

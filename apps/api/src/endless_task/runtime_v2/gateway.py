@@ -298,13 +298,26 @@ class GatewayToolApprovalGate(ToolApprovalGate):
         self,
         approval_id: str,
         decision: ToolApprovalDecision,
+        *,
+        modified_arguments: Optional[Mapping[str, object]] = None,
     ) -> bool:
         async with self._lock:
             future = self._waiters.get(approval_id)
             if future is None or future.done():
                 return False
+            pending = self._pending_approvals.get(approval_id)
+            if pending is not None and modified_arguments is not None:
+                # A1-modify：把用户修正的参数暂存到 pending，供执行端读取并校验。
+                pending.metadata["modifiedArguments"] = dict(modified_arguments)
             future.set_result(decision)
             return True
+
+    def modified_arguments_for(self, approval_id: str) -> Optional[Mapping[str, object]]:
+        pending = self._pending_approvals.get(approval_id)
+        if pending is None:
+            return None
+        value = pending.metadata.get("modifiedArguments") if isinstance(pending.metadata, dict) else None
+        return value if isinstance(value, dict) else None
 
     async def _wait_for_decision(
         self,
@@ -635,8 +648,14 @@ class AgentSessionConnection:
         self,
         approval_id: str,
         decision: ToolApprovalDecision,
+        *,
+        modified_arguments: Optional[Mapping[str, object]] = None,
     ) -> bool:
-        return await self._gateway.resolve_approval(approval_id, decision)
+        return await self._gateway.resolve_approval(
+            approval_id,
+            decision,
+            modified_arguments=modified_arguments,
+        )
 
     def snapshot(self) -> dict[str, object]:
         return self._gateway.snapshot(self.conversation_id)
@@ -1213,8 +1232,14 @@ class RuntimeV2SessionGateway:
         self,
         approval_id: str,
         decision: ToolApprovalDecision,
+        *,
+        modified_arguments: Optional[Mapping[str, object]] = None,
     ) -> bool:
-        return await self._approval_gate.resolve(approval_id, decision)
+        return await self._approval_gate.resolve(
+            approval_id,
+            decision,
+            modified_arguments=modified_arguments,
+        )
 
     def has_active_run(self, conversation_id: str) -> bool:
         active = self._active_runs.get(conversation_id)

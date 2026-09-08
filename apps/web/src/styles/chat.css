@@ -829,6 +829,62 @@
   font-size: var(--fs-1);
 }
 
+/* --- A1 修改参数 --- */
+.approval-actions button.approval-modify {
+  border-bottom-color: var(--warn-mid);
+  color: var(--warn-deep);
+}
+
+.approval-modify-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
+.approval-modify-label {
+  font-size: var(--fs-2);
+  font-weight: 600;
+  color: var(--muted-strong);
+}
+.approval-modify-input {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--paper);
+  color: var(--ink-raise);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2);
+  resize: vertical;
+}
+.approval-modify-error {
+  color: var(--danger-deep);
+  font-size: var(--fs-2);
+}
+.approval-modify-actions {
+  display: flex;
+  gap: var(--space-3);
+}
+.approval-modify-submit,
+.approval-modify-cancel {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-s);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+.approval-modify-submit {
+  background: var(--sheen-soft);
+  color: var(--accent);
+}
+.approval-modify-cancel {
+  background: transparent;
+  color: var(--muted);
+}
+
 /* --- A2 上下文/Token 预算指示 --- */
 .context-budget {
   display: flex;

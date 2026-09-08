@@ -521,12 +521,19 @@ export const chatApi = {
     request<{ runId: string; accepted: boolean }>(`/api/v2/runs/${runId}/cancel`, {
       method: "POST",
     }),
-  resolveRuntimeV2Approval: (approvalId: string, decision: "approve" | "deny") =>
+  resolveRuntimeV2Approval: (
+    approvalId: string,
+    decision: "approve" | "deny" | "modify",
+    args?: Record<string, unknown>,
+  ) =>
     request<{ approvalId: string; resolved: boolean }>(
       `/api/v2/approvals/${approvalId}`,
       {
         method: "POST",
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({
+          decision,
+          ...(decision === "modify" ? { arguments: args } : {}),
+        }),
       },
     ),
   resolveRuntimeV2Recovery: (

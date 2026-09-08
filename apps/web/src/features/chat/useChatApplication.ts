@@ -1736,14 +1736,15 @@ export function useChatApplication() {
   const resolveApproval = async (
     turnId: string,
     approvalId: string,
-    decision: "approve" | "deny",
+    decision: "approve" | "deny" | "modify",
+    args?: Record<string, unknown>,
     surface: SnapshotTarget = "main",
   ) => {
     const feedbackTarget =
       surface === "side" ? sideCommandTarget : primaryCommandTarget;
     setCommandFeedback(feedbackTarget, `approval:${approvalId}`, null);
     try {
-      await chatApi.resolveRuntimeV2Approval(approvalId, decision);
+      await chatApi.resolveRuntimeV2Approval(approvalId, decision, args);
       setLiveTurns((current) => {
         const live = current[turnId];
         if (!live || live.pendingApproval?.id !== approvalId) return current;
