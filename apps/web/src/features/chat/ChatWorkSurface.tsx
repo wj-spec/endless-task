@@ -40,6 +40,8 @@ import { ResponseFeedbackControl } from "./ResponseFeedbackControl";
 import { ContextBudgetMeter } from "./ContextBudgetMeter";
 import { CopyButton } from "./CopyButton";
 import { PlanLine, type PlanPayload } from "./PlanLine";
+import { StuckNotice } from "./StuckNotice";
+import { deriveStuckState } from "./stuckState";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
@@ -68,6 +70,8 @@ type ChatWorkSurfaceProps = {
   onArchive: () => void;
   onCancel: () => void;
   onCancelRunningRun?: (runId: string) => void;
+  /** C2：运行卡住时把纠偏指令注入运行中的 steer 通道。 */
+  onSteerRun?: (runId: string, content: string) => void;
   onCreateBranch?: (forkTurnId: string) => void;
   onCreateTemporaryConversation?: () => void;
   onDelete: () => void;
@@ -266,6 +270,7 @@ export function ChatWorkSurface({
   onArchive,
   onCancel,
   onCancelRunningRun,
+  onSteerRun,
   onCreateBranch,
   onCreateTemporaryConversation,
   onDelete,
@@ -325,6 +330,8 @@ export function ChatWorkSurface({
     autoRestoreEvent && typeof autoRestoreEvent.data === "object"
       ? (autoRestoreEvent.data as Record<string, unknown>)
       : null;
+  // C2 失败记忆：卡住态 = 快照 + 实时 run.stuck / run.progress_resumed 折叠。
+  const stuckState = deriveStuckState(runtimeSnapshot, runtimeEvents);
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -684,6 +691,15 @@ export function ChatWorkSurface({
               {" "}个跳过）；你的修改未受影响。
             </span>
           </div>
+        ) : null}
+
+        {stuckState ? (
+          <StuckNotice
+            onSteer={onSteerRun}
+            onTakeOver={onCancelRunningRun}
+            pending={pendingAction !== null}
+            state={stuckState}
+          />
         ) : null}
 
         {runtimeConnectionPhase === "reconnecting" ? (

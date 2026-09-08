@@ -267,3 +267,72 @@ class EnforcementIntegrationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(RunStatus.COMPLETED, result.status)
         self.assertEqual(5, len(provider.requests))
+
+
+class RepeatedFailureDetectorTest(unittest.IsolatedAsyncioTestCase):
+    """C2 回归：连续失败要落到 repeated_failure 检测器。
+
+    ToolExecutionRecord 的错误是扁平字段（error_code），早先按嵌套 error 对象
+    读取，导致该检测器永远退化成 identical_tool_outcome。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self._tmp.name) / "runtime.db")
+        self.database.initialize()
+        self.chat_repository = SqliteChatRepository(self.database)
+        self.repository = SqliteRuntimeV2Repository(self.database)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_consecutive_failures_report_repeated_failure_detector(self) -> None:
+        from tests.test_runtime_v2_execution import NormalizedFailureTool
+
+        conversation = self.chat_repository.create_conversation()
+        lane = self.repository.create_lane(conversation_id=conversation.id)
+        trigger = self.repository.append_entry(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            type=TranscriptEntryType.USER_MESSAGE,
+            actor=Actor.USER,
+            payload={"content": "任务"},
+            context_policy={"include_in_llm": True, "transform": "full"},
+        )
+        run = self.repository.create_run(
+            conversation_id=conversation.id,
+            lane_id=lane.id,
+            trigger_entry_id=trigger.id,
+        )
+        turns = []
+        for index in range(2):
+            turns.append(
+                (
+                    ProviderTextDelta(f"尝试{index}。"),
+                    ProviderToolCall(
+                        id=f"call_{index}",
+                        name="read_file",
+                        arguments={"path": "a.txt"},
+                    ),
+                    ProviderCompleted(finish_reason="tool_calls"),
+                )
+            )
+        turns.append((ProviderTextDelta("完成。"), ProviderCompleted(finish_reason="stop")))
+        registry = ToolRegistry()
+        registry.register(NormalizedFailureTool("read_file", return_failure=True))
+        evaluations = []
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=ScriptedProvider(turns),
+            tool_registry=registry,
+            model="scripted-model",
+            no_progress_observer=evaluations.append,
+        )
+        result = await executor.execute(
+            run.id,
+            cancellation_token=CancellationToken(),
+        )
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertGreaterEqual(len(evaluations), 1)
+        self.assertEqual("repeated_failure", evaluations[-1].detector)
+        self.assertEqual(StopLevel.RESTRICT, evaluations[-1].level)

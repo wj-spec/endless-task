@@ -608,6 +608,19 @@ class ProductRuntimeEventProjection:
                 "skipped": payload.get("skipped"),
                 "trigger": _string(payload, "trigger"),
             }
+        if event_type == "run_stuck":
+            return "run.stuck", {
+                "runId": event.run_id,
+                "level": _string(payload, "level"),
+                "detector": _string(payload, "detector"),
+                "reasons": list(payload.get("reasons") or ()),
+                "consecutive": payload.get("consecutive"),
+                "repeatedFailures": list(payload.get("repeatedFailures") or ()),
+                "attempts": list(payload.get("attempts") or ()),
+                "guidance": _string(payload, "guidance"),
+            }
+        if event_type == "run_progress_resumed":
+            return "run.progress_resumed", {"runId": event.run_id}
         if event_type == "safety_stop":
             return "run.status_changed", {
                 "runId": event.run_id,
@@ -1284,6 +1297,7 @@ class RuntimeV2SessionGateway:
                 "contextUsage": {"inputTokens": 0, "outputTokens": 0},
                 "contextBudget": _context_budget_json(0, self._context_window_tokens),
                 "interruptedRuns": self._recovery_reports_json(conversation_id),
+                "stuck": None,
                 "capabilities": V2_CAPABILITIES,
             }
 
@@ -1317,6 +1331,10 @@ class RuntimeV2SessionGateway:
                 self._context_window_tokens,
             ),
             "interruptedRuns": self._recovery_reports_json(conversation_id),
+            "stuck": _stuck_json(
+                product_events,
+                running_run_id=runtime_snapshot.running_run_id,
+            ),
             "capabilities": V2_CAPABILITIES,
         }
 
@@ -1676,6 +1694,41 @@ def _context_budget_json(used: int, limit: Optional[int]) -> dict[str, object]:
         "usedRatio": round(ratio, 4),
         "remainingTokens": max(0, limit - used),
     }
+
+
+def _stuck_json(
+    product_events: tuple[ProductRuntimeEventRecord, ...],
+    *,
+    running_run_id: Optional[str],
+) -> Optional[dict[str, object]]:
+    """C2：把最近一条 ``run.stuck`` 投影成快照里的卡住态。
+
+    卡住态是运行期的外部状态：``run.stuck`` 出现即置位，
+    ``run.progress_resumed``（同一运行）出现即清空。刷新页面后前端依然能
+    从快照恢复"卡在哪、试过什么、为什么失败"。
+    """
+    if running_run_id is None:
+        return None
+    stuck: Optional[dict[str, object]] = None
+    for event in product_events:
+        if event.run_id != running_run_id:
+            continue
+        if event.event_type == "run.stuck":
+            stuck = {
+                "runId": running_run_id,
+                "level": event.data.get("level") or "remind",
+                "detector": event.data.get("detector") or "",
+                "reasons": list(event.data.get("reasons") or ()),
+                "consecutive": event.data.get("consecutive"),
+                "repeatedFailures": list(
+                    event.data.get("repeatedFailures") or ()
+                ),
+                "attempts": list(event.data.get("attempts") or ()),
+                "guidance": event.data.get("guidance") or "",
+            }
+        elif event.event_type == "run.progress_resumed":
+            stuck = None
+    return stuck
 
 
 def _approval_json(approval: PendingApproval) -> dict[str, object]:

@@ -312,6 +312,7 @@ export function App() {
         }}
         onCancel={() => void chat.cancel()}
         onCancelRunningRun={(runId) => void chat.cancelRuntimeRun(runId)}
+        onSteerRun={(runId, content) => void chat.steerRuntimeRun(runId, content)}
         onCreateBranch={(forkTurnId) => {
           if (!chat.activeConversationId) return;
           const sourceLaneId =
@@ -461,6 +462,9 @@ export function App() {
             }
             onCancelRunningRun={(runId) =>
               void chat.cancelRuntimeRun(runId, "side")
+            }
+            onSteerRun={(runId, content) =>
+              void chat.steerRuntimeRun(runId, content, "side")
             }
             onCloseSide={chat.closeSideConversation}
             onDelete={() => {}}

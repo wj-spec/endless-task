@@ -1733,6 +1733,27 @@ export function useChatApplication() {
     }
   };
 
+  // C2：卡住横幅的「换一条路径」——把纠偏指令注入运行中的 steer 通道。
+  const steerRuntimeRun = async (
+    runId: string,
+    content: string,
+    surface: SnapshotTarget = "main",
+  ) => {
+    const target = surface === "side" ? sideCommandTarget : primaryCommandTarget;
+    if (!target) return;
+    setCommandFeedback(target, "steer-running", null);
+    try {
+      const result = await chatApi.steerRuntimeV2Run(runId, content);
+      setCommandFeedback(
+        target,
+        null,
+        result.accepted ? null : "已提示，但运行未接受该指令",
+      );
+    } catch (steerError) {
+      setCommandFeedback(target, null, readableError(steerError));
+    }
+  };
+
   const resolveApproval = async (
     turnId: string,
     approvalId: string,
@@ -2040,6 +2061,7 @@ export function useChatApplication() {
     sideRuntimeSnapshot,
     cancel,
     cancelRuntimeRun,
+    steerRuntimeRun,
     deleteConversation,
     draft,
     error: primaryCommandState?.error ?? error,

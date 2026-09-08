@@ -47,6 +47,7 @@ from .domain import (
     ToolExecutionRecord,
     ToolExecutionStatus,
 )
+from .failure_memory import FailureMemoryAccumulator
 from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
 from .trace_observer import MIRROR_TIMEOUT_SECONDS, RunTraceObserver
@@ -317,9 +318,11 @@ def _no_progress_evaluation_for_run(*, repository, run_id: str):
             for execution in executions:
                 status = getattr(execution, "status", None)
                 status_value = getattr(status, "value", status)
-                error = getattr(execution, "error", None)
-                if error is not None:
-                    unresolved = getattr(error, "code", None) or str(error)
+                # ToolExecutionRecord 的错误是扁平字段（error_code/safe_message），
+                # 早先按嵌套 error 对象读取，导致 repeated_failure 检测永不触发。
+                error_code = getattr(execution, "error_code", None)
+                if error_code:
+                    unresolved = error_code
                     continue
                 if status_value in ("completed", "COMPLETED"):
                     contents.append(getattr(execution, "content", "") or "")
@@ -363,10 +366,13 @@ class ToolExecutionCoordinator:
         v2_pipeline_enabled: bool = False,
         limits: Optional[ToolExecutionLimits] = None,
         protocol_receipt_sink=None,
+        failure_memory: Optional[FailureMemoryAccumulator] = None,
     ) -> None:
         self._repository = repository
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate or WaitingToolApprovalGate()
+        # C2 失败记忆：循环的外部状态，逐条累积失败尝试（None = 关闭）。
+        self._failure_memory = failure_memory
         # RS-6 slice 2b: optional async sink(dict protocol-receipt fields,
         # TraceContext) receiving completed tool side effects so they land
         # in the runtime ledger as safety-critical records. None = off.
@@ -593,6 +599,9 @@ class ToolExecutionCoordinator:
                 error=item.error,
                 structured_content=item.structured_content,
             )
+            if self._failure_memory is not None:
+                # C2：失败尝试进入外部状态（成功一次即清零该工具的连续失败）。
+                self._failure_memory.record(record)
             if self._protocol_receipt_sink is not None:
                 await self._emit_protocol_receipt(
                     run=run,
@@ -1859,6 +1868,15 @@ class AgentRunExecutor:
         self._provider_retry_observer = provider_retry_observer
         self._no_progress_observer = no_progress_observer
         self._no_progress_enforcement_enabled = bool(no_progress_enforcement_enabled)
+        # C2 失败记忆：本次运行的失败尝试（外部状态），随工具执行增量累积。
+        self._failure_memory = FailureMemoryAccumulator()
+        # 已经就"哪一组重复失败"提示过模型 / 发过 run.stuck 事件。
+        self._stuck_signature: Optional[tuple[tuple[str, str, str], ...]] = None
+        self._stuck_emitted = False
+        # 已注入过失败记忆的（工具，错误码）组合，避免每轮重复注入。
+        self._injected_failure_keys: set[tuple[str, str]] = set()
+        # 已通过 no-progress 评估发出的卡住级别（避免每轮重复发事件）。
+        self._no_progress_stuck_level: Optional[str] = None
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
@@ -1883,6 +1901,7 @@ class AgentRunExecutor:
             v2_pipeline_enabled=v2_pipeline_enabled,
             limits=tool_execution_limits,
             protocol_receipt_sink=protocol_receipt_sink,
+            failure_memory=self._failure_memory,
         )
         self._model_turn_runner = ModelTurnRunner(
             repository=repository,
@@ -2049,6 +2068,7 @@ class AgentRunExecutor:
                     )
 
                 provider_messages.extend(outcome.messages)
+                self._observe_failure_memory(run)
                 delivered = not outcome.tool_calls and bool(outcome.content.strip())
                 # 工具级「提前终止」：本批所有工具结果都请求 terminate → 停循环。
                 if outcome.tool_calls and outcome.terminate:
@@ -2095,6 +2115,7 @@ class AgentRunExecutor:
                         repository=self._repository,
                         run_id=run.id,
                     )
+                    self._observe_no_progress_stuck(run, evaluation)
                     if evaluation is not None and evaluation.level is StopLevel.STOP:
                         guidance = no_progress_guidance(evaluation.level, evaluation.reasons)
                         content_parts.append("\n\n" + guidance)
@@ -2293,6 +2314,103 @@ class AgentRunExecutor:
             RunStatus.CANCELLING,
             event_type="run_cancel_requested",
             cancelled_by=cancelled_by,
+        )
+
+    def _observe_failure_memory(self, run: RunRecord) -> None:
+        """C2：把"连续同因失败"变成外部状态，并作为下一轮决策的输入。
+
+        * 一组新的重复失败出现 → 发 ``run_stuck`` 事件（产品层可见/可审计），
+          并把精简的失败记忆注入下一轮：模型不该原样重复已失败的调用；
+        * 该工具成功一次（连续失败清零）→ 发 ``run_progress_resumed`` 清掉卡住态。
+        """
+        memory = self._failure_memory.snapshot
+        if not memory.repeated:
+            if self._stuck_emitted:
+                self._append_progress_resumed(run)
+                self._stuck_emitted = False
+                self._stuck_signature = None
+                self._injected_failure_keys.clear()
+            return
+        signature = tuple(
+            (
+                item.tool_name,
+                item.error_code,
+                "restrict" if item.count >= 3 else "remind",
+            )
+            for item in memory.repeated
+        )
+        if signature == self._stuck_signature:
+            return
+        self._stuck_signature = signature
+        self._stuck_emitted = True
+        guidance = memory.guidance()
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_stuck",
+            payload={
+                "level": "restrict"
+                if any(item.count >= 3 for item in memory.repeated)
+                else "remind",
+                "detector": "repeated_failure",
+                "reasons": [
+                    f"{item.tool_name} 已连续失败 {item.count} 次"
+                    f"（{item.error_code}）"
+                    for item in memory.repeated
+                ],
+                "repeatedFailures": [
+                    item.as_json() for item in memory.repeated
+                ],
+                "attempts": list(memory.digest(limit=5)),
+                "guidance": guidance,
+            },
+        )
+        # 同一组（工具，错误码）只注入一次，避免每轮重复占上下文。
+        new_keys = {
+            (item.tool_name, item.error_code)
+            for item in memory.repeated
+            if (item.tool_name, item.error_code) not in self._injected_failure_keys
+        }
+        if guidance and new_keys:
+            self._injected_failure_keys.update(new_keys)
+            self._steering_messages.append(guidance)
+
+    def _observe_no_progress_stuck(self, run: RunRecord, evaluation: object) -> None:
+        """C2：no-progress 评估（启用时）也落到同一条 run.stuck 通道。
+
+        只在级别变化时发事件，级别回落 ``none`` 时发恢复事件，避免每轮刷屏。
+        """
+        level = getattr(getattr(evaluation, "level", None), "value", None)
+        if level in (None, "none"):
+            if self._no_progress_stuck_level is not None:
+                self._no_progress_stuck_level = None
+                self._append_progress_resumed(run)
+            return
+        if level == self._no_progress_stuck_level:
+            return
+        self._no_progress_stuck_level = level
+        memory = self._failure_memory.snapshot
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_stuck",
+            payload={
+                "level": level,
+                "detector": getattr(evaluation, "detector", None),
+                "reasons": list(getattr(evaluation, "reasons", ()) or ()),
+                "consecutive": getattr(evaluation, "consecutive", None),
+                "repeatedFailures": [
+                    item.as_json() for item in memory.repeated
+                ],
+                "attempts": list(memory.digest(limit=5)),
+                "guidance": memory.guidance(),
+            },
+        )
+
+    def _append_progress_resumed(self, run: RunRecord) -> None:
+        """C2：卡住态解除（失败记忆清零或 no-progress 级别回落）。"""
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_progress_resumed",
+            payload={"runId": run.id},
         )
 
     async def _drain_steering_messages(self, run: RunRecord) -> list[ProviderMessage]:

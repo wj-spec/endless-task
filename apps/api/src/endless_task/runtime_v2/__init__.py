@@ -32,6 +32,13 @@ from .domain import (
 )
 from .context import ContextPolicy, ContextProjection, ContextProjectionResult
 from .compaction import RuntimeV2ContextCompactionService
+from .failure_memory import (
+    FailedAttempt,
+    FailureMemory,
+    FailureMemoryAccumulator,
+    RepeatedFailure,
+    build_failure_memory,
+)
 from .execution import (
     AgentRunExecutor,
     ContextCompactionHook,
@@ -121,6 +128,11 @@ __all__ = [
     "StaticToolApprovalGate",
     "ToolApprovalDecision",
     "ToolApprovalGate",
+    "FailedAttempt",
+    "FailureMemory",
+    "FailureMemoryAccumulator",
+    "RepeatedFailure",
+    "build_failure_memory",
     "ToolExecutionCoordinator",
     "ToolExecutionLimits",
     "ToolExecutionOutcome",

@@ -2384,3 +2384,72 @@ button.citation-chip:focus-visible {
   user-select: none;
 }
 .workspace-preview-text { flex: 1 1 auto; overflow: visible; }
+
+/* C2 失败记忆：卡住横幅（展示试过什么/为什么失败 + 换路径/人工接管） */
+.stuck-notice {
+  display: block;
+  width: min(760px, 100%);
+  margin: 12px auto 0;
+  padding: 12px var(--space-4, 14px);
+  border: 1px solid var(--warn-mid, var(--line));
+  border-left: 3px solid var(--warn-mid, var(--line));
+  border-radius: var(--radius-m, 10px);
+  background: var(--warn-soft, var(--accent-soft));
+}
+.stuck-notice strong {
+  display: block;
+  color: var(--warn-deep, var(--accent));
+  font-size: 0.92rem;
+}
+.stuck-notice-restrict,
+.stuck-notice-stop {
+  border-color: var(--danger-mid, var(--warn-mid));
+  border-left-color: var(--danger-mid, var(--warn-mid));
+  background: var(--danger-soft, var(--warn-soft));
+}
+.stuck-notice-restrict strong,
+.stuck-notice-stop strong {
+  color: var(--danger-deep, var(--warn-deep));
+}
+.stuck-summary {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.stuck-reasons {
+  margin: 6px 0 0;
+  padding-left: 1.1rem;
+  color: var(--text, inherit);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.stuck-guidance {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.stuck-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 10px;
+}
+.stuck-actions button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.stuck-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.stuck-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

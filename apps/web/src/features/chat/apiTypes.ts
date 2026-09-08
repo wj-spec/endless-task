@@ -501,7 +501,33 @@ export type RuntimeV2Snapshot = {
     remainingTokens: number;
   };
   interruptedRuns: RuntimeV2RecoveryReport[];
+  stuck?: RuntimeV2StuckState | null;
   capabilities: string[];
+};
+
+/** C2 失败记忆：运行期"卡住"状态（快照 + 实时事件都能给出）。 */
+export type RuntimeV2StuckState = {
+  runId: string;
+  /** remind（刚出现重复失败）| restrict（连续失败升级）| no-progress 级别。 */
+  level: string;
+  detector: string;
+  reasons: string[];
+  consecutive?: number | null;
+  repeatedFailures: Array<{
+    toolName: string;
+    errorCode: string;
+    count: number;
+    safeMessage?: string;
+  }>;
+  attempts: Array<{
+    toolName: string;
+    errorCode: string;
+    safeMessage?: string;
+    attempt: number;
+    retryable?: boolean;
+    toolExecutionId?: string | null;
+  }>;
+  guidance: string;
 };
 
 export type RuntimeV2LaneKind =
