@@ -29,6 +29,11 @@ from .sqlite_undo_journal_repository import (
     SqliteUndoJournalRepository,
     UndoJournalEntry,
 )
+from .sqlite_user_profile_repository import (
+    GENERAL_SCOPE_KEY,
+    SqliteUserProfileRepository,
+    UserProfileRecord,
+)
 from .sqlite_task_repository import SqliteTaskRepository
 from .sqlite_task_proposal_repository import SqliteTaskProposalRepository
 from .sqlite_notification_repository import SqliteNotificationRepository
@@ -45,7 +50,10 @@ __all__ = [
     "AVAILABLE",
     "FILE_DELETE",
     "FILE_WRITE",
+    "GENERAL_SCOPE_KEY",
     "MemoryConsolidationRecord",
+    "SqliteUserProfileRepository",
+    "UserProfileRecord",
     "MemoryReflectionRecord",
     "SqliteMemoryReflectionRepository",
     "UNDONE",

@@ -60,6 +60,7 @@ from .escalation import (
 )
 from .failure_memory import FailureMemoryAccumulator
 from .usage_cost import cost_cap_exceeded, estimate_cost_usd
+from .user_profile import UserProfileBlock
 from .verification import (
     VERIFICATION_PROTOCOL_VERSION,
     VerificationVerdict,
@@ -1869,6 +1870,7 @@ class AgentRunExecutor:
         escalation_budget_ratio: float = DEFAULT_BUDGET_RATIO,
         verifier_mode: str = "0",
         verifier_model: Optional[str] = None,
+        user_profile_provider: Optional[Callable[[str], Optional[UserProfileBlock]]] = None,
         cost_cap_usd: float = 0.0,
         pricing_catalog: Optional[PricingCatalog] = None,
         context_shadow_observer: Optional[object] = None,
@@ -1908,6 +1910,9 @@ class AgentRunExecutor:
         # C1 制造者—检查者分离：独立验证模式（0 关 / 1 全部 / side_effects 仅关键运行）。
         self._verifier_mode = verifier_mode
         self._verifier_model = verifier_model
+        # B5 用户画像：每次运行开始时读一次已存画像（只读，不重算），
+        # 放在静态前缀之后 → 同一版本字节一致，provider 前缀缓存可复用。
+        self._user_profile_provider = user_profile_provider
         # C5 成本可见：累计成本估算（按定价表）与可选的成本上限。
         self._cost_cap_usd = float(cost_cap_usd)
         self._pricing_catalog = pricing_catalog or make_default_catalog()
@@ -2041,8 +2046,26 @@ class AgentRunExecutor:
         provider_messages: list[ProviderMessage] = list(
             self._context_prefix_messages
         )
+        profile = self._load_user_profile(run.conversation_id)
+        if profile is not None and not profile.empty:
+            provider_messages.append(
+                ProviderMessage(role="system", content=profile.content)
+            )
         provider_messages.extend(projection.messages)
         run = self._repository.start_run(run.id)
+        if profile is not None and not profile.empty:
+            # 缓存/成本可观测：把版本与签名记进事件，便于观察前缀变动频率。
+            self._repository.append_runtime_event(
+                run_id=run.id,
+                event_type="user_profile_injected",
+                payload={
+                    "version": profile.version,
+                    "signature": profile.signature,
+                    "characters": profile.characters,
+                    "lines": len(profile.lines),
+                    "manual": profile.manual,
+                },
+            )
         cancellation_token.raise_if_cancelled()
         run_span = self._open_run_span(run, monotonic_started=run_started)
 
@@ -2520,6 +2543,17 @@ class AgentRunExecutor:
                 "guidance": memory.guidance(),
             },
         )
+
+    def _load_user_profile(self, conversation_id: str) -> Optional[UserProfileBlock]:
+        """B5：读取已存画像（只读一行；失败一律当作没有画像）。"""
+        provider = self._user_profile_provider
+        if provider is None:
+            return None
+        try:
+            return provider(conversation_id)
+        except Exception:  # noqa: BLE001 画像读取失败不影响运行
+            logger.debug("User profile load failed", exc_info=True)
+            return None
 
     def _side_effect_evidence(self, tool_calls: Sequence[ProviderToolCall]) -> list[str]:
         """本次运行里"有副作用"的工具调用（local_write / external_action）。"""

@@ -141,6 +141,7 @@ from endless_task.knowledge.ingestion import IngestionError, ingest_file_bytes
 from endless_task.mcp_runtime import McpManager
 from endless_task.proposals.budget import ProposalBudget
 from endless_task.memory import (
+    UserProfileService,
     MemoryConflictService,
     MemoryConsolidationService,
     MemoryForgettingService,
@@ -156,7 +157,9 @@ from endless_task.tasks import (
     TaskWorker,
 )
 from endless_task.storage import (
+    GENERAL_SCOPE_KEY,
     SqliteMemoryConsolidationRepository,
+    SqliteUserProfileRepository,
     SqliteMemoryReflectionRepository,
     SqliteUndoJournalRepository,
     Database,
@@ -837,6 +840,7 @@ class AppContainer:
     memory_consolidation_service: Optional[MemoryConsolidationService]
     undo_service: Optional[WorkspaceUndoService]
     memory_reflection_service: Optional[MemoryReflectionService]
+    user_profile_service: Optional[UserProfileService]
     undo_journal_repository: SqliteUndoJournalRepository
     embedding_indexer: Optional[EmbeddingIndexer]
     proposal_budget: Optional[ProposalBudget]
@@ -957,6 +961,13 @@ class RuntimeV2RecoveryBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["mark_failed", "retry"]
+
+
+class UserProfileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    scopeKey: Optional[str] = None
 
 
 class UpdateMemoryBody(BaseModel):
@@ -1733,6 +1744,7 @@ def _build_container(
     )
     memory_repository = SqliteMemoryRepository(database)
     memory_reflection_repository = SqliteMemoryReflectionRepository(database)
+    user_profile_repository = SqliteUserProfileRepository(database)
     undo_journal_repository = SqliteUndoJournalRepository(database)
     memory_consolidation_repository = SqliteMemoryConsolidationRepository(database)
     proposal_repository = SqliteMemoryProposalRepository(database)
@@ -1813,6 +1825,10 @@ def _build_container(
     selected_provider = provider or _provider_from_settings(settings)
     runtime_v2_repository = SqliteRuntimeV2Repository(database)
     runtime_v2_memory_repository = SqliteRuntimeV2MemoryRepository(database)
+    user_profile_service = UserProfileService(
+        profile_repository=user_profile_repository,
+        memory_repository=runtime_v2_memory_repository,
+    )
     runtime_v2_memory_quality_service = RuntimeV2MemoryQualityService(
         memory_repository=runtime_v2_memory_repository,
         embedder=embedder,
@@ -1933,6 +1949,28 @@ def _build_container(
                 ),
             )
         )
+    def _user_profile_provider(conversation_id: str):
+        """B5：运行开始时读一次已存画像（只读，不重算，保证前缀稳定）。"""
+        try:
+            workspace_id = chat_repository.get_conversation(
+                conversation_id
+            ).workspace_id
+        except Exception:  # noqa: BLE001
+            workspace_id = None
+        scope_key = workspace_id or GENERAL_SCOPE_KEY
+        # 运行前对齐：内容未变不写库；被取代/过期的记忆会立刻从画像里消失。
+        return user_profile_service.ensure_current(scope_key)
+
+    def _refresh_user_profile(conversation_id: str) -> None:
+        """B5：会话结束时更新画像（内部有节流；内容没变则完全不写库）。"""
+        try:
+            workspace_id = chat_repository.get_conversation(
+                conversation_id
+            ).workspace_id
+        except Exception:  # noqa: BLE001
+            workspace_id = None
+        user_profile_service.refresh(workspace_id or GENERAL_SCOPE_KEY)
+
     # B4 反思：任何终态运行（含失败）都走 fanout 触发一次反思（fail-open）。
     memory_reflection_service = MemoryReflectionService(
         runtime_repository=runtime_v2_repository,
@@ -2156,6 +2194,7 @@ def _build_container(
         escalation_budget_ratio=settings.escalation_budget_ratio,
         verifier_mode=settings.verifier_mode,
         verifier_model=settings.verifier_model,
+        user_profile_provider=_user_profile_provider,
         cost_cap_usd=settings.cost_cap_usd,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
@@ -2196,6 +2235,7 @@ def _build_container(
         escalation_budget_ratio=settings.escalation_budget_ratio,
         verifier_mode=settings.verifier_mode,
         verifier_model=settings.verifier_model,
+        user_profile_provider=_user_profile_provider,
         cost_cap_usd=settings.cost_cap_usd,
         provider_retry_observer=(
             # Task/reminder runs are one-shot; the process-level metrics
@@ -2283,6 +2323,7 @@ def _build_container(
                 escalation_budget_ratio=settings.escalation_budget_ratio,
                 verifier_mode=settings.verifier_mode,
                 verifier_model=settings.verifier_model,
+                user_profile_provider=_user_profile_provider,
                 cost_cap_usd=settings.cost_cap_usd,
                 provider_retry_observer=(
                     # Child run ids are assigned by the coordinator after the
@@ -2941,6 +2982,9 @@ def _build_container(
                         },
                     )
 
+            # B5：会话结束更新用户画像（节流 + 签名比对，通常不写库）。
+            _refresh_user_profile(run.conversation_id)
+
         runtime_v2_gateway.set_run_completion_callback(on_v2_run_completed)
 
     task_notification_service = None
@@ -3015,6 +3059,7 @@ def _build_container(
         memory_consolidation_service=memory_consolidation_service,
         undo_service=undo_service,
         memory_reflection_service=memory_reflection_service,
+        user_profile_service=user_profile_service,
         undo_journal_repository=undo_journal_repository,
         embedding_indexer=embedding_indexer,
         proposal_budget=proposal_budget,
@@ -5168,6 +5213,38 @@ def create_app(
             "memory": memory_record_json(memory),
             "consolidatedMemoryIds": consolidated_ids,
         }
+
+    @app.get("/user-profile")
+    async def get_user_profile(scope_key: Optional[str] = None) -> dict[str, object]:
+        """B5：当前用户画像（注入用的稳定前缀块）。"""
+        service = container.user_profile_service
+        if service is None:
+            return {"content": "", "version": 0, "signature": "", "lines": []}
+        block = service.block_for(scope_key or GENERAL_SCOPE_KEY)
+        return block.as_json()
+
+    @app.put("/user-profile")
+    async def put_user_profile(body: UserProfileBody) -> dict[str, object]:
+        """B5：用户手写画像（整段替换；自动重建不再覆盖它）。"""
+        service = container.user_profile_service
+        if service is None:
+            raise ValidationError("User profile is not available.")
+        result = service.set_manual(
+            body.content, body.scopeKey or GENERAL_SCOPE_KEY
+        )
+        return result.as_json()
+
+    @app.post("/user-profile/refresh")
+    async def refresh_user_profile(
+        scope_key: Optional[str] = None,
+        force: bool = False,
+    ) -> dict[str, object]:
+        """B5：从记忆重建画像（默认遵守节流，force=true 立即重建）。"""
+        service = container.user_profile_service
+        if service is None:
+            return {"content": "", "version": 0, "signature": "", "lines": []}
+        result = service.refresh(scope_key or GENERAL_SCOPE_KEY, force=force)
+        return result.as_json()
 
     @app.get("/reflections")
     async def list_all_memory_reflections(

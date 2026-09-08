@@ -19,6 +19,7 @@ import {
 import type {
   MemoryConsolidationRecord,
   MemoryReflectionRecord,
+  UserProfileBlock,
 } from "../chat/apiTypes";
 import {
   reflectionSourceText,
@@ -57,6 +58,12 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
   const [consolidating, setConsolidating] = useState(false);
   // B4 反思：从失败中归纳出的洞见及其来源。
   const [reflections, setReflections] = useState<MemoryReflectionRecord[]>([]);
+  // B5 用户画像：注入用的稳定前缀块（可编辑/可重建）。
+  const [profile, setProfile] = useState<UserProfileBlock | null>(null);
+  const [profileDraft, setProfileDraft] = useState("");
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileNote, setProfileNote] = useState<string | null>(null);
   const [consolidateNote, setConsolidateNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -78,6 +85,53 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     }
   }, []);
 
+  const loadProfile = useCallback(async () => {
+    try {
+      const block = await chatApi.getUserProfile();
+      setProfile(block);
+      setProfileDraft(block.lines.join("\n"));
+    } catch {
+      // 画像加载失败不打扰用户（注入侧也会自动跳过）。
+    }
+  }, []);
+
+  const rebuildProfile = async (force = false) => {
+    setProfileBusy(true);
+    setProfileNote(null);
+    try {
+      const result = await chatApi.refreshUserProfile(force);
+      setProfile(result);
+      setProfileDraft(result.lines.join("\n"));
+      setProfileNote(
+        result.refreshed
+          ? `已更新画像（版本 ${result.version}）`
+          : result.reason === "manual_profile_kept"
+            ? "你手写的画像不会被自动覆盖"
+            : "画像没有变化，版本保持不变（前缀缓存不受影响）",
+      );
+    } catch {
+      setProfileNote("重建失败，请重试。");
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const saveProfile = async () => {
+    setProfileBusy(true);
+    setProfileNote(null);
+    try {
+      const result = await chatApi.saveUserProfile(profileDraft);
+      setProfile(result);
+      setProfileDraft(result.lines.join("\n"));
+      setProfileEditing(false);
+      setProfileNote(`已保存（版本 ${result.version}）`);
+    } catch {
+      setProfileNote("保存失败，请重试。");
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
   const loadReflections = useCallback(async () => {
     try {
       setReflections((await chatApi.listMemoryReflections()).items);
@@ -90,7 +144,8 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
     void load();
     void loadConsolidations();
     void loadReflections();
-  }, [load, loadConsolidations, loadReflections]);
+    void loadProfile();
+  }, [load, loadConsolidations, loadReflections, loadProfile]);
 
   const startEdit = (memory: MemoryRecord) => {
     setEditingId(memory.id);
@@ -363,6 +418,89 @@ export function MemoryContent({ onOpenConversation }: MemoryContentProps) {
             );
           })
         : null}
+      {!loading && !loadError ? (
+        <section className="profile-group memory-user-profile">
+          <div className="memory-forgetting-head">
+            <h3 className="profile-group-title">用户画像</h3>
+            <span className="memory-forgetting-risk">
+              {profile && profile.version > 0
+                ? `版本 ${profile.version} · ${profile.characters} 字符${
+                    profile.manual ? " · 手写" : ""
+                  }`
+                : "尚未生成"}
+            </span>
+          </div>
+          <p className="memory-forgetting-summary">
+            画像会作为**稳定的前缀**注入每轮对话；只有内容变化时才会更新版本，
+            因此不会破坏模型侧的提示缓存。
+          </p>
+          {profileEditing ? (
+            <>
+              <textarea
+                aria-label="编辑用户画像"
+                className="memory-edit"
+                onChange={(event) => setProfileDraft(event.target.value)}
+                value={profileDraft}
+              />
+              <div className="memory-actions">
+                <button
+                  disabled={profileBusy}
+                  onClick={() => void saveProfile()}
+                  type="button"
+                >
+                  {profileBusy ? "保存中…" : "保存画像"}
+                </button>
+                <button
+                  disabled={profileBusy}
+                  onClick={() => {
+                    setProfileEditing(false);
+                    setProfileDraft(profile?.lines.join("\n") ?? "");
+                  }}
+                  type="button"
+                >
+                  取消
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {profile && profile.lines.length > 0 ? (
+                <ul className="memory-profile-lines">
+                  {profile.lines.map((line) => (
+                    <li key={line}>{line.replace(/^- /, "")}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="memory-forgetting-summary">
+                  还没有画像。随着你告诉助手偏好，它会自动生成。
+                </p>
+              )}
+              <div className="memory-actions">
+                <button
+                  disabled={profileBusy}
+                  onClick={() => setProfileEditing(true)}
+                  type="button"
+                >
+                  编辑画像
+                </button>
+                <button
+                  disabled={profileBusy}
+                  onClick={() => void rebuildProfile(false)}
+                  type="button"
+                >
+                  {profileBusy ? "重建中…" : "从记忆重建"}
+                </button>
+              </div>
+            </>
+          )}
+          {profileNote ? (
+            <p className="memory-consolidation-note" role="status">
+              {profileNote}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       {!loading && !loadError ? (
         <section className="profile-group memory-consolidation">
           <div className="memory-forgetting-head">

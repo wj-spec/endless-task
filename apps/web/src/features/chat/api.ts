@@ -19,6 +19,7 @@ import type { KnowledgeProposal,
   RuntimeV2MessageResponse,
   RuntimeV2Metrics,
   AuditTrailResponse,
+  UserProfileBlock,
   MemoryReflectionRecord,
   MemoryConsolidationRecord,
   UndoJournalEntry,
@@ -829,6 +830,16 @@ export const chatApi = {
     request<{ memory: MemoryRecord }>(`/memories/${memoryId}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
+    }),
+  getUserProfile: () => request<UserProfileBlock>("/user-profile"),
+  saveUserProfile: (content: string) =>
+    request<UserProfileBlock>("/user-profile", {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    }),
+  refreshUserProfile: (force = false) =>
+    request<UserProfileBlock>(`/user-profile/refresh?force=${force}`, {
+      method: "POST",
     }),
   listMemoryReflections: (includeResolved = true, limit = 20) =>
     request<{ items: MemoryReflectionRecord[] }>(

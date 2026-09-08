@@ -41,6 +41,7 @@ from .domain import (
 )
 from .escalation import DEFAULT_BUDGET_RATIO
 from .usage_cost import build_run_usage_summary
+from .user_profile import UserProfileBlock
 from .lane import RuntimeV2LaneCreationResult, RuntimeV2LaneService
 from .memory import RuntimeV2MemoryService
 from .execution import (
@@ -771,6 +772,10 @@ class RuntimeV2SessionGateway:
         # C1: 独立验证模式（0 关 / 1 全部 / side_effects 仅关键运行）与验证模型。
         verifier_mode: str = "0",
         verifier_model: Optional[str] = None,
+        # B5: 用户画像块提供器（conversation_id -> 画像块）；None = 不注入。
+        user_profile_provider: Optional[
+            Callable[[str], Optional[UserProfileBlock]]
+        ] = None,
         # C5: 成本可见（定价表）与可选的单次运行成本上限。
         cost_cap_usd: float = 0.0,
         pricing_catalog: Optional[PricingCatalog] = None,
@@ -801,6 +806,7 @@ class RuntimeV2SessionGateway:
         self._escalation_budget_ratio = float(escalation_budget_ratio)
         self._verifier_mode = verifier_mode
         self._verifier_model = verifier_model
+        self._user_profile_provider = user_profile_provider
         self._cost_cap_usd = float(cost_cap_usd)
         self._pricing_catalog = pricing_catalog or make_default_catalog()
         # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
@@ -1556,6 +1562,7 @@ class RuntimeV2SessionGateway:
             escalation_budget_ratio=self._escalation_budget_ratio,
             verifier_mode=self._verifier_mode,
             verifier_model=self._verifier_model,
+            user_profile_provider=self._user_profile_provider,
             cost_cap_usd=self._cost_cap_usd,
             pricing_catalog=self._pricing_catalog,
             provider=selected_provider,

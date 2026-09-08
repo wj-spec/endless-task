@@ -293,6 +293,38 @@ class SqliteRuntimeV2MemoryRepository:
             ).fetchall()
         return tuple(self._memory_from_row(row) for row in rows)
 
+    def list_memories_for_profile(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        limit: int = 32,
+    ) -> tuple[RuntimeV2MemoryRecord, ...]:
+        """B5 画像素材：user_global（+ 指定工作区）的活跃记忆，按最近更新排序。
+
+        只读 v2 记忆表：v2 运行时的上下文只认 v2 记忆，画像也必须同源，
+        否则会把 v1 的旧记忆夹带进 v2 请求。
+        """
+        if limit <= 0:
+            return ()
+        with self._database.connect() as connection:
+            now = self._clock()
+            rows = connection.execute(
+                """
+                SELECT * FROM v2_runtime_memories
+                WHERE status = 'active'
+                  AND (expired_at IS NULL OR expired_at > ?)
+                  AND superseded_by IS NULL
+                  AND (
+                    scope = 'user_global'
+                    OR (scope = 'workspace' AND workspace_id = ?)
+                  )
+                ORDER BY updated_at DESC, id
+                LIMIT ?
+                """,
+                (now, workspace_id, int(limit)),
+            ).fetchall()
+        return tuple(self._memory_from_row(row) for row in rows)
+
     def create_promotion(
         self,
         *,

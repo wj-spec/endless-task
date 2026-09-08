@@ -11,6 +11,11 @@ from .forgetting_service import (
     MemoryForgettingService,
 )
 from .proposal_service import MemoryProposalService
+from .user_profile_service import (
+    PROFILE_SCOPES,
+    ProfileRefreshResult,
+    UserProfileService,
+)
 from .reflection_service import (
     MemoryReflectionService,
     ReflectionCandidate,
@@ -32,4 +37,7 @@ __all__ = [
     "ReflectionCandidate",
     "ReflectionRunReport",
     "ReflectionTerminalObserver",
+    "PROFILE_SCOPES",
+    "ProfileRefreshResult",
+    "UserProfileService",
 ]

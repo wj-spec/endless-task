@@ -1158,6 +1158,19 @@ export type MemoryRecord = {
   pinned: boolean;
 };
 
+/** B5 用户画像：注入用的稳定前缀块。 */
+export type UserProfileBlock = {
+  content: string;
+  version: number;
+  signature: string;
+  lines: string[];
+  manual: boolean;
+  characters: number;
+  refreshed?: boolean;
+  versionChanged?: boolean;
+  reason?: string;
+};
+
 /** B4 反思：一条从失败中归纳出的洞见及其来源。 */
 export type MemoryReflectionRecord = {
   id: string;
