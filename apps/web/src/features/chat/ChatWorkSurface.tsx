@@ -44,6 +44,8 @@ import { StuckNotice } from "./StuckNotice";
 import { deriveStuckState } from "./stuckState";
 import { EscalationNotice } from "./EscalationNotice";
 import { deriveEscalationState } from "./escalation";
+import { VerificationBadge } from "./VerificationBadge";
+import { deriveVerificationState } from "./verification";
 import { runStageLabel } from "./runtimeStage";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { SearchBar } from "./SearchBar";
@@ -336,6 +338,8 @@ export function ChatWorkSurface({
   const stuckState = deriveStuckState(runtimeSnapshot, runtimeEvents);
   // C4 终止与升级：无进展/预算将尽时优先展示升级视图（含三条出路）。
   const escalationState = deriveEscalationState(runtimeSnapshot, runtimeEvents);
+  // C1 独立验证：制造者产出后的检查者结论（验证中/通过/不确定/未通过）。
+  const verificationState = deriveVerificationState(runtimeSnapshot, runtimeEvents);
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -695,6 +699,15 @@ export function ChatWorkSurface({
               {" "}个跳过）；你的修改未受影响。
             </span>
           </div>
+        ) : null}
+
+        {verificationState ? (
+          <VerificationBadge
+            onRetry={onSteerRun}
+            onTakeOver={onCancelRunningRun}
+            pending={pendingAction !== null}
+            state={verificationState}
+          />
         ) : null}
 
         {escalationState ? (

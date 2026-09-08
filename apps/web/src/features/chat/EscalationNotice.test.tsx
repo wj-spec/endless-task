@@ -79,6 +79,26 @@ describe("EscalationNotice（C4 终止与升级）", () => {
     expect(html).toContain("人工接管");
   });
 
+  it("验证失败原因展示验证结论", () => {
+    const html = renderToStaticMarkup(
+      <EscalationNotice
+        state={{
+          ...state,
+          reason: "verification_failed",
+          summary: "独立验证未通过：报告未写入。",
+          verdict: {
+            verdict: "fail",
+            reasons: ["报告未写入"],
+            missing: ["report.md"],
+          },
+        }}
+      />,
+    );
+    expect(html).toContain("报告未写入");
+    expect(html).toContain("缺失：report.md");
+    expect(html).toContain("escalation-verdict");
+  });
+
   it("预算原因显示预算标签", () => {
     const html = renderToStaticMarkup(
       <EscalationNotice

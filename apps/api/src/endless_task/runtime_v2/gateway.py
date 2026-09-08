@@ -622,6 +622,22 @@ class ProductRuntimeEventProjection:
             }
         if event_type == "run_progress_resumed":
             return "run.progress_resumed", {"runId": event.run_id}
+        if event_type == "run_verifying":
+            return "run.verifying", {
+                "runId": event.run_id,
+                "model": _string(payload, "model"),
+            }
+        if event_type == "run_verified":
+            return "run.verified", {
+                "runId": event.run_id,
+                "verdict": _string(payload, "verdict"),
+                "reasons": list(payload.get("reasons") or ()),
+                "missing": list(payload.get("missing") or ()),
+                "model": _string(payload, "model"),
+                "latencyMs": payload.get("latencyMs"),
+                "inputTokens": payload.get("inputTokens"),
+                "outputTokens": payload.get("outputTokens"),
+            }
         if event_type == "run_awaiting_user":
             return "run.awaiting_user", {
                 "runId": event.run_id,
@@ -634,6 +650,7 @@ class ProductRuntimeEventProjection:
                 "failures": list(payload.get("failures") or ()),
                 "guidance": _string(payload, "guidance"),
                 "willStop": payload.get("willStop", False),
+                "verdict": payload.get("verdict"),
             }
         if event_type == "safety_stop":
             return "run.status_changed", {
@@ -748,6 +765,9 @@ class RuntimeV2SessionGateway:
         no_progress_enforcement_enabled: bool = False,
         # C4: 升级（无进展/预算将尽）的上下文预算阈值。
         escalation_budget_ratio: float = DEFAULT_BUDGET_RATIO,
+        # C1: 独立验证模式（0 关 / 1 全部 / side_effects 仅关键运行）与验证模型。
+        verifier_mode: str = "0",
+        verifier_model: Optional[str] = None,
         provider_retry_evaluator: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
@@ -773,6 +793,8 @@ class RuntimeV2SessionGateway:
             no_progress_enforcement_enabled
         )
         self._escalation_budget_ratio = float(escalation_budget_ratio)
+        self._verifier_mode = verifier_mode
+        self._verifier_model = verifier_model
         # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
         # legacy behavior. The observer is bound per run at launch so
         # retry decisions attribute to the correct run.
@@ -1316,6 +1338,7 @@ class RuntimeV2SessionGateway:
                 "interruptedRuns": self._recovery_reports_json(conversation_id),
                 "stuck": None,
                 "escalation": None,
+                "verification": None,
                 "capabilities": V2_CAPABILITIES,
             }
 
@@ -1356,6 +1379,11 @@ class RuntimeV2SessionGateway:
             "escalation": _escalation_json(
                 product_events,
                 running_run_id=runtime_snapshot.running_run_id,
+            ),
+            "verification": _verification_json(
+                product_events,
+                run_id=runtime_snapshot.active_run_id
+                or runtime_snapshot.running_run_id,
             ),
             "capabilities": V2_CAPABILITIES,
         }
@@ -1506,6 +1534,8 @@ class RuntimeV2SessionGateway:
             repository=self._repository,
             no_progress_enforcement_enabled=self._no_progress_enforcement_enabled,
             escalation_budget_ratio=self._escalation_budget_ratio,
+            verifier_mode=self._verifier_mode,
+            verifier_model=self._verifier_model,
             provider=selected_provider,
             tool_registry=self._tool_registry,
             model=selected_model,
@@ -1783,6 +1813,44 @@ def _escalation_json(
         elif event.event_type == "run.progress_resumed":
             escalation = None
     return escalation
+
+
+def _verification_json(
+    product_events: tuple[ProductRuntimeEventRecord, ...],
+    *,
+    run_id: Optional[str],
+) -> Optional[dict[str, object]]:
+    """C1：最近一次独立验证的结论（``run.verifying`` 进行中 → 状态为 verifying）。"""
+    if run_id is None:
+        return None
+    verification: Optional[dict[str, object]] = None
+    for event in product_events:
+        if event.run_id != run_id:
+            continue
+        if event.event_type == "run.verifying":
+            verification = {
+                "runId": run_id,
+                "status": "verifying",
+                "verdict": None,
+                "reasons": [],
+                "missing": [],
+                "model": event.data.get("model") or "",
+                "latencyMs": None,
+            }
+        elif event.event_type == "run.verified":
+            data = event.data
+            verification = {
+                "runId": run_id,
+                "status": "verified",
+                "verdict": data.get("verdict") or "uncertain",
+                "reasons": list(data.get("reasons") or ()),
+                "missing": list(data.get("missing") or ()),
+                "model": data.get("model") or "",
+                "latencyMs": data.get("latencyMs"),
+                "inputTokens": data.get("inputTokens"),
+                "outputTokens": data.get("outputTokens"),
+            }
+    return verification
 
 
 def _approval_json(approval: PendingApproval) -> dict[str, object]:

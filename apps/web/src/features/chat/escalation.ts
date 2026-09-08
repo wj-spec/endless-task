@@ -87,6 +87,24 @@ export const escalationFromPayload = (
     })),
     guidance: asString(payload.guidance),
     willStop: payload.willStop === true,
+    verdict:
+      typeof payload.verdict === "object" && payload.verdict !== null
+        ? {
+            verdict: asString(
+              (payload.verdict as Record<string, unknown>).verdict,
+              "fail",
+            ),
+            reasons: asStringArray(
+              (payload.verdict as Record<string, unknown>).reasons,
+            ),
+            missing: asStringArray(
+              (payload.verdict as Record<string, unknown>).missing,
+            ),
+            model: asString(
+              (payload.verdict as Record<string, unknown>).model,
+            ),
+          }
+        : null,
   };
 };
 

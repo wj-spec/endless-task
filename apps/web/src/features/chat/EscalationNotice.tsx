@@ -73,6 +73,16 @@ export const EscalationNotice = ({
           ))}
         </ul>
       ) : null}
+      {state.verdict ? (
+        <ul className="escalation-verdict">
+          {state.verdict.reasons.map((reason, index) => (
+            <li key={`verdict-${index}`}>{reason}</li>
+          ))}
+          {state.verdict.missing.length > 0 ? (
+            <li>缺失：{state.verdict.missing.join("、")}</li>
+          ) : null}
+        </ul>
+      ) : null}
       {state.guidance ? (
         <p className="escalation-guidance">{state.guidance}</p>
       ) : null}

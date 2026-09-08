@@ -503,7 +503,23 @@ export type RuntimeV2Snapshot = {
   interruptedRuns: RuntimeV2RecoveryReport[];
   stuck?: RuntimeV2StuckState | null;
   escalation?: RuntimeV2Escalation | null;
+  verification?: RuntimeV2Verification | null;
   capabilities: string[];
+};
+
+/** C1 制造者—检查者分离：独立验证结论。 */
+export type RuntimeV2Verification = {
+  runId: string;
+  /** verifying | verified */
+  status: string;
+  /** pass | fail | uncertain（verifying 时为 null） */
+  verdict: string | null;
+  reasons: string[];
+  missing: string[];
+  model: string;
+  latencyMs?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
 };
 
 /** C4 终止与升级：无进展/预算将尽时提请人工决策的报告。 */
@@ -543,6 +559,13 @@ export type RuntimeV2Escalation = {
   guidance: string;
   /** 安全停止策略是否已经/将要结束本次运行。 */
   willStop: boolean;
+  /** C1：验证不通过时的验证结论。 */
+  verdict?: {
+    verdict: string;
+    reasons: string[];
+    missing: string[];
+    model?: string;
+  } | null;
 };
 
 /** C2 失败记忆：运行期"卡住"状态（快照 + 实时事件都能给出）。 */

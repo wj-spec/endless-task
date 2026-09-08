@@ -2528,3 +2528,67 @@ button.citation-chip:focus-visible {
   opacity: 0.5;
   cursor: default;
 }
+
+/* C1 制造者—检查者分离：独立验证徽标 */
+.verification-badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  width: min(760px, 100%);
+  margin: 12px auto 0;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: var(--radius-m, 10px);
+  background: var(--surface);
+  font-size: 0.8rem;
+}
+.verification-badge-text {
+  font-weight: 600;
+  color: var(--muted);
+}
+.verification-pass {
+  border-left-color: var(--ok-mid, var(--accent));
+}
+.verification-pass .verification-badge-text {
+  color: var(--ok-deep, var(--accent));
+}
+.verification-fail {
+  border-left-color: var(--danger-mid, var(--line));
+}
+.verification-fail .verification-badge-text {
+  color: var(--danger-deep, var(--warn-deep));
+}
+.verification-uncertain,
+.verification-verifying {
+  border-left-color: var(--warn-mid, var(--line));
+}
+.verification-badge-model,
+.verification-badge-detail {
+  color: var(--muted);
+}
+.verification-badge button {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.verification-badge button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.verification-badge button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.escalation-verdict {
+  margin: 6px 0 0;
+  padding-left: 1.1rem;
+  color: var(--danger-deep, var(--warn-deep));
+  font-size: 0.8rem;
+  line-height: 1.5;
+}

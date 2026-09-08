@@ -44,6 +44,16 @@ from .escalation import (
     build_escalation_report,
     budget_exhausted,
 )
+from .verification import (
+    VERDICT_FAIL,
+    VERDICT_PASS,
+    VERDICT_UNCERTAIN,
+    VERIFIER_MODES,
+    VerificationVerdict,
+    build_verifier_messages,
+    parse_verdict,
+    should_verify,
+)
 from .failure_memory import (
     FailedAttempt,
     FailureMemory,
@@ -141,6 +151,14 @@ __all__ = [
     "ToolApprovalDecision",
     "ToolApprovalGate",
     "BUDGET_REASON",
+    "VERDICT_FAIL",
+    "VERDICT_PASS",
+    "VERDICT_UNCERTAIN",
+    "VERIFIER_MODES",
+    "VerificationVerdict",
+    "build_verifier_messages",
+    "parse_verdict",
+    "should_verify",
     "EscalationBudget",
     "EscalationProgress",
     "EscalationReport",

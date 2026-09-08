@@ -56,6 +56,7 @@ from endless_task.runtime import (
 )
 from endless_task.runtime.provider import ModelProvider, ProviderError, ProviderMessage
 from endless_task.runtime.provider_manager import ProviderManager
+from endless_task.runtime_v2.verification import VERIFIER_MODES
 from endless_task.runtime_v2 import (
     AgentRunExecutor,
     LaneKind,
@@ -409,6 +410,10 @@ class AppSettings:
     stop_policy_enforcement: bool = False
     # C4: 上下文预算用掉多少比例就升级人工（无进展升级与阈值无关）。
     escalation_budget_ratio: float = 0.85
+    # C1: 独立验证模式 —— 0 关（默认）/ 1 所有运行 / side_effects 仅有副作用的
+    # 关键运行；verifier_model 为空时用主模型（上下文与 prompt 仍完全独立）。
+    verifier_mode: str = "0"
+    verifier_model: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.config_version != CONFIG_VERSION:
@@ -419,6 +424,10 @@ class AppSettings:
             raise ValueError("Timeout values must be positive")
         if self.context_window_tokens <= self.max_output_tokens:
             raise ValueError("Context window must be larger than max output tokens")
+        if self.verifier_mode not in VERIFIER_MODES:
+            raise ValueError(
+                "ENDLESS_TASK_VERIFIER 只允许 0 | 1 | side_effects"
+            )
         if not 0 < self.escalation_budget_ratio <= 1:
             raise ValueError("Escalation budget ratio must be within (0, 1]")
         if self.summary_token_limit < 0:
@@ -538,6 +547,12 @@ class AppSettings:
             escalation_budget_ratio=_parse_ratio(
                 env.get("ENDLESS_TASK_ESCALATION_BUDGET_RATIO", "0.85"),
                 name="ENDLESS_TASK_ESCALATION_BUDGET_RATIO",
+            ),
+            verifier_mode=_parse_verifier_mode(
+                env.get("ENDLESS_TASK_VERIFIER", "0"),
+            ),
+            verifier_model=(
+                env.get("ENDLESS_TASK_VERIFIER_MODEL", "").strip() or None
             ),
             otel_export_endpoint=env.get(
                 "ENDLESS_TASK_OTEL_ENDPOINT",
@@ -1225,6 +1240,18 @@ def _parse_strict_flag(value: str, *, name: str) -> bool:
     raise ValueError(f"{name} 只允许 0 或 1")
 
 
+def _parse_verifier_mode(value: str) -> str:
+    """Strict verifier mode parsing (C1): 0 | 1 | side_effects."""
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return "0"
+    if normalized in {"1", "true", "yes", "on", "all"}:
+        return "1"
+    if normalized in {"side_effects", "side-effects"}:
+        return "side_effects"
+    raise ValueError("ENDLESS_TASK_VERIFIER 只允许 0 | 1 | side_effects")
+
+
 def _parse_ratio(value: str, *, name: str) -> float:
     """Strict (0, 1] ratio parsing: illegal env values fail startup."""
     try:
@@ -1751,6 +1778,8 @@ def _build_container(
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
         no_progress_enforcement_enabled=settings.stop_policy_enforcement,
         escalation_budget_ratio=settings.escalation_budget_ratio,
+        verifier_mode=settings.verifier_mode,
+        verifier_model=settings.verifier_model,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -1788,6 +1817,8 @@ def _build_container(
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
         no_progress_enforcement_enabled=settings.stop_policy_enforcement,
         escalation_budget_ratio=settings.escalation_budget_ratio,
+        verifier_mode=settings.verifier_mode,
+        verifier_model=settings.verifier_model,
         provider_retry_observer=(
             # Task/reminder runs are one-shot; the process-level metrics
             # summary aggregates retry decisions (not per-run), so the
@@ -1872,6 +1903,8 @@ def _build_container(
                 provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
                 no_progress_enforcement_enabled=settings.stop_policy_enforcement,
                 escalation_budget_ratio=settings.escalation_budget_ratio,
+                verifier_mode=settings.verifier_mode,
+                verifier_model=settings.verifier_model,
                 provider_retry_observer=(
                     # Child run ids are assigned by the coordinator after the
                     # executor is built; the metrics summary is aggregate,

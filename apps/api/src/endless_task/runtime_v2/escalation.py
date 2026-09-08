@@ -31,7 +31,10 @@ NO_PROGRESS_REASON = "no_progress"
 #: 预算将尽（上下文用量接近上限且未压缩）触发的升级。
 BUDGET_REASON = "budget_exhausted"
 
-_REASONS = (NO_PROGRESS_REASON, BUDGET_REASON)
+#: C1 独立验证不通过触发的升级。
+VERIFICATION_REASON = "verification_failed"
+
+_REASONS = (NO_PROGRESS_REASON, BUDGET_REASON, VERIFICATION_REASON)
 
 OPTION_CONTINUE = "continue"
 OPTION_CHANGE_APPROACH = "change_approach"
@@ -158,6 +161,8 @@ class EscalationReport:
     failures: tuple[dict[str, object], ...] = ()
     guidance: str = ""
     will_stop: bool = False
+    #: C1：验证结论（仅 VERIFICATION_REASON 时非空）。
+    verdict: Optional[dict[str, object]] = None
     schema_version: int = ESCALATION_PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -178,6 +183,7 @@ class EscalationReport:
             "failures": list(self.failures),
             "guidance": self.guidance,
             "willStop": self.will_stop,
+            "verdict": self.verdict,
         }
 
 
@@ -188,6 +194,7 @@ def build_escalation_report(
     budget: EscalationBudget,
     memory: Any = None,
     will_stop: bool = False,
+    verdict: Any = None,
 ) -> EscalationReport:
     """按原因生成升级报告（摘要/失败记忆/引导语都在这里定稿）。"""
     if reason not in _REASONS:
@@ -208,8 +215,13 @@ def build_escalation_report(
         guidance = memory.guidance()
     if reason == BUDGET_REASON:
         summary = _budget_summary(budget)
+    elif reason == VERIFICATION_REASON:
+        summary = _verification_summary(verdict)
     else:
         summary = _no_progress_summary(progress, repeated)
+    verdict_json = (
+        verdict.as_json() if callable(getattr(verdict, "as_json", None)) else None
+    )
     return EscalationReport(
         reason=reason,
         summary=summary,
@@ -219,6 +231,7 @@ def build_escalation_report(
         failures=tuple(failures[0]) if failures else (),
         guidance=guidance,
         will_stop=will_stop,
+        verdict=verdict_json,
     )
 
 
@@ -230,6 +243,16 @@ def _budget_summary(budget: EscalationBudget) -> str:
         f"上下文预算将尽：已用 {budget.used_tokens} / "
         f"{budget.limit_tokens} tokens（{percent}%），继续推进可能需要压缩或换策略。"
     )
+
+
+def _verification_summary(verdict: Any) -> str:
+    reasons = tuple(getattr(verdict, "reasons", ()) or ())
+    missing = tuple(getattr(verdict, "missing", ()) or ())
+    detail = "；".join(reasons[:3]) if reasons else "验证者未给出具体理由"
+    summary = f"独立验证未通过：{detail}。"
+    if missing:
+        summary += f"缺失：{'、'.join(missing[:3])}。"
+    return summary
 
 
 def _no_progress_summary(
@@ -258,6 +281,7 @@ __all__ = [
     "EscalationProgress",
     "EscalationReport",
     "NO_PROGRESS_REASON",
+    "VERIFICATION_REASON",
     "OPTION_CHANGE_APPROACH",
     "OPTION_CONTINUE",
     "OPTION_TAKE_OVER",

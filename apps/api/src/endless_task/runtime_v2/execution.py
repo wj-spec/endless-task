@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
 
@@ -51,12 +51,20 @@ from .escalation import (
     BUDGET_REASON,
     DEFAULT_BUDGET_RATIO,
     NO_PROGRESS_REASON,
+    VERIFICATION_REASON,
     EscalationBudget,
     EscalationProgress,
     build_escalation_report,
     budget_exhausted,
 )
 from .failure_memory import FailureMemoryAccumulator
+from .verification import (
+    VERIFICATION_PROTOCOL_VERSION,
+    VerificationVerdict,
+    build_verifier_messages,
+    parse_verdict,
+    should_verify,
+)
 from .safety import SafetyStopError, SafetyStopReason
 from .metrics import ModelTurnMetric, RunMetric, RuntimeV2MetricsCollector
 from .trace_observer import MIRROR_TIMEOUT_SECONDS, RunTraceObserver
@@ -1856,6 +1864,8 @@ class AgentRunExecutor:
         no_progress_observer: Optional[object] = None,
         no_progress_enforcement_enabled: bool = False,
         escalation_budget_ratio: float = DEFAULT_BUDGET_RATIO,
+        verifier_mode: str = "0",
+        verifier_model: Optional[str] = None,
         context_shadow_observer: Optional[object] = None,
         context_window_tokens: Optional[int] = None,
         agent_timeout_seconds: Optional[float] = None,
@@ -1890,6 +1900,9 @@ class AgentRunExecutor:
         # C4 升级：预算阈值与已升级原因（同一原因只提请注意一次）。
         self._escalation_budget_ratio = float(escalation_budget_ratio)
         self._escalated_reasons: set[str] = set()
+        # C1 制造者—检查者分离：独立验证模式（0 关 / 1 全部 / side_effects 仅关键运行）。
+        self._verifier_mode = verifier_mode
+        self._verifier_model = verifier_model
         self._context_shadow_observer = context_shadow_observer
         self._context_window_tokens = context_window_tokens
         self._context_engine_v2_enabled = context_engine_v2_enabled
@@ -2033,6 +2046,8 @@ class AgentRunExecutor:
         # C4 升级报告所需的运行进展计数（局部累计，无需回查数据库）。
         tool_calls_total = 0
         produced_characters = 0
+        # C1 验证所需：本次运行实际执行过的"有副作用"工具（关键运行的判据）。
+        side_effect_evidence: list[str] = []
 
         try:
             while True:
@@ -2073,6 +2088,9 @@ class AgentRunExecutor:
                 output_tokens += outcome.output_tokens or 0
                 tool_calls_total += len(outcome.tool_calls)
                 produced_characters += len(outcome.content)
+                side_effect_evidence.extend(
+                    self._side_effect_evidence(outcome.tool_calls)
+                )
                 pending_approval_ids = outcome.pending_approval_execution_ids
                 if pending_approval_ids:
                     return self._result(
@@ -2104,6 +2122,20 @@ class AgentRunExecutor:
                 delivered = not outcome.tool_calls and bool(outcome.content.strip())
                 # 工具级「提前终止」：本批所有工具结果都请求 terminate → 停循环。
                 if outcome.tool_calls and outcome.terminate:
+                    await self._maybe_verify(
+                        run,
+                        candidate="".join(content_parts),
+                        side_effects=side_effect_evidence,
+                        progress=EscalationProgress(
+                            model_turns=len(model_turn_ids),
+                            tool_calls=tool_calls_total,
+                            tool_failures=self._failure_memory.snapshot.total,
+                            produced_characters=produced_characters,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                        ),
+                        cancellation_token=cancellation_token,
+                    )
                     final_run, assistant_entry = self._repository.finalize_run(
                         run.id,
                         content="".join(content_parts),
@@ -2122,6 +2154,20 @@ class AgentRunExecutor:
                         assistant_entry_id=assistant_entry.id,
                     )
                 if delivered:
+                    await self._maybe_verify(
+                        run,
+                        candidate="".join(content_parts),
+                        side_effects=side_effect_evidence,
+                        progress=EscalationProgress(
+                            model_turns=len(model_turn_ids),
+                            tool_calls=tool_calls_total,
+                            tool_failures=self._failure_memory.snapshot.total,
+                            produced_characters=produced_characters,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                        ),
+                        cancellation_token=cancellation_token,
+                    )
                     final_run, assistant_entry = self._repository.finalize_run(
                         run.id,
                         content="".join(content_parts),
@@ -2165,6 +2211,20 @@ class AgentRunExecutor:
                         )
                         guidance = no_progress_guidance(evaluation.level, evaluation.reasons)
                         content_parts.append("\n\n" + guidance)
+                        await self._maybe_verify(
+                            run,
+                            candidate="".join(content_parts),
+                            side_effects=side_effect_evidence,
+                            progress=EscalationProgress(
+                                model_turns=len(model_turn_ids),
+                                tool_calls=tool_calls_total,
+                                tool_failures=self._failure_memory.snapshot.total,
+                                produced_characters=produced_characters,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                            ),
+                            cancellation_token=cancellation_token,
+                        )
                         final_run, assistant_entry = self._repository.finalize_run(
                             run.id,
                             content="".join(content_parts),
@@ -2451,6 +2511,133 @@ class AgentRunExecutor:
                 "attempts": list(memory.digest(limit=5)),
                 "guidance": memory.guidance(),
             },
+        )
+
+    def _side_effect_evidence(self, tool_calls: Sequence[ProviderToolCall]) -> list[str]:
+        """本次运行里"有副作用"的工具调用（local_write / external_action）。"""
+        evidence: list[str] = []
+        for call in tool_calls:
+            try:
+                definition = self._tool_registry.resolve(call.name).definition
+            except Exception:
+                continue
+            effect = getattr(definition.effect, "value", definition.effect)
+            if effect and str(effect) != "read_only":
+                evidence.append(f"{call.name}（{effect}）")
+        return evidence
+
+    def _verification_goal(self, run: RunRecord) -> str:
+        """验证器的"目标"：本次运行的触发内容。"""
+        if run.trigger_content_override:
+            return run.trigger_content_override
+        try:
+            entry = self._repository.get_entry(run.trigger_entry_id)
+        except Exception:
+            return ""
+        content = entry.payload.get("content") if isinstance(entry.payload, dict) else None
+        return content if isinstance(content, str) else ""
+
+    async def _maybe_verify(
+        self,
+        run: RunRecord,
+        *,
+        candidate: str,
+        side_effects: Sequence[str],
+        progress: EscalationProgress,
+        cancellation_token: CancellationToken,
+    ) -> Optional[VerificationVerdict]:
+        """C1：制造者产出后，由独立验证者（独立上下文）判定结果。
+
+        验证器只看目标 + 产出 + 工具证据，不共享制造者历史；判定写入
+        ``run_verified`` 事件；判 fail 时同时走 C4 升级通道（带结论重试/接管）。
+        验证失败（网络/超时）不改变本次运行结果——只记 uncertain。
+        """
+        if not should_verify(
+            self._verifier_mode,
+            has_side_effects=bool(side_effects),
+            candidate=candidate,
+        ):
+            return None
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_verifying",
+            payload={"runId": run.id, "model": self._verifier_model or self._model},
+        )
+        messages = build_verifier_messages(
+            goal=self._verification_goal(run),
+            candidate=candidate,
+            evidence=tuple(side_effects),
+        )
+        model = self._verifier_model or self._model
+        request = ProviderRequest(
+            request_id=f"{run.id}:verify",
+            model=model,
+            messages=messages,
+            max_output_tokens=min(512, self._max_output_tokens),
+            temperature=0.0,
+            tools=(),
+        )
+        started = time.monotonic()
+        text_parts: list[str] = []
+        completion: Optional[ProviderCompleted] = None
+        try:
+            async for event in self._provider.stream(request, cancellation_token):
+                cancellation_token.raise_if_cancelled()
+                if isinstance(event, ProviderTextDelta):
+                    text_parts.append(event.text)
+                elif isinstance(event, ProviderCompleted):
+                    completion = event
+        except Exception:
+            logger.exception(
+                "Verifier call failed",
+                extra={"run_id": run.id},
+            )
+            verdict = VerificationVerdict(
+                verdict="uncertain",
+                reasons=("验证器调用失败，未能得到独立结论。",),
+                model=model,
+            )
+        else:
+            verdict = parse_verdict("".join(text_parts), model=model)
+        verdict = replace(
+            verdict,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            input_tokens=getattr(completion, "input_tokens", None),
+            output_tokens=getattr(completion, "output_tokens", None),
+        )
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_verified",
+            payload=verdict.as_json(),
+        )
+        if verdict.failed:
+            self._escalate_verification_failure(run, verdict, progress=progress)
+        return verdict
+
+    def _escalate_verification_failure(
+        self,
+        run: RunRecord,
+        verdict: VerificationVerdict,
+        *,
+        progress: EscalationProgress,
+    ) -> None:
+        """验证不通过 → 升级人工（C4），报告里带上验证结论。"""
+        if VERIFICATION_REASON in self._escalated_reasons:
+            return
+        self._escalated_reasons.add(VERIFICATION_REASON)
+        memory = self._failure_memory.snapshot
+        report = build_escalation_report(
+            reason=VERIFICATION_REASON,
+            progress=progress,
+            budget=EscalationBudget(used_tokens=0, limit_tokens=None),
+            memory=memory,
+            will_stop=False,
+            verdict=verdict,
+        )
+        self._repository.append_runtime_event(
+            run_id=run.id,
+            event_type="run_awaiting_user",
+            payload=report.as_json(),
         )
 
     def _maybe_escalate(
