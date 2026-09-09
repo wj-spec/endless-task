@@ -16,6 +16,8 @@ export type WorkspaceTreeController = {
   loading: string[];
   errors: Record<string, string>;
   rootBusy: boolean;
+  /** S14：按需预取某一层（不改展开状态，供目录标签使用）。 */
+  ensure: (path: string) => void;
   toggle: (path: string) => void;
   /** 保留展开状态，只重取已加载层级（窗口聚焦 / 手动刷新）。 */
   refresh: () => void;
@@ -123,6 +125,13 @@ export function useWorkspaceTree(
     [load, state.children],
   );
 
+  const ensure = useCallback(
+    (path: string) => {
+      if (!(path in state.children)) load(path);
+    },
+    [load, state.children],
+  );
+
   return {
     children: state.children,
     truncated: state.truncated,
@@ -130,6 +139,7 @@ export function useWorkspaceTree(
     loading,
     errors,
     rootBusy: loading.includes("") && !state.children[""],
+    ensure,
     toggle,
     refresh: reloadLoaded,
     hardRefresh: refresh,

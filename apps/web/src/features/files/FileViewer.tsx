@@ -85,9 +85,11 @@ export type WorkspaceFileViewerProps = {
   workspaceId: string;
   path: string;
   rootPath?: string | null;
-  /** 窄面板主从切换时显示返回；宽面板双栏时传 undefined。 */
-  onBack?: () => void;
+  /** 关闭当前标签（标签页模式下恒有）。 */
+  onClose?: () => void;
   onEdit?: () => void;
+  /** 面包屑点击：打开该级目录的标签。 */
+  onOpenDirectory?: (path: string) => void;
   /** 工作区名（面包屑首段）。 */
   workspaceName?: string;
 };
@@ -97,8 +99,9 @@ export function WorkspaceFileViewer({
   workspaceId,
   path,
   rootPath,
-  onBack,
+  onClose,
   onEdit,
+  onOpenDirectory,
   workspaceName,
 }: WorkspaceFileViewerProps) {
   const [preview, setPreview] = useState<WorkspaceFilePreview | null>(null);
@@ -145,36 +148,45 @@ export function WorkspaceFileViewer({
   };
 
   const segments = pathSegments(path);
+  const directorySegments = segments.slice(0, -1);
 
   return (
     <div className="file-viewer">
       <div className="file-viewer-head">
-        {onBack ? (
-          <button
-            aria-label="返回文件树"
-            className="file-viewer-back"
-            onClick={onBack}
-            type="button"
-          >
-            ← 文件
-          </button>
-        ) : null}
         <nav aria-label="文件路径" className="file-viewer-crumbs" title={path}>
           {workspaceName ? (
-            <span className="file-viewer-crumb is-root">{workspaceName}</span>
+            onOpenDirectory ? (
+              <button
+                className="file-viewer-crumb is-button"
+                onClick={() => onOpenDirectory("")}
+                type="button"
+              >
+                {workspaceName}
+              </button>
+            ) : (
+              <span className="file-viewer-crumb is-root">{workspaceName}</span>
+            )
           ) : null}
-          {segments.map((segment, index) => (
-            <span
-              className={
-                index === segments.length - 1
-                  ? "file-viewer-crumb is-current"
-                  : "file-viewer-crumb"
-              }
-              key={segment.path}
-            >
-              {segment.label}
+          {directorySegments.map((segment) => (
+            <span className="file-viewer-crumb" key={segment.path}>
+              {onOpenDirectory ? (
+                <button
+                  className="file-viewer-crumb is-button"
+                  onClick={() => onOpenDirectory(segment.path)}
+                  type="button"
+                >
+                  {segment.label}
+                </button>
+              ) : (
+                segment.label
+              )}
             </span>
           ))}
+          {segments.length > 0 ? (
+            <span className="file-viewer-crumb is-current">
+              {segments[segments.length - 1].label}
+            </span>
+          ) : null}
         </nav>
         {onEdit ? (
           <button className="file-viewer-action" onClick={onEdit} type="button">
@@ -187,6 +199,16 @@ export function WorkspaceFileViewer({
         {reveal ? (
           <button className="file-viewer-action" onClick={reveal} type="button">
             在访达中显示
+          </button>
+        ) : null}
+        {onClose ? (
+          <button
+            aria-label="关闭标签"
+            className="file-viewer-action"
+            onClick={onClose}
+            type="button"
+          >
+            关闭
           </button>
         ) : null}
       </div>

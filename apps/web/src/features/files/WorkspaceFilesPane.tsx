@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { chatApi } from "../chat/api";
 import { readableError } from "../chat/apiErrorText";
-import { ResizeHandle } from "../ui/ResizeHandle";
+import { CloseIcon } from "../ui/Icons";
 import { WorkspaceFileEditor } from "./FileEditor";
-import { FileTree } from "./FileTree";
+import { FileList } from "./FileList";
+import { FileTypeIcon, categoryOfPath } from "./FileTypeIcon";
 import { WorkspaceFileViewer } from "./FileViewer";
-import { useElementWidth } from "./useElementWidth";
+import { ROOT_TAB, breadcrumbOf, tabLabel } from "./fileTabs";
+import { useFileTabs } from "./useFileTabs";
 import { useWorkspaceTree } from "./useWorkspaceTree";
 
 export type WorkspaceFilesPaneProps = {
@@ -19,27 +21,12 @@ export type WorkspaceFilesPaneProps = {
   focusNonce?: number;
 };
 
-/** 宽度阈值：≥ 此值用左右双栏，否则用主从切换（窄面板友好）。 */
-export const WIDE_LAYOUT_MIN_WIDTH = 520;
-const TREE_WIDTH_KEY = "endless-task-file-tree-width";
-const TREE_WIDTH_DEFAULT = 240;
-const TREE_WIDTH_MIN = 180;
-const TREE_WIDTH_MAX = 360;
-
-const readTreeWidth = (): number => {
-  if (typeof window === "undefined") return TREE_WIDTH_DEFAULT;
-  const stored = Number.parseFloat(localStorage.getItem(TREE_WIDTH_KEY) ?? "");
-  if (!Number.isFinite(stored)) return TREE_WIDTH_DEFAULT;
-  return Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, stored));
-};
-
 /**
- * S11 文件面板：宽度感知布局。
+ * S14 文件视图：**目录/文件标签页**。
  *
- * - 面板 ≥ 520px：左侧目录树（可拖拽 180–360px）+ 右侧预览，选中文件时树不消失；
- * - 面板 < 520px：主从切换（树 → 预览，带返回）。
- *
- * 根层加载失败（未绑定目录、目录不可用）在树上以错误行呈现，不阻塞页签切换。
+ * - 目录标签：同一级平铺列出该目录直接子项，图标按分类；
+ * - 文件标签：预览 / 编辑独占面板（Markdown 仍限可读宽度）；
+ * - 标签按工作区记忆；根目录标签常驻、最后一个标签不可关闭。
  */
 export function WorkspaceFilesPane({
   workspaceId,
@@ -51,29 +38,30 @@ export function WorkspaceFilesPane({
 }: WorkspaceFilesPaneProps) {
   const [showHidden, setShowHidden] = useState(false);
   const [hideNoisy, setHideNoisy] = useState(true);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [treeWidth, setTreeWidth] = useState(readTreeWidth);
   const [terminalNotice, setTerminalNotice] = useState<string | null>(null);
   const [openingTerminal, setOpeningTerminal] = useState(false);
-  const [paneRef, paneWidth] = useElementWidth<HTMLDivElement>();
   const tree = useWorkspaceTree(workspaceId, showHidden);
-  const wide = paneWidth >= WIDE_LAYOUT_MIN_WIDTH;
+  const tabs = useFileTabs(workspaceId);
+  const workspaceLabel = workspaceName || "工作区";
+
+  // 目录标签打开时预取该层内容（含手动刷新）。
+  useEffect(() => {
+    if (tabs.active.kind !== "directory") return;
+    tree.ensure(tabs.active.path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs.active.kind, tabs.active.path, tabs.refreshNonce]);
 
   useEffect(() => {
     setEditing(false);
-  }, [selectedPath]);
+  }, [tabs.active.id]);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem(TREE_WIDTH_KEY, String(treeWidth));
-  }, [treeWidth]);
-
-  // 交叉跳转：产物 →「在文件中打开」时选中目标文件。
+  // 交叉跳转：产物 →「在文件中打开」时打开/聚焦该文件标签。
   useEffect(() => {
     if (!focusPath) return;
     setEditing(false);
-    setSelectedPath(focusPath);
+    tabs.openFile(focusPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusPath, focusNonce]);
 
   const openTerminal = async () => {
@@ -97,134 +85,133 @@ export function WorkspaceFilesPane({
     return <p className="file-tree-note">该会话未绑定工作区，无法浏览文件。</p>;
   }
 
-  const treeView = (
-    <FileTree
-      children={tree.children}
-      errors={tree.errors}
-      expanded={tree.expanded}
-      hideNoisy={hideNoisy}
-      loading={tree.loading}
-      onOpen={setSelectedPath}
-      onToggle={tree.toggle}
-      selectedPath={selectedPath}
-      truncated={tree.truncated}
-    />
-  );
-
-  const toolbar = (
-    <div className="workspace-files-toolbar">
-      <button
-        aria-pressed={hideNoisy}
-        className={hideNoisy ? "is-active" : undefined}
-        onClick={() => setHideNoisy((value) => !value)}
-        type="button"
-      >
-        {hideNoisy ? "显示降噪目录" : "隐藏降噪目录"}
-      </button>
-      <button
-        aria-pressed={showHidden}
-        className={showHidden ? "is-active" : undefined}
-        onClick={() => setShowHidden((value) => !value)}
-        type="button"
-      >
-        {showHidden ? "隐藏点文件" : "显示隐藏文件"}
-      </button>
-      <button onClick={tree.refresh} type="button">
-        刷新
-      </button>
-      <button
-        disabled={openingTerminal}
-        onClick={() => void openTerminal()}
-        type="button"
-      >
-        {openingTerminal ? "正在打开…" : "终端"}
-      </button>
-    </div>
-  );
-
-  const notice = terminalNotice ? (
-    <p className="file-tree-note" role="status">
-      {terminalNotice}
-    </p>
-  ) : null;
-
-  // 编辑态在两种布局下都占满预览区（宽面板时左侧树保持可见）。
-  const previewContent = selectedPath ? (
-    editing ? (
-      <WorkspaceFileEditor
-        conversationId={conversationId}
-        onBack={() => {
-          setEditing(false);
-          if (!wide) setSelectedPath(null);
-        }}
-        onSaved={() => tree.refresh()}
-        path={selectedPath}
-        workspaceId={workspaceId}
-      />
-    ) : (
-      <WorkspaceFileViewer
-        onBack={
-          wide
-            ? undefined
-            : () => {
-                setEditing(false);
-                setSelectedPath(null);
-              }
-        }
-        onEdit={() => setEditing(true)}
-        path={selectedPath}
-        rootPath={rootPath}
-        workspaceId={workspaceId}
-        workspaceName={workspaceName}
-      />
-    )
-  ) : null;
-
-  if (!wide) {
-    if (previewContent) {
-      return (
-        <div className="workspace-files" ref={paneRef}>
-          {previewContent}
-        </div>
-      );
-    }
-    return (
-      <div className="workspace-files" ref={paneRef}>
-        {toolbar}
-        {notice}
-        {tree.rootBusy ? <p className="file-tree-note">正在读取…</p> : null}
-        <div className="workspace-files-tree">{treeView}</div>
-      </div>
-    );
-  }
+  const activePath = tabs.active.path;
+  const directoryEntries = tree.children[activePath] ?? [];
+  const directoryBusy =
+    tree.loading.includes(activePath) && !(activePath in tree.children);
 
   return (
-    <div className="workspace-files" ref={paneRef}>
-      {toolbar}
-      {notice}
-      <div
-        className="workspace-files-body is-wide"
-        style={{
-          gridTemplateColumns: `${treeWidth}px 6px minmax(0, 1fr)`,
-        }}
-      >
-        <div className="workspace-files-tree">
-          {tree.rootBusy ? <p className="file-tree-note">正在读取…</p> : null}
-          {treeView}
-        </div>
-        <ResizeHandle
-          label="调整文件树宽度"
-          max={TREE_WIDTH_MAX}
-          min={TREE_WIDTH_MIN}
-          onChange={setTreeWidth}
-          onReset={() => setTreeWidth(TREE_WIDTH_DEFAULT)}
-          value={treeWidth}
-        />
-        <div className="workspace-files-preview">
-          {previewContent ?? (
-            <p className="file-tree-note">选择左侧文件即可预览。</p>
-          )}
-        </div>
+    <div className="workspace-files">
+      <div className="workspace-files-toolbar">
+        <button
+          aria-pressed={hideNoisy}
+          className={hideNoisy ? "is-active" : undefined}
+          onClick={() => setHideNoisy((value) => !value)}
+          type="button"
+        >
+          {hideNoisy ? "显示降噪目录" : "隐藏降噪目录"}
+        </button>
+        <button
+          aria-pressed={showHidden}
+          className={showHidden ? "is-active" : undefined}
+          onClick={() => setShowHidden((value) => !value)}
+          type="button"
+        >
+          {showHidden ? "隐藏点文件" : "显示隐藏文件"}
+        </button>
+        <button onClick={tabs.refresh} type="button">
+          刷新
+        </button>
+        <button
+          disabled={openingTerminal}
+          onClick={() => void openTerminal()}
+          type="button"
+        >
+          {openingTerminal ? "正在打开…" : "终端"}
+        </button>
+      </div>
+      {terminalNotice ? (
+        <p className="file-tree-note" role="status">
+          {terminalNotice}
+        </p>
+      ) : null}
+      <div aria-label="已打开的文件标签" className="file-tabs" role="tablist">
+        {tabs.tabs.map((tab) => (
+          <span
+            className={tab.id === tabs.active.id ? "file-tab is-active" : "file-tab"}
+            key={tab.id}
+          >
+            <button
+              aria-selected={tab.id === tabs.active.id}
+              className="file-tab-label"
+              onClick={() => tabs.activate(tab.id)}
+              role="tab"
+              title={tab.path || workspaceLabel}
+              type="button"
+            >
+              <FileTypeIcon
+                category={categoryOfPath(tab.path, tab.kind)}
+                size={13}
+              />
+              <span className="file-tab-name">{tabLabel(tab, workspaceLabel)}</span>
+            </button>
+            {tab.id === ROOT_TAB.id ? null : (
+              <button
+                aria-label={`关闭 ${tabLabel(tab, workspaceLabel)}`}
+                className="file-tab-close"
+                onClick={() => tabs.close(tab.id)}
+                type="button"
+              >
+                <CloseIcon size={11} />
+              </button>
+            )}
+          </span>
+        ))}
+      </div>
+      <div className="file-tab-body">
+        {tabs.active.kind === "directory" ? (
+          <>
+            <nav aria-label="目录路径" className="file-crumbs">
+              {breadcrumbOf(activePath, workspaceLabel).map((crumb, index, all) => (
+                <span className="file-crumb" key={crumb.path || "root"}>
+                  {index === all.length - 1 ? (
+                    <span className="file-crumb-current">{crumb.label}</span>
+                  ) : (
+                    <button
+                      className="file-crumb-button"
+                      onClick={() => tabs.openDirectory(crumb.path)}
+                      type="button"
+                    >
+                      {crumb.label}
+                    </button>
+                  )}
+                </span>
+              ))}
+            </nav>
+            <div className="file-list-scroll">
+              <FileList
+                busy={directoryBusy}
+                entries={directoryEntries}
+                error={tree.errors[activePath] ?? null}
+                hideNoisy={hideNoisy}
+                onOpenDirectory={tabs.openDirectory}
+                onOpenFile={tabs.openFile}
+                truncated={tree.truncated[activePath] === true}
+              />
+            </div>
+          </>
+        ) : editing ? (
+          <WorkspaceFileEditor
+            conversationId={conversationId}
+            onBack={() => {
+              setEditing(false);
+              tabs.close(tabs.active.id);
+            }}
+            onSaved={() => tree.refresh()}
+            path={activePath}
+            workspaceId={workspaceId}
+          />
+        ) : (
+          <WorkspaceFileViewer
+            onClose={() => tabs.close(tabs.active.id)}
+            onEdit={() => setEditing(true)}
+            onOpenDirectory={tabs.openDirectory}
+            path={activePath}
+            rootPath={rootPath}
+            workspaceId={workspaceId}
+            workspaceName={workspaceLabel}
+          />
+        )}
       </div>
     </div>
   );

@@ -2227,83 +2227,6 @@
   font-weight: 620;
 }
 
-.workspace-files-tree {
-  flex: 1;
-  min-height: 0;
-  padding: var(--space-2) 0 var(--space-3);
-  overflow: auto;
-}
-
-.file-tree-group {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.file-tree-item {
-  display: block;
-  border-radius: var(--radius-s);
-  outline-offset: -2px;
-}
-
-.file-tree-item:focus-visible {
-  outline: 2px solid var(--focus-ring);
-}
-
-.file-tree-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 3px var(--space-2);
-  color: var(--ink);
-  font-size: var(--fs-2);
-  cursor: pointer;
-}
-
-.file-tree-item:hover > .file-tree-row {
-  background: var(--rail);
-}
-
-.file-tree-item.is-noisy > .file-tree-row {
-  opacity: 0.62;
-}
-
-.file-tree-chevron {
-  flex: none;
-  color: var(--faint);
-}
-
-.file-tree-dot {
-  flex: none;
-  width: 12px;
-  color: var(--faint);
-  font-size: var(--fs-1);
-  text-align: center;
-}
-
-.file-tree-dot::before {
-  content: "·";
-}
-
-.file-tree-name {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-tree-item.is-directory > .file-tree-row > .file-tree-name {
-  font-weight: 560;
-}
-
-.file-tree-size {
-  flex: none;
-  color: var(--faint);
-  font-size: var(--fs-1);
-  font-variant-numeric: tabular-nums;
-}
-
 .file-tree-note,
 .file-tree-error {
   margin: var(--space-1) var(--space-3);
@@ -2765,30 +2688,6 @@
 
 /* ---------- S11 文件面板：宽度感知双栏 + 排版收口 ---------- */
 
-.workspace-files-body.is-wide {
-  display: grid;
-  flex: 1;
-  min-height: 0;
-  border-top: 1px solid var(--line-faint);
-}
-
-.workspace-files-body.is-wide > .workspace-files-tree {
-  padding: var(--space-2) 0 var(--space-3);
-  border-right: 0;
-}
-
-.workspace-files-preview {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-}
-
-.workspace-files-preview > .file-viewer {
-  min-width: 0;
-}
-
 /* 分隔条：细、可命中、键盘可达 */
 .resize-handle {
   position: relative;
@@ -2820,33 +2719,6 @@
 
 .resize-handle-grip {
   display: none;
-}
-
-/* 文件树：更紧凑的密度与类型标记 */
-.file-tree-row {
-  padding-top: 2px;
-  padding-bottom: 2px;
-  line-height: 20px;
-}
-
-.file-tree-badge {
-  flex: none;
-  width: 22px;
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.02em;
-  text-align: center;
-  text-transform: uppercase;
-}
-
-.file-tree-item.is-selected > .file-tree-row {
-  background: var(--accent-soft);
-}
-
-.file-tree-item.is-selected > .file-tree-row > .file-tree-name {
-  color: var(--accent);
-  font-weight: 600;
 }
 
 /* 预览：面包屑 + 可读宽度收口 */
@@ -3059,4 +2931,227 @@
   .resize-handle.is-edge-left {
     display: none;
   }
+}
+
+/* ---------- S14 文件标签页 ---------- */
+
+.file-tabs {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.file-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+}
+
+.file-tab.is-active {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--accent-soft);
+}
+
+.file-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 168px;
+  padding: 2px 4px 2px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.file-tab.is-active .file-tab-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.file-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tab-close {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px 2px 1px;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.file-tab-close:hover {
+  color: var(--danger-deep);
+}
+
+.file-tab-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* 分类图标：颜色区分类型，形状由 FileTypeIcon 给出 */
+.file-icon {
+  flex: none;
+}
+
+.file-icon.is-folder {
+  color: var(--warn-deep);
+}
+
+.file-icon.is-markdown {
+  color: var(--accent);
+}
+
+.file-icon.is-code {
+  color: var(--success);
+}
+
+.file-icon.is-data {
+  color: var(--warn-deep);
+}
+
+.file-icon.is-image {
+  color: var(--success);
+}
+
+.file-icon.is-text {
+  color: var(--muted);
+}
+
+.file-icon.is-other {
+  color: var(--faint);
+}
+
+/* 目录内容：同一级平铺 */
+.file-crumbs {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--line-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+}
+
+.file-crumb {
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+}
+
+.file-crumb + .file-crumb::before {
+  margin-right: 2px;
+  content: "/";
+}
+
+.file-crumb-button {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.file-crumb-button:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.file-crumb-current {
+  padding: 0 2px;
+  color: var(--ink-raise);
+  font-weight: 600;
+}
+
+.file-list-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-2) var(--space-2) var(--space-4);
+  overflow: auto;
+}
+
+.file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px var(--space-2);
+  border-radius: var(--radius-s);
+  color: var(--ink);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+
+.file-list-item:hover,
+.file-list-item:focus-visible {
+  background: var(--rail);
+  outline: none;
+}
+
+.file-list-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.file-list-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-item.is-directory .file-list-name {
+  font-weight: 560;
+}
+
+.file-list-meta {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.file-list-note {
+  padding: var(--space-1) var(--space-2);
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
+
+/* 文件标签里的面包屑按钮 */
+.file-viewer-crumb.is-button {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.file-viewer-crumb.is-button:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
