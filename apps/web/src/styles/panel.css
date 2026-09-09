@@ -3013,3 +3013,48 @@
   font-size: var(--fs-2);
   line-height: 1.6;
 }
+
+/* ---------- S13 布局宽度拖拽 ---------- */
+
+.session-rail,
+.workspace-panel {
+  position: relative;
+}
+
+.resize-handle.is-edge-right,
+.resize-handle.is-edge-left {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+}
+
+.resize-handle.is-edge-right {
+  right: -3px;
+}
+
+.resize-handle.is-edge-left {
+  left: -3px;
+}
+
+.resize-handle.is-edge-right::before,
+.resize-handle.is-edge-left::before {
+  inset: 0 3px;
+  background: transparent;
+}
+
+.resize-handle.is-edge-right:hover::before,
+.resize-handle.is-edge-left:hover::before,
+.resize-handle.is-edge-right:focus-visible::before,
+.resize-handle.is-edge-left:focus-visible::before {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* 移动端：抽屉布局下不显示拖拽条 */
+@media (max-width: 760px) {
+  .resize-handle.is-edge-right,
+  .resize-handle.is-edge-left {
+    display: none;
+  }
+}

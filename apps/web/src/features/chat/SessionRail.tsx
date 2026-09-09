@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ResizeHandle } from "../ui/ResizeHandle";
+import { LAYOUT_LIMITS, useLayoutWidth } from "../ui/useLayoutWidth";
 import type {
   Conversation,
   ConversationStatus,
@@ -229,6 +231,7 @@ export function SessionRail({
 
   const railExpanded = open || !collapsed;
   const railToggleLabel = railExpanded ? "收起侧栏" : "展开侧栏";
+  const railWidth = useLayoutWidth("rail");
 
   return (
     <aside
@@ -241,6 +244,17 @@ export function SessionRail({
       role={open ? "dialog" : undefined}
       tabIndex={open ? -1 : undefined}
     >
+      {railExpanded ? (
+        <ResizeHandle
+          className="is-edge-right"
+          label="调整会话栏宽度"
+          max={LAYOUT_LIMITS.rail.max}
+          min={LAYOUT_LIMITS.rail.min}
+          onChange={railWidth.setWidth}
+          onReset={railWidth.reset}
+          value={railWidth.width}
+        />
+      ) : null}
       <header className="rail-header">
         <div className="wordmark" aria-label="Endless Task">
           <span className="wordmark-symbol">∞</span>

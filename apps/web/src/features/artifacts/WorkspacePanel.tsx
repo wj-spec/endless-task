@@ -4,6 +4,8 @@ import type { WorkspaceSnapshot } from "../chat/apiTypes";
 import { WorkspaceFilesPane } from "../files/WorkspaceFilesPane";
 import { TerminalWorkspace } from "../terminal/TerminalPane";
 import { useTerminalSessions } from "../terminal/useTerminalSessions";
+import { ResizeHandle } from "../ui/ResizeHandle";
+import { LAYOUT_LIMITS, useLayoutWidth } from "../ui/useLayoutWidth";
 import { BrowserPlaceholder } from "../workspace/views/BrowserPlaceholder";
 import { WorkspaceViewTabs } from "../workspace/views/WorkspaceViewTabs";
 import { useWorkspaceViews } from "../workspace/views/useWorkspaceViews";
@@ -37,6 +39,7 @@ export function WorkspacePanel({
 }: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const views = useWorkspaceViews(conversationId);
+  const panelWidth = useLayoutWidth("aux");
   const tab = views.activeKind;
   const terminals = useTerminalSessions(tab === "terminals" ? workspaceId : "");
   const titleId = useId();
@@ -78,6 +81,18 @@ export function WorkspacePanel({
       role={isDrawerModal ? "dialog" : undefined}
       tabIndex={isDrawerModal ? -1 : undefined}
     >
+      {isDrawerModal ? null : (
+        <ResizeHandle
+          className="is-edge-left"
+          invert
+          label="调整工作区侧边栏宽度"
+          max={LAYOUT_LIMITS.aux.max}
+          min={LAYOUT_LIMITS.aux.min}
+          onChange={panelWidth.setWidth}
+          onReset={panelWidth.reset}
+          value={panelWidth.width}
+        />
+      )}
       <header className="workspace-header">
         <div className="workspace-header-titles">
           <h2 id={titleId}>{header.title}</h2>
