@@ -1,11 +1,15 @@
 import {
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { MoreIcon } from "./Icons";
 
 export type RowMenuItem = {
@@ -26,6 +30,46 @@ type RowMenuProps = {
   disabled?: boolean;
 };
 
+export type MenuGeometry = {
+  triggerRect: { top: number; bottom: number; left: number; right: number };
+  menu: { width: number; height: number };
+  viewport: { width: number; height: number };
+  placement: "down" | "up";
+  /** 触发点与菜单之间的间距。 */
+  gap?: number;
+  /** 视口内边距。 */
+  margin?: number;
+};
+
+/**
+ * 计算浮层菜单的 fixed 定位。
+ *
+ * 之所以走 fixed + portal：菜单原本绝对定位在触发器里，一旦祖先有
+ * `overflow: hidden/auto`（会话栏、标签条）就会被裁掉——这正是
+ * 「+ 菜单被挤占」的根因。
+ */
+export function computeMenuPosition({
+  triggerRect,
+  menu,
+  viewport,
+  placement,
+  gap = 6,
+  margin = 8,
+}: MenuGeometry): { top: number; left: number } {
+  const maxLeft = Math.max(margin, viewport.width - menu.width - margin);
+  const maxTop = Math.max(margin, viewport.height - menu.height - margin);
+  // down：右对齐触发点；up：左对齐触发点。
+  const preferredLeft =
+    placement === "up" ? triggerRect.left : triggerRect.right - menu.width;
+  const left = Math.min(Math.max(margin, preferredLeft), maxLeft);
+  const preferredTop =
+    placement === "up"
+      ? triggerRect.top - menu.height - gap
+      : triggerRect.bottom + gap;
+  const top = Math.min(Math.max(margin, preferredTop), maxTop);
+  return { top, left };
+}
+
 const enabledMenuItems = (menu: HTMLDivElement | null) =>
   Array.from(
     menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [],
@@ -41,11 +85,57 @@ export function RowMenu({
   disabled = false,
 }: RowMenuProps) {
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(
+    null,
+  );
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const initialFocusRef = useRef<"first" | "last">("first");
   const menuId = useId();
+
+  const place = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const menu = menuRef.current;
+    setPosition(
+      computeMenuPosition({
+        triggerRect: {
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.right,
+        },
+        menu: {
+          width: menu?.offsetWidth ?? 160,
+          height: menu?.offsetHeight ?? 0,
+        },
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        },
+        placement,
+      }),
+    );
+  }, [placement]);
+
+  // 先挂载再测量：useLayoutEffect 在绘制前完成定位，用户看不到跳动。
+  useLayoutEffect(() => {
+    if (open) place();
+    else setPosition(null);
+  }, [open, place]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onViewportChange = () => place();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    return () => {
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+    };
+  }, [open, place]);
 
   const returnFocus = () => {
     requestAnimationFrame(() => {
@@ -64,9 +154,11 @@ export function RowMenu({
     target?.focus();
 
     const onPointerDown = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      // 菜单已 portal 到 body，必须单独判断，否则点菜单会被当成"点外部"。
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -136,14 +228,22 @@ export function RowMenu({
       >
         {trigger}
       </button>
-      {open ? (
+      {open && typeof document !== "undefined"
+        ? createPortal(
         <div
           aria-label={triggerAriaLabel}
-          className="row-menu-pop"
+          className="row-menu-pop is-floating"
           id={menuId}
           onKeyDown={handleMenuKeyDown}
           ref={menuRef}
           role="menu"
+          style={
+            {
+              top: position?.top ?? 0,
+              left: position?.left ?? 0,
+              visibility: position ? "visible" : "hidden",
+            } as CSSProperties
+          }
         >
           {items.map((item) => (
             <button
@@ -166,8 +266,10 @@ export function RowMenu({
               {item.label}
             </button>
           ))}
-        </div>
-      ) : null}
+        </div>,
+        document.body,
+      )
+        : null}
     </div>
   );
 }

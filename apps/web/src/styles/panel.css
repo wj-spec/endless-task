@@ -2908,10 +2908,11 @@
 .workspace-view-tabs {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3) var(--space-2);
-  overflow-x: auto;
+  /* 不用 overflow-x:auto：那会让下拉菜单被裁切（且视图最多 4 个，换行即可）。 */
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -2977,7 +2978,8 @@
 }
 
 .workspace-view-hint {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: auto;
   padding-left: var(--space-2);
   color: var(--faint);

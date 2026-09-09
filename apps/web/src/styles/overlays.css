@@ -160,6 +160,15 @@
   animation: pop-in 140ms ease;
 }
 
+/* portal 浮层：fixed 定位由内联 top/left 给出，必须清掉绝对定位的锚定值 */
+.row-menu-pop.is-floating {
+  position: fixed;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+}
+
 .row-menu.pop-up .row-menu-pop {
   top: auto;
   bottom: calc(100% + 8px);
