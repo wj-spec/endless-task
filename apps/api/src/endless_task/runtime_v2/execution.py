@@ -239,6 +239,18 @@ class StaticToolApprovalGate:
         return self._decision
 
 
+class ToolTrustPolicy(Protocol):
+    """Optional policy that can waive approval for provably safe calls.
+
+    Consulted **only** when a call would otherwise need approval and is not
+    force-confirmed (dangerous commands always ask). Implementations must fail
+    closed: any parse error means "not trusted".
+    """
+
+    def allows(self, tool_name: str, call: ToolCall) -> bool:  # pragma: no cover - protocol
+        ...
+
+
 class UnattendedToolApprovalGate:
     """Fail closed when no interactive approval channel exists."""
 
@@ -388,10 +400,13 @@ class ToolExecutionCoordinator:
         limits: Optional[ToolExecutionLimits] = None,
         protocol_receipt_sink=None,
         failure_memory: Optional[FailureMemoryAccumulator] = None,
+        trust_policy: Optional[ToolTrustPolicy] = None,
     ) -> None:
         self._repository = repository
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate or WaitingToolApprovalGate()
+        # S8: 只读信任策略（None = 全部按 approval_mode 处理，行为不变）。
+        self._trust_policy = trust_policy
         # C2 失败记忆：循环的外部状态，逐条累积失败尝试（None = 关闭）。
         self._failure_memory = failure_memory
         # RS-6 slice 2b: optional async sink(dict protocol-receipt fields,
@@ -874,6 +889,17 @@ class ToolExecutionCoordinator:
                     tool.definition.approval_mode.value == "required"
                     or force_confirm
                 )
+                # S8 只读信任：危险命令（force_confirm）永不免确认。
+                if needs_approval and not force_confirm:
+                    policy = self._trust_policy
+                    allows = getattr(policy, "allows", None)
+                    if callable(allows):
+                        try:
+                            needs_approval = not bool(
+                                allows(tool.definition.name, call)
+                            )
+                        except Exception:
+                            needs_approval = True
             except ToolValidationError as error:
                 self._fail_item(
                     item,
@@ -1878,6 +1904,7 @@ class AgentRunExecutor:
         agent_timeout_seconds: Optional[float] = None,
         trace_observer: Optional[RunTraceObserver] = None,
         span_recorder: Optional[object] = None,
+        tool_trust_policy: Optional[ToolTrustPolicy] = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
@@ -1941,6 +1968,7 @@ class AgentRunExecutor:
             limits=tool_execution_limits,
             protocol_receipt_sink=protocol_receipt_sink,
             failure_memory=self._failure_memory,
+            trust_policy=tool_trust_policy,
         )
         self._model_turn_runner = ModelTurnRunner(
             repository=repository,

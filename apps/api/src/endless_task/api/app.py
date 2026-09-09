@@ -2210,6 +2210,24 @@ def _build_container(
         else None
     )
 
+    # S8 只读信任策略：默认关闭（全部命令逐条确认，行为不变）。
+    from endless_task.workspace_runtime.shell_trust import (
+        ShellTrustPolicy,
+        trust_enabled_from_env,
+    )
+
+    shell_trust_policy = ShellTrustPolicy(
+        enabled=trust_enabled_from_env(
+            os.environ.get("ENDLESS_TASK_SHELL_TRUST_READONLY")
+        ),
+        extra_prefixes=tuple(
+            part.strip()
+            for part in os.environ.get(
+                "ENDLESS_TASK_SHELL_TRUSTED_PREFIXES", ""
+            ).split(",")
+            if part.strip()
+        ),
+    )
     tool_execution_limits = ToolExecutionLimits(
         max_calls_per_turn=settings.max_tool_calls_per_turn,
         max_concurrent_calls=settings.max_concurrent_tool_calls,
@@ -2247,6 +2265,7 @@ def _build_container(
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
+        tool_trust_policy=shell_trust_policy,
         no_progress_enforcement_enabled=settings.stop_policy_enforcement,
         escalation_budget_ratio=settings.escalation_budget_ratio,
         verifier_mode=settings.verifier_mode,
@@ -2631,6 +2650,7 @@ def _build_container(
                 no_change_timeout_seconds=settings.shell_no_change_timeout_seconds,
                 max_output_bytes=settings.shell_max_output_bytes,
                 checkpoint_coordinator=run_checkpoint_coordinator,
+                undo_service=undo_service,
             )
         )
         selected_tool_registry.register(UpdatePlanTool(runtime_v2_repository))

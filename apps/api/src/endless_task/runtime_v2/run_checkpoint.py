@@ -280,6 +280,36 @@ class RunCheckpointCoordinator:
     def tracked_run_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._checkpoints))
 
+    def read_checkpoint_text(
+        self,
+        *,
+        run_id: str,
+        workspace_root: str,
+        relative: str,
+    ) -> Optional[str]:
+        """读取该 run checkpoint 中某个文件的原文（S8 shell 对账用）。
+
+        返回 None 表示：没有 checkpoint、文件不在快照里、非 UTF-8 或超过上限。
+        调用方据此决定"能否记录 before 内容"，不要据此判断文件是否存在。
+        """
+        ref = self.checkpoint_for(run_id=run_id, workspace_root=workspace_root)
+        if ref is None:
+            return None
+        try:
+            manifest = read_manifest(self._store_root, ref.checkpoint_id)
+        except AgentPlatformError:
+            return None
+        sha = dict(manifest.entries).get(relative)
+        if sha is None:
+            return None
+        blob = self._store_root / "blobs" / sha
+        try:
+            if blob.stat().st_size > 512_000:
+                return None
+            return blob.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
     # -- internals ---------------------------------------------------------
 
     def _require_ref(

@@ -780,6 +780,8 @@ class RuntimeV2SessionGateway:
         cost_cap_usd: float = 0.0,
         pricing_catalog: Optional[PricingCatalog] = None,
         provider_retry_evaluator: Optional[object] = None,
+        # S8: 只读信任策略（None = 全部按 approval_mode 处理）。
+        tool_trust_policy: Optional[object] = None,
     ) -> None:
         self._chat_repository = chat_repository
         self._repository = repository
@@ -808,6 +810,7 @@ class RuntimeV2SessionGateway:
         self._verifier_model = verifier_model
         self._user_profile_provider = user_profile_provider
         self._cost_cap_usd = float(cost_cap_usd)
+        self._tool_trust_policy = tool_trust_policy
         self._pricing_catalog = pricing_catalog or make_default_catalog()
         # M3A RS-1 (G1-2): shadow provider-retry wiring; evaluator None =
         # legacy behavior. The observer is bound per run at launch so
@@ -1591,6 +1594,7 @@ class RuntimeV2SessionGateway:
                 if self._provider_retry_evaluator is not None
                 else None
             ),
+            tool_trust_policy=self._tool_trust_policy,
         )
         task = self._active_run_supervisor.spawn(
             executor.execute(
