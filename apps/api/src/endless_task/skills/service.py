@@ -8,6 +8,16 @@ from ..storage.sqlite_skill_override_repository import SqliteSkillOverrideReposi
 from .loader import discover_skills
 from .models import Skill, SkillScope
 
+#: 单次注入的技能正文上限（字节）；超出按字符安全截断并标注。
+MAX_SKILL_BODY_BYTES = 32 * 1024
+
+#: 显式调用失败原因（供 API 与 UI 复用）。
+INVOKE_OK = "ok"
+INVOKE_UNKNOWN = "unknown"
+INVOKE_NOT_USER_INVOCABLE = "not_user_invocable"
+INVOKE_DISABLED = "disabled"
+INVOKE_INVALID = "invalid"
+
 
 def build_available_skills_prompt(
     skills: Tuple[Skill, ...],
@@ -78,6 +88,8 @@ class SkillService:
                     workspace_disabled if skill.scope == SkillScope.WORKSPACE else user_disabled
                 ),
                 disable_model_invocation=skill.disable_model_invocation,
+                model_invocable=skill.model_invocable,
+                user_invocable=skill.user_invocable,
                 diagnostics=skill.diagnostics,
             )
             for skill in skills
@@ -111,6 +123,73 @@ class SkillService:
             )
             if skill.valid and not skill.disabled
         )
+
+    def invocable_skills(
+        self,
+        workspace_root: Optional[Path] = None,
+        *,
+        workspace_id: str = "",
+    ) -> Tuple[Skill, ...]:
+        """S1：用户可显式调用的技能（与 model-invocable 解耦）。"""
+        return tuple(
+            skill
+            for skill in self.visible_skills(workspace_root, workspace_id=workspace_id)
+            if skill.user_invocable
+        )
+
+    def resolve_invocable(
+        self,
+        name: str,
+        workspace_root: Optional[Path] = None,
+        *,
+        workspace_id: str = "",
+    ) -> Tuple[Optional[Skill], str]:
+        """解析显式调用：返回 (技能, 原因码)。
+
+        名称根本不存在时返回 ``unknown``（普通文本里的 ``/tmp`` 不算错误）；
+        存在但不允许用户调用/被禁用/清单非法时返回对应原因。
+        """
+        target = (name or "").strip()
+        if not target:
+            return None, INVOKE_UNKNOWN
+        for skill in self.list_skills(workspace_root, workspace_id=workspace_id):
+            if skill.name != target:
+                continue
+            if not skill.valid:
+                return None, INVOKE_INVALID
+            if skill.disabled:
+                return None, INVOKE_DISABLED
+            if not skill.user_invocable:
+                return None, INVOKE_NOT_USER_INVOCABLE
+            return skill, INVOKE_OK
+        return None, INVOKE_UNKNOWN
+
+    def skill_body(self, skill: Skill, *, max_bytes: int = MAX_SKILL_BODY_BYTES) -> str:
+        """读取技能正文（去 frontmatter，有界，按字符安全截断）。"""
+        try:
+            text = skill.file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+        # 注入给模型的是"正文"，不含 frontmatter（模型不需要看清单字段）。
+        try:
+            from .manifest import parse_skill_manifest
+
+            parsed = parse_skill_manifest(skill.file_path, text)
+            if parsed.body.strip():
+                text = parsed.body
+        except Exception:  # noqa: BLE001 解析失败时退回原文
+            pass
+        raw = text.encode("utf-8")
+        if len(raw) <= max_bytes:
+            return text
+        # 按字符边界裁剪，避免切坏多字节字符。
+        clipped = raw[:max_bytes]
+        while clipped:
+            try:
+                return clipped.decode("utf-8") + "\n\n[技能正文已截断]"
+            except UnicodeDecodeError:
+                clipped = clipped[:-1]
+        return ""
 
     def skill_roots(self, workspace_root: Optional[Path] = None) -> tuple[Path, ...]:
         roots = [self._user_dir]

@@ -26,6 +26,9 @@ class Skill:
     file_path: Path
     disabled: bool = False
     disable_model_invocation: bool = False
+    #: S1：调用策略（与模型调用解耦）。user_invocable 决定"用户 /技能名"是否可用。
+    model_invocable: bool = True
+    user_invocable: bool = True
     diagnostics: Tuple[SkillDiagnostic, ...] = field(default_factory=tuple)
 
     @property

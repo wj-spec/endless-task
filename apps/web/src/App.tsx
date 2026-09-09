@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
-import type { TaskNotification } from "./features/chat/apiTypes";
+import type {
+  SkillInvocationCandidate,
+  TaskNotification,
+} from "./features/chat/apiTypes";
 import { AssistantPanel } from "./features/panel/AssistantPanel";
 import type { AssistantPanelTab } from "./features/panel/AssistantPanel";
 import { useAssistantHub } from "./features/hub/useAssistantHub";
@@ -193,6 +196,30 @@ export function App() {
     ),
   );
 
+  const [skillCandidates, setSkillCandidates] = useState<
+    SkillInvocationCandidate[]
+  >([]);
+
+  useEffect(() => {
+    const workspaceId = chat.workspaceId;
+    if (!workspaceId) {
+      setSkillCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    void chatApi
+      .listInvocableSkills(workspaceId)
+      .then((items) => {
+        if (!cancelled) setSkillCandidates(items);
+      })
+      .catch(() => {
+        if (!cancelled) setSkillCandidates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chat.workspaceId]);
+
   const openAssistantPanel = (tab: AssistantPanelTab = "notifications") => {
     void chat.refreshCapabilities();
     dispatchSurface({ type: "open-assistant", tab });
@@ -372,6 +399,7 @@ export function App() {
         onOpenWorkspace={openWorkspacePanel}
         onToggleWorkspace={workspaceVisible ? toggleWorkspacePanel : undefined}
         workspacePanelOpen={workspaceVisible && !workspaceCollapsed}
+        skillCandidates={skillCandidates}
         onOpenWorkspaceSettings={
           activeWorkspace
             ? () => {

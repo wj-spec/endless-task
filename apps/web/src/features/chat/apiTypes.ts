@@ -916,6 +916,15 @@ export type RuntimeV2MessageResponse = {
   laneId: string;
   runId: string;
   userMessageId: string;
+  /** S1：显式技能调用结果（ok / disabled / not_user_invocable / …）。 */
+  requestedSkills?: { name: string; status: string; message: string }[];
+};
+
+/** S1：composer `/` 候选（用户可显式调用的技能）。 */
+export type SkillInvocationCandidate = {
+  name: string;
+  description: string;
+  scope: "user" | "workspace";
 };
 
 export type RuntimeV2RecoveryResponse = {

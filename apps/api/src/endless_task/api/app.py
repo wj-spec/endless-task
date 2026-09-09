@@ -213,7 +213,14 @@ from endless_task.storage.sqlite_skill_override_repository import (
     SqliteSkillOverrideRepository,
 )
 from endless_task.storage.sqlite_knowledge_repository import scope_tier
-from endless_task.skills import Skill, SkillService, build_available_skills_prompt
+from endless_task.skills import (
+    INVOKE_OK,
+    INVOKE_UNKNOWN,
+    Skill,
+    SkillService,
+    build_available_skills_prompt,
+    parse_skill_commands,
+)
 from endless_task.tooling import (
     ApprovalStatus,
     ToolApprovalMode,
@@ -1625,6 +1632,73 @@ def _runtime_v2_memory_promotion_json(
     }
 
 
+def resolve_skill_requests(
+    skill_service: "SkillService",
+    workspace_resolver: "WorkspaceResolver",
+    conversation_id: str,
+    content: str,
+    *,
+    include_bodies: bool,
+) -> tuple[tuple[object, ...], list[dict[str, str]]]:
+    """S1：解析用户消息里的 ``/技能名``。
+
+    返回 (user-role 消息元组, 结果通知列表)。名称不存在于任何技能时静默忽略
+    （普通文本里的 ``/tmp`` 不应报错），只有"存在但不能用"才给通知。
+    """
+    names = parse_skill_commands(content)
+    if not names:
+        return (), []
+    binding = workspace_resolver.resolve_binding(conversation_id)
+    root = binding.root if binding is not None else None
+    workspace_id = binding.workspace_id if binding is not None else ""
+    messages: list[object] = []
+    notices: list[dict[str, str]] = []
+    for name in names:
+        skill, reason = skill_service.resolve_invocable(
+            name, root, workspace_id=workspace_id
+        )
+        if skill is None:
+            if reason == INVOKE_UNKNOWN:
+                continue
+            notices.append(
+                {
+                    "name": name,
+                    "status": reason,
+                    "message": {
+                        "disabled": "该技能已禁用。",
+                        "not_user_invocable": "该技能不允许用户调用。",
+                        "invalid": "该技能清单有错误，无法加载。",
+                    }.get(reason, "该技能不可用。"),
+                }
+            )
+            continue
+        body = skill_service.skill_body(skill) if include_bodies else ""
+        if include_bodies and not body:
+            notices.append(
+                {
+                    "name": name,
+                    "status": "unreadable",
+                    "message": "技能正文读取失败。",
+                }
+            )
+            continue
+        notices.append({"name": name, "status": INVOKE_OK, "message": ""})
+        if include_bodies:
+            from endless_task.runtime.provider import ProviderMessage
+
+            messages.append(
+                ProviderMessage(
+                    role="user",
+                    content=(
+                        f'<skill_request name="{name}">\n{body}\n</skill_request>\n'
+                        "（该技能正文已随本消息加载，无需再调用 read_skill_file；"
+                        "只有需要技能目录内的其他资源文件时才读取。）"
+                    ),
+                )
+            )
+    return tuple(messages), notices
+
+
 def _resolve_runtime_v2_conversation(
     container: AppContainer,
     conversation_id: str,
@@ -2906,7 +2980,7 @@ def _build_container(
     ) -> tuple[ProviderMessage]:
         del lane_id
         conversation = chat_repository.get_conversation(conversation_id)
-        return context_builder.build_system_messages(
+        base = context_builder.build_system_messages(
             conversation_id,
             user_content,
             turn_id=run_id,
@@ -2915,6 +2989,22 @@ def _build_container(
             # 避免 v1/v2 记忆双重注入（v1 存量已由 migration 049 迁入 v2）。
             include_v1_memory=False,
         )
+        # S1：用户显式调用技能（/技能名）→ 以 user-role 注入正文，
+        # 让技能内容不获得 system 级权威；名称不存在时静默忽略。
+        skill_messages, notices = resolve_skill_requests(
+            skill_service,
+            workspace_resolver,
+            conversation_id,
+            user_content,
+            include_bodies=True,
+        )
+        if skill_messages or notices:
+            runtime_v2_repository.append_runtime_event(
+                run_id=run_id,
+                event_type="skill_requested",
+                payload={"notices": notices},
+            )
+        return (*base, *skill_messages)
 
     runtime_v2_gateway.set_context_prefix_builder(
         build_runtime_v2_context_prefix
@@ -4852,6 +4942,32 @@ def create_app(
             ],
         }
 
+    @app.get("/skills/invocable")
+    async def list_invocable_skills(
+        workspace_id: Optional[str] = Query(None, alias="workspaceId"),
+    ) -> dict[str, object]:
+        """S1：composer ``/`` 候选——用户可显式调用、未禁用、清单合法的技能。"""
+        root = None
+        if workspace_id:
+            try:
+                item = container.workspace_repository.get_workspace(workspace_id)
+                root = Path(item.root_path).expanduser() if item.root_path else None
+            except Exception:
+                root = None
+        skills = container.skill_service.invocable_skills(
+            root, workspace_id=workspace_id or ""
+        )
+        return {
+            "items": [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "scope": skill.scope.value,
+                }
+                for skill in skills
+            ]
+        }
+
     @app.patch("/skills/{scope}/{name}")
     async def patch_skill(
         scope: Literal["user", "workspace"],
@@ -4861,11 +4977,15 @@ def create_app(
     ) -> dict[str, object]:
         from endless_task.skills import SkillScope
 
+        # 用户级技能是全局开关：必须落在 workspace_id="" 上，否则读侧
+        # （list_skills 只查 (user, "")）看不到这次禁用——历史 UI 会带工作区参数。
+        target_scope = SkillScope(scope)
+        workspace_key = "" if target_scope is SkillScope.USER else (workspace or "")
         container.skill_service.set_disabled(
-            scope=SkillScope(scope),
+            scope=target_scope,
             name=name,
             disabled=body.disabled,
-            workspace_id=workspace or "",
+            workspace_id=workspace_key,
         )
         return {"disabled": body.disabled}
 
@@ -6853,6 +6973,13 @@ def create_app(
                 "消息内容超过本地配置允许的长度。",
                 status_code=413,
             )
+        _skill_messages, skill_notices = resolve_skill_requests(
+            container.skill_service,
+            container.workspace_resolver,
+            target_conversation_id,
+            body.content,
+            include_bodies=False,
+        )
         handle = await container.runtime_v2_gateway.send(
             target_conversation_id,
             body.content,
@@ -6865,6 +6992,8 @@ def create_app(
             "runId": handle.run_id,
             "userMessageId": handle.user_message_id,
             "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
+            # S1：显式技能调用结果（ok / disabled / not_user_invocable / …）
+            "requestedSkills": skill_notices,
         }
 
     @app.get("/api/v2/metrics")

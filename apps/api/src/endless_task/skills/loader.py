@@ -59,6 +59,8 @@ def load_skill_file(path: Path, scope: SkillScope) -> Optional[Skill]:
         scope=scope,
         file_path=path,
         disable_model_invocation=not manifest.model_invocable,
+        model_invocable=manifest.model_invocable,
+        user_invocable=manifest.user_invocable,
         diagnostics=tuple(diagnostics),
     )
 

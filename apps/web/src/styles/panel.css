@@ -3161,3 +3161,63 @@
   color: var(--accent);
   text-decoration: underline;
 }
+
+/* ---------- S1 composer `/技能名` 候选 ---------- */
+
+.composer-input-row {
+  position: relative;
+}
+
+.composer-slash-menu {
+  position: absolute;
+  z-index: var(--z-menu-pop);
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: min(420px, 100%);
+  max-height: 260px;
+  margin: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--paper);
+  box-shadow: var(--shadow-pop);
+  list-style: none;
+}
+
+.composer-slash-menu button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 6px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-slash-menu button:hover,
+.composer-slash-menu button.is-active {
+  background: var(--accent-soft);
+}
+
+.composer-slash-name {
+  flex: none;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-weight: 620;
+}
+
+.composer-slash-desc {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

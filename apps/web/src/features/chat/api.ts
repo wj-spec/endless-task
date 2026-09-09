@@ -60,6 +60,7 @@ import type { KnowledgeProposal,
   WorkspaceFileContent,
   WorkspaceFileWriteResult,
   WorkspaceTreeListing,
+  SkillInvocationCandidate,
   TerminalSnapshot,
   WorkspaceSnapshot,
   SkillPackagesResponse,
@@ -311,6 +312,15 @@ export const chatApi = {
     request<{ server: McpServer }>(`/mcp/servers/${serverId}/reload`, {
       method: "POST",
     }).then((response) => response.server),
+  listInvocableSkills: async (workspaceId?: string | null) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspaceId", workspaceId);
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
+    const response = await request<{ items: SkillInvocationCandidate[] }>(
+      `/skills/invocable${suffix}`,
+    );
+    return response.items;
+  },
   listSkills: async (workspaceId?: string | null) => {
     const parameters = new URLSearchParams();
     if (workspaceId) parameters.set("workspace", workspaceId);

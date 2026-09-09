@@ -146,9 +146,14 @@ def parse_skill_manifest(
     # v1 adapter: plain-key frontmatter with default provenance/visibility.
     name = str(raw_frontmatter.get("name") or path.parent.name)
     description = str(raw_frontmatter.get("description") or "")
-    disable_model = str(
+    disable_model = _frontmatter_bool(
         raw_frontmatter.get("disable-model-invocation", "")
-    ).lower() in ("true", "1", "yes")
+    )
+    # S1：v1 也认 ``user-invocable``（与 ``disable-model-invocation`` 同一文法），
+    # 让老技能无需升级 schema-version 就能声明"仅模型调用"。
+    user_invocable = _frontmatter_bool(
+        raw_frontmatter.get("user-invocable", ""), default=True
+    )
     if not name.strip():
         diagnostics.append(
             SkillDiagnostic(path=path, code="invalid_name", message="技能名缺失。")
@@ -169,9 +174,17 @@ def parse_skill_manifest(
         digest=digest,
         body=body,
         model_invocable=not disable_model,
-        user_invocable=True,
+        user_invocable=user_invocable,
         diagnostics=tuple(diagnostics),
     )
+
+
+def _frontmatter_bool(value: object, *, default: bool = False) -> bool:
+    """frontmatter 布尔文法（与参考项目一致）：true/1/yes/on 为真。"""
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    return text in ("true", "1", "yes", "on")
 
 
 def _extract_frontmatter(

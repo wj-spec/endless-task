@@ -9,6 +9,11 @@ from .dependencies import (
     check_skill_dependencies,
     dependency_satisfied_skills,
 )
+from .invocation import (
+    MAX_SKILL_REQUESTS,
+    SKILL_COMMAND_RE,
+    parse_skill_commands,
+)
 from .loader import discover_skills
 from .scanner import (
     QUARANTINE_LEVELS,
@@ -41,9 +46,27 @@ from .registry import (
     SkillRoot,
     SkillState,
 )
-from .service import SkillService, build_available_skills_prompt
+from .service import (
+    INVOKE_DISABLED,
+    INVOKE_INVALID,
+    INVOKE_NOT_USER_INVOCABLE,
+    INVOKE_OK,
+    INVOKE_UNKNOWN,
+    MAX_SKILL_BODY_BYTES,
+    SkillService,
+    build_available_skills_prompt,
+)
 
 __all__ = [
+    "INVOKE_DISABLED",
+    "INVOKE_INVALID",
+    "INVOKE_NOT_USER_INVOCABLE",
+    "INVOKE_OK",
+    "INVOKE_UNKNOWN",
+    "MAX_SKILL_BODY_BYTES",
+    "MAX_SKILL_REQUESTS",
+    "SKILL_COMMAND_RE",
+    "parse_skill_commands",
     "Skill",
     "SkillDiagnostic",
     "SkillScope",

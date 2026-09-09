@@ -13,6 +13,7 @@ import type {
   RuntimeV2Snapshot,
   TurnStatus,
   Workspace,
+  SkillInvocationCandidate,
 } from "./apiTypes";
 import { chatApi } from "./api";
 import type { RuntimeConnectionPhase } from "./runtimeController";
@@ -130,6 +131,8 @@ type ChatWorkSurfaceProps = {
   onOpenWorkspace?: () => void;
   onToggleWorkspace?: () => void;
   workspacePanelOpen?: boolean;
+  /** S1：`/技能名` 候选。 */
+  skillCandidates?: SkillInvocationCandidate[];
   onOpenWorkspaceSettings?: () => void;
   onEditResendMessage?: (turnId: string, content: string) => void;
   editedUserMessages?: Record<string, string>;
@@ -314,6 +317,7 @@ export function ChatWorkSurface({
   onOpenWorkspaceSettings,
   onToggleWorkspace,
   workspacePanelOpen,
+  skillCandidates = [],
   onEditResendMessage,
   editedUserMessages,
   workspaces,
@@ -1490,6 +1494,7 @@ export function ChatWorkSurface({
         onRemoveFile={onRemoveFile}
         onSend={onSend}
         onUploadFile={onUploadFile}
+        skillCandidates={skillCandidates}
         steerable={currentLaneHasActiveRun}
       />
 

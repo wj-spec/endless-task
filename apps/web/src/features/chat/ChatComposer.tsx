@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ConversationSnapshot,
   HealthSnapshot,
   ProviderProfile,
   RuntimeV2Snapshot,
+  SkillInvocationCandidate,
 } from "./apiTypes";
 import { ContextBudgetMeter } from "./ContextBudgetMeter";
 import { AddIcon, CloseIcon, FileIcon, SendIcon } from "../ui/Icons";
@@ -33,6 +34,8 @@ type ChatComposerProps = {
   onUploadFile: (file: File) => void;
   /** A2：上下文预算（环形指示器，输入框左下角）。 */
   contextBudget?: RuntimeV2Snapshot["contextBudget"];
+  /** S1：`/技能名` 候选。 */
+  skillCandidates?: SkillInvocationCandidate[];
 };
 
 export function ChatComposer({
@@ -56,8 +59,47 @@ export function ChatComposer({
   onSend,
   onUploadFile,
   contextBudget,
+  skillCandidates = [],
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  const slashMatches = useMemo(() => {
+    if (slashQuery === null) return [];
+    const query = slashQuery.toLowerCase();
+    return skillCandidates
+      .filter((candidate) => candidate.name.toLowerCase().startsWith(query))
+      .slice(0, 8);
+  }, [skillCandidates, slashQuery]);
+
+  const slashOpen = slashQuery !== null && slashMatches.length > 0;
+
+  /** 只在"行首或空白后的 /token"上触发候选（避免路径误触发）。 */
+  const syncSlash = (value: string, caret: number | null) => {
+    const upto = caret === null ? value.length : caret;
+    const match = /(^|\s)\/([a-z0-9-]*)$/.exec(value.slice(0, upto));
+    setSlashQuery(match ? match[2] : null);
+    setSlashIndex(0);
+  };
+
+  const acceptSlash = (name: string) => {
+    const textarea = composerRef.current;
+    const caret = textarea?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret);
+    const match = /(^|\s)\/([a-z0-9-]*)$/.exec(before);
+    if (!match) return;
+    const replaced = `${before.slice(0, match.index)}${match[1]}/${name} `;
+    const next = replaced + draft.slice(caret);
+    onDraftChange(next);
+    setSlashQuery(null);
+    requestAnimationFrame(() => {
+      const node = composerRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(replaced.length, replaced.length);
+    });
+  };
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -152,12 +194,62 @@ export function ChatComposer({
           </div>
         ) : null}
         <div className="composer-input-row">
+          {slashOpen ? (
+            <ul
+              aria-label="技能候选"
+              className="composer-slash-menu"
+              role="listbox"
+            >
+              {slashMatches.map((candidate, index) => (
+                <li key={candidate.name}>
+                  <button
+                    aria-selected={index === slashIndex}
+                    className={index === slashIndex ? "is-active" : undefined}
+                    onClick={() => acceptSlash(candidate.name)}
+                    role="option"
+                    type="button"
+                  >
+                    <span className="composer-slash-name">/{candidate.name}</span>
+                    <span className="composer-slash-desc">{candidate.description}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <textarea
             aria-label="给 Endless 发送消息"
             ref={composerRef}
             disabled={composerDisabled || (isGenerating && !steerable)}
-            onChange={(event) => onDraftChange(event.target.value)}
+            onChange={(event) => {
+              onDraftChange(event.target.value);
+              syncSlash(event.target.value, event.target.selectionStart);
+            }}
             onKeyDown={(event) => {
+              if (slashOpen) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setSlashIndex((current) => (current + 1) % slashMatches.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setSlashIndex(
+                    (current) =>
+                      (current - 1 + slashMatches.length) % slashMatches.length,
+                  );
+                  return;
+                }
+                if (event.key === "Enter" || event.key === "Tab") {
+                  event.preventDefault();
+                  acceptSlash(slashMatches[slashIndex].name);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setSlashQuery(null);
+                  return;
+                }
+              }
               if (
                 event.key === "Enter" &&
                 !event.shiftKey &&

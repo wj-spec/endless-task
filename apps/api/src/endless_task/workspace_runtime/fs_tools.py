@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -117,6 +118,30 @@ class ReadSkillFileTool:
         self._skill_root_provider = skill_root_provider
         self._locator_resolver_provider = locator_resolver_provider
         self._max_file_bytes = max_file_bytes
+        # 未启用 locator 解析时，不要把 locator 写成"推荐"——否则模型会先试
+        # 一次必然失败的 locator 调用（S1 live 实测发生过）。
+        if locator_resolver_provider is None:
+            self.definition = replace(
+                type(self).definition,
+                description=(
+                    "读取系统提示词中列出的技能正文。用 available_skills 提供的路径"
+                    "（path）；该工具只读且仅允许访问技能目录。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
+                        "start_line": {"type": "integer", "minimum": 1},
+                        "line_count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                        },
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            )
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
