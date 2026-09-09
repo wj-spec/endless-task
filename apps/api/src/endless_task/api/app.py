@@ -121,6 +121,8 @@ from endless_task.workspace_runtime import (
     DeleteWorkspaceFileTool,
     EffectLog,
     ListWorkspaceDirTool,
+    EditWorkspaceFileTool,
+    ManageWorkspacePathsTool,
     ReadWorkspaceFileTool,
     RunShellTool,
     WorkspaceResolver,
@@ -240,6 +242,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "- 能直接回答的问题用自然语言直接回答，不要调用工具。\n"
     "- 信息不足时先向用户追问关键信息，不要猜测。\n"
     "- 只有问题确实需要会话附件内容时才调用文件工具。\n"
+    "- 文件操作优先用类型化工具：改已有文件里的一处用 edit_workspace_file（默认要求"
+    "唯一匹配，改完会返回 diff）；移动/重命名/复制/建目录用 manage_workspace_paths；"
+    "整文件新建或覆盖用 write_workspace_file；只有需要跑程序、构建、测试、装依赖或"
+    "文本变换时才用 run_shell。\n"
     "- 工具执行失败或用户未授权时，用自然语言说明情况和下一步，不要原样重复同一调用。\n"
     "- 用户要求产出文档/文件（如写 README、报告、脚本）时，读完所需材料后应立即调用"
     "写入工具或直接给出完整结果，不要无休止地继续收集资料；读完即动手。\n"
@@ -771,7 +777,7 @@ class AppSettings:
             ),
             system_prompt_version=env.get(
                 "ENDLESS_TASK_SYSTEM_PROMPT_VERSION",
-                "p1-v2",
+                "p1-v3",
             ),
             context_window_tokens=int(
                 env.get("ENDLESS_TASK_CONTEXT_WINDOW_TOKENS", "131072")
@@ -2061,6 +2067,7 @@ def _build_container(
         # built-in tools) keeps its own tools untouched; no enforcement and no
         # silent swap, which is fine because that surface is internal.
         from endless_task.workspace_runtime.enforcement import (
+            EnforcementUnsupportedTool,
             EnforcingToolRegistry,
             ToolEnforcement,
         )
@@ -2576,6 +2583,24 @@ def _build_container(
                 undo_service=undo_service,
             )
         )
+        selected_tool_registry.register(
+            EditWorkspaceFileTool(
+                workspace_resolver,
+                effect_log,
+                max_write_bytes=settings.workspace_max_write_bytes,
+                checkpoint_coordinator=run_checkpoint_coordinator,
+                undo_service=undo_service,
+            )
+        )
+        selected_tool_registry.register(
+            ManageWorkspacePathsTool(
+                workspace_resolver,
+                effect_log,
+                max_write_bytes=settings.workspace_max_write_bytes,
+                checkpoint_coordinator=run_checkpoint_coordinator,
+                undo_service=undo_service,
+            )
+        )
         selected_tool_registry.register(ListWorkspaceDirTool(workspace_resolver))
         selected_tool_registry.register(
             WorkspaceSearchTool(
@@ -2631,6 +2656,26 @@ def _build_container(
                         checkpoint_coordinator=run_checkpoint_coordinator,
                         execution_backend=enforcement_backend,
                         undo_service=undo_service,
+                    ),
+                    # edit / path 工具尚未 backend 化：enforcement 激活时
+                    # fail closed（拒绝执行），绝不允许绕过隔离直接写宿主。
+                    "edit_workspace_file": EnforcementUnsupportedTool(
+                        EditWorkspaceFileTool(
+                            workspace_resolver,
+                            effect_log,
+                            max_write_bytes=settings.workspace_max_write_bytes,
+                            checkpoint_coordinator=run_checkpoint_coordinator,
+                            undo_service=undo_service,
+                        )
+                    ),
+                    "manage_workspace_paths": EnforcementUnsupportedTool(
+                        ManageWorkspacePathsTool(
+                            workspace_resolver,
+                            effect_log,
+                            max_write_bytes=settings.workspace_max_write_bytes,
+                            checkpoint_coordinator=run_checkpoint_coordinator,
+                            undo_service=undo_service,
+                        )
                     ),
                 }
             )

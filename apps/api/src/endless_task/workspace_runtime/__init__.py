@@ -3,7 +3,9 @@
 from .effect_log import EffectLog, EffectReceipt
 from .fs_tools import (
     DeleteWorkspaceFileTool,
+    EditWorkspaceFileTool,
     ListWorkspaceDirTool,
+    ManageWorkspacePathsTool,
     ReadSkillFileTool,
     ReadWorkspaceFileTool,
     WriteWorkspaceFileTool,
@@ -16,9 +18,11 @@ from .visibility import WORKSPACE_TOOLS, workspace_tool_filter
 
 __all__ = [
     "DeleteWorkspaceFileTool",
+    "EditWorkspaceFileTool",
     "EffectLog",
     "EffectReceipt",
     "ListWorkspaceDirTool",
+    "ManageWorkspacePathsTool",
     "ReadSkillFileTool",
     "ReadWorkspaceFileTool",
     "RunShellTool",

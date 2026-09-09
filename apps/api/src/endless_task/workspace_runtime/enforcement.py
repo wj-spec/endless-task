@@ -77,7 +77,38 @@ class EnforcingToolRegistry(ToolRegistry):
         return getattr(self._inner, name)
 
 
+class EnforcementUnsupportedTool:
+    """Fail-closed proxy for tools that are not yet backend-化.
+
+    Keeps the wrapped tool's ``definition`` (schema/effect/approval metadata are
+    unchanged, so executors cannot tell it apart) but refuses to execute. Used
+    while ``ENDLESS_TASK_EXECUTION_BACKEND`` is active for capabilities whose
+    isolated implementation has not landed yet: refusing is safer than silently
+    writing to the host outside the enforcement backend.
+    """
+
+    def __init__(self, tool: RegisteredTool) -> None:
+        self._tool = tool
+        self.definition = tool.definition
+
+    def __getattr__(self, name: str):
+        return getattr(self._tool, name)
+
+    async def execute(self, call, token):  # noqa: ANN001, ARG002
+        from endless_task.tooling import ToolError
+
+        raise ToolError(
+            "enforcement_unsupported",
+            (
+                f"当前执行后端未覆盖 {self.definition.name}，已拒绝执行；"
+                "请改用 write_workspace_file / delete_workspace_file。"
+            ),
+            retryable=False,
+        )
+
+
 __all__ = [
+    "EnforcementUnsupportedTool",
     "EnforcingToolRegistry",
     "ToolEnforcement",
 ]

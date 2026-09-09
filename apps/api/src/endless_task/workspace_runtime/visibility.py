@@ -18,6 +18,8 @@ WORKSPACE_TOOLS: frozenset[str] = frozenset(
     {
         "read_workspace_file",
         "write_workspace_file",
+        "edit_workspace_file",
+        "manage_workspace_paths",
         "list_workspace_dir",
         "delete_workspace_file",
         "run_shell",

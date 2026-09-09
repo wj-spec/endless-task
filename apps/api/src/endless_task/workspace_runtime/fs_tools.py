@@ -766,6 +766,535 @@ class ListWorkspaceDirTool:
         )
 
 
+class EditWorkspaceFileTool:
+    """就地编辑：old_string → new_string（默认要求唯一匹配），返回行级 diff。
+
+    为什么需要它：整文件重写既费 token 又容易误伤无关内容；有了唯一匹配的
+    字符串替换，模型改一处只需传上下文与替换文本（对齐参考实现的
+    `str_replace_editor` 契约）。
+    """
+
+    definition = ToolDefinition(
+        name="edit_workspace_file",
+        description=(
+            "在工作区根内就地修改一个 UTF-8 文本文件：把 old_string 替换为 "
+            "new_string。old_string 必须与文件内容完全一致（含空白与缩进）；"
+            "默认要求它在文件中唯一出现，出现 0 次或多次都会被拒绝——"
+            "请带上足够上下文让它唯一，或显式设置 replace_all=true 替换全部。"
+            "整文件新建/覆盖请用 write_workspace_file。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "old_string": {"type": "string", "minLength": 1, "maxLength": 20_000},
+                "new_string": {"type": "string", "maxLength": 20_000},
+                "replace_all": {"type": "boolean"},
+            },
+            "required": ["path", "old_string"],
+            "additionalProperties": False,
+        },
+        effect=ToolEffect.LOCAL_WRITE,
+        approval_mode=ToolApprovalMode.AUTO,
+        timeout_seconds=15.0,
+        max_output_characters=6_000,
+    )
+
+    _DIFF_MAX_LINES = 120
+
+    def __init__(
+        self,
+        resolver,
+        effect_log: EffectLog,
+        *,
+        max_write_bytes: int = 512_000,
+        checkpoint_coordinator=None,
+        undo_service=None,
+    ) -> None:
+        self._resolver = resolver
+        self._effect_log = effect_log
+        self._max_write_bytes = max_write_bytes
+        self._checkpoint_coordinator = checkpoint_coordinator
+        self._undo_service = undo_service
+
+    def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
+        return ToolActivityCopy(
+            running="正在编辑工作区文件",
+            completed="已编辑工作区文件",
+            failed="编辑工作区文件失败",
+        )
+
+    def requires_explicit_confirmation(self, call: ToolCall) -> bool:
+        return False
+
+    def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
+        target = call.require_argument("path", str)
+        return ToolApprovalPrompt(
+            summary="允许编辑工作区文件吗？",
+            reason=f"将在工作区文件 {target} 中替换一段文本（可撤销）。",
+            metadata={"toolName": "edit_workspace_file", "path": target},
+        )
+
+    async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
+        token.raise_if_cancelled()
+        binding = self._resolver.require_binding(call.conversation_id)
+        path = call.require_argument("path", str)
+        old_string = call.require_argument("old_string", str)
+        new_string = call.optional_argument("new_string", str, "")
+        replace_all = bool(call.optional_argument("replace_all", bool, False))
+        resolved = resolve_workspace_path(binding.root, path)
+        if not resolved.canonical.exists():
+            raise ToolError(
+                "path_not_found",
+                f"文件不存在：{resolved.original_raw}（新建请用 write_workspace_file）。",
+                retryable=False,
+            )
+        if resolved.canonical.is_dir():
+            raise ToolError(
+                "path_is_directory",
+                "路径指向目录，不能编辑。",
+                retryable=False,
+            )
+        lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
+        async with lock:
+            before_content = _decode_utf8(resolved.canonical.read_bytes())
+            occurrences = before_content.count(old_string)
+            if occurrences == 0:
+                raise ToolError(
+                    "edit_no_match",
+                    "old_string 在文件中没有出现；请核对空白/缩进，或先用 "
+                    "read_workspace_file 确认内容。",
+                    retryable=False,
+                )
+            if occurrences > 1 and not replace_all:
+                line_numbers = _match_line_numbers(before_content, old_string)
+                preview = ", ".join(f"L{n}" for n in line_numbers[:10])
+                raise ToolError(
+                    "edit_not_unique",
+                    f"old_string 出现了 {occurrences} 次（{preview}）；"
+                    "请带上足够上下文让它唯一，或设置 replace_all=true 全部替换。",
+                    retryable=False,
+                )
+            if replace_all:
+                after_content = before_content.replace(old_string, new_string)
+            else:
+                after_content = before_content.replace(old_string, new_string, 1)
+            if after_content == before_content:
+                raise ToolError(
+                    "edit_no_change",
+                    "替换后内容没有变化。",
+                    retryable=False,
+                )
+            encoded = after_content.encode("utf-8")
+            if len(encoded) > self._max_write_bytes:
+                raise ToolError(
+                    "write_too_large",
+                    f"编辑后内容超过写入上限（{self._max_write_bytes} 字节）。",
+                    retryable=False,
+                )
+            self._ensure_checkpoint(call, binding)
+            resolved.canonical.write_text(after_content, encoding="utf-8")
+        diff_lines = _line_diff(
+            before_content, after_content, max_lines=self._DIFF_MAX_LINES
+        )
+        _record_undo_write(
+            self._undo_service,
+            call,
+            binding,
+            resolved,
+            before_content=before_content,
+            after_hash=sha256_text(after_content),
+        )
+        _record_mutation(
+            self._checkpoint_coordinator,
+            call,
+            binding,
+            resolved,
+            operation="file_edit",
+            before_hash=_sha256_bytes(before_content.encode("utf-8")),
+            after_hash=_sha256_bytes(encoded),
+        )
+        receipt = EffectReceipt(
+            kind="file_write",
+            path=str(resolved.canonical),
+            sha256=sha256_text(after_content),
+            executed_at=_now_iso(),
+        )
+        _log_effect(
+            self._effect_log,
+            call,
+            binding,
+            "edit_file",
+            resolved.original_raw,
+            receipt,
+        )
+        token.raise_if_cancelled()
+        replaced = occurrences if replace_all else 1
+        diff_text = "\n".join(diff_lines)
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                f"已编辑工作区文件：{resolved.original_raw}（替换 {replaced} 处）。\n"
+                f"```diff\n{diff_text}\n```"
+            ),
+            structured_content={
+                "path": resolved.original_raw,
+                "replaced": replaced,
+                "diff": diff_lines,
+                "bytes": len(encoded),
+                "effect": receipt.as_dict(),
+            },
+        )
+
+    def _ensure_checkpoint(self, call: ToolCall, binding: WorkspaceBinding) -> None:
+        _ensure_checkpoint(self._checkpoint_coordinator, call, binding)
+
+
+class ManageWorkspacePathsTool:
+    """路径操作：mkdir / copy / move（工作区根内，覆盖需确认）。"""
+
+    definition = ToolDefinition(
+        name="manage_workspace_paths",
+        description=(
+            "在工作区根内执行路径操作：operation=mkdir 创建目录（自动补父目录）；"
+            "copy 复制文件到 to_path；move 移动/重命名文件到 to_path。"
+            "目标已存在时默认拒绝，需显式 overwrite=true（会要求用户确认）。"
+            "只处理文件，目录移动/复制请逐个文件进行或说明后由用户处理。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["mkdir", "copy", "move"],
+                },
+                "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "to_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "overwrite": {"type": "boolean"},
+            },
+            "required": ["operation", "path"],
+            "additionalProperties": False,
+        },
+        effect=ToolEffect.LOCAL_WRITE,
+        approval_mode=ToolApprovalMode.AUTO,
+        timeout_seconds=20.0,
+        max_output_characters=4_000,
+    )
+
+    def __init__(
+        self,
+        resolver,
+        effect_log: EffectLog,
+        *,
+        max_write_bytes: int = 512_000,
+        checkpoint_coordinator=None,
+        undo_service=None,
+    ) -> None:
+        self._resolver = resolver
+        self._effect_log = effect_log
+        self._max_write_bytes = max_write_bytes
+        self._checkpoint_coordinator = checkpoint_coordinator
+        self._undo_service = undo_service
+
+    def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
+        operation = call.optional_argument("operation", str, "")
+        verb = {"mkdir": "创建目录", "copy": "复制文件", "move": "移动文件"}.get(
+            operation, "修改工作区路径"
+        )
+        return ToolActivityCopy(
+            running=f"正在{verb}",
+            completed=f"已{verb}",
+            failed=f"{verb}失败",
+        )
+
+    def requires_explicit_confirmation(self, call: ToolCall) -> bool:
+        # 覆盖已有文件是不可逆的高风险分支：即使 approval_mode=AUTO 也强制确认。
+        return bool(call.optional_argument("overwrite", bool, False))
+
+    def approval_prompt(self, call: ToolCall) -> ToolApprovalPrompt:
+        operation = call.optional_argument("operation", str, "")
+        source = call.require_argument("path", str)
+        target = call.optional_argument("to_path", str, "")
+        return ToolApprovalPrompt(
+            summary="允许覆盖已有工作区文件吗？",
+            reason=(
+                f"operation={operation} 会把 {source} 写到 {target}，"
+                "而目标已存在且 overwrite=true，原内容将被替换（可撤销）。"
+            ),
+            metadata={
+                "toolName": "manage_workspace_paths",
+                "operation": operation,
+                "path": source,
+                "toPath": target,
+            },
+        )
+
+    async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
+        token.raise_if_cancelled()
+        binding = self._resolver.require_binding(call.conversation_id)
+        operation = call.require_argument("operation", str)
+        if operation not in {"mkdir", "copy", "move"}:
+            raise ToolError(
+                "invalid_operation",
+                f"不支持的操作：{operation}（可选 mkdir/copy/move）。",
+                retryable=False,
+            )
+        overwrite = bool(call.optional_argument("overwrite", bool, False))
+        source = resolve_workspace_path(binding.root, call.require_argument("path", str))
+        if operation == "mkdir":
+            return await self._mkdir(call, binding, source, token)
+        to_path = call.require_argument("to_path", str)
+        target = resolve_workspace_path(binding.root, to_path)
+        if operation == "copy":
+            return await self._copy(call, binding, source, target, overwrite, token)
+        return await self._move(call, binding, source, target, overwrite, token)
+
+    async def _mkdir(self, call, binding, source, token) -> ToolResult:
+        if source.canonical.exists():
+            if source.canonical.is_dir():
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content=f"目录已存在：{source.original_raw}。",
+                    structured_content={"path": source.original_raw, "created": False},
+                )
+            raise ToolError(
+                "path_is_file",
+                "同名文件已存在，无法创建目录。",
+                retryable=False,
+            )
+        source.canonical.mkdir(parents=True, exist_ok=True)
+        receipt = EffectReceipt(
+            kind="file_write",
+            path=str(source.canonical),
+            executed_at=_now_iso(),
+        )
+        _log_effect(self._effect_log, call, binding, "mkdir", source.original_raw, receipt)
+        token.raise_if_cancelled()
+        return ToolResult(
+            tool_call_id=call.id,
+            content=f"已创建目录：{source.original_raw}。",
+            structured_content={
+                "path": source.original_raw,
+                "created": True,
+                "effect": receipt.as_dict(),
+            },
+        )
+
+    async def _copy(self, call, binding, source, target, overwrite, token) -> ToolResult:
+        if not source.canonical.exists():
+            raise ToolError(
+                "path_not_found", f"源文件不存在：{source.original_raw}。", retryable=False
+            )
+        if source.canonical.is_dir():
+            raise ToolError(
+                "path_is_directory",
+                "目录复制暂不开放，请逐个文件复制。",
+                retryable=False,
+            )
+        if source.canonical.stat().st_size > self._max_write_bytes:
+            raise ToolError(
+                "write_too_large",
+                f"源文件超过复制上限（{self._max_write_bytes} 字节）。",
+                retryable=False,
+            )
+        locks = sorted({str(source.canonical), str(target.canonical)})
+        acquired = [await _PATH_LOCKS.acquire(key) for key in locks]
+        for lock in acquired:
+            await lock.acquire()
+        try:
+            if target.canonical.exists():
+                if target.canonical.is_dir():
+                    raise ToolError(
+                        "path_is_directory",
+                        "目标路径是目录，请给出完整文件路径。",
+                        retryable=False,
+                    )
+                if not overwrite:
+                    raise ToolError(
+                        "target_exists",
+                        f"目标已存在：{target.original_raw}（如需覆盖请设置 overwrite=true）。",
+                        retryable=False,
+                    )
+                if _read_text_or_none(target.canonical) is None:
+                    raise ToolError(
+                        "binary_overwrite_unsupported",
+                        "目标文件不是可撤销的 UTF-8 文本，拒绝覆盖。",
+                        retryable=False,
+                    )
+            before_content = _read_text_or_none(target.canonical)
+            before_exists = target.canonical.exists()
+            self._ensure_checkpoint(call, binding)
+            target.canonical.parent.mkdir(parents=True, exist_ok=True)
+            raw = source.canonical.read_bytes()
+            target.canonical.write_bytes(raw)
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
+        _record_undo_write(
+            self._undo_service,
+            call,
+            binding,
+            target,
+            before_content=before_content if before_exists else None,
+            after_hash=_sha256_bytes(raw),
+        )
+        _record_mutation(
+            self._checkpoint_coordinator,
+            call,
+            binding,
+            target,
+            operation="file_write",
+            before_hash=None,
+            after_hash=_sha256_bytes(raw),
+        )
+        receipt = EffectReceipt(
+            kind="file_write",
+            path=str(target.canonical),
+            sha256=_sha256_bytes(raw),
+            executed_at=_now_iso(),
+        )
+        _log_effect(
+            self._effect_log,
+            call,
+            binding,
+            "copy_file",
+            f"{source.original_raw} -> {target.original_raw}",
+            receipt,
+        )
+        token.raise_if_cancelled()
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                f"已复制文件：{source.original_raw} -> {target.original_raw}"
+                f"（{len(raw)} 字节）。"
+            ),
+            structured_content={
+                "operation": "copy",
+                "path": source.original_raw,
+                "toPath": target.original_raw,
+                "bytes": len(raw),
+                "effect": receipt.as_dict(),
+            },
+        )
+
+    async def _move(self, call, binding, source, target, overwrite, token) -> ToolResult:
+        if not source.canonical.exists():
+            raise ToolError(
+                "path_not_found", f"源文件不存在：{source.original_raw}。", retryable=False
+            )
+        if source.canonical.is_dir():
+            raise ToolError(
+                "path_is_directory",
+                "目录移动暂不开放，请逐个文件移动。",
+                retryable=False,
+            )
+        if str(source.canonical) == str(target.canonical):
+            raise ToolError(
+                "no_op", "源路径与目标路径相同。", retryable=False
+            )
+        locks = sorted({str(source.canonical), str(target.canonical)})
+        acquired = [await _PATH_LOCKS.acquire(key) for key in locks]
+        for lock in acquired:
+            await lock.acquire()
+        try:
+            if target.canonical.exists():
+                if target.canonical.is_dir():
+                    raise ToolError(
+                        "path_is_directory",
+                        "目标路径是目录，请给出完整文件路径。",
+                        retryable=False,
+                    )
+                if not overwrite:
+                    raise ToolError(
+                        "target_exists",
+                        f"目标已存在：{target.original_raw}（如需覆盖请设置 overwrite=true）。",
+                        retryable=False,
+                    )
+                if _read_text_or_none(target.canonical) is None:
+                    raise ToolError(
+                        "binary_overwrite_unsupported",
+                        "目标文件不是可撤销的 UTF-8 文本，拒绝覆盖。",
+                        retryable=False,
+                    )
+            before_source = _read_text_or_none(source.canonical)
+            before_target = _read_text_or_none(target.canonical)
+            before_target_exists = target.canonical.exists()
+            self._ensure_checkpoint(call, binding)
+            target.canonical.parent.mkdir(parents=True, exist_ok=True)
+            raw = source.canonical.read_bytes()
+            target.canonical.write_bytes(raw)
+            source.canonical.unlink()
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
+        _record_undo_write(
+            self._undo_service,
+            call,
+            binding,
+            target,
+            before_content=before_target if before_target_exists else None,
+            after_hash=_sha256_bytes(raw),
+        )
+        _record_undo_delete(
+            self._undo_service,
+            call,
+            binding,
+            source,
+            before_content=before_source,
+        )
+        _record_mutation(
+            self._checkpoint_coordinator,
+            call,
+            binding,
+            source,
+            operation="file_delete",
+            before_hash=_sha256_bytes(raw),
+            after_hash=None,
+        )
+        _record_mutation(
+            self._checkpoint_coordinator,
+            call,
+            binding,
+            target,
+            operation="file_write",
+            before_hash=None,
+            after_hash=_sha256_bytes(raw),
+        )
+        receipt = EffectReceipt(
+            kind="file_write",
+            path=str(target.canonical),
+            sha256=_sha256_bytes(raw),
+            executed_at=_now_iso(),
+        )
+        _log_effect(
+            self._effect_log,
+            call,
+            binding,
+            "move_file",
+            f"{source.original_raw} -> {target.original_raw}",
+            receipt,
+        )
+        token.raise_if_cancelled()
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                f"已移动文件：{source.original_raw} -> {target.original_raw}"
+                f"（{len(raw)} 字节）。撤销需要两步：先撤销对目标文件的写入，"
+                "再撤销对源文件的删除。"
+            ),
+            structured_content={
+                "operation": "move",
+                "path": source.original_raw,
+                "toPath": target.original_raw,
+                "bytes": len(raw),
+                "effect": receipt.as_dict(),
+            },
+        )
+
+    def _ensure_checkpoint(self, call: ToolCall, binding: WorkspaceBinding) -> None:
+        _ensure_checkpoint(self._checkpoint_coordinator, call, binding)
+
+
 class DeleteWorkspaceFileTool:
     definition = ToolDefinition(
         name="delete_workspace_file",
@@ -964,6 +1493,105 @@ def _now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_checkpoint(coordinator, call: ToolCall, binding: WorkspaceBinding) -> None:
+    """Run-level 工作区快照（best-effort，失败不阻塞写入）。"""
+    if coordinator is None:
+        return
+    run_id = call.response_variant_id or call.id
+    try:
+        coordinator.ensure_checkpoint(
+            run_id=run_id,
+            workspace_root=str(binding.root),
+        )
+    except Exception:
+        return
+
+
+def _match_line_numbers(text: str, needle: str) -> list[int]:
+    """needle 每次出现所在的行号（1 起）。"""
+    numbers: list[int] = []
+    start = 0
+    while True:
+        index = text.find(needle, start)
+        if index < 0:
+            break
+        numbers.append(text.count("\n", 0, index) + 1)
+        start = index + max(1, len(needle))
+    return numbers
+
+
+def _line_diff(
+    before: str,
+    after: str,
+    *,
+    max_lines: int = 120,
+    context: int = 2,
+) -> list[str]:
+    """紧凑行级 diff（公共前后缀裁剪 + LCS，过大时退化为整段增删）。"""
+    left = before.split("\n")
+    right = after.split("\n")
+    start = 0
+    while start < len(left) and start < len(right) and left[start] == right[start]:
+        start += 1
+    end_left = len(left)
+    end_right = len(right)
+    while (
+        end_left > start
+        and end_right > start
+        and left[end_left - 1] == right[end_right - 1]
+    ):
+        end_left -= 1
+        end_right -= 1
+    head = left[:start]
+    tail = left[end_left:]
+    mid_left = left[start:end_left]
+    mid_right = right[start:end_right]
+
+    body: list[str] = []
+    if len(mid_left) + len(mid_right) > 400:
+        body = [f"- {line}" for line in mid_left] + [
+            f"+ {line}" for line in mid_right
+        ]
+    else:
+        rows = len(mid_left)
+        cols = len(mid_right)
+        table = [[0] * (cols + 1) for _ in range(rows + 1)]
+        for i in range(rows - 1, -1, -1):
+            for j in range(cols - 1, -1, -1):
+                if mid_left[i] == mid_right[j]:
+                    table[i][j] = table[i + 1][j + 1] + 1
+                else:
+                    table[i][j] = max(table[i + 1][j], table[i][j + 1])
+        i = 0
+        j = 0
+        while i < rows and j < cols:
+            if mid_left[i] == mid_right[j]:
+                body.append(f"  {mid_left[i]}")
+                i += 1
+                j += 1
+            elif table[i + 1][j] >= table[i][j + 1]:
+                body.append(f"- {mid_left[i]}")
+                i += 1
+            else:
+                body.append(f"+ {mid_right[j]}")
+                j += 1
+        while i < rows:
+            body.append(f"- {mid_left[i]}")
+            i += 1
+        while j < cols:
+            body.append(f"+ {mid_right[j]}")
+            j += 1
+
+    lines = (
+        [f"  {line}" for line in head[-context:]]
+        + body
+        + [f"  {line}" for line in tail[:context]]
+    )
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + ["…（diff 已截断）"]
+    return lines
 
 
 def _record_mutation(

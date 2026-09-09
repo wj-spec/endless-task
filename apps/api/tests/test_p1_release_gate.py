@@ -143,7 +143,9 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                 (
                     "cancel_agent",
                     "delete_workspace_file",
+                    "edit_workspace_file",
                     "list_workspace_dir",
+                    "manage_workspace_paths",
                     "query_agent",
                     "read_artifact",
                     "read_skill_file",

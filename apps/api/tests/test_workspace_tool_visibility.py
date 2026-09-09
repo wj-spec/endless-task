@@ -58,13 +58,16 @@ class WorkspaceToolFilterTest(unittest.TestCase):
         self.assertIsNone(workspace_tool_filter(None, "conv_any"))
 
     def test_workspace_tools_set_matches_v1_surface(self) -> None:
-        # 与 v1 runtime/assistant.py 历史内联集合保持一致。
+        # v1/v2 共用的工作区工具集；S7 起新增 edit/manage 两个动词。
+        # v1 未注册这两个名字，多过滤掉它们不影响 v1 行为。
         self.assertEqual(
             WORKSPACE_TOOLS,
             frozenset(
                 {
                     "read_workspace_file",
                     "write_workspace_file",
+                    "edit_workspace_file",
+                    "manage_workspace_paths",
                     "list_workspace_dir",
                     "delete_workspace_file",
                     "run_shell",
