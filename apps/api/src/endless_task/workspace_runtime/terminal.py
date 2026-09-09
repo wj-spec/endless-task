@@ -45,6 +45,9 @@ MAX_INPUT_BYTES = 64 * 1024
 #: bash 每轮提示符前打印的私有 marker（S5 的就绪判定复用；xterm.js 会忽略未知 OSC）。
 PROMPT_MARKER_COMMAND = "printf '\\033]133;D;\\007'"
 
+#: bash 提示符 marker 的字节形式（就绪判定用）。
+PROMPT_MARKER = "\x1b]133;D;\x07"
+
 TerminalStatusKind = Literal["running", "exited"]
 
 
@@ -162,6 +165,8 @@ class PtySession:
         self._waiters: list[asyncio.Future[TerminalStatus]] = []
         self._closing = False
         self._closed = False
+        self._prompt_seen = False
+        self._prompt_waiter: Optional[asyncio.Future[bool]] = None
         self._watch_task: Optional[asyncio.Task] = None
 
     # ---------- 生命周期 ----------
@@ -341,6 +346,52 @@ class PtySession:
         return self._status
 
     @property
+    def shell_pgid(self) -> Optional[int]:
+        """shell 自己的进程组（会话首进程的 pgid）。"""
+        process = self._process
+        if process is None:
+            return None
+        try:
+            return os.getpgid(process.pid)
+        except OSError:
+            return None
+
+    @property
+    def foreground_pgid(self) -> Optional[int]:
+        """PTY 当前前台进程组（前台命令运行时不是 shell 的 pgid）。"""
+        if self._master_fd is None:
+            return None
+        try:
+            return os.tcgetpgrp(self._master_fd)
+        except OSError:
+            return None
+
+    async def wait_ready(self, timeout_seconds: float = 10.0) -> bool:
+        """等待 shell 首次回到提示符（收到私有 marker）。
+
+        marker 可能在订阅之前就已到达（读协程一直在跑），所以先查标志位，
+        再等一个由读协程唤醒的 future。
+        """
+        if self._prompt_seen:
+            return True
+        if not self.alive:
+            return False
+        waiter: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._prompt_waiter = waiter
+        unsubscribe_exit = self.add_exit_listener(
+            lambda _status: waiter.done() or waiter.set_result(False)
+        )
+        try:
+            try:
+                return await asyncio.wait_for(waiter, timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                return False
+        finally:
+            unsubscribe_exit()
+            if self._prompt_waiter is waiter:
+                self._prompt_waiter = None
+
+    @property
     def alive(self) -> bool:
         return self._status.kind == "running" and not self._closed
 
@@ -374,6 +425,11 @@ class PtySession:
         text = self._decoder.decode(chunk)
         if not text:
             return
+        if PROMPT_MARKER in text:
+            self._prompt_seen = True
+            waiter = self._prompt_waiter
+            if waiter is not None and not waiter.done():
+                waiter.set_result(True)
         self._append(text)
         for listener in list(self._listeners):
             try:

@@ -138,6 +138,10 @@ from endless_task.workspace_runtime.terminal import (
     DEFAULT_ROWS as TERMINAL_DEFAULT_ROWS,
     TerminalService,
 )
+from endless_task.workspace_runtime.terminal_tools import (
+    TERMINAL_TOOL_NAMES,
+    build_terminal_tools,
+)
 from endless_task.workspace_runtime.visibility import workspace_tool_filter
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import (
@@ -2249,6 +2253,8 @@ def _build_container(
     )
     # S9 shell 沙箱：off（默认，本机直跑）/ seatbelt / container。
     # 显式开启但沙箱不可用时**拒绝启动**（无静默降级）。
+    # S4/S5：终端服务实例（面板与模型工具共用同一份会话注册表）。
+    terminal_service = TerminalService()
     shell_sandbox_backend = None
     shell_sandbox_network_mode = None
     _shell_sandbox = (os.environ.get("ENDLESS_TASK_SHELL_SANDBOX") or "off").strip().lower()
@@ -2718,6 +2724,17 @@ def _build_container(
                 sandbox_network_mode=shell_sandbox_network_mode,
             )
         )
+        if (os.environ.get("ENDLESS_TASK_TERMINAL_TOOLS") or "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            # S5 模型侧终端工具：默认关闭，避免给不用的会话平添工具面开销。
+            for terminal_tool in build_terminal_tools(
+                workspace_resolver, terminal_service
+            ):
+                selected_tool_registry.register(terminal_tool)
         selected_tool_registry.register(UpdatePlanTool(runtime_v2_repository))
         if tool_enforcement is not None:
             # Enforcement backend shares the run coordinator's mutation
@@ -3268,7 +3285,7 @@ def _build_container(
         run_checkpoint_coordinator=run_checkpoint_coordinator,
         unattended_tool_registry=unattended_tool_registry,
         execution_backend_mode=settings.execution_backend_mode,
-        terminal_service=TerminalService(),
+        terminal_service=terminal_service,
     )
 
 

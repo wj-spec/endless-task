@@ -24,6 +24,12 @@ WORKSPACE_TOOLS: frozenset[str] = frozenset(
         "delete_workspace_file",
         "run_shell",
         "workspace_search",
+        "terminal_open",
+        "terminal_send",
+        "terminal_read",
+        "terminal_signal",
+        "terminal_close",
+        "terminal_list",
     }
 )
 
