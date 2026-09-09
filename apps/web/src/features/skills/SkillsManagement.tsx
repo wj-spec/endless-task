@@ -191,6 +191,9 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
           <div className="memory-item knowledge-item" key={key}>
             <p className="memory-content knowledge-title">{skill.name}</p>
             <p className="memory-content">{skill.description}</p>
+            {skill.whenToUse ? (
+              <p className="memory-content skill-when">适用：{skill.whenToUse}</p>
+            ) : null}
             <div className="memory-meta">
               <span
                 className={
@@ -203,6 +206,8 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
               </span>
               {pack ? (
                 <span className="knowledge-badge">v{pack.version}</span>
+              ) : skill.version ? (
+                <span className="knowledge-badge">v{skill.version}</span>
               ) : null}
               {pack?.quarantined ? (
                 <span className="memory-status is-expired">已隔离</span>

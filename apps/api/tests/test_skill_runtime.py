@@ -77,14 +77,18 @@ class SkillLoaderTest(unittest.TestCase):
         prompt = build_available_skills_prompt(skills)
         self.assertIn("<available_skills>", prompt)
         self.assertIn("read_skill_file", prompt)
-        self.assertIn(str(path), prompt)
+        self.assertIn("<name>weekly-report</name>", prompt)
+        self.assertIn("<description>写周报</description>", prompt)
+        # S3：目录不再暴露宿主路径，正文也不进目录。
+        self.assertNotIn(str(path), prompt)
+        self.assertNotIn("<location>", prompt)
         self.assertNotIn("正文：", prompt)
 
-    def test_locator_mode_exposes_locator_not_host_path(self) -> None:
+    def test_catalog_never_exposes_locator_or_host_path(self) -> None:
         write_skill(self.user, "weekly-report", "写周报")
         skills = discover_skills(self.user)
         prompt = build_available_skills_prompt(skills, locator_mode=True)
-        self.assertIn("skill://user/weekly-report", prompt)
+        self.assertNotIn("skill://user/weekly-report", prompt)
         self.assertNotIn(str(self.user), prompt)
 
 

@@ -19,31 +19,39 @@ INVOKE_DISABLED = "disabled"
 INVOKE_INVALID = "invalid"
 
 
+#: S3：目录里单条描述的上限（避免一个技能吃掉整个前缀预算）。
+MAX_CATALOG_DESCRIPTION_CHARACTERS = 500
+
+
 def build_available_skills_prompt(
     skills: Tuple[Skill, ...],
     *,
     locator_mode: bool = False,
 ) -> str:
+    """技能目录：**只给名称 + 截断描述，不给路径**（S3）。
+
+    模型通过 ``read_skill_file(name=...)`` 按需读取正文；路径是本地实现细节，
+    既不该进入模型上下文，也会在技能移动/换工作区后失效。
+    """
+    del locator_mode  # 兼容旧调用方；目录不再暴露路径或 locator。
     visible = [skill for skill in skills if skill.valid and not skill.disable_model_invocation]
     if not visible:
         return ""
     lines = [
-        "以下技能为特定任务提供专门指引。任务与某技能描述匹配时，先调用 read_skill_file "
-        "读取其全文，再按其中步骤执行；技能内相对路径以其所在目录解析。",
+        "以下技能为特定任务提供专门指引（这里只有摘要，未读取正文前不要据其行动）。"
+        "任务与某技能描述匹配时，先调用 read_skill_file（传 name）读取全文，"
+        "再按其中步骤执行；技能内相对路径以其所在目录解析。",
         "<available_skills>",
     ]
     for skill in visible:
-        location = (
-            f"skill://{skill.scope.value}/{skill.name}"
-            if locator_mode
-            else str(skill.file_path)
-        )
+        description = skill.description.strip()
+        if len(description) > MAX_CATALOG_DESCRIPTION_CHARACTERS:
+            description = description[:MAX_CATALOG_DESCRIPTION_CHARACTERS] + "…"
         lines.extend(
             [
                 "  <skill>",
                 f"    <name>{escape(skill.name)}</name>",
-                f"    <description>{escape(skill.description)}</description>",
-                f"    <location>{escape(location)}</location>",
+                f"    <description>{escape(description)}</description>",
                 "  </skill>",
             ]
         )
@@ -86,6 +94,7 @@ class SkillService:
                 file_path=skill.file_path,
                 digest=skill.digest,
                 version=skill.version,
+                when_to_use=skill.when_to_use,
                 disabled=skill.name in (
                     workspace_disabled if skill.scope == SkillScope.WORKSPACE else user_disabled
                 ),

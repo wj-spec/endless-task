@@ -60,6 +60,7 @@ def load_skill_file(path: Path, scope: SkillScope) -> Optional[Skill]:
         file_path=path,
         digest=manifest.digest,
         version=manifest.version,
+        when_to_use=manifest.when_to_use,
         disable_model_invocation=not manifest.model_invocable,
         model_invocable=manifest.model_invocable,
         user_invocable=manifest.user_invocable,

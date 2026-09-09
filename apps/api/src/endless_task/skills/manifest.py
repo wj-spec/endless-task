@@ -68,6 +68,14 @@ SKILL_MANIFEST_V2_SCHEMA: Mapping[str, Any] = {
             "type": "string",
             "enum": ["package-only"],
         },
+        # S3：可选展示/筛选字段（不参与调用判定，也不进模型目录）。
+        "whenToUse": {"type": "string", "maxLength": 500},
+        "metadata": {
+            "type": "object",
+            "additionalProperties": {
+                "type": ["string", "number", "boolean"],
+            },
+        },
     },
     "required": ["name", "description", "version", "schema-version"],
     "additionalProperties": False,
@@ -99,6 +107,9 @@ class SkillManifest:
     optional_tools: Tuple[str, ...] = ()
     conflicts_with: Tuple[str, ...] = ()
     resource_policy: Optional[str] = None
+    #: S3：人工可读的适用场景与自由元数据（不进模型目录）。
+    when_to_use: str = ""
+    metadata: Tuple[Tuple[str, str], ...] = ()
     diagnostics: Tuple[SkillDiagnostic, ...] = field(default_factory=tuple)
 
     @property
@@ -175,6 +186,7 @@ def parse_skill_manifest(
         body=body,
         model_invocable=not disable_model,
         user_invocable=user_invocable,
+        when_to_use=str(raw_frontmatter.get("whenToUse") or ""),
         diagnostics=tuple(diagnostics),
     )
 
@@ -280,6 +292,13 @@ def _validate_v2(
         optional_tools=tuple(str(item) for item in optional_tools),
         conflicts_with=tuple(str(item) for item in conflicts),
         resource_policy=raw.get("resource-policy"),
+        when_to_use=str(raw.get("whenToUse") or ""),
+        metadata=tuple(
+            (str(key), str(value))
+            for key, value in (raw.get("metadata") or {}).items()
+        )
+        if isinstance(raw.get("metadata"), Mapping)
+        else (),
         diagnostics=tuple(diagnostics),
     )
 

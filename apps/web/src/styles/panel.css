@@ -3392,3 +3392,9 @@
   flex: none;
   color: var(--faint);
 }
+
+/* S3：技能适用场景与版本 */
+.skill-when {
+  color: var(--muted);
+  font-size: var(--fs-1);
+}

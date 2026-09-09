@@ -210,3 +210,29 @@ class SkillLoaderDigestAndVersionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkillManifestOptionalFieldsTest(unittest.TestCase):
+    """S3：whenToUse / metadata 解析（v2 与 v1 都支持）。"""
+
+    def test_v2_when_to_use_and_metadata(self) -> None:
+        from endless_task.skills.manifest import parse_skill_manifest
+
+        text = (
+            "---\nname: a\ndescription: d\nversion: 1.0.0\nschema-version: 2\n"
+            "whenToUse: 当用户要求评审时\nmetadata:\n  owner: team-x\n---\n正文\n"
+        )
+        manifest = parse_skill_manifest(Path("pkg/SKILL.md"), text)
+        self.assertTrue(manifest.valid)
+        self.assertEqual("当用户要求评审时", manifest.when_to_use)
+        self.assertEqual((("owner", "team-x"),), manifest.metadata)
+
+    def test_v1_when_to_use(self) -> None:
+        from endless_task.skills.manifest import parse_skill_manifest
+
+        text = (
+            "---\nname: a\ndescription: d\nwhenToUse: 只在写周报时用\n---\n正文\n"
+        )
+        manifest = parse_skill_manifest(Path("pkg/SKILL.md"), text)
+        self.assertEqual("只在写周报时用", manifest.when_to_use)
+        self.assertEqual((), manifest.metadata)

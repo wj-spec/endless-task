@@ -114,6 +114,9 @@ export type Skill = {
   disabled: boolean;
   disableModelInvocation: boolean;
   diagnostics: SkillDiagnostic[];
+  version?: string;
+  digest?: string;
+  whenToUse?: string;
 };
 
 export type McpToolStatus = {
@@ -983,6 +986,7 @@ export type SkillInvocationCandidate = {
   name: string;
   description: string;
   scope: "user" | "workspace";
+  whenToUse?: string;
 };
 
 export type RuntimeV2RecoveryResponse = {

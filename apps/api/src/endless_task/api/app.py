@@ -2728,6 +2728,26 @@ def _build_container(
             locator_mode=settings.skill_packages_enabled,
         )
 
+    def skill_name_resolver(conversation_id: str):
+        """S3：按技能名解析到 SKILL.md（目录不再暴露路径）。
+
+        只返回"可见"技能（合法 + 未禁用）；SKILL.md 的根包含性仍由工具侧
+        ``resolve_external_read_path`` 兜底。
+        """
+
+        def resolve(name: str) -> Optional[Path]:
+            binding = workspace_resolver.resolve_binding(conversation_id)
+            root = binding.root if binding is not None else None
+            workspace_id = binding.workspace_id if binding is not None else ""
+            for skill in skill_service.visible_skills(
+                root, workspace_id=workspace_id
+            ):
+                if skill.name == name:
+                    return skill.file_path
+            return None
+
+        return resolve
+
     def skill_locator_resolver(conversation_id: str):
         """Resolve ``skill://<scope>/<name>`` to a canonical SKILL.md path.
 
@@ -2871,6 +2891,7 @@ def _build_container(
             ReadSkillFileTool(
                 skill_roots_for_conversation,
                 locator_resolver_provider=skill_locator_resolver,
+                name_resolver_provider=skill_name_resolver,
                 max_file_bytes=settings.max_file_bytes,
             )
         )
@@ -5049,6 +5070,9 @@ def create_app(
                     "description": skill.description,
                     "scope": skill.scope.value,
                     "filePath": str(skill.file_path),
+                    "version": skill.version,
+                    "digest": skill.digest,
+                    "whenToUse": skill.when_to_use,
                     "disabled": skill.disabled,
                     "disableModelInvocation": skill.disable_model_invocation,
                     "diagnostics": [
@@ -5356,6 +5380,7 @@ def create_app(
                     "name": skill.name,
                     "description": skill.description,
                     "scope": skill.scope.value,
+                    "whenToUse": skill.when_to_use,
                 }
                 for skill in skills
             ]

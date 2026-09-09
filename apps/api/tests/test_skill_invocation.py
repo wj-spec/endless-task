@@ -8,6 +8,7 @@ from pathlib import Path
 
 from endless_task.skills import (
     INVOKE_DISABLED,
+    Skill,
     INVOKE_NOT_USER_INVOCABLE,
     INVOKE_OK,
     INVOKE_UNKNOWN,
@@ -114,11 +115,97 @@ class ReadSkillFileToolSchemaTest(unittest.TestCase):
         from endless_task.workspace_runtime.fs_tools import ReadSkillFileTool
 
         without = ReadSkillFileTool(lambda _: ())
-        self.assertEqual(["path"], without.definition.input_schema.get("required"))
-        self.assertNotIn("locator", without.definition.description)
+        self.assertEqual(
+            [{"required": ["name"]}, {"required": ["path"]}],
+            without.definition.input_schema.get("anyOf"),
+        )
+        self.assertNotIn("locator", without.definition.input_schema["properties"])
+        self.assertIn("name", without.definition.description)
 
         with_locator = ReadSkillFileTool(
             lambda _: (), locator_resolver_provider=lambda _: None
         )
-        self.assertIsNotNone(with_locator.definition.input_schema.get("anyOf"))
-        self.assertIn("locator", with_locator.definition.description)
+        self.assertIn("locator", with_locator.definition.input_schema["properties"])
+
+
+class SkillCatalogFormTest(unittest.TestCase):
+    """S3：目录只给名称 + 截断描述，不给路径。"""
+
+    def test_catalog_hides_paths_and_caps_description(self) -> None:
+        from endless_task.skills.service import (
+            MAX_CATALOG_DESCRIPTION_CHARACTERS,
+            build_available_skills_prompt,
+        )
+
+        skill = Skill(
+            name="review-notes",
+            description="x" * 900,
+            scope="user",
+            file_path=Path("/Users/someone/secret/skills/review-notes/SKILL.md"),
+        )
+        prompt = build_available_skills_prompt((skill,))
+        self.assertIn("<name>review-notes</name>", prompt)
+        self.assertNotIn("/Users/someone", prompt)
+        self.assertNotIn("<location>", prompt)
+        self.assertNotIn("x" * (MAX_CATALOG_DESCRIPTION_CHARACTERS + 1), prompt)
+        self.assertIn("…", prompt)
+        self.assertIn("read_skill_file", prompt)
+
+    def test_empty_catalog_returns_empty_string(self) -> None:
+        from endless_task.skills.service import build_available_skills_prompt
+
+        self.assertEqual("", build_available_skills_prompt(()))
+
+
+class ReadSkillFileByNameTest(unittest.IsolatedAsyncioTestCase):
+    """S3：read_skill_file 支持 name（目录不再暴露路径）。"""
+
+    async def test_name_resolution_and_errors(self) -> None:
+        from endless_task.runtime.cancellation import CancellationToken
+        from endless_task.tooling import ToolCall, ToolCallStatus, ToolError
+        from endless_task.workspace_runtime.fs_tools import ReadSkillFileTool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skills"
+            (root / "demo").mkdir(parents=True)
+            skill_file = root / "demo" / "SKILL.md"
+            skill_file.write_text("---\nname: demo\ndescription: d\n---\n暗号 ORANGE-42\n", encoding="utf-8")
+
+            tool = ReadSkillFileTool(
+                lambda _: (root,),
+                name_resolver_provider=lambda _: (
+                    lambda name: skill_file if name == "demo" else None
+                ),
+            )
+
+            def call(**arguments):
+                return ToolCall(
+                    id="call_skill",
+                    conversation_id="conv_1",
+                    turn_id="turn_1",
+                    response_variant_id="variant_1",
+                    tool_name="read_skill_file",
+                    arguments=arguments,
+                    status=ToolCallStatus.CREATED,
+                    created_at="2026-09-09T00:00:00.000Z",
+                )
+
+            result = await tool.execute(
+                call(name="demo"), CancellationToken()
+            )
+            self.assertIn("ORANGE-42", result.content)
+            self.assertNotIn("<location>", result.content)
+
+            with self.assertRaises(ToolError) as ctx:
+                await tool.execute(call(name="missing"), CancellationToken())
+            self.assertEqual("skill_not_found", ctx.exception.code)
+
+            # 目录外路径仍被拒绝（name 解析结果也要过根包含性校验）
+            outside = Path(tmp) / "outside.md"
+            outside.write_text("secret", encoding="utf-8")
+            escaping = ReadSkillFileTool(
+                lambda _: (root,),
+                name_resolver_provider=lambda _: (lambda name: outside),
+            )
+            with self.assertRaises(ToolError):
+                await escaping.execute(call(name="demo"), CancellationToken())

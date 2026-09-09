@@ -27,6 +27,8 @@ class Skill:
     #: 内容摘要与版本（SKILL.md 原始字节 sha256 / manifest version）。
     digest: str = ""
     version: str = ""
+    #: S3：适用场景（人工可读；不进模型目录）。
+    when_to_use: str = ""
     disabled: bool = False
     disable_model_invocation: bool = False
     #: S1：调用策略（与模型调用解耦）。user_invocable 决定"用户 /技能名"是否可用。

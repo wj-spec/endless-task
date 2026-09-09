@@ -78,23 +78,30 @@ class ReadSkillFileTool:
     definition = ToolDefinition(
         name="read_skill_file",
         description=(
-            "读取系统提示词中列出的技能正文。可传 locator（skill://user/name，推荐）"
-            "或 available_skills 提供的绝对路径（兼容）；该工具只读且仅允许访问技能目录。"
+            "按名称读取 <available_skills> 里列出的技能正文（传 name）。"
+            "该工具只读且仅允许访问技能目录。"
         ),
         input_schema={
             "type": "object",
             "properties": {
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "技能名（与目录中的 <name> 一致）。",
+                },
                 "locator": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 512,
-                    "description": "技能 locator，形如 skill://user/<name>。",
+                    "description": "兼容写法：skill://<scope>/<name>。",
                 },
                 "path": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "start_line": {"type": "integer", "minimum": 1},
                 "line_count": {"type": "integer", "minimum": 1, "maximum": 200},
             },
             "anyOf": [
+                {"required": ["name"]},
                 {"required": ["locator"]},
                 {"required": ["path"]},
             ],
@@ -113,33 +120,34 @@ class ReadSkillFileTool:
         locator_resolver_provider: Optional[
             Callable[[str], Optional[Callable[[str], Optional[Path]]]]
         ] = None,
+        name_resolver_provider: Optional[
+            Callable[[str], Optional[Callable[[str], Optional[Path]]]]
+        ] = None,
         max_file_bytes: int = 1_000_000,
     ) -> None:
         self._skill_root_provider = skill_root_provider
         self._locator_resolver_provider = locator_resolver_provider
+        self._name_resolver_provider = name_resolver_provider
         self._max_file_bytes = max_file_bytes
         # 未启用 locator 解析时，不要把 locator 写成"推荐"——否则模型会先试
         # 一次必然失败的 locator 调用（S1 live 实测发生过）。
         if locator_resolver_provider is None:
+            schema = dict(type(self).definition.input_schema)
+            properties = dict(schema["properties"])
+            properties.pop("locator", None)
             self.definition = replace(
                 type(self).definition,
                 description=(
-                    "读取系统提示词中列出的技能正文。用 available_skills 提供的路径"
-                    "（path）；该工具只读且仅允许访问技能目录。"
+                    "按名称读取 <available_skills> 里列出的技能正文（传 name）；"
+                    "该工具只读且仅允许访问技能目录。"
                 ),
                 input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "minLength": 1, "maxLength": 2048},
-                        "start_line": {"type": "integer", "minimum": 1},
-                        "line_count": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 200,
-                        },
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
+                    **schema,
+                    "properties": properties,
+                    "anyOf": [
+                        {"required": ["name"]},
+                        {"required": ["path"]},
+                    ],
                 },
             )
 
@@ -152,8 +160,11 @@ class ReadSkillFileTool:
 
     async def execute(self, call: ToolCall, token: CancellationToken) -> ToolResult:
         token.raise_if_cancelled()
+        name = call.optional_argument("name", str, None)
         locator = call.optional_argument("locator", str, None)
-        if locator is not None:
+        if name is not None:
+            canonical = self._resolve_name(name, call)
+        elif locator is not None:
             canonical = self._resolve_locator(locator, call)
         else:
             roots = self._skill_root_provider(call.conversation_id)
@@ -198,6 +209,40 @@ class ReadSkillFileTool:
                 "totalLines": len(lines),
             },
         )
+
+    def _resolve_name(self, name: str, call: ToolCall) -> Path:
+        """S3：按技能名解析（目录只暴露 name，不暴露路径）。"""
+        if self._name_resolver_provider is None:
+            raise ToolError(
+                "name_unavailable",
+                "技能名解析不可用；请改用 path。",
+                retryable=False,
+            )
+        resolver = self._name_resolver_provider(call.conversation_id)
+        if resolver is None:
+            raise ToolError(
+                "skill_not_found",
+                f"未找到技能：{name}。",
+                retryable=False,
+            )
+        try:
+            canonical = resolver(name)
+        except (ValueError, OSError) as error:
+            raise ToolError(
+                "invalid_skill_name", f"技能名无效：{name}。", retryable=False
+            ) from error
+        if canonical is None:
+            raise ToolError(
+                "skill_not_found",
+                f"未找到技能：{name}（可能已禁用或依赖不满足）。",
+                retryable=False,
+            )
+        return self._guard_containment(canonical, call)
+
+    def _guard_containment(self, canonical: Path, call: ToolCall) -> Path:
+        roots = self._skill_root_provider(call.conversation_id)
+        resolved = resolve_external_read_path(roots, str(canonical))
+        return resolved.canonical
 
     def _resolve_locator(self, locator: str, call: ToolCall) -> Path:
         if self._locator_resolver_provider is None:
