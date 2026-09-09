@@ -110,7 +110,11 @@ export function WorkspacePanel({
         ))}
       </div>
       {tab === "files" ? (
-        <WorkspaceFilesPane rootPath={workspaceRootPath} workspaceId={workspaceId} />
+        <WorkspaceFilesPane
+          conversationId={conversationId}
+          rootPath={workspaceRootPath}
+          workspaceId={workspaceId}
+        />
       ) : selectedArtifactId ? (
         <ArtifactDetail
           artifactId={selectedArtifactId}

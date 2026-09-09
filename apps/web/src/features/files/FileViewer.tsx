@@ -86,6 +86,7 @@ export type WorkspaceFileViewerProps = {
   path: string;
   rootPath?: string | null;
   onBack: () => void;
+  onEdit?: () => void;
 };
 
 /** P0 文件面板：单个文件的只读预览（工作区根内）。 */
@@ -94,6 +95,7 @@ export function WorkspaceFileViewer({
   path,
   rootPath,
   onBack,
+  onEdit,
 }: WorkspaceFileViewerProps) {
   const [preview, setPreview] = useState<WorkspaceFilePreview | null>(null);
   const [busy, setBusy] = useState(true);
@@ -140,6 +142,11 @@ export function WorkspaceFileViewer({
         <span className="file-viewer-path" title={path}>
           {path}
         </span>
+        {onEdit ? (
+          <button className="file-viewer-action" onClick={onEdit} type="button">
+            编辑
+          </button>
+        ) : null}
         {reveal ? (
           <button
             className="file-viewer-action"

@@ -13,6 +13,11 @@
     "test:e2e:mobile": "playwright test --project=mobile-chromium"
   },
   "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/lang-python": "^6.2.1",
+    "codemirror": "^6.0.2",
     "highlight.js": "^11.12.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

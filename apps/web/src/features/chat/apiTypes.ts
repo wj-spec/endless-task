@@ -54,6 +54,33 @@ export type WorkspaceTreeListing = {
   truncated: boolean;
 };
 
+/** P1 编辑：读取单个工作区文件（含乐观并发版本 token）。 */
+export type WorkspaceFileContent = {
+  workspaceId: string;
+  path: string;
+  version: string;
+  size: number;
+  totalLines: number;
+  content: string;
+};
+
+export type WorkspaceFileWriteResult = {
+  workspaceId: string;
+  path: string;
+  version: string;
+  size: number;
+  totalLines: number;
+  undoEntryId: string | null;
+};
+
+/** 409 冲突时服务端附带的当前状态（用于"重新加载 / 覆盖 / 另存副本"）。 */
+export type WorkspaceFileConflictDetails = {
+  path?: string;
+  currentVersion?: string | null;
+  currentContent?: string | null;
+  beforeExists?: boolean;
+};
+
 export type SkillDiagnostic = {
   code: string;
   message: string;

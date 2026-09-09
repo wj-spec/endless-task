@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { WorkspaceTreeEntry } from "../chat/apiTypes";
 import {
   childPath,
+  copyNameFor,
+  diffLines,
+  diffSummary,
   extensionOf,
   formatFileSize,
   isMarkdownPath,
@@ -63,5 +66,30 @@ describe("workspaceFiles（文件面板纯函数）", () => {
       { label: "chat.ts", path: "src/features/chat.ts" },
     ]);
     expect(pathSegments("")).toEqual([]);
+  });
+
+  it("另存副本文件名带时间戳且保留目录与扩展名", () => {
+    const now = new Date(2026, 8, 9, 12, 3);
+    expect(copyNameFor("note.md", now)).toBe("note.edited-20260909-1203.md");
+    expect(copyNameFor("src/note.md", now)).toBe("src/note.edited-20260909-1203.md");
+    expect(copyNameFor("Makefile", now)).toBe("Makefile.edited-20260909-1203");
+  });
+
+  it("行级 diff：公共前后缀保持 same，中间给出增删", () => {
+    const lines = diffLines("a\nb\nc\n", "a\nB\nc\n");
+    expect(lines.map((line) => [line.type, line.text])).toEqual([
+      ["same", "a"],
+      ["remove", "b"],
+      ["add", "B"],
+      ["same", "c"],
+      ["same", ""],
+    ]);
+    expect(diffSummary(lines)).toEqual({ added: 1, removed: 1 });
+  });
+
+  it("行级 diff：整段新增与整段删除", () => {
+    expect(diffSummary(diffLines("", "a\nb"))).toEqual({ added: 2, removed: 1 });
+    expect(diffSummary(diffLines("a\nb", ""))).toEqual({ added: 1, removed: 2 });
+    expect(diffSummary(diffLines("same", "same"))).toEqual({ added: 0, removed: 0 });
   });
 });

@@ -57,6 +57,8 @@ import type { KnowledgeProposal,
   Skill,
   Workspace,
   WorkspaceFilePreview,
+  WorkspaceFileContent,
+  WorkspaceFileWriteResult,
   WorkspaceTreeListing,
   WorkspaceSnapshot,
   SkillPackagesResponse,
@@ -83,6 +85,7 @@ type ApiErrorEnvelope = {
     message?: string;
     retryable?: boolean;
     correlationId?: string;
+    details?: Record<string, unknown>;
   };
 };
 
@@ -91,6 +94,7 @@ export class ApiClientError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly correlationId?: string;
+  readonly details?: Record<string, unknown>;
 
   constructor(response: Response, payload?: ApiErrorEnvelope) {
     super(payload?.error?.message ?? `请求失败（${response.status}）`);
@@ -99,6 +103,7 @@ export class ApiClientError extends Error {
     this.code = payload?.error?.code ?? "request_failed";
     this.retryable = payload?.error?.retryable ?? response.status >= 500;
     this.correlationId = payload?.error?.correlationId;
+    this.details = payload?.error?.details;
   }
 }
 
@@ -267,6 +272,24 @@ export const chatApi = {
       `/workspaces/${workspaceId}/tree?${parameters.toString()}`,
     );
   },
+  readWorkspaceFile: (workspaceId: string, path: string) =>
+    request<WorkspaceFileContent>(
+      `/workspaces/${workspaceId}/file?path=${encodeURIComponent(path)}`,
+    ),
+  writeWorkspaceFile: (
+    workspaceId: string,
+    path: string,
+    body: { content: string; version: string | null },
+    conversationId: string,
+  ) =>
+    request<WorkspaceFileWriteResult>(
+      `/workspaces/${workspaceId}/file?path=${encodeURIComponent(path)}`
+        + `&conversation_id=${encodeURIComponent(conversationId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      },
+    ),
   listMcpServers: async () => {
     const response = await request<{ items: McpServer[] }>("/mcp/servers");
     return response.items;

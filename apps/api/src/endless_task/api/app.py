@@ -8,9 +8,9 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator, Callable, Literal, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Literal, Mapping, Optional
 
 from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -1144,6 +1144,15 @@ class RevealPathBody(BaseModel):
     note: Optional[str] = None
 
 
+class WorkspaceFileWriteBody(BaseModel):
+    """P1 文件编辑保存：内容 + 打开时的版本 token（乐观并发）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    version: Optional[str] = None
+
+
 class ResolveArtifactProposalBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1171,11 +1180,19 @@ class SetPermissionBody(BaseModel):
 
 
 class ApiRequestError(RuntimeError):
-    def __init__(self, code: str, message: str, *, status_code: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int = 400,
+        details: Optional[Mapping[str, object]] = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.details = details
 
 
 def _tool_platform_v2_profile_name() -> str:
@@ -1195,17 +1212,19 @@ def _error_response(
     code: str,
     message: str,
     retryable: bool = False,
+    details: Optional[Mapping[str, object]] = None,
 ) -> JSONResponse:
+    payload: dict[str, object] = {
+        "code": code,
+        "message": message,
+        "retryable": retryable,
+        "correlationId": _correlation_id(),
+    }
+    if details is not None:
+        payload["details"] = dict(details)
     return JSONResponse(
         status_code=status_code,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "retryable": retryable,
-                "correlationId": _correlation_id(),
-            }
-        },
+        content={"error": payload},
     )
 
 
@@ -3359,6 +3378,7 @@ def create_app(
             status_code=error.status_code,
             code=error.code,
             message=error.message,
+            details=error.details,
         )
 
     @app.exception_handler(FileError)
@@ -4932,6 +4952,202 @@ def create_app(
             "rootPath": str(root),
             "entries": entries,
             "truncated": len(items) >= _WS_MAX_BROWSE_ITEMS,
+        }
+
+    # ---------- P1 文件编辑保存（工作区根内，乐观并发） ----------
+
+    def _workspace_root_or_error(workspace_id: str) -> tuple[object, Path]:
+        """解析工作区与其绑定根目录（供文件读写端点共用）。"""
+        try:
+            workspace = container.workspace_repository.get_workspace(workspace_id)
+        except NotFoundError:
+            raise ApiRequestError(
+                "workspace_not_found", "工作区不存在。", status_code=404
+            ) from None
+        if not workspace.root_path:
+            raise ApiRequestError("workspace_not_bound", "该工作区未绑定本地目录。")
+        root = Path(workspace.root_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ApiRequestError("workspace_not_bound", "该工作区绑定目录不可用。")
+        return workspace, root
+
+    def _resolve_workspace_file_or_error(root: Path, path: str) -> object:
+        from endless_task.tooling import ToolError as _WsToolError
+        from endless_task.workspace_runtime.path_safety import (
+            resolve_workspace_path as _ws_resolve_workspace_path,
+        )
+
+        try:
+            return _ws_resolve_workspace_path(root, path)
+        except _WsToolError as error:
+            status = 404 if error.code == "path_not_found" else 400
+            message = getattr(error, "safe_message", None) or str(error)
+            raise ApiRequestError(error.code, message, status_code=status) from None
+
+    def _file_version_of(raw: bytes, stat_result) -> str:
+        import hashlib as _hashlib
+
+        return (
+            f"{_hashlib.sha256(raw).hexdigest()[:16]}"
+            f":{stat_result.st_mtime_ns}:{stat_result.st_size}"
+        )
+
+    @app.get("/workspaces/{workspace_id}/file")
+    async def read_workspace_file_api(
+        workspace_id: str,
+        path: str = Query(..., min_length=1, max_length=1024),
+    ) -> dict[str, object]:
+        """P1：读取单个工作区文件（完整内容 + 版本 token），供编辑器使用。"""
+        from endless_task.tooling import ToolError as _WsToolError
+        from endless_task.workspace_runtime.fs_tools import _decode_utf8 as _ws_decode
+
+        _workspace, root = _workspace_root_or_error(workspace_id)
+        resolved = _resolve_workspace_file_or_error(root, path)
+        canonical = resolved.canonical
+        if not canonical.exists():
+            raise ApiRequestError("path_not_found", "文件不存在。", status_code=404)
+        if canonical.is_dir():
+            raise ApiRequestError("path_is_directory", "路径指向目录。")
+        stat_result = canonical.stat()
+        if stat_result.st_size > container.settings.max_file_bytes:
+            raise ApiRequestError(
+                "file_too_large",
+                f"文件超过编辑上限（{container.settings.max_file_bytes} 字节），"
+                "请用系统程序打开。",
+            )
+        raw = canonical.read_bytes()
+        try:
+            text = _ws_decode(raw)
+        except _WsToolError as error:
+            message = getattr(error, "safe_message", None) or str(error)
+            raise ApiRequestError(error.code, message) from None
+        return {
+            "workspaceId": workspace_id,
+            "path": resolved.original_raw,
+            "version": _file_version_of(raw, stat_result),
+            "size": stat_result.st_size,
+            "totalLines": len(text.splitlines()) or 1,
+            "content": text,
+        }
+
+    @app.put("/workspaces/{workspace_id}/file")
+    async def write_workspace_file_api(
+        workspace_id: str,
+        body: WorkspaceFileWriteBody,
+        path: str = Query(..., min_length=1, max_length=1024),
+        conversation_id: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        """P1：保存单个工作区文件（If-Match 版本 token，冲突返回 409）。
+
+        与 `write_workspace_file` 工具共用路径锁、undo journal 与审计日志；
+        区别是这里由人操作（`approver="user"`），并以版本 token 做乐观并发。
+        """
+        from endless_task.tooling import ToolError as _WsToolError
+        from endless_task.workspace_runtime.effect_log import EffectReceipt
+        from endless_task.workspace_runtime.fs_tools import (
+            _PATH_LOCKS as _ws_path_locks,
+            _read_text_or_none as _ws_read_text_or_none,
+            sha256_text as _ws_sha256_text,
+        )
+
+        if not conversation_id:
+            raise ApiRequestError(
+                "conversation_required", "保存工作区文件需要 conversation_id。"
+            )
+        try:
+            conversation = container.chat_repository.get_conversation(conversation_id)
+        except NotFoundError:
+            raise ApiRequestError(
+                "conversation_not_found", "会话不存在。", status_code=404
+            ) from None
+        if conversation.workspace_id != workspace_id:
+            raise ApiRequestError(
+                "conversation_workspace_mismatch",
+                "该会话不属于此工作区，无法记录撤销日志。",
+            )
+
+        _workspace, root = _workspace_root_or_error(workspace_id)
+        resolved = _resolve_workspace_file_or_error(root, path)
+        canonical = resolved.canonical
+        if canonical.exists() and canonical.is_dir():
+            raise ApiRequestError("path_is_directory", "路径指向目录，不能覆盖为文件。")
+        content = body.content
+        encoded = content.encode("utf-8")
+        if len(encoded) > container.settings.max_file_bytes:
+            raise ApiRequestError(
+                "write_too_large",
+                f"内容超过写入上限（{container.settings.max_file_bytes} 字节）。",
+            )
+
+        lock = await _ws_path_locks.acquire(str(canonical))
+        async with lock:
+            before_exists = canonical.exists()
+            if before_exists:
+                before_stat = canonical.stat()
+                before_raw = canonical.read_bytes()
+                current_version = _file_version_of(before_raw, before_stat)
+                before_content = _ws_read_text_or_none(canonical)
+            else:
+                before_raw = b""
+                current_version = None
+                before_content = None
+            if body.version != current_version:
+                raise ApiRequestError(
+                    "file_version_conflict",
+                    "文件已被其它改动更新，请先对比再决定是否覆盖。",
+                    status_code=409,
+                    details={
+                        "path": resolved.original_raw,
+                        "currentVersion": current_version,
+                        "currentContent": before_content,
+                        "beforeExists": before_exists,
+                    },
+                )
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            canonical.write_text(content, encoding="utf-8")
+            after_stat = canonical.stat()
+            after_version = _file_version_of(encoded, after_stat)
+
+        undo_entry = None
+        if container.undo_service is not None:
+            undo_entry = container.undo_service.record_file_write(
+                conversation_id=conversation_id,
+                target=resolved.original_raw,
+                workspace_root=str(root),
+                before_content=before_content,
+                before_exists=before_exists,
+                after_hash=_ws_sha256_text(content),
+                workspace_id=workspace_id,
+            )
+        try:
+            container.effect_log.append(
+                conversation_id=conversation_id,
+                workspace_id=workspace_id,
+                workspace_root=str(root),
+                operation="human_write",
+                detail=resolved.original_raw,
+                receipt=EffectReceipt(
+                    kind="file_write",
+                    path=str(canonical),
+                    sha256=_ws_sha256_text(content),
+                    executed_at=datetime.now(timezone.utc).isoformat(),
+                ),
+                approver="user",
+            )
+        except _WsToolError as error:
+            # 文件已写入但审计失败：如实告知，不假装成功。
+            raise ApiRequestError(
+                "unknown_outcome",
+                "文件已保存，但本地审计日志写入失败；请到工作区设置检查日志目录后核对结果。",
+                status_code=500,
+            ) from error
+        return {
+            "workspaceId": workspace_id,
+            "path": resolved.original_raw,
+            "version": after_version,
+            "size": after_stat.st_size,
+            "totalLines": len(content.splitlines()) or 1,
+            "undoEntryId": undo_entry.id if undo_entry is not None else None,
         }
 
     @app.get("/filesystem/browse")

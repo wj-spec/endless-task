@@ -2451,3 +2451,219 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---------- P1 文件编辑：编辑器 / 冲突 / 变更回显 ---------- */
+
+.file-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.file-editor-dirty {
+  margin-left: var(--space-2);
+  color: var(--warn-deep);
+  font-size: var(--fs-1);
+}
+
+.file-viewer-action.is-primary {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 620;
+}
+
+.file-viewer-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-editor-notice {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-1);
+}
+
+.file-editor-saved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+}
+
+.file-editor-saved button {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.file-editor-saved button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.file-editor-saved button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.file-editor-body.is-split > * {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.file-editor-host {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.file-editor-mount {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.file-editor-mount .cm-editor {
+  height: 100%;
+}
+
+.file-editor-preview {
+  padding: var(--space-3);
+  border-left: 1px solid var(--line-soft);
+  font-size: var(--fs-2);
+}
+
+.file-diff {
+  flex: none;
+  max-height: 40%;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  overflow: auto;
+}
+
+.file-diff-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--line-faint);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+}
+
+.file-diff-head button {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.file-diff-body {
+  margin: 0;
+  padding: var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  line-height: 1.55;
+}
+
+.file-diff-line {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+}
+
+.file-diff-line.is-add {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--ink);
+}
+
+.file-diff-line.is-remove {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--muted-strong);
+}
+
+.file-diff-sign {
+  flex: none;
+  width: 1ch;
+  color: var(--faint);
+}
+
+.file-diff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.file-conflict {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warn-mid);
+  border-left: 3px solid var(--warn-mid);
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+}
+
+.file-conflict-message {
+  margin: 0;
+  color: var(--warn-deep);
+  font-size: var(--fs-2);
+  font-weight: 620;
+}
+
+.file-conflict-hint {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  line-height: 1.6;
+}
+
+.file-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.file-conflict-actions button {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.file-conflict-actions button:hover:not(:disabled) {
+  border-color: var(--warn-deep);
+  color: var(--warn-deep);
+}
+
+.file-conflict-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

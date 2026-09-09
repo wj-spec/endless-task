@@ -1,34 +1,58 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { WorkspaceFileEditor } from "./FileEditor";
 import { FileTree } from "./FileTree";
 import { WorkspaceFileViewer } from "./FileViewer";
 import { useWorkspaceTree } from "./useWorkspaceTree";
 
 export type WorkspaceFilesPaneProps = {
   workspaceId: string;
+  conversationId: string;
   rootPath?: string | null;
 };
 
 /**
- * P0 文件面板：目录树 + 单文件只读预览（主从切换，窄面板友好）。
+ * P0/P1 文件面板：目录树 + 只读预览 + 编辑保存（主从切换，窄面板友好）。
  *
  * 根层加载失败（未绑定目录、目录不可用）在树上以错误行呈现，不阻塞页签切换。
  */
 export function WorkspaceFilesPane({
   workspaceId,
+  conversationId,
   rootPath,
 }: WorkspaceFilesPaneProps) {
   const [showHidden, setShowHidden] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
   const tree = useWorkspaceTree(workspaceId, showHidden);
+
+  useEffect(() => {
+    setEditing(false);
+  }, [selectedPath]);
 
   if (!workspaceId) {
     return <p className="file-tree-note">该会话未绑定工作区，无法浏览文件。</p>;
+  }
+
+  if (selectedPath && editing) {
+    return (
+      <WorkspaceFileEditor
+        conversationId={conversationId}
+        onBack={() => {
+          setEditing(false);
+          setSelectedPath(null);
+        }}
+        onSaved={() => tree.refresh()}
+        path={selectedPath}
+        workspaceId={workspaceId}
+      />
+    );
   }
 
   if (selectedPath) {
     return (
       <WorkspaceFileViewer
         onBack={() => setSelectedPath(null)}
+        onEdit={() => setEditing(true)}
         path={selectedPath}
         rootPath={rootPath}
         workspaceId={workspaceId}
