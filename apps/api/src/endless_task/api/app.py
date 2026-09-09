@@ -2228,6 +2228,50 @@ def _build_container(
             if part.strip()
         ),
     )
+    # S9 shell 沙箱：off（默认，本机直跑）/ seatbelt / container。
+    # 显式开启但沙箱不可用时**拒绝启动**（无静默降级）。
+    shell_sandbox_backend = None
+    shell_sandbox_network_mode = None
+    _shell_sandbox = (os.environ.get("ENDLESS_TASK_SHELL_SANDBOX") or "off").strip().lower()
+    if _shell_sandbox not in {"", "off"}:
+        from endless_task.execution_env import NetworkMode
+
+        _network = (
+            NetworkMode.ALLOW_ALL
+            if (os.environ.get("ENDLESS_TASK_SHELL_SANDBOX_NETWORK") or "deny").strip().lower()
+            == "allow"
+            else NetworkMode.DENY
+        )
+        if _shell_sandbox == "seatbelt":
+            import shutil as _shutil
+
+            from endless_task.execution_env import SeatbeltBackend, probe_seatbelt
+
+            _sandbox_exec = _shutil.which("sandbox-exec")
+            if not _sandbox_exec or not probe_seatbelt(_sandbox_exec):
+                raise ValueError(
+                    "ENDLESS_TASK_SHELL_SANDBOX=seatbelt 但 sandbox-exec 无法应用沙箱；"
+                    "已拒绝启动（不降级为本机执行）。"
+                )
+            shell_sandbox_backend = SeatbeltBackend(sandbox_exec=_sandbox_exec)
+            shell_sandbox_network_mode = _network
+        elif _shell_sandbox == "container":
+            from endless_task.execution_env import ContainerExecutionBackend
+
+            _image = (os.environ.get("ENDLESS_TASK_SHELL_SANDBOX_IMAGE") or "").strip()
+            if not _image:
+                raise ValueError(
+                    "ENDLESS_TASK_SHELL_SANDBOX=container 需要同时设置 "
+                    "ENDLESS_TASK_SHELL_SANDBOX_IMAGE。"
+                )
+            shell_sandbox_backend = ContainerExecutionBackend(image=_image)
+            shell_sandbox_network_mode = _network
+        else:
+            raise ValueError(
+                f"不支持的 ENDLESS_TASK_SHELL_SANDBOX 取值：{_shell_sandbox}"
+                "（可选 off/seatbelt/container）。"
+            )
+
     tool_execution_limits = ToolExecutionLimits(
         max_calls_per_turn=settings.max_tool_calls_per_turn,
         max_concurrent_calls=settings.max_concurrent_tool_calls,
@@ -2651,6 +2695,8 @@ def _build_container(
                 max_output_bytes=settings.shell_max_output_bytes,
                 checkpoint_coordinator=run_checkpoint_coordinator,
                 undo_service=undo_service,
+                execution_backend=shell_sandbox_backend,
+                sandbox_network_mode=shell_sandbox_network_mode,
             )
         )
         selected_tool_registry.register(UpdatePlanTool(runtime_v2_repository))

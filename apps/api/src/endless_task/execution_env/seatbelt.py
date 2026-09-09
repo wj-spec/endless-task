@@ -79,6 +79,25 @@ def build_seatbelt_profile(
     return "\n".join(lines)
 
 
+#: ``sandbox-exec`` 自身失败时打印的前缀（子进程输出不含它）。
+_SANDBOX_FAILURE_MARKERS = (
+    b"sandbox-exec:",
+    b"sandbox_apply:",
+    b"unbound variable",
+    b"unknown operation",
+)
+
+
+def sandbox_apply_failed(stderr: bytes) -> bool:
+    """stderr 是否来自 ``sandbox-exec`` 自身（而非被执行的命令）。
+
+    S9：``sandbox-exec`` 正常时会把子进程的退出码原样返回，因此不能"非零即
+    沙箱失败"；只有它自己报错（前缀/关键标记命中）才判定沙箱未生效。
+    """
+    head = stderr[:512]
+    return any(marker in head for marker in _SANDBOX_FAILURE_MARKERS)
+
+
 def probe_seatbelt(sandbox_exec: str) -> bool:
     """Whether ``sandbox-exec`` can actually apply a sandbox here."""
     import subprocess
@@ -167,9 +186,9 @@ class SeatbeltBackend(ExecutionEnvironment):
                 pass
             stdout_bytes, stderr_bytes = b"", b""
             exit_code = None
-        if exit_code is not None and exit_code != 0:
-            # sandbox-exec returns non-zero when the sandbox cannot be
-            # applied (e.g. restricted macOS). Never run outside it.
+        if exit_code is not None and exit_code != 0 and sandbox_apply_failed(stderr_bytes):
+            # 只有 sandbox-exec 自己报错才判定"沙箱未生效"；命令本身失败
+            # （非零退出）要原样返回给调用方。
             raise AgentPlatformError(
                 "sandbox_unavailable",
                 "sandbox-exec 无法应用沙箱，已拒绝执行。",
@@ -229,4 +248,9 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-__all__ = ["SeatbeltBackend", "build_seatbelt_profile", "probe_seatbelt"]
+__all__ = [
+    "SeatbeltBackend",
+    "build_seatbelt_profile",
+    "probe_seatbelt",
+    "sandbox_apply_failed",
+]

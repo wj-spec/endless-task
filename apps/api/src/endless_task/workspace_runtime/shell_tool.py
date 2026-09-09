@@ -29,6 +29,7 @@ from endless_task.tooling import (
 )
 
 from .dangerous_commands import is_dangerous
+from .shell_runner import _sanitized_env
 from .effect_log import EffectLog, EffectReceipt, sha256_text
 from .resolver import WorkspaceResolver
 from .shell_reconcile import (
@@ -98,6 +99,8 @@ class RunShellTool:
         checkpoint_coordinator=None,
         undo_service=None,
         reconcile_max_files: int = DEFAULT_MAX_FILES,
+        execution_backend=None,
+        sandbox_network_mode=None,
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
@@ -111,6 +114,10 @@ class RunShellTool:
         # S8: shell 造成的文件改动也进撤销日志与审计日志。
         self._undo_service = undo_service
         self._reconcile_max_files = reconcile_max_files
+        # S9: 可选 ExecutionEnvironment 后端（seatbelt/container）；None = 直接
+        # 在本机 spawn（历史行为）。
+        self._execution_backend = execution_backend
+        self._sandbox_network_mode = sandbox_network_mode
 
     def activity_copy(self, call: ToolCall) -> ToolActivityCopy:
         return ToolActivityCopy(
@@ -151,13 +158,7 @@ class RunShellTool:
         before = scan_workspace(
             binding.root, max_files=self._reconcile_max_files
         )
-        result: ShellResult = await run_shell_command(
-            command=command,
-            cwd=binding.root,
-            timeout_seconds=self._timeout_seconds,
-            no_change_timeout_seconds=self._no_change_timeout_seconds,
-            max_output_bytes=self._max_output_bytes,
-        )
+        result = await self._run(call, binding, command)
         outcome = self._reconcile(call, binding, before)
         return await self._finish(call, result, command, binding, token, outcome)
 
@@ -176,14 +177,7 @@ class RunShellTool:
         before = scan_workspace(
             binding.root, max_files=self._reconcile_max_files
         )
-        result: ShellResult = await run_shell_command(
-            command=command,
-            cwd=binding.root,
-            timeout_seconds=self._timeout_seconds,
-            no_change_timeout_seconds=self._no_change_timeout_seconds,
-            max_output_bytes=self._max_output_bytes,
-            on_progress=on_progress,
-        )
+        result = await self._run(call, binding, command, on_progress=on_progress)
         outcome = self._reconcile(call, binding, before)
         return await self._finish(call, result, command, binding, token, outcome)
 
@@ -273,6 +267,81 @@ class RunShellTool:
                 "reconcileSkipped": outcome.skipped,
                 "reconcileTruncated": outcome.truncated,
             },
+        )
+
+    # ---------- S9 沙箱执行 ----------
+
+    async def _run(
+        self,
+        call: ToolCall,
+        binding,
+        command: str,
+        *,
+        on_progress=None,
+    ) -> ShellResult:
+        """执行命令：配置了 ExecutionEnvironment 后端则走沙箱，否则本机直跑。"""
+        backend = self._execution_backend
+        if backend is None:
+            kwargs = {}
+            if on_progress is not None:
+                kwargs["on_progress"] = on_progress
+            return await run_shell_command(
+                command=command,
+                cwd=binding.root,
+                timeout_seconds=self._timeout_seconds,
+                no_change_timeout_seconds=self._no_change_timeout_seconds,
+                max_output_bytes=self._max_output_bytes,
+                **kwargs,
+            )
+        from endless_task.agent_platform import AgentPlatformError
+        from endless_task.execution_env import (
+            ExecutionPolicy,
+            ProcessRequest,
+        )
+        from endless_task.runtime_ledger import TraceContext
+
+        run_id = call.response_variant_id or call.id
+        network_mode = self._sandbox_network_mode
+        if network_mode is None:
+            from endless_task.execution_env import NetworkMode
+
+            network_mode = NetworkMode.DENY
+        request = ProcessRequest(
+            effect_id=f"shell:{call.id}",
+            tool_call_id=call.id,
+            argv=("/bin/bash", "-lc", command),
+            cwd=str(Path(binding.root).expanduser().resolve()),
+            policy=ExecutionPolicy(
+                workspace_root=str(Path(binding.root).expanduser().resolve()),
+                read_allow_paths=(),
+                write_allow_paths=(),
+                network_mode=network_mode,
+                timeout_seconds=self._timeout_seconds,
+            ),
+            trace=TraceContext(
+                trace_id=run_id, run_id=run_id, correlation_id=run_id
+            ),
+            requested_at=_now_iso(),
+            environment=_sanitized_env(),
+        )
+        started = _monotonic()
+        try:
+            result = await backend.run_process(request)
+        except AgentPlatformError as error:
+            raise ToolError(
+                error.code,
+                "命令未执行：当前沙箱后端不可用（已按失败关闭处理）。",
+                retryable=False,
+            ) from error
+        duration = _monotonic() - started
+        return ShellResult(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            timed_out=result.exit_code is None,
+            no_change_timeout=False,
+            truncated=result.truncated,
+            duration_seconds=duration,
         )
 
     # ---------- S8 变更对账 ----------
@@ -469,6 +538,12 @@ class RunShellTool:
         except Exception:
             # Snapshot is best-effort; never block the user's command.
             return
+
+
+def _monotonic() -> float:
+    import time
+
+    return time.monotonic()
 
 
 def _now_iso() -> str:
