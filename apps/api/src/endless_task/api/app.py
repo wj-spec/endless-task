@@ -4844,6 +4844,96 @@ def create_app(
             "lines": rows,
         }
 
+    @app.get("/workspaces/{workspace_id}/tree")
+    async def list_workspace_tree(
+        workspace_id: str,
+        path: str = Query("", max_length=1024),
+        show_hidden: bool = Query(False),
+    ) -> dict[str, object]:
+        """P0 文件面板：工作区文件树（单层、只读、工作区根内）。
+
+        与 `file-preview` 同源：路径解析走 `resolve_workspace_path`（拒绝绝对
+        路径与 `..`、canonicalize 后校验 containment），列目录复用
+        `browse_directory`（默认隐藏点文件、单层最多 200 项）。
+        """
+        from endless_task.tooling import ToolError as _WsToolError
+        from endless_task.workspace_runtime.browse import (
+            MAX_BROWSE_ITEMS as _WS_MAX_BROWSE_ITEMS,
+            browse_directory as _ws_browse_directory,
+        )
+        from endless_task.workspace_runtime.path_safety import (
+            resolve_workspace_path as _ws_resolve_workspace_path,
+        )
+
+        try:
+            workspace = container.workspace_repository.get_workspace(workspace_id)
+        except NotFoundError:
+            raise ApiRequestError(
+                "workspace_not_found", "工作区不存在。", status_code=404
+            ) from None
+        if not workspace.root_path:
+            raise ApiRequestError(
+                "workspace_not_bound", "该工作区未绑定本地目录。"
+            )
+        root = Path(workspace.root_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ApiRequestError(
+                "workspace_not_bound", "该工作区绑定目录不可用。"
+            )
+
+        raw_path = (path or "").strip()
+        if raw_path in ("", ".", "/"):
+            target = root
+            display_path = ""
+        else:
+            try:
+                resolved = _ws_resolve_workspace_path(root, raw_path)
+            except _WsToolError as error:
+                status = 404 if error.code == "path_not_found" else 400
+                message = getattr(error, "safe_message", None) or str(error)
+                raise ApiRequestError(
+                    error.code, message, status_code=status
+                ) from None
+            target = resolved.canonical
+            display_path = resolved.original_raw
+
+        if not target.exists():
+            raise ApiRequestError("path_not_found", "目录不存在。", status_code=404)
+        if not target.is_dir():
+            raise ApiRequestError("path_is_file", "路径指向文件，不是目录。")
+
+        current, items = _ws_browse_directory(str(target), show_hidden=show_hidden)
+        entries = []
+        for item in items:
+            entry_path = Path(item.path)
+            try:
+                relative_path = str(entry_path.relative_to(root))
+            except ValueError:
+                continue
+            # 符号链接可能指向工作区外：解析后仍必须落在根内，否则不进文件树。
+            try:
+                if not entry_path.resolve(strict=False).is_relative_to(root):
+                    continue
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "name": item.name,
+                    "relativePath": relative_path.replace(os.sep, "/"),
+                    "kind": item.kind,
+                    "size": item.size,
+                    "isHidden": item.is_hidden,
+                }
+            )
+        return {
+            "workspaceId": workspace_id,
+            "path": display_path,
+            "currentPath": current,
+            "rootPath": str(root),
+            "entries": entries,
+            "truncated": len(items) >= _WS_MAX_BROWSE_ITEMS,
+        }
+
     @app.get("/filesystem/browse")
     async def browse_filesystem(
         path: Optional[str] = Query(None),

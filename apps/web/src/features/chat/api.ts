@@ -57,6 +57,7 @@ import type { KnowledgeProposal,
   Skill,
   Workspace,
   WorkspaceFilePreview,
+  WorkspaceTreeListing,
   WorkspaceSnapshot,
   SkillPackagesResponse,
   TrajectoryMeta,
@@ -248,11 +249,23 @@ export const chatApi = {
   browseFilesystem: async (path?: string, showHidden = false) => {
     const parameters = new URLSearchParams();
     if (path) parameters.set("path", path);
-    if (showHidden) parameters.set("showHidden", "true");
+    if (showHidden) parameters.set("show_hidden", "true");
     const response = await request<{ currentPath: string; items: BrowseItem[] }>(
       `/filesystem/browse?${parameters.toString()}`,
     );
     return response;
+  },
+  listWorkspaceTree: async (
+    workspaceId: string,
+    path = "",
+    showHidden = false,
+  ) => {
+    const parameters = new URLSearchParams();
+    if (path) parameters.set("path", path);
+    if (showHidden) parameters.set("show_hidden", "true");
+    return request<WorkspaceTreeListing>(
+      `/workspaces/${workspaceId}/tree?${parameters.toString()}`,
+    );
   },
   listMcpServers: async () => {
     const response = await request<{ items: McpServer[] }>("/mcp/servers");

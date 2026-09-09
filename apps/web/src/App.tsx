@@ -580,6 +580,7 @@ export function App() {
           }}
           onWorkspaceRefresh={() => void workspace.refresh()}
           workspace={workspace.workspace!}
+          workspaceId={chat.workspaceId ?? ""}
           workspaceRootPath={
             chat.workspaces.find((item) => item.id === chat.workspaceId)?.rootPath ??
             null

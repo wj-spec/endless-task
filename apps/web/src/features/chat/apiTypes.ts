@@ -36,6 +36,24 @@ export type BrowseItem = {
   isHidden: boolean;
 };
 
+/** P0 文件面板：工作区文件树单层条目（relativePath 相对工作区根）。 */
+export type WorkspaceTreeEntry = {
+  name: string;
+  relativePath: string;
+  kind: "directory" | "file";
+  size: number;
+  isHidden: boolean;
+};
+
+export type WorkspaceTreeListing = {
+  workspaceId: string;
+  path: string;
+  currentPath: string;
+  rootPath: string;
+  entries: WorkspaceTreeEntry[];
+  truncated: boolean;
+};
+
 export type SkillDiagnostic = {
   code: string;
   message: string;
