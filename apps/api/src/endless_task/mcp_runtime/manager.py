@@ -61,6 +61,7 @@ class McpManager:
         tool_registry: ToolRegistry,
         connect_timeout_seconds: float = CONNECT_TIMEOUT_SECONDS,
         effect_log: Optional[EffectLog] = None,
+        workspace_root_provider=None,
         reconnect_initial_delay_seconds: float = 0.5,
         reconnect_max_delay_seconds: float = 30.0,
         reconnect_max_attempts: int = 10,
@@ -70,6 +71,7 @@ class McpManager:
         self._registry = tool_registry
         self._connect_timeout_seconds = connect_timeout_seconds
         self._effect_log = effect_log
+        self._workspace_root_provider = workspace_root_provider
         self._reconnect_initial_delay_seconds = reconnect_initial_delay_seconds
         self._reconnect_max_delay_seconds = reconnect_max_delay_seconds
         self._reconnect_max_attempts = reconnect_max_attempts
@@ -398,6 +400,7 @@ class McpManager:
                     session_provider=self._session,
                     effect_log=self._effect_log,
                     failure_callback=self._report_tool_failure,
+                    workspace_root_provider=self._workspace_root_provider,
                 )
             )
         return tuple(bridges)

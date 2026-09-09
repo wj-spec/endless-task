@@ -105,6 +105,28 @@ class EffectLog:
                 retryable=False,
             ) from error
 
+    def list_for_operation(
+        self, prefix: str, *, limit: int = 100
+    ) -> list[Mapping[str, Any]]:
+        """M2：按 operation 前缀读取最近条目（MCP 调用按 `mcp__` 前缀取）。"""
+        entries: list[Mapping[str, Any]] = []
+        paths = sorted(self._log_dir.glob("effects_*.jsonl"), reverse=True)
+        for path in paths:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in reversed(lines):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if str(entry.get("operation", "")).startswith(prefix):
+                    entries.append(entry)
+                    if len(entries) >= limit:
+                        return entries
+        return entries
+
     def list_for_workspace(
         self, workspace_id: str, *, limit: int = 100
     ) -> list[Mapping[str, Any]]:

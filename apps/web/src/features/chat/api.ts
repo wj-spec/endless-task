@@ -60,6 +60,7 @@ import type { KnowledgeProposal,
   WorkspaceFileContent,
   WorkspaceFileWriteResult,
   WorkspaceTreeListing,
+  McpCallRecord,
   SkillCaseResult,
   SkillImportResult,
   SkillInvocationCandidate,
@@ -312,6 +313,10 @@ export const chatApi = {
     }).then((response) => response.server),
   deleteMcpServer: (serverId: string) =>
     request<void>(`/mcp/servers/${serverId}`, { method: "DELETE" }),
+  listMcpCalls: (serverId: string, limit = 20) =>
+    request<{ items: McpCallRecord[] }>(
+      `/mcp/servers/${serverId}/calls?limit=${limit}`,
+    ).then((response) => response.items),
   reloadMcpServer: (serverId: string) =>
     request<{ server: McpServer }>(`/mcp/servers/${serverId}/reload`, {
       method: "POST",

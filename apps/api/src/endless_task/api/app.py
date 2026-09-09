@@ -1683,6 +1683,14 @@ def _runtime_v2_memory_promotion_json(
     }
 
 
+def _mcp_call_status(detail: str) -> str:
+    for part in detail.split(";"):
+        text = part.strip()
+        if text.startswith("status="):
+            return text[len("status=") :]
+    return "ok"
+
+
 def resolve_skill_requests(
     skill_service: "SkillService",
     workspace_resolver: "WorkspaceResolver",
@@ -2800,10 +2808,19 @@ def _build_container(
         repository=undo_journal_repository,
         effect_log=effect_log,
     )
+    def _mcp_workspace_root(conversation_id: str):
+        """M2：MCP 图片落盘需要工作区根（未绑定则不给）。"""
+        try:
+            binding = workspace_resolver.resolve_binding(conversation_id)
+        except Exception:  # noqa: BLE001 未绑定/已删除都按"没有工作区"处理
+            return None
+        return binding.root if binding is not None else None
+
     mcp_manager = McpManager(
         repository=mcp_server_repository,
         tool_registry=selected_tool_registry,
         effect_log=effect_log,
+        workspace_root_provider=_mcp_workspace_root,
     )
     artifact_file_store = ArtifactFileStore(workspace_resolver)
     artifact_proposal_repository.set_artifact_store(artifact_file_store)
@@ -4787,6 +4804,29 @@ def create_app(
     async def delete_mcp_server(server_id: str) -> None:
         await container.mcp_manager.disconnect(server_id)
         container.mcp_server_repository.delete_server(server_id)
+
+    @app.get("/mcp/servers/{server_id}/calls")
+    async def list_mcp_calls(
+        server_id: str,
+        limit: int = Query(20, ge=1, le=200),
+    ) -> dict[str, object]:
+        """M2：某 MCP 服务器的最近调用（耗时/状态/结果规模）。"""
+        config = container.mcp_server_repository.get_server(server_id)
+        entries = container.effect_log.list_for_operation(
+            f"mcp__{config.name}__", limit=limit
+        )
+        return {
+            "items": [
+                {
+                    "time": entry.get("time"),
+                    "operation": entry.get("operation"),
+                    "detail": entry.get("detail"),
+                    "durationMs": entry.get("durationMs", 0),
+                    "status": _mcp_call_status(str(entry.get("detail", ""))),
+                }
+                for entry in entries
+            ]
+        }
 
     @app.post("/mcp/servers/{server_id}/reload")
     async def reload_mcp_server(server_id: str) -> dict[str, object]:

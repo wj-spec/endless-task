@@ -920,6 +920,15 @@ export type RuntimeV2MessageResponse = {
   requestedSkills?: { name: string; status: string; message: string }[];
 };
 
+/** M2：MCP 调用记录。 */
+export type McpCallRecord = {
+  time: string;
+  operation: string;
+  detail: string;
+  durationMs: number;
+  status: string;
+};
+
 /** S2：技能校验结果（清单 + 诊断 + 扫描）。 */
 export type SkillValidation = {
   valid: boolean;

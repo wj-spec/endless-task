@@ -3,7 +3,7 @@ import { FormErrorSummary } from "../ui/FormErrorSummary";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { chatApi } from "../chat/api";
-import type { McpServer } from "../chat/apiTypes";
+import type { McpCallRecord, McpServer } from "../chat/apiTypes";
 
 type McpContentProps = {
   onChanged?: () => void | Promise<void>;
@@ -54,6 +54,20 @@ export function McpContent({ onChanged }: McpContentProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<McpServer | null>(null);
+  const [calls, setCalls] = useState<Record<string, McpCallRecord[]>>({});
+  const [callsBusyId, setCallsBusyId] = useState<string | null>(null);
+
+  const loadCalls = useCallback(async (serverId: string) => {
+    setCallsBusyId(serverId);
+    try {
+      const items = await chatApi.listMcpCalls(serverId, 10);
+      setCalls((current) => ({ ...current, [serverId]: items }));
+    } catch {
+      setCalls((current) => ({ ...current, [serverId]: [] }));
+    } finally {
+      setCallsBusyId(null);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -307,6 +321,13 @@ export function McpContent({ onChanged }: McpContentProps) {
               重连
             </button>
             <button
+              disabled={callsBusyId === server.id}
+              onClick={() => void loadCalls(server.id)}
+              type="button"
+            >
+              {callsBusyId === server.id ? "读取中…" : "最近调用"}
+            </button>
+            <button
               className="danger-action"
               disabled={busyId === server.id}
               onClick={() => setConfirmRemove(server)}
@@ -315,6 +336,28 @@ export function McpContent({ onChanged }: McpContentProps) {
               删除
             </button>
           </div>
+          {calls[server.id] ? (
+            calls[server.id].length === 0 ? (
+              <p className="file-tree-note">还没有调用记录。</p>
+            ) : (
+              <ul className="mcp-call-list">
+                {calls[server.id].map((item, index) => (
+                  <li
+                    className={item.status === "ok" ? "is-ok" : "is-failed"}
+                    key={`${item.time}-${index}`}
+                  >
+                    <code>{item.operation}</code>
+                    <span className="mcp-call-meta">
+                      {item.durationMs} ms · {item.status}
+                    </span>
+                    <span className="mcp-call-time">
+                      {item.time ? new Date(item.time).toLocaleTimeString() : "—"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : null}
         </div>
       ))}
       {confirmRemove ? (

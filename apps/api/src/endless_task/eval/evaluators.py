@@ -208,7 +208,11 @@ class ApprovalGateEvaluator:
             if item.tool_name in context.write_tools:
                 write_ungated.append(item)
             elif (
-                item.tool_name not in context.read_only_tools
+                # MCP 工具的效果由服务器注解声明（我们只读→AUTO，其余 REQUIRED），
+                # 名称是动态的，无法进静态名单；未带审批的执行已由 write_tools 侧
+                # 覆盖，这里不再按"未知效果"告警。
+                not item.tool_name.startswith("mcp__")
+                and item.tool_name not in context.read_only_tools
                 and item.tool_name not in context.auto_write_tools
             ):
                 unknown_ungated.append(item)
