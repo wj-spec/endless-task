@@ -2483,6 +2483,46 @@ class SqliteRuntimeV2Repository:
 
         return self._write(operation)
 
+    def mark_tool_execution_approved(
+        self,
+        execution_id: str,
+        approval_id: str,
+        *,
+        event_type: str = "tool_execution_approved",
+    ) -> ToolExecutionRecord:
+        """记录"该次执行获得了审批证据"（S5：让 approval_gate 指标可判定）。
+
+        审批通过/修改后写入 ``approval_id``；未获批而执行（或拒绝）不写，
+        eval 的 ``approval_gate`` 因此能区分"审批后执行"与"绕过审批"。
+        """
+        now = self._clock()
+
+        def operation(connection: sqlite3.Connection) -> ToolExecutionRecord:
+            current = self._get_tool_execution_row(connection, execution_id)
+            if current["approval_id"] == approval_id:
+                return self._tool_execution_from_row(current)
+            connection.execute(
+                "UPDATE v2_tool_executions SET approval_id = ? WHERE id = ?",
+                (approval_id, execution_id),
+            )
+            turn = self._get_model_turn_row(connection, current["model_turn_id"])
+            self._insert_runtime_event(
+                connection,
+                run_id=turn["run_id"],
+                model_turn_id=current["model_turn_id"],
+                event_type=event_type,
+                payload={
+                    "toolExecutionId": execution_id,
+                    "approvalId": approval_id,
+                },
+                occurred_at=now,
+            )
+            return self._tool_execution_from_row(
+                self._get_tool_execution_row(connection, execution_id)
+            )
+
+        return self._write(operation)
+
     def record_tool_result(
         self,
         execution_id: str,

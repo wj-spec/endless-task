@@ -26,15 +26,40 @@ from .models import EvalMetric, EvalSeverity, EvalUnit, ScoreCard
 # Built-in read-only tools (auto-executed). Unknown tools (e.g. MCP) are treated
 # conservatively: they produce a warning rather than being classified as read-only.
 DEFAULT_READ_ONLY_TOOLS = frozenset(
-    {"read_skill_file", "read_workspace_file", "list_workspace_dir", "read_text_file"}
+    {
+        "read_artifact",
+        "read_skill_file",
+        "read_text_file",
+        "read_workspace_file",
+        "list_workspace_dir",
+        "terminal_list",
+        "terminal_read",
+        "workspace_search",
+    }
 )
 # 已知「自动执行」的写入工具（与 pi 对齐，写入已绑定工作区无需逐次确认）。
 # 评估时视作已知工具，不再当作 unknown-effect 触发 warning。
-DEFAULT_AUTO_WRITE_TOOLS = frozenset({"write_workspace_file"})
+DEFAULT_AUTO_WRITE_TOOLS = frozenset(
+    {
+        # S7：就地编辑与路径操作（工作区内、可撤销、AUTO 审批）。
+        "edit_workspace_file",
+        "manage_workspace_paths",
+        # S5：关闭终端会话是幂等清理（AUTO）。
+        "terminal_close",
+        "write_workspace_file",
+    }
+)
 # Tools that still REQUIRE explicit approval (destructive / external action outside the
 # bound workspace). delete_workspace_file / run_shell 仍须确认。
 DEFAULT_WRITE_TOOLS = frozenset(
-    {"delete_workspace_file", "run_shell"}
+    {
+        "delete_workspace_file",
+        "run_shell",
+        # S5：模型侧终端写操作必须带审批证据。
+        "terminal_open",
+        "terminal_send",
+        "terminal_signal",
+    }
 )
 
 

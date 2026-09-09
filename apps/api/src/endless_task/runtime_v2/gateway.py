@@ -314,6 +314,17 @@ class GatewayToolApprovalGate(ToolApprovalGate):
             if pending is not None and modified_arguments is not None:
                 # A1-modify：把用户修正的参数暂存到 pending，供执行端读取并校验。
                 pending.metadata["modifiedArguments"] = dict(modified_arguments)
+            if pending is not None and decision in (
+                ToolApprovalDecision.APPROVE,
+                ToolApprovalDecision.MODIFY,
+            ):
+                # S5：审批通过后把证据写到执行记录，供 eval approval_gate 判定。
+                try:
+                    self._repository.mark_tool_execution_approved(
+                        pending.tool_execution_id, approval_id
+                    )
+                except Exception:  # noqa: BLE001 证据写入失败不阻断审批
+                    logger.debug("Approval evidence write failed", exc_info=True)
             future.set_result(decision)
             return True
 
