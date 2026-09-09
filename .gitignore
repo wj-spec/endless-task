@@ -11,7 +11,7 @@ __pycache__/
 provider-secrets.json
 .provider-secrets.json.*.tmp
 .venv/
-
+.npm-cache/
 apps/*/node_modules/
 apps/*/dist/
 apps/web/test-results/
