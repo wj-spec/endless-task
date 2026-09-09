@@ -77,7 +77,7 @@ export function ArtifactReminder({
       <div className="proposal-compact-head">
         <span className="proposal-kind">{kindLabel[proposal.kind]}</span>
         <button
-          aria-controls={detailId}
+          {...(expanded ? { "aria-controls": detailId } : {})}
           aria-expanded={expanded}
           className="proposal-compact-toggle"
           onClick={onToggle}
