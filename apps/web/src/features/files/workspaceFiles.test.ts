@@ -6,8 +6,10 @@ import {
   diffLines,
   diffSummary,
   extensionOf,
+  fileBadge,
   formatFileSize,
   isMarkdownPath,
+  isNoisyDirectoryName,
   isNoisyEntry,
   languageForPath,
   parentPath,
@@ -91,5 +93,18 @@ describe("workspaceFiles（文件面板纯函数）", () => {
     expect(diffSummary(diffLines("", "a\nb"))).toEqual({ added: 2, removed: 1 });
     expect(diffSummary(diffLines("a\nb", ""))).toEqual({ added: 1, removed: 2 });
     expect(diffSummary(diffLines("same", "same"))).toEqual({ added: 0, removed: 0 });
+  });
+});
+
+describe("fileBadge / isNoisyDirectoryName", () => {
+  it("文件取扩展名短标记，目录为空", () => {
+    expect(fileBadge({ name: "main.ts", relativePath: "main.ts", kind: "file", size: 1, isHidden: false })).toBe("TS");
+    expect(fileBadge({ name: "README", relativePath: "README", kind: "file", size: 1, isHidden: false })).toBe("·");
+    expect(fileBadge({ name: "src", relativePath: "src", kind: "directory", size: 0, isHidden: false })).toBe("");
+  });
+
+  it("降噪目录名单可判定", () => {
+    expect(isNoisyDirectoryName("node_modules")).toBe(true);
+    expect(isNoisyDirectoryName("src")).toBe(false);
   });
 });

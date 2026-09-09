@@ -27,6 +27,31 @@ const rootEntries: WorkspaceTreeEntry[] = [
 ];
 
 describe("FileTree（工作区文件树）", () => {
+  it("hideNoisy 过滤 node_modules 等降噪目录", () => {
+    const entries = [
+      entry({ name: "src", relativePath: "src", kind: "directory" }),
+      entry({ name: "node_modules", relativePath: "node_modules", kind: "directory" }),
+    ];
+    const html = renderToStaticMarkup(
+      <FileTree {...baseProps} children={{ "": entries }} hideNoisy />,
+    );
+    expect(html).toContain("src");
+    expect(html).not.toContain("node_modules");
+  });
+
+  it("选中项带 is-selected，文件显示扩展名标记", () => {
+    const html = renderToStaticMarkup(
+      <FileTree
+        {...baseProps}
+        children={{ "": rootEntries }}
+        selectedPath="README.md"
+      />,
+    );
+    expect(html).toContain("is-selected");
+    expect(html).toContain("MD");
+  });
+
+
   it("渲染根层条目：目录在前、文件带大小", () => {
     const html = renderToStaticMarkup(
       <FileTree {...baseProps} children={{ "": rootEntries }} />,

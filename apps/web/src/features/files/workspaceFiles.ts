@@ -72,6 +72,19 @@ export function isNoisyEntry(entry: WorkspaceTreeEntry): boolean {
   return entry.kind === "directory" && NOISY_DIRECTORIES.has(entry.name);
 }
 
+/** 是否属于"降噪目录"（供文件树过滤开关使用）。 */
+export function isNoisyDirectoryName(name: string): boolean {
+  return NOISY_DIRECTORIES.has(name);
+}
+
+/** 文件树行左侧的类型标记：目录空串，文件用短扩展名（最多 4 字符）。 */
+export function fileBadge(entry: WorkspaceTreeEntry): string {
+  if (entry.kind === "directory") return "";
+  const extension = extensionOf(entry.name);
+  if (!extension) return "·";
+  return extension.slice(0, 4).toUpperCase();
+}
+
 /** 人类可读的文件大小（B/KB/MB），目录固定为空串。 */
 export function formatFileSize(entry: WorkspaceTreeEntry): string {
   if (entry.kind === "directory") return "";

@@ -72,6 +72,10 @@ export function WorkspacePanel({
   }, [workspace.artifacts, selectedArtifactId]);
 
   const pendingCount = workspace.pendingProposals.length;
+  // 面包屑首段：优先用绑定目录名，其次"工作区"。
+  const workspaceLabel = workspaceRootPath
+    ? (workspaceRootPath.split("/").filter(Boolean).pop() ?? "工作区")
+    : "工作区";
   const header = TAB_TITLES[tab];
 
   return (
@@ -130,6 +134,7 @@ export function WorkspacePanel({
           conversationId={conversationId}
           rootPath={workspaceRootPath}
           workspaceId={workspaceId}
+          workspaceName={workspaceLabel}
         />
       ) : selectedArtifactId ? (
         <ArtifactDetail

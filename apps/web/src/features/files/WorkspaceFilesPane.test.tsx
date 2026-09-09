@@ -3,13 +3,22 @@ import { describe, expect, it } from "vitest";
 import { WorkspaceFilesPane } from "./WorkspaceFilesPane";
 
 describe("WorkspaceFilesPane（文件面板工具栏）", () => {
-  it("渲染隐藏文件开关、刷新与系统终端入口", () => {
+  it("渲染降噪目录/隐藏文件开关、刷新与系统终端入口", () => {
     const html = renderToStaticMarkup(
       <WorkspaceFilesPane conversationId="conv_1" workspaceId="ws_1" />,
     );
+    expect(html).toContain("显示降噪目录");
     expect(html).toContain("显示隐藏文件");
     expect(html).toContain("刷新");
     expect(html).toContain("终端");
+  });
+
+  it("窄面板（无容器宽度）默认走主从切换，不渲染分隔条", () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceFilesPane conversationId="conv_1" workspaceId="ws_1" />,
+    );
+    expect(html).not.toContain('role="separator"');
+    expect(html).not.toContain("选择左侧文件即可预览");
   });
 
   it("未绑定工作区时给出提示而不是请求", () => {

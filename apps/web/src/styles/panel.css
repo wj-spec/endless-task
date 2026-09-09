@@ -2786,3 +2786,143 @@
   color: var(--faint);
   font-size: var(--fs-1);
 }
+
+/* ---------- S11 文件面板：宽度感知双栏 + 排版收口 ---------- */
+
+.workspace-files-body.is-wide {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--line-faint);
+}
+
+.workspace-files-body.is-wide > .workspace-files-tree {
+  padding: var(--space-2) 0 var(--space-3);
+  border-right: 0;
+}
+
+.workspace-files-preview {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.workspace-files-preview > .file-viewer {
+  min-width: 0;
+}
+
+/* 分隔条：细、可命中、键盘可达 */
+.resize-handle {
+  position: relative;
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.resize-handle::before {
+  position: absolute;
+  inset: 0 2px;
+  border-radius: var(--radius-full);
+  background: var(--line-faint);
+  content: "";
+  transition: background 120ms ease;
+}
+
+.resize-handle:hover::before,
+.resize-handle:focus-visible::before {
+  background: var(--accent);
+}
+
+.resize-handle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.resize-handle-grip {
+  display: none;
+}
+
+/* 文件树：更紧凑的密度与类型标记 */
+.file-tree-row {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  line-height: 20px;
+}
+
+.file-tree-badge {
+  flex: none;
+  width: 22px;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.file-tree-item.is-selected > .file-tree-row {
+  background: var(--accent-soft);
+}
+
+.file-tree-item.is-selected > .file-tree-row > .file-tree-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 预览：面包屑 + 可读宽度收口 */
+.file-viewer-crumbs {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  white-space: nowrap;
+}
+
+.file-viewer-crumb {
+  flex: none;
+  color: var(--faint);
+}
+
+.file-viewer-crumb + .file-viewer-crumb::before {
+  margin-right: 2px;
+  color: var(--faint);
+  content: "/";
+}
+
+.file-viewer-crumb.is-root {
+  color: var(--muted);
+}
+
+.file-viewer-crumb.is-current {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--ink-raise);
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.file-viewer-markdown {
+  max-width: 68ch;
+  margin: 0 auto;
+}
+
+.file-viewer-code,
+.file-viewer-plain {
+  min-width: 0;
+}
+
+.file-viewer-lines {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}

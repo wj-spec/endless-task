@@ -1,7 +1,7 @@
 import type { KeyboardEvent } from "react";
 import type { WorkspaceTreeEntry } from "../chat/apiTypes";
 import { ChevronIcon } from "../ui/Icons";
-import { formatFileSize, isNoisyEntry } from "./workspaceFiles";
+import { fileBadge, formatFileSize, isNoisyEntry } from "./workspaceFiles";
 
 export type FileTreeProps = {
   children: Record<string, WorkspaceTreeEntry[]>;
@@ -11,6 +11,10 @@ export type FileTreeProps = {
   truncated: Record<string, boolean>;
   onToggle: (path: string) => void;
   onOpen: (path: string) => void;
+  /** S11：隐藏降噪目录（node_modules/.git/dist…），减少长列表干扰。 */
+  hideNoisy?: boolean;
+  /** 当前选中项（宽面板双栏时高亮）。 */
+  selectedPath?: string | null;
 };
 
 type LevelProps = FileTreeProps & {
@@ -25,7 +29,10 @@ function activate(event: KeyboardEvent<HTMLLIElement>, action: () => void): void
 }
 
 function FileTreeLevel(props: LevelProps) {
-  const entries = props.children[props.parentPath] ?? [];
+  const allEntries = props.children[props.parentPath] ?? [];
+  const entries = props.hideNoisy
+    ? allEntries.filter((entry) => !isNoisyEntry(entry))
+    : allEntries;
   const busy = props.loading.includes(props.parentPath);
   const error = props.errors[props.parentPath];
   const truncated = props.truncated[props.parentPath] === true;
@@ -39,7 +46,9 @@ function FileTreeLevel(props: LevelProps) {
         </p>
       ) : null}
       {entries.length === 0 && !busy && !error ? (
-        <p className="file-tree-note">空目录</p>
+        <p className="file-tree-note">
+          {allEntries.length > 0 ? "已隐藏降噪目录" : "空目录"}
+        </p>
       ) : null}
       <ul className="file-tree-group" role="group">
         {entries.map((entry) => {
@@ -50,6 +59,7 @@ function FileTreeLevel(props: LevelProps) {
             "file-tree-item",
             isDirectory ? "is-directory" : "is-file",
             isNoisyEntry(entry) ? "is-noisy" : "",
+            props.selectedPath === path ? "is-selected" : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -70,7 +80,7 @@ function FileTreeLevel(props: LevelProps) {
             >
               <span
                 className="file-tree-row"
-                style={{ paddingLeft: `${8 + props.depth * 14}px` }}
+                style={{ paddingLeft: `${6 + props.depth * 12}px` }}
               >
                 {isDirectory ? (
                   <ChevronIcon
@@ -79,7 +89,9 @@ function FileTreeLevel(props: LevelProps) {
                     size={12}
                   />
                 ) : (
-                  <span aria-hidden="true" className="file-tree-dot" />
+                  <span aria-hidden="true" className="file-tree-badge">
+                    {fileBadge(entry)}
+                  </span>
                 )}
                 <span className="file-tree-name">{entry.name}</span>
                 <span className="file-tree-size">{formatFileSize(entry)}</span>

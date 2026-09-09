@@ -88,8 +88,9 @@
   /* 桌面壳层：模块化宽度与共同 content frame（避免散布 magic numbers） */
   --rail-w: 252px;
   --rail-w-collapsed: 56px;
-  --aux-w: 380px;
-  --aux-w-compact: 340px;
+  /* S11：默认更宽，让文件面板可进入双栏（≥520px 时生效）。 */
+  --aux-w: 440px;
+  --aux-w-compact: 360px;
   --reading-w: 760px;
   --composer-w: 800px;
   --frame-w: 800px; /* header/composer 共同轴线 */

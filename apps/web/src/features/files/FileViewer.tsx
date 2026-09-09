@@ -4,7 +4,7 @@ import { readableError } from "../chat/apiErrorText";
 import type { WorkspaceFilePreview } from "../chat/apiTypes";
 import { CodeBlock } from "../chat/CodeBlock";
 import { MessageContent } from "../chat/MessageContent";
-import { isMarkdownPath, languageForPath } from "./workspaceFiles";
+import { isMarkdownPath, languageForPath, pathSegments } from "./workspaceFiles";
 
 const PREVIEW_LINE_LIMIT = 2000;
 
@@ -85,8 +85,11 @@ export type WorkspaceFileViewerProps = {
   workspaceId: string;
   path: string;
   rootPath?: string | null;
-  onBack: () => void;
+  /** 窄面板主从切换时显示返回；宽面板双栏时传 undefined。 */
+  onBack?: () => void;
   onEdit?: () => void;
+  /** 工作区名（面包屑首段）。 */
+  workspaceName?: string;
 };
 
 /** P0 文件面板：单个文件的只读预览（工作区根内）。 */
@@ -96,10 +99,12 @@ export function WorkspaceFileViewer({
   rootPath,
   onBack,
   onEdit,
+  workspaceName,
 }: WorkspaceFileViewerProps) {
   const [preview, setPreview] = useState<WorkspaceFilePreview | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,31 +133,59 @@ export function WorkspaceFileViewer({
       }
     : undefined;
 
+  const copyPath = async () => {
+    const absolute = rootPath ? `${rootPath}/${path}` : path;
+    try {
+      await navigator.clipboard.writeText(absolute);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setError("复制路径失败，请手动选择。");
+    }
+  };
+
+  const segments = pathSegments(path);
+
   return (
     <div className="file-viewer">
       <div className="file-viewer-head">
-        <button
-          aria-label="返回文件树"
-          className="file-viewer-back"
-          onClick={onBack}
-          type="button"
-        >
-          ← 文件
-        </button>
-        <span className="file-viewer-path" title={path}>
-          {path}
-        </span>
+        {onBack ? (
+          <button
+            aria-label="返回文件树"
+            className="file-viewer-back"
+            onClick={onBack}
+            type="button"
+          >
+            ← 文件
+          </button>
+        ) : null}
+        <nav aria-label="文件路径" className="file-viewer-crumbs" title={path}>
+          {workspaceName ? (
+            <span className="file-viewer-crumb is-root">{workspaceName}</span>
+          ) : null}
+          {segments.map((segment, index) => (
+            <span
+              className={
+                index === segments.length - 1
+                  ? "file-viewer-crumb is-current"
+                  : "file-viewer-crumb"
+              }
+              key={segment.path}
+            >
+              {segment.label}
+            </span>
+          ))}
+        </nav>
         {onEdit ? (
           <button className="file-viewer-action" onClick={onEdit} type="button">
             编辑
           </button>
         ) : null}
+        <button className="file-viewer-action" onClick={() => void copyPath()} type="button">
+          {copied ? "已复制" : "复制路径"}
+        </button>
         {reveal ? (
-          <button
-            className="file-viewer-action"
-            onClick={reveal}
-            type="button"
-          >
+          <button className="file-viewer-action" onClick={reveal} type="button">
             在访达中显示
           </button>
         ) : null}
