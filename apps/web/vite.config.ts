@@ -35,7 +35,9 @@ export default defineConfig(({ mode }) => {
         "/retrieval-events": apiTarget,
         "/retrieval-stats": apiTarget,
         "/search": apiTarget,
-        "/workspaces": apiTarget,
+        // S12：终端 WebSocket 走同一条路径，必须显式开启 ws 升级转发，
+        // 否则浏览器连不上 /workspaces/{id}/terminals/{sid}。
+        "/workspaces": { target: apiTarget, ws: true },
       },
     },
   };

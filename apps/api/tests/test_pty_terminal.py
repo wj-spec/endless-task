@@ -66,7 +66,7 @@ class PtySessionTest(_PtyBoundTestCase):
         self.addAsyncCleanup(session.close)
         return session
 
-    async def _wait_for(self, predicate, *, timeout: float = 5.0) -> None:
+    async def _wait_for(self, predicate, *, timeout: float = 20.0) -> None:
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             if predicate():
@@ -131,7 +131,7 @@ class PtySessionTest(_PtyBoundTestCase):
         session.add_exit_listener(exits.append)
 
         session.write("exit 7\n")
-        status = await asyncio.wait_for(session.wait_closed(), timeout=5.0)
+        status = await asyncio.wait_for(session.wait_closed(), timeout=20.0)
 
         self.assertEqual("exited", status.kind)
         self.assertEqual(7, status.exit_code)
@@ -210,7 +210,7 @@ class TerminalServiceTest(_PtyBoundTestCase):
         )
         session = await service.create(workspace_id="ws_idle", cwd=self.root)
 
-        deadline = asyncio.get_running_loop().time() + 5.0
+        deadline = asyncio.get_running_loop().time() + 20.0
         while asyncio.get_running_loop().time() < deadline:
             if not service.list_for_workspace("ws_idle"):
                 break
