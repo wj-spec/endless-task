@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { chatApi } from "../chat/api";
+import { readableError } from "../chat/apiErrorText";
 import type { Skill, SkillPackagesResponse } from "../chat/apiTypes";
+import { SkillCreateForm } from "./SkillCreateForm";
+import { SkillDetailPanel } from "./SkillDetailPanel";
+import { SkillImportForm } from "./SkillImportForm";
 
 type SkillsContentProps = {
   onChanged?: () => void | Promise<void>;
   workspaceId: string | null;
 };
+
+type FormMode = "none" | "import" | "create";
 
 export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -16,13 +23,9 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
   const [busyName, setBusyName] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [packages, setPackages] = useState<SkillPackagesResponse | null>(null);
-
-  useEffect(() => {
-    void chatApi
-      .listSkillPackages(workspaceId)
-      .then(setPackages)
-      .catch(() => setPackages(null));
-  }, [workspaceId]);
+  const [form, setForm] = useState<FormMode>("none");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<Skill | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -38,9 +41,23 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
     }
   }, [workspaceId]);
 
+  const loadPackages = useCallback(() => {
+    void chatApi
+      .listSkillPackages(workspaceId)
+      .then(setPackages)
+      .catch(() => setPackages(null));
+  }, [workspaceId]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    loadPackages();
+  }, [load, loadPackages]);
+
+  const refreshAll = useCallback(async () => {
+    await load();
+    loadPackages();
+    await onChanged?.();
+  }, [load, loadPackages, onChanged]);
 
   const toggleDisabled = async (skill: Skill) => {
     setBusyName(skill.name);
@@ -52,8 +69,7 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
         !skill.disabled,
         workspaceId,
       );
-      await load();
-      await onChanged?.();
+      await refreshAll();
     } catch {
       setActionError("更新技能状态失败，请重试。");
     } finally {
@@ -61,8 +77,61 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
     }
   };
 
+  const remove = async (skill: Skill) => {
+    setBusyName(skill.name);
+    setActionError(null);
+    try {
+      await chatApi.deleteSkill(skill.scope, skill.name, workspaceId);
+      await refreshAll();
+    } catch (cause: unknown) {
+      setActionError(readableError(cause) || "删除失败。");
+    } finally {
+      setBusyName(null);
+      setConfirmRemove(null);
+    }
+  };
+
+  const packageOf = (skill: Skill) =>
+    packages?.packages.find(
+      (item) => item.scope === skill.scope && item.name === skill.name,
+    );
+
   return (
     <div className="panel-content">
+      <div className="knowledge-toolbar">
+        <p className="skill-directory">{userDirectory || "技能目录"}</p>
+        <button onClick={() => void refreshAll()} type="button">
+          刷新
+        </button>
+        <button
+          onClick={() => setForm(form === "import" ? "none" : "import")}
+          type="button"
+        >
+          导入技能
+        </button>
+        <button
+          onClick={() => setForm(form === "create" ? "none" : "create")}
+          type="button"
+        >
+          新建技能
+        </button>
+      </div>
+
+      {form === "import" ? (
+        <SkillImportForm
+          onCancel={() => setForm("none")}
+          onDone={() => void refreshAll()}
+          workspaceId={workspaceId ?? ""}
+        />
+      ) : null}
+      {form === "create" ? (
+        <SkillCreateForm
+          onCancel={() => setForm("none")}
+          onDone={() => void refreshAll()}
+          workspaceId={workspaceId ?? ""}
+        />
+      ) : null}
+
       {packages?.enabled ? (
         <section aria-label="技能包" className="skill-packages-note">
           <strong>技能包（v2 registry）</strong>
@@ -85,12 +154,7 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
           ) : null}
         </section>
       ) : null}
-      <div className="knowledge-toolbar">
-        <p className="skill-directory">{userDirectory}</p>
-        <button onClick={() => void load()} type="button">
-          刷新
-        </button>
-      </div>
+
       {actionError ? (
         <div className="proposal-error" role="alert">
           {actionError}
@@ -116,58 +180,101 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
       ) : null}
       {!loading && !loadError && skills.length === 0 ? (
         <EmptyState
-          desc="把技能文件夹放入上方目录。每个技能是一个包含 SKILL.md 的文件夹，助手会在任务匹配时自动读取。"
+          desc="点上方「新建技能」按模板创建，或「导入技能」把已有目录装进来。"
           title="还没有技能"
         />
       ) : null}
-      {skills.map((skill) => (
-        <div
-          className="memory-item knowledge-item"
-          key={`${skill.scope}:${skill.name}`}
-        >
-          <p className="memory-content knowledge-title">{skill.name}</p>
-          <p className="memory-content">{skill.description}</p>
-          <div className="memory-meta">
-            <span
-              className={
-                skill.scope === "user"
-                  ? "knowledge-badge is-global"
-                  : "knowledge-badge is-workspace"
-              }
-            >
-              {skill.scope === "user" ? "用户级" : "工作区"}
-            </span>
-            {skill.disableModelInvocation ? (
-              <span className="knowledge-badge">仅手动</span>
-            ) : null}
-            {skill.diagnostics.length > 0 ? (
-              <span className="memory-status is-expired">
-                {skill.diagnostics[0].message}
+      {skills.map((skill) => {
+        const key = `${skill.scope}:${skill.name}`;
+        const pack = packageOf(skill);
+        return (
+          <div className="memory-item knowledge-item" key={key}>
+            <p className="memory-content knowledge-title">{skill.name}</p>
+            <p className="memory-content">{skill.description}</p>
+            <div className="memory-meta">
+              <span
+                className={
+                  skill.scope === "user"
+                    ? "knowledge-badge is-global"
+                    : "knowledge-badge is-workspace"
+                }
+              >
+                {skill.scope === "user" ? "用户级" : "工作区"}
               </span>
+              {pack ? (
+                <span className="knowledge-badge">v{pack.version}</span>
+              ) : null}
+              {pack?.quarantined ? (
+                <span className="memory-status is-expired">已隔离</span>
+              ) : null}
+              {skill.disableModelInvocation ? (
+                <span className="knowledge-badge">仅手动</span>
+              ) : null}
+              {skill.disabled ? (
+                <span className="memory-status is-expired">已禁用</span>
+              ) : null}
+              {skill.diagnostics.length > 0 ? (
+                <span className="memory-status is-expired">
+                  {skill.diagnostics[0].message}
+                </span>
+              ) : null}
+            </div>
+            <code className="skill-path">{skill.filePath}</code>
+            <div className="memory-actions">
+              <button
+                disabled={busyName === skill.name}
+                onClick={() => void toggleDisabled(skill)}
+                type="button"
+              >
+                {busyName === skill.name
+                  ? "处理中…"
+                  : skill.disabled
+                    ? "启用"
+                    : "禁用"}
+              </button>
+              <button
+                aria-expanded={expanded === key}
+                onClick={() => setExpanded(expanded === key ? null : key)}
+                type="button"
+              >
+                {expanded === key ? "收起详情" : "详情 / 用例"}
+              </button>
+              <button
+                onClick={() => void chatApi.revealInFinder(skill.filePath)}
+                type="button"
+              >
+                在访达中显示
+              </button>
+              <button
+                className="danger-action"
+                disabled={busyName === skill.name}
+                onClick={() => setConfirmRemove(skill)}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+            {expanded === key ? (
+              <SkillDetailPanel
+                onChanged={() => void refreshAll()}
+                skill={skill}
+                workspaceId={workspaceId ?? ""}
+              />
             ) : null}
           </div>
-          <code className="skill-path">{skill.filePath}</code>
-          <div className="memory-actions">
-            <button
-              disabled={busyName === skill.name}
-              onClick={() => void toggleDisabled(skill)}
-              type="button"
-            >
-              {busyName === skill.name
-                ? "更新中…"
-                : skill.disabled
-                  ? "启用"
-                  : "禁用"}
-            </button>
-            <button
-              onClick={() => void chatApi.revealInFinder(skill.filePath)}
-              type="button"
-            >
-              在访达中显示
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
+
+      {confirmRemove ? (
+        <ConfirmDialog
+          body={`将把「${confirmRemove.name}」移入技能目录下的 .trash（可手工找回），并立即从模型可见目录中移除。`}
+          confirmLabel="删除技能"
+          onClose={() => setConfirmRemove(null)}
+          onConfirm={() => void remove(confirmRemove)}
+          title="删除这个技能？"
+          tone="danger"
+        />
+      ) : null}
     </div>
   );
 }

@@ -24,6 +24,9 @@ class Skill:
     description: str
     scope: SkillScope
     file_path: Path
+    #: 内容摘要与版本（SKILL.md 原始字节 sha256 / manifest version）。
+    digest: str = ""
+    version: str = ""
     disabled: bool = False
     disable_model_invocation: bool = False
     #: S1：调用策略（与模型调用解耦）。user_invocable 决定"用户 /技能名"是否可用。

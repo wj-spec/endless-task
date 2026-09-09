@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 import contextlib
@@ -209,6 +210,9 @@ from endless_task.storage.sqlite_provider_profile_repository import (
     SqliteProviderProfileRepository,
 )
 from endless_task.storage.provider_secret_store import ProviderSecretStore
+from endless_task.storage.sqlite_skill_usage_repository import (
+    SqliteSkillUsageRepository,
+)
 from endless_task.storage.sqlite_skill_override_repository import (
     SqliteSkillOverrideRepository,
 )
@@ -874,6 +878,8 @@ class AppContainer:
     workspace_repository: SqliteWorkspaceRepository
     workspace_resolver: WorkspaceResolver
     skill_service: SkillService
+    #: S2：技能使用统计（按 digest 分代持久化）。
+    skill_usage_repository: SqliteSkillUsageRepository
     provider_profile_repository: SqliteProviderProfileRepository
     provider_secret_store: ProviderSecretStore
     provider_manager: ProviderManager
@@ -1129,6 +1135,51 @@ class SkillPatchBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     disabled: bool
+
+
+class SkillValidateBody(BaseModel):
+    """S2：校验技能包（目录路径）或内联 SKILL.md 内容。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: Optional[str] = None
+    content: Optional[str] = None
+
+
+class SkillImportBody(BaseModel):
+    """S2：从本地目录导入技能包。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sourcePath: str
+    scope: Literal["user", "workspace"] = "user"
+    workspaceId: Optional[str] = None
+    allowUpgrade: bool = False
+
+
+class SkillCreateBody(BaseModel):
+    """S2：按模板新建技能（写入用户级或工作区级技能根）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["user", "workspace"] = "user"
+    workspaceId: Optional[str] = None
+    name: str
+    description: str
+    whenToUse: Optional[str] = None
+    body: str
+    modelInvocable: bool = True
+    userInvocable: bool = True
+
+
+class SkillCasesRunBody(BaseModel):
+    """S2：跑技能包声明的用例（可对某次运行的真实 trace 校验）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runId: Optional[str] = None
+    toolsUsed: list[str] = []
+    output: str = ""
 
 
 class McpServerBody(BaseModel):
@@ -1639,6 +1690,7 @@ def resolve_skill_requests(
     content: str,
     *,
     include_bodies: bool,
+    usage_recorder=None,
 ) -> tuple[tuple[object, ...], list[dict[str, str]]]:
     """S1：解析用户消息里的 ``/技能名``。
 
@@ -1685,6 +1737,10 @@ def resolve_skill_requests(
         notices.append({"name": name, "status": INVOKE_OK, "message": ""})
         if include_bodies:
             from endless_task.runtime.provider import ProviderMessage
+
+            if usage_recorder is not None:
+                usage_recorder(skill, "invoked")
+                usage_recorder(skill, "body_read")
 
             messages.append(
                 ProviderMessage(
@@ -2623,6 +2679,25 @@ def _build_container(
         override_repository=skill_override_repository,
     )
 
+    skill_usage_repository = SqliteSkillUsageRepository(database)
+
+    def _record_skill_usage(
+        skill: Skill, kind: str, *, workspace_id: str = ""
+    ) -> None:
+        """S2：使用统计写入（失败不影响主流程）。"""
+        del workspace_id
+        if not skill.digest:
+            return
+        try:
+            skill_usage_repository.record(
+                scope=skill.scope.value,
+                name=skill.name,
+                digest=skill.digest,
+                kind=kind,
+            )
+        except Exception:  # noqa: BLE001 统计失败不阻断
+            logger.debug("skill usage record failed", exc_info=True)
+
     def skill_roots_for_conversation(conversation_id: str) -> tuple[Path, ...]:
         binding = workspace_resolver.resolve_binding(conversation_id)
         return skill_service.skill_roots(binding.root if binding else None)
@@ -2635,8 +2710,13 @@ def _build_container(
                 root = Path(workspace.root_path).expanduser() if workspace.root_path else None
             except Exception:
                 root = None
+        visible = skill_service.visible_skills(
+            root, workspace_id=workspace_id or ""
+        )
+        for skill in visible:
+            _record_skill_usage(skill, "surfaced", workspace_id=workspace_id or "")
         return build_available_skills_prompt(
-            skill_service.visible_skills(root, workspace_id=workspace_id or ""),
+            visible,
             locator_mode=settings.skill_packages_enabled,
         )
 
@@ -2997,6 +3077,7 @@ def _build_container(
             conversation_id,
             user_content,
             include_bodies=True,
+            usage_recorder=_record_skill_usage,
         )
         if skill_messages or notices:
             runtime_v2_repository.append_runtime_event(
@@ -3376,6 +3457,7 @@ def _build_container(
         unattended_tool_registry=unattended_tool_registry,
         execution_backend_mode=settings.execution_backend_mode,
         terminal_service=terminal_service,
+        skill_usage_repository=skill_usage_repository,
     )
 
 
@@ -4940,6 +5022,277 @@ def create_app(
                 }
                 for skill in items
             ],
+        }
+
+    def _skill_root_for(
+        scope: str, workspace_id: Optional[str]
+    ) -> Path:
+        """S2：技能根目录（user = 数据目录/skills，workspace = <root>/.endless-task/skills）。"""
+        if scope == "user":
+            return container.settings.database_path.parent / "skills"
+        if not workspace_id:
+            raise ApiRequestError(
+                "invalid_request", "工作区级技能需要 workspaceId。"
+            )
+        try:
+            workspace = container.workspace_repository.get_workspace(workspace_id)
+        except NotFoundError as error:
+            raise NotFoundError(f"Unknown workspace: {workspace_id}") from error
+        if not workspace.root_path:
+            raise ApiRequestError(
+                "workspace_not_bound", "该工作区未绑定本地目录。"
+            )
+        return Path(workspace.root_path).expanduser() / ".endless-task" / "skills"
+
+    def _skill_package_dir(scope: str, name: str, workspace_id: Optional[str]) -> Path:
+        root = _skill_root_for(scope, workspace_id)
+        package = root / name
+        if not (package / "SKILL.md").is_file():
+            raise ApiRequestError(
+                "skill_not_found", f"技能不存在：{scope}/{name}。", status_code=404
+            )
+        return package
+
+    def _skill_validation_payload(path: Path, text: Optional[str]) -> dict[str, object]:
+        """解析 + 扫描一份技能包，返回 UI 可直接渲染的结果。"""
+        from endless_task.skills import (
+            ScanReport,
+            SkillRevision,
+            parse_skill_manifest,
+            scan_skill_directory,
+            scan_skill_revision,
+        )
+
+        if text is None:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                raise ApiRequestError(
+                    "unreadable", "无法读取 SKILL.md。", status_code=400
+                ) from None
+        manifest = parse_skill_manifest(path, text)
+        revision = SkillRevision.from_manifest(manifest, scope="user", path=path)
+        body_scan = scan_skill_revision(revision)
+        directory_scan = (
+            scan_skill_directory(path.parent)
+            if path.parent.is_dir() and path.name == "SKILL.md"
+            else ScanReport()
+        )
+        scan = ScanReport(findings=body_scan.findings + directory_scan.findings)
+        return {
+            "valid": manifest.valid and not scan.quarantined,
+            "manifest": {
+                "name": manifest.name,
+                "description": manifest.description,
+                "version": manifest.version,
+                "schemaVersion": manifest.schema_version,
+                "digest": manifest.digest,
+                "modelInvocable": manifest.model_invocable,
+                "userInvocable": manifest.user_invocable,
+                "requiredTools": list(manifest.required_tools),
+                "requiredCapabilities": list(manifest.required_capabilities),
+                "conflictsWith": list(manifest.conflicts_with),
+            },
+            "diagnostics": [
+                {
+                    "code": diagnostic.code,
+                    "message": diagnostic.message,
+                    "path": str(diagnostic.path),
+                }
+                for diagnostic in manifest.diagnostics
+            ],
+            "scan": {
+                "worstLevel": (
+                    scan.worst_level.value if scan.worst_level is not None else None
+                ),
+                "quarantined": scan.quarantined,
+                "findings": [
+                    {
+                        "code": finding.code,
+                        "level": finding.level.value,
+                        "message": finding.message,
+                        "path": str(finding.path),
+                    }
+                    for finding in scan.findings
+                ],
+            },
+        }
+
+    @app.post("/skills/validate")
+    async def validate_skill(body: SkillValidateBody) -> dict[str, object]:
+        """S2：导入前校验（目录路径或内联内容）。"""
+        if body.path and body.content is not None:
+            raise ApiRequestError(
+                "invalid_request", "path 与 content 只能给一个。"
+            )
+        if body.content is not None:
+            return _skill_validation_payload(
+                Path("inline") / "SKILL.md", body.content
+            )
+        if not body.path:
+            raise ApiRequestError("invalid_request", "需要 path 或 content。")
+        candidate = Path(body.path).expanduser()
+        if candidate.is_dir():
+            candidate = candidate / "SKILL.md"
+        if not candidate.is_file():
+            raise ApiRequestError(
+                "skill_not_found", "目录里没有 SKILL.md。", status_code=404
+            )
+        return _skill_validation_payload(candidate, None)
+
+    @app.post("/skills/import", status_code=201)
+    async def import_skill(body: SkillImportBody) -> dict[str, object]:
+        """S2：本地目录导入（staging → 扫描门禁 → 原子激活）。"""
+        from endless_task.skills import ImportFailure, import_skill_package
+
+        source = Path(body.sourcePath).expanduser()
+        target_root = _skill_root_for(body.scope, body.workspaceId)
+        target_root.mkdir(parents=True, exist_ok=True)
+        try:
+            result = import_skill_package(
+                source, target_root, allow_upgrade=body.allowUpgrade
+            )
+        except ImportFailure as failure:
+            raise ApiRequestError(
+                failure.code, failure.message, status_code=400
+            ) from None
+        return {
+            "skill": {
+                "name": result.name,
+                "version": result.version,
+                "digest": result.digest,
+                "target": str(result.target),
+                "upgraded": result.upgraded,
+                "replacedDigest": result.replaced_digest,
+                "worstLevel": (
+                    result.scan_report.worst_level.value
+                    if result.scan_report is not None
+                    and result.scan_report.worst_level is not None
+                    else None
+                ),
+            }
+        }
+
+    @app.post("/skills/create", status_code=201)
+    async def create_skill(body: SkillCreateBody) -> dict[str, object]:
+        """S2：按 v2 模板新建技能。"""
+        name = body.name.strip()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name):
+            raise ApiRequestError(
+                "invalid_name", "技能名必须为小写字母、数字或连字符。"
+            )
+        if not body.description.strip() or not body.body.strip():
+            raise ApiRequestError(
+                "invalid_request", "description 与 body 不能为空。"
+            )
+        root = _skill_root_for(body.scope, body.workspaceId)
+        package = root / name
+        if package.exists():
+            raise ApiRequestError(
+                "skill_exists",
+                f"技能 {name} 已存在；如需覆盖请用导入并确认升级。",
+                status_code=409,
+            )
+        package.mkdir(parents=True)
+        lines = [
+            "---",
+            f"name: {name}",
+            f"description: {body.description.strip()}",
+            "version: 0.1.0",
+            "schema-version: 2",
+        ]
+        if body.whenToUse and body.whenToUse.strip():
+            lines.append(f"whenToUse: {body.whenToUse.strip()}")
+        lines.append(f"model-invocable: {'true' if body.modelInvocable else 'false'}")
+        lines.append(f"user-invocable: {'true' if body.userInvocable else 'false'}")
+        lines.extend(["---", "", body.body.strip(), ""])
+        (package / "SKILL.md").write_text("\n".join(lines), encoding="utf-8")
+        return {
+            "skill": {
+                "name": name,
+                "path": str(package / "SKILL.md"),
+                "scope": body.scope,
+            }
+        }
+
+    @app.delete("/skills/{scope}/{name}")
+    async def delete_skill(
+        scope: Literal["user", "workspace"],
+        name: str,
+        workspace: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        """S2：删除技能包（移入同根 ``.trash``，可手工找回）。"""
+        import shutil
+        from datetime import datetime, timezone
+
+        package = _skill_package_dir(scope, name, workspace)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        trash = package.parent / ".trash" / f"{stamp}-{name}"
+        trash.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(package), str(trash))
+        return {"deleted": True, "trashedTo": str(trash)}
+
+    @app.get("/skills/{scope}/{name}/usage")
+    async def skill_usage(
+        scope: Literal["user", "workspace"],
+        name: str,
+        workspace: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        """S2：使用统计（按 digest 分代）。"""
+        _skill_package_dir(scope, name, workspace)
+        rows = container.skill_usage_repository.snapshot(scope=scope, name=name)
+        return {"items": [row.as_dict() for row in rows]}
+
+    @app.post("/skills/{scope}/{name}/cases/run")
+    async def run_skill_cases(
+        scope: Literal["user", "workspace"],
+        name: str,
+        body: SkillCasesRunBody,
+        workspace: Optional[str] = Query(None),
+    ) -> dict[str, object]:
+        """S2：跑技能包声明的用例（对给定 trace/output 或某次真实运行）。"""
+        from endless_task.skills import load_package_cases, run_package_case
+
+        package = _skill_package_dir(scope, name, workspace)
+        suite = load_package_cases(package)
+        tools_used = list(body.toolsUsed)
+        output = body.output
+        if body.runId:
+            tools_used = [
+                str(record.tool_name)
+                for turn in container.runtime_v2_repository.list_model_turns(
+                    body.runId
+                )
+                for record in container.runtime_v2_repository.list_tool_executions(
+                    turn.id
+                )
+            ]
+            run_record = container.runtime_v2_repository.get_run(body.runId)
+            entries = container.runtime_v2_repository.list_entries(
+                run_record.lane_id
+            )
+            from endless_task.runtime_v2.domain import TranscriptEntryType
+
+            output = "\n".join(
+                str(entry.payload.get("content", ""))
+                for entry in entries
+                if entry.type is TranscriptEntryType.ASSISTANT_MESSAGE
+            )
+        results = [
+            run_package_case(case, tools_used=tools_used, output=output)
+            for case in suite.cases
+        ]
+        return {
+            "diagnostics": list(suite.diagnostics),
+            "cases": [
+                {
+                    "name": result.name,
+                    "passed": result.passed,
+                    "failures": list(result.failures),
+                }
+                for result in results
+            ],
+            "toolsUsed": tools_used,
         }
 
     @app.get("/skills/invocable")

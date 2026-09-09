@@ -84,6 +84,8 @@ class SkillService:
                 description=skill.description,
                 scope=skill.scope,
                 file_path=skill.file_path,
+                digest=skill.digest,
+                version=skill.version,
                 disabled=skill.name in (
                     workspace_disabled if skill.scope == SkillScope.WORKSPACE else user_disabled
                 ),

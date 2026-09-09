@@ -920,6 +920,55 @@ export type RuntimeV2MessageResponse = {
   requestedSkills?: { name: string; status: string; message: string }[];
 };
 
+/** S2：技能校验结果（清单 + 诊断 + 扫描）。 */
+export type SkillValidation = {
+  valid: boolean;
+  manifest: {
+    name: string;
+    description: string;
+    version: string;
+    schemaVersion: number;
+    digest: string;
+    modelInvocable: boolean;
+    userInvocable: boolean;
+    requiredTools: string[];
+    requiredCapabilities: string[];
+    conflictsWith: string[];
+  };
+  diagnostics: { code: string; message: string; path: string }[];
+  scan: {
+    worstLevel: string | null;
+    quarantined: boolean;
+    findings: { code: string; level: string; message: string; path: string }[];
+  };
+};
+
+/** S2：技能使用统计（按 digest 分代）。 */
+export type SkillUsageRow = {
+  scope: string;
+  name: string;
+  digest: string;
+  counts: Record<string, number>;
+  lastAt: string | null;
+};
+
+/** S2：技能包用例结果。 */
+export type SkillCaseResult = {
+  name: string;
+  passed: boolean;
+  failures: string[];
+};
+
+export type SkillImportResult = {
+  name: string;
+  version: string;
+  digest: string;
+  target: string;
+  upgraded: boolean;
+  replacedDigest: string | null;
+  worstLevel: string | null;
+};
+
 /** S1：composer `/` 候选（用户可显式调用的技能）。 */
 export type SkillInvocationCandidate = {
   name: string;

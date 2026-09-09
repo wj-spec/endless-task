@@ -60,7 +60,11 @@ import type { KnowledgeProposal,
   WorkspaceFileContent,
   WorkspaceFileWriteResult,
   WorkspaceTreeListing,
+  SkillCaseResult,
+  SkillImportResult,
   SkillInvocationCandidate,
+  SkillUsageRow,
+  SkillValidation,
   TerminalSnapshot,
   WorkspaceSnapshot,
   SkillPackagesResponse,
@@ -330,6 +334,78 @@ export const chatApi = {
       items: Skill[];
     }>(`/skills${suffix}`);
     return response;
+  },
+  validateSkill: (body: { path?: string; content?: string }) =>
+    request<SkillValidation>(`/skills/validate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  importSkill: (body: {
+    sourcePath: string;
+    scope?: "user" | "workspace";
+    workspaceId?: string | null;
+    allowUpgrade?: boolean;
+  }) =>
+    request<{ skill: SkillImportResult }>(`/skills/import`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }).then((response) => response.skill),
+  createSkill: (body: {
+    name: string;
+    description: string;
+    whenToUse?: string;
+    body: string;
+    scope?: "user" | "workspace";
+    workspaceId?: string | null;
+    modelInvocable?: boolean;
+    userInvocable?: boolean;
+  }) =>
+    request<{ skill: { name: string; path: string } }>(`/skills/create`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }).then((response) => response.skill),
+  deleteSkill: (
+    scope: "user" | "workspace",
+    name: string,
+    workspaceId?: string | null,
+  ) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspace", workspaceId);
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
+    return request<{ deleted: boolean; trashedTo: string }>(
+      `/skills/${scope}/${encodeURIComponent(name)}${suffix}`,
+      { method: "DELETE" },
+    );
+  },
+  skillUsage: (
+    scope: "user" | "workspace",
+    name: string,
+    workspaceId?: string | null,
+  ) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspace", workspaceId);
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
+    return request<{ items: SkillUsageRow[] }>(
+      `/skills/${scope}/${encodeURIComponent(name)}/usage${suffix}`,
+    ).then((response) => response.items);
+  },
+  runSkillCases: (
+    scope: "user" | "workspace",
+    name: string,
+    body: { runId?: string; toolsUsed?: string[]; output?: string },
+    workspaceId?: string | null,
+  ) => {
+    const parameters = new URLSearchParams();
+    if (workspaceId) parameters.set("workspace", workspaceId);
+    const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
+    return request<{
+      diagnostics: string[];
+      cases: SkillCaseResult[];
+      toolsUsed: string[];
+    }>(`/skills/${scope}/${encodeURIComponent(name)}/cases/run${suffix}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   },
   patchSkill: (
     scope: "user" | "workspace",
