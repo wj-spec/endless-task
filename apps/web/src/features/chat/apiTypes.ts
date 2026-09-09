@@ -54,6 +54,25 @@ export type WorkspaceTreeListing = {
   truncated: boolean;
 };
 
+/** S4 内嵌终端：PTY 会话快照。 */
+export type TerminalStatus = {
+  kind: "running" | "exited";
+  exitCode: number | null;
+  signal: string | null;
+};
+
+export type TerminalSnapshot = {
+  sessionId: string;
+  workspaceId: string;
+  pid: number;
+  cwd: string;
+  name: string;
+  createdAt: number;
+  status: TerminalStatus;
+  rows: number;
+  cols: number;
+};
+
 /** P1 编辑：读取单个工作区文件（含乐观并发版本 token）。 */
 export type WorkspaceFileContent = {
   workspaceId: string;

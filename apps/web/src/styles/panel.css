@@ -2675,3 +2675,114 @@
   justify-content: space-between;
   gap: var(--space-2);
 }
+
+/* ---------- S4 内嵌终端 ---------- */
+
+.workspace-terminals {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.terminal-tabs {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.terminal-tabs button {
+  flex: none;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.terminal-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 620;
+}
+
+.workspace-terminals-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.terminal-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.terminal-pane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: var(--fs-1);
+}
+
+.terminal-pane-status {
+  flex: none;
+  color: var(--accent);
+}
+
+.terminal-pane-exit {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-pane-action {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.terminal-pane-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.terminal-pane-host {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-1) 0 var(--space-1) var(--space-2);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.terminal-pane-host .xterm {
+  height: 100%;
+}
+
+.terminal-pane-hint {
+  flex: none;
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--line-faint);
+  color: var(--faint);
+  font-size: var(--fs-1);
+}

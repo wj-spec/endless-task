@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { WorkspaceSnapshot } from "../chat/apiTypes";
 import { WorkspaceFilesPane } from "../files/WorkspaceFilesPane";
+import { TerminalWorkspace } from "../terminal/TerminalPane";
+import { useTerminalSessions } from "../terminal/useTerminalSessions";
 import { ArtifactDetail } from "./ArtifactDetail";
 import { formatRelativeTime } from "./time";
 import { useMediaQuery } from "../ui/useMediaQuery";
@@ -17,18 +19,20 @@ type WorkspacePanelProps = {
   workspaceRootPath?: string | null;
 };
 
-type WorkspacePanelTab = "artifacts" | "files";
+type WorkspacePanelTab = "artifacts" | "files" | "terminals";
 
 const kindLabel = { markdown: "文档", text: "纯文本" } as const;
 
 const TAB_LABELS: Record<WorkspacePanelTab, string> = {
   artifacts: "资产",
   files: "文件",
+  terminals: "终端",
 };
 
 const TAB_TITLES: Record<WorkspacePanelTab, { title: string; sub: string }> = {
   artifacts: { title: "工作区资产", sub: "此会话生成的产物与文档" },
   files: { title: "工作区文件", sub: "浏览与预览绑定的本地目录" },
+  terminals: { title: "工作区终端", sub: "在工作区目录运行持久终端会话" },
 };
 
 export function WorkspacePanel({
@@ -43,6 +47,7 @@ export function WorkspacePanel({
 }: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [tab, setTab] = useState<WorkspacePanelTab>("artifacts");
+  const terminals = useTerminalSessions(tab === "terminals" ? workspaceId : "");
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const isMobile = useMediaQuery("(max-width: 760px)");
@@ -109,7 +114,18 @@ export function WorkspacePanel({
           </button>
         ))}
       </div>
-      {tab === "files" ? (
+      {tab === "terminals" ? (
+        <TerminalWorkspace
+          activeId={terminals.activeId}
+          busy={terminals.busy}
+          error={terminals.error}
+          onCloseSession={terminals.close}
+          onCreate={terminals.create}
+          onSelect={terminals.select}
+          sessions={terminals.sessions}
+          workspaceId={workspaceId}
+        />
+      ) : tab === "files" ? (
         <WorkspaceFilesPane
           conversationId={conversationId}
           rootPath={workspaceRootPath}

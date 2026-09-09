@@ -60,6 +60,7 @@ import type { KnowledgeProposal,
   WorkspaceFileContent,
   WorkspaceFileWriteResult,
   WorkspaceTreeListing,
+  TerminalSnapshot,
   WorkspaceSnapshot,
   SkillPackagesResponse,
   TrajectoryMeta,
@@ -350,6 +351,25 @@ export const chatApi = {
     request<WorkspaceFilePreview>(
       `/workspaces/${workspaceId}/file-preview?path=${encodeURIComponent(path)}`
         + `&start_line=${startLine}&line_count=${lineCount}`,
+    ),
+  listWorkspaceTerminals: async (workspaceId: string) => {
+    const response = await request<{ items: TerminalSnapshot[] }>(
+      `/workspaces/${workspaceId}/terminals`,
+    );
+    return response.items;
+  },
+  createWorkspaceTerminal: (
+    workspaceId: string,
+    body: { name?: string; rows?: number; cols?: number } = {},
+  ) =>
+    request<{ terminal: TerminalSnapshot }>(
+      `/workspaces/${workspaceId}/terminals`,
+      { method: "POST", body: JSON.stringify(body) },
+    ).then((response) => response.terminal),
+  closeWorkspaceTerminal: (workspaceId: string, sessionId: string) =>
+    request<{ closed: boolean }>(
+      `/workspaces/${workspaceId}/terminals/${sessionId}`,
+      { method: "DELETE" },
     ),
   openWorkspaceTerminal: (workspaceId: string) =>
     request<{ opened: boolean; cwd: string; launcher: string; message: string }>(

@@ -6,13 +6,14 @@ import logging
 import os
 import sys
 import uuid
+import contextlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Literal, Mapping, Optional
 
-from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
+from fastapi import WebSocket, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
@@ -132,6 +133,11 @@ from endless_task.workspace_runtime import (
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
 from endless_task.workspace_runtime.browse import browse_directory
 from endless_task.workspace_runtime.system_terminal import open_system_terminal
+from endless_task.workspace_runtime.terminal import (
+    DEFAULT_COLS as TERMINAL_DEFAULT_COLS,
+    DEFAULT_ROWS as TERMINAL_DEFAULT_ROWS,
+    TerminalService,
+)
 from endless_task.workspace_runtime.visibility import workspace_tool_filter
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import (
@@ -896,6 +902,8 @@ class AppContainer:
     unattended_tool_registry: Optional[ToolRegistry] = None
     execution_backend_mode: str = ""
     response_feedback_repository: Optional[SqliteResponseFeedbackRepository] = None
+    # S4 内嵌终端：按工作区管理 PTY 会话（默认开启；上限/回收见 terminal.py）。
+    terminal_service: Optional["TerminalService"] = None
 
 
 class ConversationPatch(BaseModel):
@@ -1149,6 +1157,16 @@ class RevealPathBody(BaseModel):
     sourceConversationId: str
     sourceTurnId: str
     note: Optional[str] = None
+
+
+class TerminalCreateBody(BaseModel):
+    """S4 内嵌终端：创建 PTY 会话的可选参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = None
+    rows: Optional[int] = None
+    cols: Optional[int] = None
 
 
 class WorkspaceFileWriteBody(BaseModel):
@@ -3250,6 +3268,7 @@ def _build_container(
         run_checkpoint_coordinator=run_checkpoint_coordinator,
         unattended_tool_registry=unattended_tool_registry,
         execution_backend_mode=settings.execution_backend_mode,
+        terminal_service=TerminalService(),
     )
 
 
@@ -3458,6 +3477,8 @@ def create_app(
             if container.embedding_indexer is not None:
                 container.embedding_indexer.stop()
             await lifespan_tasks.shutdown(cancel=True)
+            if container.terminal_service is not None:
+                await container.terminal_service.close_all()
             await container.mcp_manager.stop_all()
             await container.task_worker.drain()
             await container.runtime_v2_gateway.shutdown()
@@ -5081,6 +5102,166 @@ def create_app(
             "launcher": result.launcher,
             "message": result.message,
         }
+
+    @app.post("/workspaces/{workspace_id}/terminals", status_code=201)
+    async def create_workspace_terminal(
+        workspace_id: str,
+        body: Optional[TerminalCreateBody] = None,
+    ) -> dict[str, object]:
+        """S4：创建一个持久 PTY 会话（每工作区上限 3 个）。"""
+        service = container.terminal_service
+        if service is None:
+            raise ApiRequestError(
+                "terminal_unavailable", "当前部署未启用内嵌终端。", status_code=503
+            )
+        _workspace, root = _workspace_root_or_error(workspace_id)
+        name = (body.name if body is not None else None) or ""
+        rows = body.rows if body is not None and body.rows else TERMINAL_DEFAULT_ROWS
+        cols = body.cols if body is not None and body.cols else TERMINAL_DEFAULT_COLS
+        try:
+            session = await service.create(
+                workspace_id=workspace_id,
+                cwd=root,
+                name=name[:64],
+                rows=rows,
+                cols=cols,
+            )
+        except ValueError as error:
+            raise ApiRequestError("terminal_create_failed", str(error)) from error
+        return {"terminal": session.snapshot().as_dict()}
+
+    @app.get("/workspaces/{workspace_id}/terminals")
+    async def list_workspace_terminals(workspace_id: str) -> dict[str, object]:
+        service = container.terminal_service
+        if service is None:
+            return {"items": []}
+        _workspace_root_or_error(workspace_id)
+        return {
+            "items": [
+                session.snapshot().as_dict()
+                for session in service.list_for_workspace(workspace_id)
+            ]
+        }
+
+    @app.delete("/workspaces/{workspace_id}/terminals/{session_id}")
+    async def close_workspace_terminal(
+        workspace_id: str, session_id: str
+    ) -> dict[str, object]:
+        service = container.terminal_service
+        if service is None:
+            return {"closed": False}
+        closed = await service.close(
+            workspace_id=workspace_id, session_id=session_id
+        )
+        return {"closed": closed}
+
+    @app.websocket("/workspaces/{workspace_id}/terminals/{session_id}")
+    async def workspace_terminal_socket(
+        websocket: WebSocket, workspace_id: str, session_id: str
+    ) -> None:
+        """S4：终端双向通道（input/resize/signal ↔ output/status）。
+
+        原始字节直通前端（交给 xterm.js 仿真）；会话不随 WS 断开而销毁。
+        """
+        service = container.terminal_service
+        await websocket.accept()
+        if service is None:
+            await websocket.send_json(
+                {"type": "error", "message": "当前部署未启用内嵌终端。"}
+            )
+            await websocket.close(code=1011)
+            return
+        try:
+            session = service.get(workspace_id=workspace_id, session_id=session_id)
+        except KeyError:
+            await websocket.send_json(
+                {"type": "error", "message": "终端会话不存在。"}
+            )
+            await websocket.close(code=1008)
+            return
+
+        outgoing: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=2048)
+
+        def push(frame: dict[str, object]) -> None:
+            try:
+                outgoing.put_nowait(frame)
+            except asyncio.QueueFull:
+                pass
+
+        def on_output(text: str) -> None:
+            push({"type": "output", "data": text})
+
+        def on_exit(status) -> None:
+            push(
+                {
+                    "type": "exit",
+                    "code": status.exit_code,
+                    "signal": status.signal,
+                }
+            )
+
+        unsubscribe_output = session.add_listener(on_output)
+        unsubscribe_exit = session.add_exit_listener(on_exit)
+        tail = session.read(offset=0, count=500)
+        push(
+            {
+                "type": "ready",
+                "terminal": session.snapshot().as_dict(),
+                "scrollback": tail.text,
+            }
+        )
+        if not session.alive:
+            push(
+                {
+                    "type": "exit",
+                    "code": session.status.exit_code,
+                    "signal": session.status.signal,
+                }
+            )
+
+        async def sender() -> None:
+            while True:
+                frame = await outgoing.get()
+                await websocket.send_json(frame)
+
+        async def receiver() -> None:
+            while True:
+                message = await websocket.receive_json()
+                kind = message.get("type") if isinstance(message, dict) else None
+                if kind == "input":
+                    session.write(str(message.get("data", "")))
+                elif kind == "resize":
+                    try:
+                        session.resize(
+                            int(message.get("rows", 0)),
+                            int(message.get("cols", 0)),
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                elif kind == "signal":
+                    session.signal(str(message.get("signal", "SIGINT")))
+                elif kind == "ping":
+                    push({"type": "pong"})
+
+        sender_task = asyncio.create_task(sender())
+        receiver_task = asyncio.create_task(receiver())
+        try:
+            done, pending = await asyncio.wait(
+                {sender_task, receiver_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                with contextlib.suppress(Exception):
+                    task.result()
+        except Exception:  # noqa: BLE001 断链/协议异常都不影响会话本身
+            logger.debug("Terminal socket loop failed", exc_info=True)
+        finally:
+            unsubscribe_output()
+            unsubscribe_exit()
+            with contextlib.suppress(Exception):
+                await websocket.close()
 
     # ---------- P1 文件编辑保存（工作区根内，乐观并发） ----------
 

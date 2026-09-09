@@ -16,6 +16,8 @@ dependencies = [
     "onnxruntime>=1.29,<2",
     "tokenizers>=0.23,<1",
     "mcp>=1.24,<2",
+    # S4: 内嵌终端 WebSocket（uvicorn 需要 websockets 或 wsproto 才能升级协议）。
+    "websockets>=12,<16",
     "jsonschema>=4.26.0",
     # SK-0: versioned SKILL.md manifests parse with the safe YAML subset;
     # PyYAML was already a transitive dependency of the MCP SDK, now
