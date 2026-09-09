@@ -351,6 +351,11 @@ export const chatApi = {
       `/workspaces/${workspaceId}/file-preview?path=${encodeURIComponent(path)}`
         + `&start_line=${startLine}&line_count=${lineCount}`,
     ),
+  openWorkspaceTerminal: (workspaceId: string) =>
+    request<{ opened: boolean; cwd: string; launcher: string; message: string }>(
+      `/workspaces/${workspaceId}/terminal/open`,
+      { method: "POST" },
+    ),
   revealInFinder: (path: string) =>
     request<{ revealed: boolean }>("/filesystem/reveal", {
       method: "POST",

@@ -131,6 +131,7 @@ from endless_task.workspace_runtime import (
 )
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
 from endless_task.workspace_runtime.browse import browse_directory
+from endless_task.workspace_runtime.system_terminal import open_system_terminal
 from endless_task.workspace_runtime.visibility import workspace_tool_filter
 from endless_task.security import configure_safe_logging
 from endless_task.knowledge import (
@@ -5063,6 +5064,22 @@ def create_app(
             "rootPath": str(root),
             "entries": entries,
             "truncated": len(items) >= _WS_MAX_BROWSE_ITEMS,
+        }
+
+    @app.post("/workspaces/{workspace_id}/terminal/open")
+    async def open_workspace_terminal(workspace_id: str) -> dict[str, object]:
+        """S3：在绑定的工作区目录打开用户的系统终端。
+
+        这是**用户的终端**：其中执行的命令不经过应用的逐条确认（前端需明示）。
+        打开失败不抛 500，返回 ``opened=false`` 与可读原因。
+        """
+        _workspace, root = _workspace_root_or_error(workspace_id)
+        result = open_system_terminal(root)
+        return {
+            "opened": result.opened,
+            "cwd": result.cwd,
+            "launcher": result.launcher,
+            "message": result.message,
         }
 
     # ---------- P1 文件编辑保存（工作区根内，乐观并发） ----------

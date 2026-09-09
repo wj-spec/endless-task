@@ -2667,3 +2667,11 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* S3 系统终端入口 */
+.shell-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}

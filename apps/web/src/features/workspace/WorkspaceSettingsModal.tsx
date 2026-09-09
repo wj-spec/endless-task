@@ -44,6 +44,8 @@ export function WorkspaceSettingsModal({
   const [createError, setCreateError] = useState<string | null>(null);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [items, setItems] = useState<BrowseItem[]>([]);
+  const [openingTerminal, setOpeningTerminal] = useState(false);
+  const [terminalNotice, setTerminalNotice] = useState<string | null>(null);
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [binding, setBinding] = useState(false);
@@ -89,6 +91,26 @@ export function WorkspaceSettingsModal({
       setLogEntries([]);
     }
   }, [workspace?.id, workspace?.rootPath]);
+
+  const openTerminal = useCallback(async () => {
+    if (!workspace?.id) return;
+    setOpeningTerminal(true);
+    setTerminalNotice(null);
+    try {
+      const result = await chatApi.openWorkspaceTerminal(workspace.id);
+      setTerminalNotice(
+        result.opened
+          ? `已在系统终端打开工作区目录（${result.launcher}）。`
+          : result.message || "无法打开系统终端。",
+      );
+    } catch (error) {
+      setTerminalNotice(
+        error instanceof Error ? error.message : "无法打开系统终端。",
+      );
+    } finally {
+      setOpeningTerminal(false);
+    }
+  }, [workspace?.id]);
 
   const parentPath = useMemo(() => {
     if (!currentPath) return null;
@@ -341,6 +363,30 @@ export function WorkspaceSettingsModal({
                     </div>
                   ))}
               </div>
+            </div>
+          )}
+
+          {workspace?.rootPath && (
+            <div className="shell-log">
+              <div className="shell-log-head">
+                <h3 className="settings-section-title">系统终端</h3>
+                <button
+                  className="directory-bind-button"
+                  disabled={openingTerminal}
+                  onClick={() => void openTerminal()}
+                  type="button"
+                >
+                  {openingTerminal ? "正在打开…" : "打开系统终端"}
+                </button>
+              </div>
+              <p className="settings-section-hint">
+                在工作区目录打开你自己的终端；该终端内的命令不受应用逐条确认保护。
+              </p>
+              {terminalNotice ? (
+                <p className="settings-section-hint" role="status">
+                  {terminalNotice}
+                </p>
+              ) : null}
             </div>
           )}
 

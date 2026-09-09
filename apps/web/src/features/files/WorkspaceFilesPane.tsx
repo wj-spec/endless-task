@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { chatApi } from "../chat/api";
+import { readableError } from "../chat/apiErrorText";
 import { WorkspaceFileEditor } from "./FileEditor";
 import { FileTree } from "./FileTree";
 import { WorkspaceFileViewer } from "./FileViewer";
@@ -23,11 +25,30 @@ export function WorkspaceFilesPane({
   const [showHidden, setShowHidden] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [terminalNotice, setTerminalNotice] = useState<string | null>(null);
+  const [openingTerminal, setOpeningTerminal] = useState(false);
   const tree = useWorkspaceTree(workspaceId, showHidden);
 
   useEffect(() => {
     setEditing(false);
   }, [selectedPath]);
+
+  const openTerminal = async () => {
+    setOpeningTerminal(true);
+    setTerminalNotice(null);
+    try {
+      const result = await chatApi.openWorkspaceTerminal(workspaceId);
+      setTerminalNotice(
+        result.opened
+          ? `已在系统终端打开工作区目录（${result.launcher}）。该终端内的命令不受应用逐条确认保护。`
+          : result.message || "无法打开系统终端。",
+      );
+    } catch (cause: unknown) {
+      setTerminalNotice(readableError(cause) || "无法打开系统终端。");
+    } finally {
+      setOpeningTerminal(false);
+    }
+  };
 
   if (!workspaceId) {
     return <p className="file-tree-note">该会话未绑定工作区，无法浏览文件。</p>;
@@ -74,7 +95,19 @@ export function WorkspaceFilesPane({
         <button onClick={tree.refresh} type="button">
           刷新
         </button>
+        <button
+          disabled={openingTerminal}
+          onClick={() => void openTerminal()}
+          type="button"
+        >
+          {openingTerminal ? "正在打开…" : "终端"}
+        </button>
       </div>
+      {terminalNotice ? (
+        <p className="file-tree-note" role="status">
+          {terminalNotice}
+        </p>
+      ) : null}
       {tree.rootBusy ? <p className="file-tree-note">正在读取…</p> : null}
       <div className="workspace-files-tree">
         <FileTree
