@@ -61,7 +61,7 @@ export function ScheduledTasksContent({
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingCancel, setPendingCancel] = useState<PendingCancel | null>(null);
-  const timers = useRef<number[]>([]);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const loadRuns = useCallback(async (taskId: string) => {
     try {

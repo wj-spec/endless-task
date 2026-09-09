@@ -31,7 +31,7 @@ export function useProposals(
   >({});
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const [resolveErrors, setResolveErrors] = useState<Record<string, string>>({});
-  const timers = useRef(new Map<string, number[]>());
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>[]>());
   const watchedTurns = useRef(new Set<string>());
 
   const fetchProposals = useCallback(async (conversationId: string) => {
@@ -74,7 +74,7 @@ export function useProposals(
     if (watchedTurns.current.has(key)) return;
     watchedTurns.current.add(key);
 
-    const scheduled: number[] = [];
+    const scheduled: ReturnType<typeof setTimeout>[] = [];
     POLL_DELAYS_MS.forEach((delay) => {
       const timer = globalThis.setTimeout(() => {
         void (async () => {

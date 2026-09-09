@@ -2677,6 +2677,12 @@
   height: 100%;
 }
 
+/* xterm 基础样式把视口背景写死为 #000；这里兜底覆盖成产品色，
+   避免加载基础样式后终端重新出现黑块（S12/S15）。 */
+.terminal-pane-host .xterm .xterm-viewport {
+  background-color: var(--surface-2) !important;
+}
+
 .terminal-pane-hint {
   flex: none;
   margin: 0;

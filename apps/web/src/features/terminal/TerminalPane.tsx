@@ -190,6 +190,10 @@ export function TerminalPane({
         const [{ Terminal }, { FitAddon }] = await Promise.all([
           import("@xterm/xterm"),
           import("@xterm/addon-fit"),
+          // xterm 基础样式必须一起加载：选中文本的 span 靠 `.xterm-decoration-top`
+          // （z-index:2）压在选择浮层（.xterm-selection z-index:1）之上，否则
+          // 选中区域会被不透明的选择色完全盖住文字。
+          import("@xterm/xterm/css/xterm.css"),
         ]);
         if (disposed || !hostRef.current) return;
         const terminal = new Terminal({
