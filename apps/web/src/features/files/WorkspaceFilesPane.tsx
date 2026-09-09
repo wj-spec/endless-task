@@ -21,6 +21,10 @@ export function WorkspaceFilesPane({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const tree = useWorkspaceTree(workspaceId, showHidden);
 
+  if (!workspaceId) {
+    return <p className="file-tree-note">该会话未绑定工作区，无法浏览文件。</p>;
+  }
+
   if (selectedPath) {
     return (
       <WorkspaceFileViewer

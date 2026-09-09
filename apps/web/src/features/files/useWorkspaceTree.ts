@@ -42,6 +42,7 @@ export function useWorkspaceTree(
 
   const load = useCallback(
     (path: string) => {
+      if (!workspaceId) return;
       if (inFlight.current.has(path)) return;
       inFlight.current.add(path);
       const currentGeneration = generation.current;

@@ -4817,10 +4817,10 @@ def create_app(
             raise ApiRequestError("path_not_found", "文件不存在。", status_code=404)
         if not canonical.is_file():
             raise ApiRequestError("path_is_directory", "路径指向目录。")
-        if canonical.stat().st_size > settings.max_file_bytes:
+        if canonical.stat().st_size > container.settings.max_file_bytes:
             raise ApiRequestError(
                 "file_too_large",
-                f"文件超过读取上限（{settings.max_file_bytes} 字节）。",
+                f"文件超过读取上限（{container.settings.max_file_bytes} 字节）。",
             )
         raw = canonical.read_bytes()
         try:

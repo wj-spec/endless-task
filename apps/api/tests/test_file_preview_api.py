@@ -139,6 +139,49 @@ class FilePreviewApiTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(404, response.status_code)
 
+    async def test_preview_works_when_app_reads_settings_from_environment(self) -> None:
+        """回归：`create_app()` 无显式 settings 时，处理器不能引用那个 None 参数。
+
+        真实启动路径（`endless_task.api.main:app`）就是无参 create_app，历史上这里
+        引用闭包里的 `settings`（None）导致每次预览 500。
+        """
+        import os
+        from unittest import mock
+
+        data_dir = Path(self._temp.name) / "env-data"
+        data_dir.mkdir()
+        env = {
+            "ENDLESS_TASK_DB_PATH": str(self.database_path),
+            "ENDLESS_TASK_DATA_DIR": str(data_dir),
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            app = create_app(provider=FakeProvider(chunks=("ok",)))
+            lifespan = app.router.lifespan_context(app)
+            await lifespan.__aenter__()
+            client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            )
+            try:
+                workspace_id = await create_bound_workspace(client, name=f"env {uuid4hex()}")
+                workspaces = await client.get("/workspaces")
+                workspace = next(
+                    item
+                    for item in workspaces.json()["items"]
+                    if item["id"] == workspace_id
+                )
+                root = Path(workspace["rootPath"]).expanduser()
+                (root / "plan.md").write_text("hello\n", encoding="utf-8")
+                response = await client.get(
+                    f"/workspaces/{workspace_id}/file-preview",
+                    params={"path": "plan.md"},
+                )
+                self.assertEqual(200, response.status_code)
+                self.assertEqual("hello", response.json()["lines"][0]["text"])
+            finally:
+                await client.aclose()
+                await lifespan.__aexit__(None, None, None)
+
 
 if __name__ == "__main__":
     unittest.main()
