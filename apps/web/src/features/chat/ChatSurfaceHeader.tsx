@@ -31,6 +31,9 @@ type ChatSurfaceHeaderProps = {
   onRestoreLane?: (laneId: string) => void;
   onSearch: () => void;
   onGlobalSearch?: () => void;
+  /** S10：右侧边栏（工作区视图）开关。 */
+  onToggleWorkspace?: () => void;
+  workspacePanelOpen?: boolean;
   onSetConfirmingDelete: () => void;
   onSetRenaming: (renaming: boolean) => void;
   onShowArchivedLanes?: (visible: boolean) => void | Promise<void>;
@@ -66,6 +69,8 @@ export function ChatSurfaceHeader({
   onRestoreLane,
 
     onGlobalSearch,
+    onToggleWorkspace,
+    workspacePanelOpen,
 
   onSearch,
   onSetConfirmingDelete,
@@ -182,6 +187,22 @@ export function ChatSurfaceHeader({
       <div className="surface-header-side">
         {conversation ? (
           <div className="conversation-actions">
+            {onToggleWorkspace ? (
+              <button
+                aria-label={workspacePanelOpen ? "收起工作区侧边栏" : "打开工作区侧边栏"}
+                aria-pressed={workspacePanelOpen === true}
+                className={
+                  workspacePanelOpen
+                    ? "icon-button conversation-icon-button is-active"
+                    : "icon-button conversation-icon-button"
+                }
+                onClick={onToggleWorkspace}
+                title="工作区：产物 / 文件 / 终端 / 浏览器"
+                type="button"
+              >
+                <FolderIcon size={19} />
+              </button>
+            ) : null}
             {onGlobalSearch ? (
               <button
                 aria-label="全局搜索"

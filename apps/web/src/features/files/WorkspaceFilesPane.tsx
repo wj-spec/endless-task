@@ -13,6 +13,10 @@ export type WorkspaceFilesPaneProps = {
   conversationId: string;
   rootPath?: string | null;
   workspaceName?: string;
+  /** 交叉跳转：打开文件视图时定位到的路径（产物 → 文件）。 */
+  focusPath?: string | null;
+  /** 同路径再次跳转时的触发序号。 */
+  focusNonce?: number;
 };
 
 /** 宽度阈值：≥ 此值用左右双栏，否则用主从切换（窄面板友好）。 */
@@ -42,6 +46,8 @@ export function WorkspaceFilesPane({
   conversationId,
   rootPath,
   workspaceName,
+  focusPath,
+  focusNonce,
 }: WorkspaceFilesPaneProps) {
   const [showHidden, setShowHidden] = useState(false);
   const [hideNoisy, setHideNoisy] = useState(true);
@@ -62,6 +68,13 @@ export function WorkspaceFilesPane({
     if (typeof window === "undefined") return;
     localStorage.setItem(TREE_WIDTH_KEY, String(treeWidth));
   }, [treeWidth]);
+
+  // 交叉跳转：产物 →「在文件中打开」时选中目标文件。
+  useEffect(() => {
+    if (!focusPath) return;
+    setEditing(false);
+    setSelectedPath(focusPath);
+  }, [focusPath, focusNonce]);
 
   const openTerminal = async () => {
     setOpeningTerminal(true);

@@ -199,6 +199,15 @@ export function App() {
     setWorkspaceCollapsed(true);
   };
 
+  const toggleWorkspacePanel = () => {
+    if (workspaceVisible && !workspaceCollapsed && !workspaceDrawerOpen) {
+      setWorkspaceCollapsed(true);
+      dispatchSurface({ type: "close-workspace-surfaces" });
+      return;
+    }
+    void openWorkspacePanel();
+  };
+
   const openWorkspacePanel = async () => {
     if (chat.sideConversationId) {
       const closed = await chat.closeSideConversation();
@@ -361,6 +370,8 @@ export function App() {
           void chat.switchLane(chat.activeConversationId, laneId);
         }}
         onOpenWorkspace={openWorkspacePanel}
+        onToggleWorkspace={workspaceVisible ? toggleWorkspacePanel : undefined}
+        workspacePanelOpen={workspaceVisible && !workspaceCollapsed}
         onOpenWorkspaceSettings={
           activeWorkspace
             ? () => {

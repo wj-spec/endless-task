@@ -21,6 +21,8 @@ type ArtifactDetailProps = {
   onBack: () => void;
   onChanged: () => void;
   workspaceRootPath?: string | null;
+  /** S10：跳转到文件视图并定位该产物。 */
+  onOpenInFiles?: (path: string) => void;
 };
 
 const kindLabel = { markdown: "文档", text: "纯文本" } as const;
@@ -74,6 +76,7 @@ export function ArtifactDetail({
   onBack,
   onChanged,
   workspaceRootPath,
+  onOpenInFiles,
 }: ArtifactDetailProps) {
   const [detail, setDetail] = useState<ArtifactDetailSnapshot | null>(null);
   const [versions, setVersions] = useState<ArtifactVersionRecord[]>([]);
@@ -279,6 +282,15 @@ export function ArtifactDetail({
             {detail.artifact.storagePath ? (
               <div className="artifact-file-row">
                 <code>{detail.artifact.storagePath}</code>
+                {onOpenInFiles ? (
+                  <button
+                    onClick={() => onOpenInFiles(detail.artifact.storagePath!)}
+                    title="在右侧「文件」视图中打开该产物"
+                    type="button"
+                  >
+                    在文件中打开
+                  </button>
+                ) : null}
                 <button
                   disabled={!workspaceRootPath}
                   onClick={() => {

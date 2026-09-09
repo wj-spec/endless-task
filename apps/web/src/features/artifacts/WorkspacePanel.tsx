@@ -1,8 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { chatApi } from "../chat/api";
 import type { WorkspaceSnapshot } from "../chat/apiTypes";
 import { WorkspaceFilesPane } from "../files/WorkspaceFilesPane";
 import { TerminalWorkspace } from "../terminal/TerminalPane";
 import { useTerminalSessions } from "../terminal/useTerminalSessions";
+import { BrowserPlaceholder } from "../workspace/views/BrowserPlaceholder";
+import { WorkspaceViewTabs } from "../workspace/views/WorkspaceViewTabs";
+import { useWorkspaceViews } from "../workspace/views/useWorkspaceViews";
 import { ArtifactDetail } from "./ArtifactDetail";
 import { formatRelativeTime } from "./time";
 import { useMediaQuery } from "../ui/useMediaQuery";
@@ -19,21 +23,7 @@ type WorkspacePanelProps = {
   workspaceRootPath?: string | null;
 };
 
-type WorkspacePanelTab = "artifacts" | "files" | "terminals";
-
 const kindLabel = { markdown: "文档", text: "纯文本" } as const;
-
-const TAB_LABELS: Record<WorkspacePanelTab, string> = {
-  artifacts: "资产",
-  files: "文件",
-  terminals: "终端",
-};
-
-const TAB_TITLES: Record<WorkspacePanelTab, { title: string; sub: string }> = {
-  artifacts: { title: "工作区资产", sub: "此会话生成的产物与文档" },
-  files: { title: "工作区文件", sub: "浏览与预览绑定的本地目录" },
-  terminals: { title: "工作区终端", sub: "在工作区目录运行持久终端会话" },
-};
 
 export function WorkspacePanel({
   workspace,
@@ -46,7 +36,8 @@ export function WorkspacePanel({
   workspaceRootPath,
 }: WorkspacePanelProps) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
-  const [tab, setTab] = useState<WorkspacePanelTab>("artifacts");
+  const views = useWorkspaceViews(conversationId);
+  const tab = views.activeKind;
   const terminals = useTerminalSessions(tab === "terminals" ? workspaceId : "");
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -76,7 +67,7 @@ export function WorkspacePanel({
   const workspaceLabel = workspaceRootPath
     ? (workspaceRootPath.split("/").filter(Boolean).pop() ?? "工作区")
     : "工作区";
-  const header = TAB_TITLES[tab];
+  const header = { title: views.active.title, sub: views.active.subtitle };
 
   return (
     <aside
@@ -104,21 +95,26 @@ export function WorkspacePanel({
           收起
         </button>
       </header>
-      <div aria-label="工作区面板" className="workspace-tabs" role="tablist">
-        {(Object.keys(TAB_LABELS) as WorkspacePanelTab[]).map((key) => (
-          <button
-            aria-selected={tab === key}
-            className={tab === key ? "is-active" : undefined}
-            key={key}
-            onClick={() => setTab(key)}
-            role="tab"
-            type="button"
-          >
-            {TAB_LABELS[key]}
-          </button>
-        ))}
-      </div>
-      {tab === "terminals" ? (
+      <WorkspaceViewTabs
+        activeKind={views.activeKind}
+        onActivate={views.activate}
+        onClose={views.close}
+        onCreate={views.open}
+        views={views.views}
+      />
+      {tab === "browser" ? (
+        <BrowserPlaceholder
+          onOpenExternal={
+            workspaceRootPath
+              ? () => {
+                  void chatApi
+                    .revealInFinder(`${workspaceRootPath}/README.md`)
+                    .catch(() => undefined);
+                }
+              : undefined
+          }
+        />
+      ) : tab === "terminals" ? (
         <TerminalWorkspace
           activeId={terminals.activeId}
           busy={terminals.busy}
@@ -132,6 +128,8 @@ export function WorkspacePanel({
       ) : tab === "files" ? (
         <WorkspaceFilesPane
           conversationId={conversationId}
+          focusPath={views.fileTarget?.path ?? null}
+          focusNonce={views.fileTarget?.nonce ?? 0}
           rootPath={workspaceRootPath}
           workspaceId={workspaceId}
           workspaceName={workspaceLabel}
@@ -143,6 +141,7 @@ export function WorkspacePanel({
           latestTurnId={latestTurnId}
           onBack={() => setSelectedArtifactId(null)}
           onChanged={onWorkspaceRefresh}
+          onOpenInFiles={(path) => views.openFile(path)}
           workspaceRootPath={workspaceRootPath}
         />
       ) : (

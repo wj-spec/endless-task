@@ -2185,33 +2185,9 @@
 
 /* ---------- P0 文件面板：页签 / 文件树 / 预览 ---------- */
 
-.workspace-tabs {
-  display: flex;
-  flex: none;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3) 0;
-  border-bottom: 1px solid var(--line-soft);
-}
 
-.workspace-tabs button {
-  padding: var(--space-1) 10px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--fs-2);
-  cursor: pointer;
-}
 
-.workspace-tabs button:hover {
-  color: var(--accent);
-}
 
-.workspace-tabs button.is-active {
-  border-bottom-color: var(--accent);
-  color: var(--accent);
-  font-weight: 620;
-}
 
 .workspace-files {
   display: flex;
@@ -2924,5 +2900,116 @@
   margin: 0;
   font-family: var(--font-mono);
   font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* ---------- S10 视图标签条 + 浏览器占位 ---------- */
+
+.workspace-view-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.workspace-view-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+}
+
+.workspace-view-tab.is-active {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--accent-soft);
+}
+
+.workspace-view-tab-label {
+  padding: 2px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.workspace-view-tab.is-active .workspace-view-tab-label {
+  color: var(--accent);
+  font-weight: 620;
+}
+
+.workspace-view-tab-close {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.workspace-view-tab-close:hover {
+  color: var(--danger-deep);
+}
+
+.workspace-view-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workspace-view-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.workspace-view-hint {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--space-2);
+  color: var(--faint);
+  font-size: var(--fs-1);
+  white-space: nowrap;
+}
+
+.browser-placeholder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+}
+
+.browser-placeholder-icon {
+  color: var(--faint);
+}
+
+.browser-placeholder h3 {
+  margin: 0;
+  color: var(--ink-raise);
+  font-size: var(--fs-3);
+}
+
+.browser-placeholder p {
+  max-width: 44ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-2);
   line-height: 1.6;
 }

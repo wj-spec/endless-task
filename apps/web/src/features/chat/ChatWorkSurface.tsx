@@ -128,6 +128,8 @@ type ChatWorkSurfaceProps = {
   onOpenConversation?: (conversationId: string) => void;
   onOpenRunningLane?: (laneId: string) => void;
   onOpenWorkspace?: () => void;
+  onToggleWorkspace?: () => void;
+  workspacePanelOpen?: boolean;
   onOpenWorkspaceSettings?: () => void;
   onEditResendMessage?: (turnId: string, content: string) => void;
   editedUserMessages?: Record<string, string>;
@@ -310,6 +312,8 @@ export function ChatWorkSurface({
   onOpenRunningLane,
   onOpenWorkspace,
   onOpenWorkspaceSettings,
+  onToggleWorkspace,
+  workspacePanelOpen,
   onEditResendMessage,
   editedUserMessages,
   workspaces,
@@ -567,7 +571,9 @@ export function ChatWorkSurface({
           onSubmitTitle={submitTitle}
           onSwitchLane={onSwitchLane}
           onTitleDraftChange={setTitleDraft}
-        />
+              onToggleWorkspace={onToggleWorkspace}
+      workspacePanelOpen={workspacePanelOpen}
+    />
 
         {conversation?.conversation.kind === "ephemeral" ? (
           <div className="branch-banner" role="note">
