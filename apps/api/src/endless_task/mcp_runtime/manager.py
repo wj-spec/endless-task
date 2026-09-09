@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
 from endless_task.runtime.background_tasks import BackgroundTaskSupervisor
@@ -36,6 +36,11 @@ class _LiveConnection:
     tools: tuple[McpToolBridge, ...]
     state: str = "reconnecting"
     connected_at: float = 0.0
+    #: M1：工具列表热同步串行化 + 合并（同一时刻只跑一次，期间再有通知合并成一轮）。
+    sync_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    sync_pending: bool = False
+    sync_generation: int = 0
+    sync_task: Optional[asyncio.Task] = None
 
 
 def _sanitized_environment(explicit: Mapping[str, str]) -> dict[str, str]:
@@ -287,18 +292,7 @@ class McpManager:
                 from mcp import types as mcp_types
 
                 async def handle_message(message: Any) -> None:
-                    root = getattr(message, "root", None)
-                    if not isinstance(root, mcp_types.ToolListChangedNotification):
-                        return
-                    connection = self._connections.get(server.id)
-                    if connection is None or connection.session is not session:
-                        return
-                    try:
-                        tools = await self._discover_tools(server, session)
-                        connection.tools = tools
-                        self._replace_registry_tools()
-                    except Exception as error:
-                        self._errors[server.id] = str(error)
+                    await self.handle_notification(message, server, session)
 
                 session = await stack.enter_async_context(
                     ClientSession(
@@ -413,6 +407,90 @@ class McpManager:
             if connection.config.name == server_name:
                 return connection.session
         return None
+
+    async def handle_notification(
+        self, message: Any, server: McpServerConfig, session: Any
+    ) -> None:
+        """M1：只处理 ``notifications/tools/list_changed``，其余通知忽略。"""
+        from mcp import types as mcp_types
+
+        root = getattr(message, "root", None)
+        if not isinstance(root, mcp_types.ToolListChangedNotification):
+            return
+        connection = self._connections.get(server.id)
+        if connection is None or connection.session is not session:
+            return
+        # 关键：**不能**在消息处理回调里 await 同步——SDK 的消息循环是串行的，
+        # 同步过程还要发 list_tools 请求并等响应，而响应同样要经过这个循环，
+        # 直接 await 会死锁。改为投递到后台任务，回调立即返回。
+        if connection.sync_task is not None and not connection.sync_task.done():
+            connection.sync_pending = True
+            return
+        connection.sync_task = self._task_supervisor.spawn(
+            self.sync_tools(server, connection, session=session),
+            name=f"mcp-sync:{server.name}",
+        )
+
+    async def sync_tools(
+        self,
+        server: McpServerConfig,
+        connection: "_LiveConnection",
+        *,
+        session: Any = None,
+    ) -> bool:
+        """M1：``tools/list_changed`` 后的两阶段代际切换。
+
+        阶段一：拉全量并构建候选工具集（重复 rawName 直接报错，不动旧代）；
+        阶段二：用候选集做一次**整体注册校验**，通过才提交（registry + connection
+        同时切换）；校验失败或拉取失败都保留旧一代继续服务。
+
+        同一连接上的同步串行化：正在同步时再来的通知只置一个 pending 位，
+        由当前这轮循环消费，避免并发注册交错。
+        """
+        target = session if session is not None else connection.session
+        if target is None:
+            return False
+        if connection.sync_lock.locked():
+            connection.sync_pending = True
+            return False
+        async with connection.sync_lock:
+            changed = False
+            while True:
+                connection.sync_pending = False
+                try:
+                    candidate = await self._discover_tools(server, target)
+                except Exception as error:
+                    # 拉取失败：保留旧代，仅记录诊断。
+                    self._errors[server.id] = (
+                        f"MCP 服务器 {server.name} 工具列表刷新失败：{error}"
+                    )
+                    return changed
+                try:
+                    self._registry_replace_with({server.id: candidate})
+                except ToolValidationError as error:
+                    self._errors[server.id] = (
+                        f"MCP 服务器 {server.name} 工具注册冲突，已保留旧一代："
+                        f"{error}"
+                    )
+                    return changed
+                connection.tools = candidate
+                connection.sync_generation += 1
+                connection.state = "connected"
+                self._errors.pop(server.id, None)
+                changed = True
+                if not connection.sync_pending:
+                    return changed
+
+    def _registry_replace_with(
+        self, overrides: dict[str, tuple[McpToolBridge, ...]]
+    ) -> None:
+        """用候选工具集做整体替换校验（失败时不修改任何连接状态）。"""
+        tools = tuple(
+            tool
+            for connection in self._connections.values()
+            for tool in overrides.get(connection.config.id, connection.tools)
+        )
+        self._registry.replace_tools(tools)
 
     def _replace_registry_tools(self) -> None:
         tools = tuple(
