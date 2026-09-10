@@ -245,6 +245,10 @@ from .hub_support import (
     hub_event_sse,
 )
 from .knowledge_support import emit_knowledge_duplicates
+from .v2_conversation_support import (
+    resolve_runtime_v2_conversation,
+    title_conversation_from_first_message,
+)
 from .runtime_v2_support import (
     runtime_v2_lane_json,
     runtime_v2_memory_json,
@@ -1110,38 +1114,8 @@ def _parse_skill_dirs(raw: Optional[str]) -> tuple[Path, ...]:
 
 
 
-def _title_conversation_from_first_message(
-    container, conversation_id: str, content: str
-) -> None:
-    """用首条用户消息给会话命名（v1 时代的行为，v2 路径补齐）。
-
-    为什么需要：v1 在 `create_turn` 里会自动命名，v2 消息路径不经过那里，
-    于是会话永远叫「新对话」——侧栏里一堆同名条目（用户反馈"摘要设计丢了"）。
-
-    规则与 v1 一致（前 30 字、空白折叠）；手动命名过的标题不动；非首条消息
-    不动。命名属于侧信道，失败不影响消息发送。
-    """
-    try:
-        conversation = container.chat_repository.get_conversation(conversation_id)
-        if conversation.title_is_manual:
-            return
-        if container.runtime_v2_repository.has_user_message(conversation_id):
-            return
-        container.chat_repository.set_automatic_title(conversation_id, content)
-    except Exception:  # noqa: BLE001 命名失败不该阻塞发消息
-        pass
 
 
-def _resolve_runtime_v2_conversation(
-    container: AppContainer,
-    conversation_id: str,
-    *,
-    write: bool,
-) -> str:
-    del write
-    # 14 B2: v2 sole runtime — conversation id is its own tree (migration
-    # mapping tables removed with the migration machinery).
-    return conversation_id
 
 
 
@@ -3684,7 +3658,7 @@ def create_app(
         conversation_id: str,
         includeArchived: bool = False,
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=False,
@@ -3726,7 +3700,7 @@ def create_app(
         conversation_id: str,
         body: RuntimeV2CreateLaneBody,
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=True,
@@ -3772,7 +3746,7 @@ def create_app(
         conversation_id: str,
         body: RuntimeV2CreateTemporaryConversationBody,
     ) -> dict[str, object]:
-        source_conversation_id = _resolve_runtime_v2_conversation(
+        source_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=True,
@@ -3952,7 +3926,7 @@ def create_app(
         lane_id: str = Query(...),
         run_id: Optional[str] = Query(None),
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=False,
@@ -3973,7 +3947,7 @@ def create_app(
         conversation_id: str,
         body: RuntimeV2MemoryBody,
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=True,
@@ -4019,7 +3993,7 @@ def create_app(
         conversation_id: str,
         include_resolved: bool = Query(False),
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=False,
@@ -4043,7 +4017,7 @@ def create_app(
         body: RuntimeV2MessageBody,
         idempotency_key: str = Header(..., alias="Idempotency-Key"),
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=True,
@@ -4061,7 +4035,7 @@ def create_app(
             body.content,
             include_bodies=False,
         )
-        _title_conversation_from_first_message(
+        title_conversation_from_first_message(
             container, target_conversation_id, body.content
         )
         handle = await container.runtime_v2_gateway.send(
@@ -4086,7 +4060,7 @@ def create_app(
         conversation_id: str,
         lane_id: Optional[str] = Query(default=None),
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=False,
@@ -4100,7 +4074,7 @@ def create_app(
     async def get_runtime_v2_recovery(
         conversation_id: str,
     ) -> dict[str, object]:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=False,
@@ -4152,7 +4126,7 @@ def create_app(
         after_seq: int = Query(0, ge=0),
         lane_id: Optional[str] = Query(default=None),
     ) -> StreamingResponse:
-        target_conversation_id = _resolve_runtime_v2_conversation(
+        target_conversation_id = resolve_runtime_v2_conversation(
             container,
             conversation_id,
             write=False,
