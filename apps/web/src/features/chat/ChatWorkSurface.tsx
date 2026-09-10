@@ -63,6 +63,7 @@ import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
 import { RuntimeStatusStrip } from "./RuntimeStatusStrip";
+import { useTurnInteractions } from "./useTurnInteractions";
 import { useTurnFocus } from "./useTurnFocus";
 import { skillCommandsOf } from "../skills/skillCommand";
 
@@ -328,48 +329,34 @@ export function ChatWorkSurface({
   const streamRef = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
-  const [editTurnId, setEditTurnId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
-  const [modifyApprovalId, setModifyApprovalId] = useState<string | null>(null);
-  const [modifyDraft, setModifyDraft] = useState("");
-  const [modifyError, setModifyError] = useState<string | null>(null);
   const search = useConversationSearch(conversation, liveTurns, streamRef);
-  const [citationsByTurn, setCitationsByTurn] = useState<
-    Record<string, KnowledgeCitation[]>
-  >({});
-  const [openCitation, setOpenCitation] = useState<{
-    turnId: string;
-    label: string;
-  } | null>(null);
+  // 逐轮交互态（消息编辑 / 审批改参 / 引用卡片 / 文件预览）：收在 hook 里，
+  // 下一轮拆 `TurnItem` 时可以把整个对象传下去。这里解构成原有变量名，使用点不变。
+  const turnInteractions = useTurnInteractions(conversation?.conversation.id);
+  const { resetForConversation } = turnInteractions;
+  const {
+    editTurnId,
+    setEditTurnId,
+    editDraft,
+    setEditDraft,
+    modifyApprovalId,
+    setModifyApprovalId,
+    modifyDraft,
+    setModifyDraft,
+    modifyError,
+    setModifyError,
+    citationsByTurn,
+    openCitation,
+    setOpenCitation,
+    handleCitationClick,
+    previewTarget,
+    setPreviewTarget,
+  } = turnInteractions;
   const [inheritedHistoryOpen, setInheritedHistoryOpen] = useState(false);
 
-  const handleCitationClick = async (turnId: string, label: string) => {
-    if (
-      openCitation &&
-      openCitation.turnId === turnId &&
-      openCitation.label === label
-    ) {
-      setOpenCitation(null);
-      return;
-    }
-    setOpenCitation({ turnId, label });
-    const items = citationsByTurn[turnId] ?? [];
-    const citation = items.find((item) => item.label === label);
-    if (citation) {
-      void chatApi
-        .recordCitationClick({
-          label: citation.label,
-          scope: citation.scope,
-          refId: citation.refId,
-          turnId,
-          conversationId: citation.conversationId,
-        })
-        .catch(() => undefined);
-    }
-  };
 
   const jumpCitation = (citation: KnowledgeCitation) => {
     if (citation.scope === "conversation") {
@@ -438,30 +425,10 @@ export function ChatWorkSurface({
   useEffect(() => {
     setRenaming(false);
     setTitleDraft(conversation?.conversation.title ?? "");
-    setOpenCitation(null);
+    resetForConversation();
     setInheritedHistoryOpen(false);
   }, [conversationId, conversation?.conversation.title]);
 
-  // 拉取本轮会话「真正注入」的引用列表（turn_id -> citations）。
-  // 前端据此把 [K1]/[K2]… 角标分为「真实引用」与「无法溯源的占位引用」。
-  useEffect(() => {
-    if (!conversationId) {
-      setCitationsByTurn({});
-      return;
-    }
-    let cancelled = false;
-    void chatApi
-      .getConversationCitations(conversationId)
-      .then((map) => {
-        if (!cancelled) setCitationsByTurn(map);
-      })
-      .catch(() => {
-        // 引用加载失败不阻断交互（此时角标保持乐观可点击）。
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [conversationId]);
 
   // 通知/引用跳转：定位目标轮次（定位期间暂停自动滚底，避免被顶掉）。
   const turnFocus = useTurnFocus({
@@ -498,8 +465,6 @@ export function ChatWorkSurface({
   const workspaceRefs = activeSnapshot
     ? extractWorkspaceSourceRefs(runtimeTools)
     : [];
-  const [previewTarget, setPreviewTarget] =
-    useState<WorkspacePreviewTarget | null>(null);
 
   const SurfaceRoot = variant === "side" ? "section" : "main";
 
