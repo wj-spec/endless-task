@@ -236,6 +236,22 @@ from endless_task.skills import (
     build_available_skills_prompt,
     parse_skill_commands,
 )
+from .container import AppContainer
+from .errors import ApiRequestError
+from .routes.system import register_system_routes
+from .schemas.system import SetPermissionBody
+from .routes.skills import register_skill_routes
+from .schemas.skills import (
+    SkillCasesRunBody,
+    SkillCreateBody,
+    SkillImportBody,
+    SkillInstallBody,
+    SkillPatchBody,
+    SkillSearchBody,
+    SkillValidateBody,
+)
+from .skill_requests import resolve_skill_requests
+
 from endless_task.tooling import (
     ApprovalStatus,
     ToolApprovalMode,
@@ -877,79 +893,6 @@ class AppSettings:
         )
 
 
-@dataclass(frozen=True)
-class AppContainer:
-    settings: AppSettings
-    database: Database
-    chat_repository: SqliteChatRepository
-    file_repository: SqliteTextFileRepository
-    memory_repository: SqliteMemoryRepository
-    proposal_repository: SqliteMemoryProposalRepository
-    preferences_repository: SqlitePreferencesRepository
-    artifact_repository: SqliteArtifactRepository
-    artifact_proposal_repository: SqliteArtifactProposalRepository
-    artifact_proposal_service: Optional[ArtifactProposalService]
-    task_repository: SqliteTaskRepository
-    task_proposal_repository: SqliteTaskProposalRepository
-    task_proposal_service: Optional[TaskProposalService]
-    task_run_repository: SqliteTaskRunRepository
-    notification_repository: SqliteNotificationRepository
-    hub_event_repository: SqliteHubEventRepository
-    reminder_repository: SqliteReminderRepository
-    knowledge_proposal_repository: SqliteKnowledgeProposalRepository
-    knowledge_proposal_service: Optional[KnowledgeProposalService]
-    knowledge_repository: SqliteKnowledgeRepository
-    retrieval_event_repository: SqliteRetrievalEventRepository
-    workspace_repository: SqliteWorkspaceRepository
-    workspace_resolver: WorkspaceResolver
-    skill_service: SkillService
-    #: S2：技能使用统计（按 digest 分代持久化）。
-    skill_usage_repository: SqliteSkillUsageRepository
-    #: S8：生态安装来源记录。
-    skill_provenance_repository: SqliteSkillProvenanceRepository
-    provider_profile_repository: SqliteProviderProfileRepository
-    provider_secret_store: ProviderSecretStore
-    provider_manager: ProviderManager
-    mcp_server_repository: SqliteMcpServerRepository
-    mcp_manager: McpManager
-    effect_log: EffectLog
-    artifact_file_store: ArtifactFileStore
-    knowledge_lifecycle_service: Optional[KnowledgeLifecycleService]
-    memory_forgetting_service: Optional[MemoryForgettingService]
-    memory_consolidation_service: Optional[MemoryConsolidationService]
-    undo_service: Optional[WorkspaceUndoService]
-    memory_reflection_service: Optional[MemoryReflectionService]
-    user_profile_service: Optional[UserProfileService]
-    undo_journal_repository: SqliteUndoJournalRepository
-    embedding_indexer: Optional[EmbeddingIndexer]
-    proposal_budget: Optional[ProposalBudget]
-    task_notification_service: Optional[TaskNotificationService]
-    task_worker: TaskWorker
-    task_scheduler: TaskScheduler
-    reference_resolver: SourceReferenceResolver
-    memory_proposal_service: Optional[MemoryProposalService]
-    memory_conflict_service: Optional[MemoryConflictService]
-    broker: RuntimeEventBroker
-    provider: ModelProvider
-    tool_registry: ToolRegistry
-    runtime_v2_repository: SqliteRuntimeV2Repository
-    runtime_v2_memory_repository: SqliteRuntimeV2MemoryRepository
-    runtime_v2_memory_quality_service: RuntimeV2MemoryQualityService
-    runtime_v2_gateway: RuntimeV2SessionGateway
-    delegation_handler: Optional[CoordinatorDelegationHandler] = None
-    runtime_v2_trace_observer: Optional[object] = None
-    runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
-    runtime_v2_span_recorder: Optional[SqliteRuntimeLedger] = None
-    run_checkpoint_coordinator: Optional[RunCheckpointCoordinator] = None
-    # M3B slice F enforcement (for ops/tests): registry view used by the
-    # unattended executors + configured mode.
-    unattended_tool_registry: Optional[ToolRegistry] = None
-    execution_backend_mode: str = ""
-    response_feedback_repository: Optional[SqliteResponseFeedbackRepository] = None
-    # S4 内嵌终端：按工作区管理 PTY 会话（默认开启；上限/回收见 terminal.py）。
-    terminal_service: Optional["TerminalService"] = None
-
-
 class ConversationPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1158,81 +1101,6 @@ class ProviderDefaultModelBody(BaseModel):
     modelId: str
 
 
-class SkillPatchBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    disabled: Optional[bool] = None
-    #: S5：固定/取消固定进默认目录。
-    pinned: Optional[bool] = None
-
-
-class SkillInstallBody(BaseModel):
-    """S8：从生态安装技能（owner/repo 或 owner/repo@skill）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    source: str = Field(min_length=3, max_length=200)
-    scope: Literal["user", "workspace"] = "user"
-    workspaceId: Optional[str] = None
-    allowUpgrade: bool = False
-
-
-class SkillSearchBody(BaseModel):
-    """S6：本地技能检索。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    query: str = Field(min_length=1, max_length=200)
-    scope: Literal["all", "workspace", "global"] = "all"
-    workspaceId: Optional[str] = None
-    limit: int = Field(default=8, ge=1, le=20)
-
-
-class SkillValidateBody(BaseModel):
-    """S2：校验技能包（目录路径）或内联 SKILL.md 内容。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    path: Optional[str] = None
-    content: Optional[str] = None
-
-
-class SkillImportBody(BaseModel):
-    """S2：从本地目录导入技能包。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    sourcePath: str
-    scope: Literal["user", "workspace"] = "user"
-    workspaceId: Optional[str] = None
-    allowUpgrade: bool = False
-
-
-class SkillCreateBody(BaseModel):
-    """S2：按模板新建技能（写入用户级或工作区级技能根）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    scope: Literal["user", "workspace"] = "user"
-    workspaceId: Optional[str] = None
-    name: str
-    description: str
-    whenToUse: Optional[str] = None
-    body: str
-    modelInvocable: bool = True
-    userInvocable: bool = True
-
-
-class SkillCasesRunBody(BaseModel):
-    """S2：跑技能包声明的用例（可对某次运行的真实 trace 校验）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    runId: Optional[str] = None
-    toolsUsed: list[str] = []
-    output: str = ""
-
-
 class McpServerBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1310,430 +1178,6 @@ class ResolveApprovalBody(BaseModel):
     arguments: Optional[dict] = None
 
 
-class SetPermissionBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    mode: str
-    acknowledge: bool = False
-
-
-class ApiRequestError(RuntimeError):
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        status_code: int = 400,
-        details: Optional[Mapping[str, object]] = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status_code = status_code
-        self.details = details
-
-
-def _tool_platform_v2_profile_name() -> str:
-    """Name of the calibrated provider profile used by the v2 tool path."""
-    from endless_task.tool_platform import create_openai_compatible_profile
-
-    return create_openai_compatible_profile().name
-
-
-def _correlation_id() -> str:
-    return f"corr_{uuid.uuid4().hex}"
-
-
-def _error_response(
-    *,
-    status_code: int,
-    code: str,
-    message: str,
-    retryable: bool = False,
-    details: Optional[Mapping[str, object]] = None,
-) -> JSONResponse:
-    payload: dict[str, object] = {
-        "code": code,
-        "message": message,
-        "retryable": retryable,
-        "correlationId": _correlation_id(),
-    }
-    if details is not None:
-        payload["details"] = dict(details)
-    return JSONResponse(
-        status_code=status_code,
-        content={"error": payload},
-    )
-
-
-def _repository_error_status(error: RepositoryError) -> int:
-    if isinstance(error, NotFoundError):
-        return 404
-    if isinstance(error, (ConflictError, InvalidStateError)):
-        return 409
-    if isinstance(error, ValidationError):
-        return 400
-    return 500
-
-
-def _runtime_v2_product_sse(event: ProductRuntimeEventRecord) -> str:
-    payload = json.dumps(
-        product_event_json(event),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"id: {event.event_seq}\nevent: {event.event_type}\ndata: {payload}\n\n"
-
-
-def _hub_event_sse(event) -> str:
-    payload = json.dumps(
-        hub_event_json(event),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"id: {event.event_seq}\nevent: hub.{event.event_type}\ndata: {payload}\n\n"
-
-
-def _hub_append_proposal_resolved(
-    container,
-    *,
-    kind: str,
-    proposal,
-    decision: str,
-) -> None:
-    """P1-2 resolve 写点：提案 accept/reject 后推 hub 事件（pending 集合变化）。"""
-    container.hub_event_repository.append(
-        "proposal.resolved",
-        conversation_id=proposal.conversation_id,
-        data={
-            "kind": kind,
-            "proposalId": proposal.id,
-            "conversationId": proposal.conversation_id,
-            "decision": decision,
-        },
-    )
-
-
-def _memory_reflection_json(record) -> dict[str, object]:
-    return {
-        "id": record.id,
-        "conversationId": record.conversation_id,
-        "runId": record.run_id,
-        "trigger": record.trigger,
-        "status": record.status,
-        "insight": record.insight_content,
-        "proposalId": record.proposal_id,
-        "insightMemoryId": record.insight_memory_id,
-        "createdAt": record.created_at,
-        "resolvedAt": record.resolved_at,
-        "sources": [dict(item) for item in record.source_refs],
-    }
-
-
-def _audit_fact_from_event(container, event) -> Optional[AuditFact]:
-    """把一条运行事件归一化成审计事实（不认识的类型返回 None）。"""
-    event_type = getattr(event, "event_type", "")
-    payload = dict(getattr(event, "payload", {}) or {})
-    occurred_at = getattr(event, "occurred_at", "") or ""
-    fact_id = getattr(event, "event_id", "") or f"{event_type}:{occurred_at}"
-    if event_type in ("run_started", "run_completed", "run_failed", "run_cancelled"):
-        titles = {
-            "run_started": "开始运行",
-            "run_completed": "运行完成",
-            "run_failed": "运行失败",
-            "run_cancelled": "运行被取消",
-        }
-        return AuditFact(
-            fact_id=fact_id,
-            kind="run",
-            occurred_at=occurred_at,
-            title=titles[event_type],
-            summary=str(payload.get("safeMessage") or ""),
-            error_code=str(payload.get("errorCode") or ""),
-        )
-    if event_type in _AUDIT_TERMINAL_TOOL_EVENTS:
-        # 只保留终态，避免同一次调用出现 4 条（created/status/started/completed）。
-        tool_name = _audit_tool_name(container, payload)
-        return AuditFact(
-            fact_id=fact_id,
-            kind="tool",
-            occurred_at=occurred_at,
-            title=_audit_tool_title(event_type, tool_name),
-            summary=str(payload.get("safeMessage") or ""),
-            tool_name=tool_name,
-            effect=_audit_tool_effect(container, tool_name),
-            error_code=str(payload.get("errorCode") or ""),
-            payload={
-                "refs": {
-                    "toolExecutionId": payload.get("toolExecutionId"),
-                    "callId": payload.get("callId"),
-                }
-            },
-        )
-    if event_type == "approval_requested":
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        tool_name = str(metadata.get("toolName") or "")
-        effect = str(metadata.get("effect") or "")
-        return AuditFact(
-            fact_id=fact_id,
-            kind="approval",
-            occurred_at=occurred_at,
-            title="请求确认",
-            summary=str(payload.get("summary") or ""),
-            tool_name=tool_name,
-            effect=effect,
-            risk=str(metadata.get("risk") or derive_approval_risk(effect, tool_name)),
-            payload={
-                "refs": {
-                    "approvalId": payload.get("approvalId"),
-                    "toolExecutionId": payload.get("toolExecutionId"),
-                }
-            },
-        )
-    if event_type == "approval_resolved":
-        decision = str(payload.get("decision") or "")
-        tool_name = _audit_tool_name(container, payload)
-        effect = _audit_tool_effect(container, tool_name)
-        return AuditFact(
-            fact_id=fact_id,
-            kind="approval",
-            occurred_at=occurred_at,
-            title=_audit_approval_title(decision),
-            decision=decision,
-            tool_name=tool_name,
-            effect=effect,
-            risk=derive_approval_risk(effect, tool_name) if tool_name else "",
-            payload={
-                "refs": {
-                    "approvalId": payload.get("approvalId"),
-                    "toolExecutionId": payload.get("toolExecutionId"),
-                }
-            },
-        )
-    if event_type == "plan_updated":
-        steps = payload.get("steps")
-        return AuditFact(
-            fact_id=fact_id,
-            kind="plan",
-            occurred_at=occurred_at,
-            title="更新执行计划",
-            summary=str(payload.get("title") or ""),
-            payload={"refs": {"planEntryId": payload.get("planEntryId")}, "steps": steps},
-        )
-    if event_type == "run_stuck":
-        return AuditFact(
-            fact_id=fact_id,
-            kind="escalation",
-            occurred_at=occurred_at,
-            title="检测到卡住",
-            summary=str(payload.get("guidance") or ""),
-            payload={
-                "reason": "no_progress",
-                "summary": "；".join(
-                    str(item) for item in (payload.get("reasons") or ())
-                ),
-            },
-        )
-    if event_type == "run_awaiting_user":
-        return AuditFact(
-            fact_id=fact_id,
-            kind="escalation",
-            occurred_at=occurred_at,
-            title="升级：需要你决定下一步",
-            summary=str(payload.get("summary") or ""),
-            payload={
-                "reason": payload.get("reason"),
-                "summary": payload.get("summary"),
-                "options": payload.get("options"),
-            },
-        )
-    if event_type == "run_verified":
-        return AuditFact(
-            fact_id=fact_id,
-            kind="verification",
-            occurred_at=occurred_at,
-            title=f"独立验证：{payload.get('verdict') or '未知'}",
-            summary=str(payload.get("model") or ""),
-            payload={
-                "verdict": payload.get("verdict"),
-                "reasons": payload.get("reasons"),
-                "missing": payload.get("missing"),
-            },
-        )
-    return None
-
-
-#: 只有终态工具事件才进轨迹（同一次调用会产生多条状态事件）。
-_AUDIT_TERMINAL_TOOL_EVENTS = (
-    "tool_execution_completed",
-    "tool_execution_failed",
-    "tool_execution_rejected",
-    "tool_execution_expired",
-    "tool_execution_cancelled",
-)
-
-
-def _audit_tool_name(container, payload) -> str:
-    """工具名优先取事件载荷，其次回查工具执行记录（终态事件不带 toolName）。"""
-    name = str(payload.get("toolName") or "")
-    if name:
-        return name
-    execution_id = payload.get("toolExecutionId")
-    if not execution_id:
-        return ""
-    try:
-        return container.runtime_v2_repository.get_tool_execution(
-            str(execution_id)
-        ).tool_name
-    except Exception:  # noqa: BLE001 记录缺失时不影响轨迹
-        return ""
-
-
-def _audit_tool_title(event_type: str, tool_name: str) -> str:
-    label = tool_name or "工具"
-    if event_type == "tool_execution_failed":
-        return f"{label} 执行失败"
-    if event_type == "tool_execution_completed":
-        return f"{label} 执行完成"
-    return f"{label} 状态变化"
-
-
-def _audit_approval_title(decision: str) -> str:
-    return {
-        "approve": "你批准了这次操作",
-        "deny": "你拒绝了这次操作",
-        "modify": "你修改参数后批准",
-    }.get(decision, "审批状态变化")
-
-
-def _audit_tool_effect(container, tool_name: str) -> str:
-    if not tool_name:
-        return ""
-    try:
-        definition = container.tool_registry.resolve(tool_name).definition
-    except Exception:  # noqa: BLE001 动态工具可能不在注册表里
-        return ""
-    effect = getattr(definition.effect, "value", definition.effect)
-    return str(effect or "")
-
-
-def _undo_entry_json(entry) -> dict[str, object]:
-    return {
-        "id": entry.id,
-        "conversationId": entry.conversation_id,
-        "workspaceId": entry.workspace_id,
-        "runId": entry.run_id,
-        "kind": entry.kind,
-        "target": entry.target,
-        "description": entry.description,
-        "status": entry.status,
-        "undoable": entry.undoable,
-        "createdAt": entry.created_at,
-        "undoneAt": entry.undone_at,
-    }
-
-
-def _hub_append_memory_consolidated(
-    container,
-    *,
-    proposal,
-    memory,
-    source_memory_ids,
-) -> None:
-    """B2：巩固落地后推 hub 事件（记忆面板/审计轨迹据此刷新）。"""
-    container.hub_event_repository.append(
-        "memory.consolidated",
-        conversation_id=proposal.conversation_id,
-        data={
-            "proposalId": proposal.id,
-            "conversationId": proposal.conversation_id,
-            "insightMemoryId": memory.id,
-            "sourceMemoryIds": list(source_memory_ids),
-            "sourceCount": len(source_memory_ids),
-        },
-    )
-
-
-def _runtime_v2_lane_json(
-    lane: LaneRecord,
-    *,
-    active_lane_id: Optional[str] = None,
-) -> dict[str, object]:
-    source_lane_id = lane.source_lane_id
-    title = lane.display_name or lane.summary
-    return {
-        "id": lane.id,
-        "conversationId": lane.conversation_id,
-        "kind": lane.kind.value,
-        "status": lane.status.value,
-        "archived": lane.is_archived,
-        "archivedAt": lane.archived_at,
-        "displayName": lane.display_name,
-        "summary": lane.summary,
-        "title": title,
-        "baseEntryExcerpt": lane.summary,
-        "baseEntryId": lane.base_entry_id,
-        "leafEntryId": lane.leaf_entry_id,
-        "createdFromEntryId": lane.created_from_entry_id,
-        "createdAt": lane.created_at,
-        "sourceLaneId": source_lane_id,
-        "isMain": lane.id == active_lane_id or (
-            active_lane_id is None and lane.kind is LaneKind.MAIN
-        ),
-    }
-
-
-def _runtime_v2_run_variant_json(run: RunRecord) -> dict[str, object]:
-    return {
-        "runId": run.id,
-        "conversationId": run.conversation_id,
-        "laneId": run.lane_id,
-        "triggerEntryId": run.trigger_entry_id,
-        "siblingGroupId": run.sibling_group_id,
-        "assistantEntryId": run.assistant_entry_id,
-        "status": run.status.value,
-        "isActiveVariant": run.is_active_variant,
-        "createdAt": run.created_at,
-        "finishedAt": run.finished_at,
-    }
-
-
-def _runtime_v2_memory_json(memory: RuntimeV2MemoryRecord) -> dict[str, object]:
-    return {
-        "id": memory.id,
-        "scope": memory.scope.value,
-        "kind": memory.kind,
-        "content": memory.content,
-        "status": memory.status,
-        "conversationId": memory.conversation_id,
-        "workspaceId": memory.workspace_id,
-        "laneId": memory.lane_id,
-        "runId": memory.run_id,
-        "sourceMemoryId": memory.source_memory_id,
-        "sourceEntryId": memory.source_entry_id,
-        "createdAt": memory.created_at,
-        "updatedAt": memory.updated_at,
-    }
-
-
-def _runtime_v2_memory_promotion_json(
-    promotion: RuntimeV2MemoryPromotion,
-) -> dict[str, object]:
-    return {
-        "id": promotion.id,
-        "memoryId": promotion.source_memory_id,
-        "targetScope": promotion.target_scope.value,
-        "targetWorkspaceId": promotion.target_workspace_id,
-        "targetLaneId": promotion.target_lane_id,
-        "status": promotion.status.value,
-        "resolvedMemoryId": promotion.resolved_memory_id,
-        "conflictMemoryId": promotion.conflict_memory_id,
-        "createdAt": promotion.created_at,
-        "updatedAt": promotion.updated_at,
-        "resolvedAt": promotion.resolved_at,
-    }
-
-
 class _CompositeTrustPolicy:
     """把多个信任策略合成一个（任一放行即放行）。"""
 
@@ -1807,78 +1251,6 @@ def _title_conversation_from_first_message(
         pass
 
 
-def resolve_skill_requests(
-    skill_service: "SkillService",
-    workspace_resolver: "WorkspaceResolver",
-    conversation_id: str,
-    content: str,
-    *,
-    include_bodies: bool,
-    usage_recorder=None,
-) -> tuple[tuple[object, ...], list[dict[str, str]]]:
-    """S1：解析用户消息里的 ``/技能名``。
-
-    返回 (user-role 消息元组, 结果通知列表)。名称不存在于任何技能时静默忽略
-    （普通文本里的 ``/tmp`` 不应报错），只有"存在但不能用"才给通知。
-    """
-    names = parse_skill_commands(content)
-    if not names:
-        return (), []
-    binding = workspace_resolver.resolve_binding(conversation_id)
-    root = binding.root if binding is not None else None
-    workspace_id = binding.workspace_id if binding is not None else ""
-    messages: list[object] = []
-    notices: list[dict[str, str]] = []
-    for name in names:
-        skill, reason = skill_service.resolve_invocable(
-            name, root, workspace_id=workspace_id
-        )
-        if skill is None:
-            if reason == INVOKE_UNKNOWN:
-                continue
-            notices.append(
-                {
-                    "name": name,
-                    "status": reason,
-                    "message": {
-                        "disabled": "该技能已禁用。",
-                        "not_user_invocable": "该技能不允许用户调用。",
-                        "invalid": "该技能清单有错误，无法加载。",
-                    }.get(reason, "该技能不可用。"),
-                }
-            )
-            continue
-        body = skill_service.skill_body(skill) if include_bodies else ""
-        if include_bodies and not body:
-            notices.append(
-                {
-                    "name": name,
-                    "status": "unreadable",
-                    "message": "技能正文读取失败。",
-                }
-            )
-            continue
-        notices.append({"name": name, "status": INVOKE_OK, "message": ""})
-        if include_bodies:
-            from endless_task.runtime.provider import ProviderMessage
-
-            if usage_recorder is not None:
-                usage_recorder(skill, "invoked")
-                usage_recorder(skill, "body_read")
-
-            messages.append(
-                ProviderMessage(
-                    role="user",
-                    content=(
-                        f'<skill_request name="{name}">\n{body}\n</skill_request>\n'
-                        "（该技能正文已随本消息加载，无需再调用 read_skill_file；"
-                        "只有需要技能目录内的其他资源文件时才读取。）"
-                    ),
-                )
-            )
-    return tuple(messages), notices
-
-
 def _resolve_runtime_v2_conversation(
     container: AppContainer,
     conversation_id: str,
@@ -1889,6 +1261,32 @@ def _resolve_runtime_v2_conversation(
     # 14 B2: v2 sole runtime — conversation id is its own tree (migration
     # mapping tables removed with the migration machinery).
     return conversation_id
+
+
+def _error_response(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    retryable: bool = False,
+    details: Optional[Mapping[str, object]] = None,
+) -> JSONResponse:
+    payload: dict[str, object] = {
+        "code": code,
+        "message": message,
+        "retryable": retryable,
+        "correlationId": _correlation_id(),
+    }
+    if details is not None:
+        payload["details"] = dict(details)
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": payload},
+    )
+
+
+def _correlation_id() -> str:
+    return f"corr_{uuid.uuid4().hex}"
 
 
 def _parse_flag(value: str) -> bool:
@@ -3747,6 +3145,375 @@ async def _run_memory_forgetting_loop(container: "AppContainer") -> None:
         await asyncio.sleep(interval_seconds)
 
 
+# ---- 以下 helper 曾随 SetPermissionBody 被误搬进 schemas/system.py，已放回 ----
+def _repository_error_status(error: RepositoryError) -> int:
+    if isinstance(error, NotFoundError):
+        return 404
+    if isinstance(error, (ConflictError, InvalidStateError)):
+        return 409
+    if isinstance(error, ValidationError):
+        return 400
+    return 500
+
+
+def _runtime_v2_product_sse(event: ProductRuntimeEventRecord) -> str:
+    payload = json.dumps(
+        product_event_json(event),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"id: {event.event_seq}\nevent: {event.event_type}\ndata: {payload}\n\n"
+
+
+def _hub_event_sse(event) -> str:
+    payload = json.dumps(
+        hub_event_json(event),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"id: {event.event_seq}\nevent: hub.{event.event_type}\ndata: {payload}\n\n"
+
+
+def _hub_append_proposal_resolved(
+    container,
+    *,
+    kind: str,
+    proposal,
+    decision: str,
+) -> None:
+    """P1-2 resolve 写点：提案 accept/reject 后推 hub 事件（pending 集合变化）。"""
+    container.hub_event_repository.append(
+        "proposal.resolved",
+        conversation_id=proposal.conversation_id,
+        data={
+            "kind": kind,
+            "proposalId": proposal.id,
+            "conversationId": proposal.conversation_id,
+            "decision": decision,
+        },
+    )
+
+
+def _memory_reflection_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "conversationId": record.conversation_id,
+        "runId": record.run_id,
+        "trigger": record.trigger,
+        "status": record.status,
+        "insight": record.insight_content,
+        "proposalId": record.proposal_id,
+        "insightMemoryId": record.insight_memory_id,
+        "createdAt": record.created_at,
+        "resolvedAt": record.resolved_at,
+        "sources": [dict(item) for item in record.source_refs],
+    }
+
+
+def _audit_fact_from_event(container, event) -> Optional[AuditFact]:
+    """把一条运行事件归一化成审计事实（不认识的类型返回 None）。"""
+    event_type = getattr(event, "event_type", "")
+    payload = dict(getattr(event, "payload", {}) or {})
+    occurred_at = getattr(event, "occurred_at", "") or ""
+    fact_id = getattr(event, "event_id", "") or f"{event_type}:{occurred_at}"
+    if event_type in ("run_started", "run_completed", "run_failed", "run_cancelled"):
+        titles = {
+            "run_started": "开始运行",
+            "run_completed": "运行完成",
+            "run_failed": "运行失败",
+            "run_cancelled": "运行被取消",
+        }
+        return AuditFact(
+            fact_id=fact_id,
+            kind="run",
+            occurred_at=occurred_at,
+            title=titles[event_type],
+            summary=str(payload.get("safeMessage") or ""),
+            error_code=str(payload.get("errorCode") or ""),
+        )
+    if event_type in _AUDIT_TERMINAL_TOOL_EVENTS:
+        # 只保留终态，避免同一次调用出现 4 条（created/status/started/completed）。
+        tool_name = _audit_tool_name(container, payload)
+        return AuditFact(
+            fact_id=fact_id,
+            kind="tool",
+            occurred_at=occurred_at,
+            title=_audit_tool_title(event_type, tool_name),
+            summary=str(payload.get("safeMessage") or ""),
+            tool_name=tool_name,
+            effect=_audit_tool_effect(container, tool_name),
+            error_code=str(payload.get("errorCode") or ""),
+            payload={
+                "refs": {
+                    "toolExecutionId": payload.get("toolExecutionId"),
+                    "callId": payload.get("callId"),
+                }
+            },
+        )
+    if event_type == "approval_requested":
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        tool_name = str(metadata.get("toolName") or "")
+        effect = str(metadata.get("effect") or "")
+        return AuditFact(
+            fact_id=fact_id,
+            kind="approval",
+            occurred_at=occurred_at,
+            title="请求确认",
+            summary=str(payload.get("summary") or ""),
+            tool_name=tool_name,
+            effect=effect,
+            risk=str(metadata.get("risk") or derive_approval_risk(effect, tool_name)),
+            payload={
+                "refs": {
+                    "approvalId": payload.get("approvalId"),
+                    "toolExecutionId": payload.get("toolExecutionId"),
+                }
+            },
+        )
+    if event_type == "approval_resolved":
+        decision = str(payload.get("decision") or "")
+        tool_name = _audit_tool_name(container, payload)
+        effect = _audit_tool_effect(container, tool_name)
+        return AuditFact(
+            fact_id=fact_id,
+            kind="approval",
+            occurred_at=occurred_at,
+            title=_audit_approval_title(decision),
+            decision=decision,
+            tool_name=tool_name,
+            effect=effect,
+            risk=derive_approval_risk(effect, tool_name) if tool_name else "",
+            payload={
+                "refs": {
+                    "approvalId": payload.get("approvalId"),
+                    "toolExecutionId": payload.get("toolExecutionId"),
+                }
+            },
+        )
+    if event_type == "plan_updated":
+        steps = payload.get("steps")
+        return AuditFact(
+            fact_id=fact_id,
+            kind="plan",
+            occurred_at=occurred_at,
+            title="更新执行计划",
+            summary=str(payload.get("title") or ""),
+            payload={"refs": {"planEntryId": payload.get("planEntryId")}, "steps": steps},
+        )
+    if event_type == "run_stuck":
+        return AuditFact(
+            fact_id=fact_id,
+            kind="escalation",
+            occurred_at=occurred_at,
+            title="检测到卡住",
+            summary=str(payload.get("guidance") or ""),
+            payload={
+                "reason": "no_progress",
+                "summary": "；".join(
+                    str(item) for item in (payload.get("reasons") or ())
+                ),
+            },
+        )
+    if event_type == "run_awaiting_user":
+        return AuditFact(
+            fact_id=fact_id,
+            kind="escalation",
+            occurred_at=occurred_at,
+            title="升级：需要你决定下一步",
+            summary=str(payload.get("summary") or ""),
+            payload={
+                "reason": payload.get("reason"),
+                "summary": payload.get("summary"),
+                "options": payload.get("options"),
+            },
+        )
+    if event_type == "run_verified":
+        return AuditFact(
+            fact_id=fact_id,
+            kind="verification",
+            occurred_at=occurred_at,
+            title=f"独立验证：{payload.get('verdict') or '未知'}",
+            summary=str(payload.get("model") or ""),
+            payload={
+                "verdict": payload.get("verdict"),
+                "reasons": payload.get("reasons"),
+                "missing": payload.get("missing"),
+            },
+        )
+    return None
+
+
+#: 只有终态工具事件才进轨迹（同一次调用会产生多条状态事件）。
+_AUDIT_TERMINAL_TOOL_EVENTS = (
+    "tool_execution_completed",
+    "tool_execution_failed",
+    "tool_execution_rejected",
+    "tool_execution_expired",
+    "tool_execution_cancelled",
+)
+
+
+def _audit_tool_name(container, payload) -> str:
+    """工具名优先取事件载荷，其次回查工具执行记录（终态事件不带 toolName）。"""
+    name = str(payload.get("toolName") or "")
+    if name:
+        return name
+    execution_id = payload.get("toolExecutionId")
+    if not execution_id:
+        return ""
+    try:
+        return container.runtime_v2_repository.get_tool_execution(
+            str(execution_id)
+        ).tool_name
+    except Exception:  # noqa: BLE001 记录缺失时不影响轨迹
+        return ""
+
+
+def _audit_tool_title(event_type: str, tool_name: str) -> str:
+    label = tool_name or "工具"
+    if event_type == "tool_execution_failed":
+        return f"{label} 执行失败"
+    if event_type == "tool_execution_completed":
+        return f"{label} 执行完成"
+    return f"{label} 状态变化"
+
+
+def _audit_approval_title(decision: str) -> str:
+    return {
+        "approve": "你批准了这次操作",
+        "deny": "你拒绝了这次操作",
+        "modify": "你修改参数后批准",
+    }.get(decision, "审批状态变化")
+
+
+def _audit_tool_effect(container, tool_name: str) -> str:
+    if not tool_name:
+        return ""
+    try:
+        definition = container.tool_registry.resolve(tool_name).definition
+    except Exception:  # noqa: BLE001 动态工具可能不在注册表里
+        return ""
+    effect = getattr(definition.effect, "value", definition.effect)
+    return str(effect or "")
+
+
+def _undo_entry_json(entry) -> dict[str, object]:
+    return {
+        "id": entry.id,
+        "conversationId": entry.conversation_id,
+        "workspaceId": entry.workspace_id,
+        "runId": entry.run_id,
+        "kind": entry.kind,
+        "target": entry.target,
+        "description": entry.description,
+        "status": entry.status,
+        "undoable": entry.undoable,
+        "createdAt": entry.created_at,
+        "undoneAt": entry.undone_at,
+    }
+
+
+def _hub_append_memory_consolidated(
+    container,
+    *,
+    proposal,
+    memory,
+    source_memory_ids,
+) -> None:
+    """B2：巩固落地后推 hub 事件（记忆面板/审计轨迹据此刷新）。"""
+    container.hub_event_repository.append(
+        "memory.consolidated",
+        conversation_id=proposal.conversation_id,
+        data={
+            "proposalId": proposal.id,
+            "conversationId": proposal.conversation_id,
+            "insightMemoryId": memory.id,
+            "sourceMemoryIds": list(source_memory_ids),
+            "sourceCount": len(source_memory_ids),
+        },
+    )
+
+
+def _runtime_v2_lane_json(
+    lane: LaneRecord,
+    *,
+    active_lane_id: Optional[str] = None,
+) -> dict[str, object]:
+    source_lane_id = lane.source_lane_id
+    title = lane.display_name or lane.summary
+    return {
+        "id": lane.id,
+        "conversationId": lane.conversation_id,
+        "kind": lane.kind.value,
+        "status": lane.status.value,
+        "archived": lane.is_archived,
+        "archivedAt": lane.archived_at,
+        "displayName": lane.display_name,
+        "summary": lane.summary,
+        "title": title,
+        "baseEntryExcerpt": lane.summary,
+        "baseEntryId": lane.base_entry_id,
+        "leafEntryId": lane.leaf_entry_id,
+        "createdFromEntryId": lane.created_from_entry_id,
+        "createdAt": lane.created_at,
+        "sourceLaneId": source_lane_id,
+        "isMain": lane.id == active_lane_id or (
+            active_lane_id is None and lane.kind is LaneKind.MAIN
+        ),
+    }
+
+
+def _runtime_v2_run_variant_json(run: RunRecord) -> dict[str, object]:
+    return {
+        "runId": run.id,
+        "conversationId": run.conversation_id,
+        "laneId": run.lane_id,
+        "triggerEntryId": run.trigger_entry_id,
+        "siblingGroupId": run.sibling_group_id,
+        "assistantEntryId": run.assistant_entry_id,
+        "status": run.status.value,
+        "isActiveVariant": run.is_active_variant,
+        "createdAt": run.created_at,
+        "finishedAt": run.finished_at,
+    }
+
+
+def _runtime_v2_memory_json(memory: RuntimeV2MemoryRecord) -> dict[str, object]:
+    return {
+        "id": memory.id,
+        "scope": memory.scope.value,
+        "kind": memory.kind,
+        "content": memory.content,
+        "status": memory.status,
+        "conversationId": memory.conversation_id,
+        "workspaceId": memory.workspace_id,
+        "laneId": memory.lane_id,
+        "runId": memory.run_id,
+        "sourceMemoryId": memory.source_memory_id,
+        "sourceEntryId": memory.source_entry_id,
+        "createdAt": memory.created_at,
+        "updatedAt": memory.updated_at,
+    }
+
+
+def _runtime_v2_memory_promotion_json(
+    promotion: RuntimeV2MemoryPromotion,
+) -> dict[str, object]:
+    return {
+        "id": promotion.id,
+        "memoryId": promotion.source_memory_id,
+        "targetScope": promotion.target_scope.value,
+        "targetWorkspaceId": promotion.target_workspace_id,
+        "targetLaneId": promotion.target_lane_id,
+        "status": promotion.status.value,
+        "resolvedMemoryId": promotion.resolved_memory_id,
+        "conflictMemoryId": promotion.conflict_memory_id,
+        "createdAt": promotion.created_at,
+        "updatedAt": promotion.updated_at,
+        "resolvedAt": promotion.resolved_at,
+    }
+
+
 def create_app(
     *,
     settings: Optional[AppSettings] = None,
@@ -3923,214 +3690,8 @@ def create_app(
             },
         )
 
-    @app.get("/health")
-    async def health() -> dict[str, object]:
-        selection = container.provider_manager.default_selection()
-        return {
-            "status": "ok",
-            "provider": selection.provider.name,
-            "model": selection.model,
-            "providerConfigured": not isinstance(
-                selection.provider,
-                UnconfiguredProvider,
-            ),
-            "embedding": {
-                "enabled": container.settings.embedding_enabled,
-                "backend": (
-                    container.settings.embedding_backend
-                    if container.settings.embedding_enabled
-                    else None
-                ),
-                "model": (
-                    container.embedding_indexer.model_name
-                    if container.embedding_indexer is not None
-                    else None
-                ),
-                "ready": (
-                    container.embedding_indexer is not None
-                    and not container.embedding_indexer.unavailable
-                ),
-            },
-        }
-
-    @app.get("/capabilities")
-    async def capabilities() -> dict[str, object]:
-        skills_by_path: dict[str, Skill] = {}
-        for skill in container.skill_service.list_skills():
-            skills_by_path[str(skill.file_path)] = skill
-        for workspace in container.workspace_repository.list_workspaces():
-            if workspace.root_path:
-                for skill in container.skill_service.list_skills(
-                    Path(workspace.root_path),
-                    workspace_id=workspace.id,
-                ):
-                    skills_by_path[str(skill.file_path)] = skill
-        skills = list(skills_by_path.values())
-        skill_diagnostics = [
-            {
-                "path": str(diagnostic.path),
-                "code": diagnostic.code,
-                "message": diagnostic.message,
-            }
-            for skill in skills
-            for diagnostic in skill.diagnostics
-        ]
-        skills_state = "degraded" if skill_diagnostics else "ok"
-
-        mcp_statuses = container.mcp_manager.list_statuses()
-        mcp_issues: list[str] = []
-        for status in mcp_statuses:
-            if status.state == "reconnecting":
-                mcp_issues.append("mcp:reconnecting")
-            elif status.enabled and status.state != "connected":
-                mcp_issues.append("mcp:error")
-        mcp_state = "degraded" if mcp_issues else "ok"
-
-        provider_selection = container.provider_manager.default_selection()
-        provider_configured = not isinstance(
-            provider_selection.provider,
-            UnconfiguredProvider,
-        )
-        provider_state = "ok" if provider_configured else "unavailable"
-        provider_issues = [] if provider_configured else ["provider:unconfigured"]
-
-        embedding_ready = (
-            container.embedding_indexer is not None
-            and not container.embedding_indexer.unavailable
-        )
-        embedding_issues = (
-            [] if not container.settings.embedding_enabled or embedding_ready
-            else ["embedding:unavailable"]
-        )
-        embedding_state = "ok" if not embedding_issues else "degraded"
-
-        states = (skills_state, mcp_state, provider_state, embedding_state)
-        if "unavailable" in states:
-            summary_state = "unavailable"
-        elif "degraded" in states:
-            summary_state = "degraded"
-        else:
-            summary_state = "ok"
-        issues = [
-            *(["skill:diagnostics"] if skill_diagnostics else []),
-            *mcp_issues,
-            *provider_issues,
-            *embedding_issues,
-        ]
-        return {
-            "summary": {"state": summary_state, "issues": issues},
-            "skills": {
-                "state": skills_state,
-                "total": len(skills),
-                "enabled": sum(not skill.disabled for skill in skills),
-                "diagnostics": skill_diagnostics,
-            },
-            "mcp": {
-                "state": mcp_state,
-                "servers": [
-                    {
-                        "id": status.server_id,
-                        "name": status.name,
-                        "state": status.state,
-                        "toolCount": status.tool_count,
-                        "lastError": status.last_error,
-                    }
-                    for status in mcp_statuses
-                ],
-            },
-            "provider": {
-                "state": provider_state,
-                "defaultProfileId": provider_selection.profile.id,
-                "profileName": provider_selection.profile.name,
-                "model": provider_selection.model,
-                "configured": provider_configured,
-                "fallback": False,
-            },
-            "embedding": {
-                "state": embedding_state,
-                "enabled": container.settings.embedding_enabled,
-                "backend": (
-                    container.settings.embedding_backend
-                    if container.settings.embedding_enabled
-                    else None
-                ),
-                "ready": embedding_ready,
-            },
-            "toolPlatformV2": {
-                "enabled": container.settings.tool_platform_v2_enabled,
-                "profileName": (
-                    _tool_platform_v2_profile_name()
-                    if container.settings.tool_platform_v2_enabled
-                    else None
-                ),
-            },
-            "contextEngineV2": {
-                "enabled": container.settings.context_engine_v2_enabled,
-            },
-            "delegation": {
-                "enabled": container.settings.delegation_mode != "0",
-                "mode": (
-                    container.settings.delegation_mode
-                    if container.settings.delegation_mode != "0"
-                    else None
-                ),
-            },
-            "skillPackages": {
-                "enabled": container.settings.skill_packages_enabled,
-            },
-            "providerRetry": {
-                "enabled": container.settings.provider_retry_mode != "0",
-                "mode": (
-                    container.settings.provider_retry_mode
-                    if container.settings.provider_retry_mode != "0"
-                    else None
-                ),
-            },
-            "runtimeTrace": {
-                "mode": container.settings.runtime_trace_mode,
-            },
-            "otlpExport": {
-                "enabled": container.settings.otel_export_mode != "0",
-                "mode": (
-                    container.settings.otel_export_mode
-                    if container.settings.otel_export_mode != "0"
-                    else None
-                ),
-            },
-            "executionBackend": {
-                "mode": container.settings.execution_backend_mode or None,
-            },
-            "stopPolicy": {
-                "enabled": container.settings.stop_policy_enforcement,
-            },
-        }
-
-    @app.get("/settings/permissions")
-    async def get_permission_mode() -> dict[str, object]:
-        mode, updated_at = container.preferences_repository.get_permission_mode()
-        return {"mode": mode.value, "updatedAt": updated_at}
-
-    @app.post("/settings/permissions")
-    async def set_permission_mode(
-        body: SetPermissionBody,
-    ) -> dict[str, object]:
-        try:
-            target = PermissionMode(body.mode)
-        except ValueError as error:
-            raise ApiRequestError(
-                "invalid_request",
-                "mode 必须是 confirm_every_time / trust_local_writes / trust_all。",
-            ) from error
-        current, _ = container.preferences_repository.get_permission_mode()
-        if target.is_escalation_from(current) and not body.acknowledge:
-            raise ApiRequestError(
-                "invalid_request",
-                "提权需要 acknowledge=true 显式确认。",
-            )
-        mode, updated_at = container.preferences_repository.set_permission_mode(
-            target
-        )
-        return {"mode": mode.value, "updatedAt": updated_at}
+    # 系统域路由搬到 api/routes/system.py（搬家不改行为）
+    register_system_routes(app, container)
 
     @app.post("/conversations", status_code=201)
     async def create_conversation(
@@ -5188,588 +4749,8 @@ def create_app(
             "aggregate": batch.aggregate,
         }
 
-    @app.get("/skills")
-    async def list_skills(
-        workspace: Optional[str] = Query(None),
-    ) -> dict[str, object]:
-        root = None
-        if workspace:
-            try:
-                item = container.workspace_repository.get_workspace(workspace)
-                root = (
-                    Path(item.root_path).expanduser()
-                    if item.root_path
-                    else None
-                )
-            except Exception:
-                root = None
-        items = container.skill_service.list_skills(
-            root, workspace_id=workspace or ""
-        )
-        catalog_names = {
-            skill.name
-            for skill in container.skill_service.catalog_skills(
-                root,
-                workspace_id=workspace or "",
-                limit=container.settings.skill_catalog_limit,
-            )[0]
-        }
-        return {
-            "userSkillsDirectory": str(
-                container.settings.database_path.parent / "skills"
-            ),
-            "items": [
-                {
-                    "name": skill.name,
-                    "description": skill.description,
-                    "scope": skill.scope.value,
-                    "filePath": str(skill.file_path),
-                    "version": skill.version,
-                    "digest": skill.digest,
-                    "whenToUse": skill.when_to_use,
-                    "source": skill.source,
-                    "pinned": skill.pinned,
-                    # 是否出现在模型的默认目录里（未出现仍可用 /技能名 或 skill_search）
-                    "inCatalog": skill.name in catalog_names,
-                    "provenance": (
-                        lambda item: item.as_dict() if item is not None else None
-                    )(
-                        container.skill_provenance_repository.get(
-                            scope=skill.scope.value,
-                            workspace_id=(
-                                ""
-                                if skill.scope is SkillScope.USER
-                                else (workspace or "")
-                            ),
-                            name=skill.name,
-                        )
-                    ),
-                    "disabled": skill.disabled,
-                    "disableModelInvocation": skill.disable_model_invocation,
-                    "diagnostics": [
-                        {
-                            "code": item.code,
-                            "message": item.message,
-                            "path": str(item.path),
-                        }
-                        for item in skill.diagnostics
-                    ],
-                }
-                for skill in items
-            ],
-        }
-
-    def _skill_root_for(
-        scope: str, workspace_id: Optional[str]
-    ) -> Path:
-        """S2：技能根目录（user = 数据目录/skills，workspace = <root>/.endless-task/skills）。"""
-        if scope == "user":
-            return container.settings.database_path.parent / "skills"
-        if not workspace_id:
-            raise ApiRequestError(
-                "invalid_request", "工作区级技能需要 workspaceId。"
-            )
-        try:
-            workspace = container.workspace_repository.get_workspace(workspace_id)
-        except NotFoundError as error:
-            raise NotFoundError(f"Unknown workspace: {workspace_id}") from error
-        if not workspace.root_path:
-            raise ApiRequestError(
-                "workspace_not_bound", "该工作区未绑定本地目录。"
-            )
-        return Path(workspace.root_path).expanduser() / ".endless-task" / "skills"
-
-    def _workspace_root_path(workspace_id: Optional[str]) -> Optional[Path]:
-        if not workspace_id:
-            return None
-        try:
-            workspace = container.workspace_repository.get_workspace(workspace_id)
-        except NotFoundError as error:
-            raise NotFoundError(f"Unknown workspace: {workspace_id}") from error
-        return (
-            Path(workspace.root_path).expanduser()
-            if workspace.root_path
-            else None
-        )
-
-    def _skill_package_dir(
-        scope: str, name: str, workspace_id: Optional[str]
-    ) -> tuple[Path, str, bool]:
-        """定位技能包目录。
-
-        S4：技能可能来自共享目录（~/.claude/skills 等），所以按**发现结果**定位，
-        而不是拼应用技能目录。返回 (包目录, 来源标签, 是否可写)。
-
-        可写 = 应用技能目录或工作区技能根；共享目录里的技能只读管理
-        （避免误删其它 agent 正在用的技能）。
-        """
-        workspace_root = _workspace_root_path(workspace_id)
-        target_scope = SkillScope(scope)
-        for skill in container.skill_service.list_skills(
-            workspace_root, workspace_id=workspace_id or ""
-        ):
-            if skill.name != name or skill.scope is not target_scope:
-                continue
-            package = skill.file_path.parent
-            label = skill.source or str(package)
-            writable = _skill_source_is_writable(skill.source, label)
-            return package, label, writable
-        raise ApiRequestError(
-            "skill_not_found", f"技能不存在：{scope}/{name}。", status_code=404
-        )
-
-    def _skill_source_is_writable(source: str, label: str) -> bool:
-        """共享目录（~/.claude/skills 等）与工作区外目录视为只读。"""
-        if not source:
-            return True
-        if source.startswith("~/"):
-            return False
-        return source in {
-            "应用技能目录",
-            label,
-        } and not source.startswith("~")
-
-    def _skill_validation_payload(path: Path, text: Optional[str]) -> dict[str, object]:
-        """解析 + 扫描一份技能包，返回 UI 可直接渲染的结果。"""
-        from endless_task.skills import (
-            ScanReport,
-            SkillRevision,
-            parse_skill_manifest,
-            scan_skill_directory,
-            scan_skill_revision,
-        )
-
-        if text is None:
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                raise ApiRequestError(
-                    "unreadable", "无法读取 SKILL.md。", status_code=400
-                ) from None
-        manifest = parse_skill_manifest(path, text)
-        revision = SkillRevision.from_manifest(manifest, scope="user", path=path)
-        body_scan = scan_skill_revision(revision)
-        directory_scan = (
-            scan_skill_directory(path.parent)
-            if path.parent.is_dir() and path.name == "SKILL.md"
-            else ScanReport()
-        )
-        scan = ScanReport(findings=body_scan.findings + directory_scan.findings)
-        return {
-            "valid": manifest.valid and not scan.quarantined,
-            "manifest": {
-                "name": manifest.name,
-                "description": manifest.description,
-                "version": manifest.version,
-                "schemaVersion": manifest.schema_version,
-                "digest": manifest.digest,
-                "modelInvocable": manifest.model_invocable,
-                "userInvocable": manifest.user_invocable,
-                "requiredTools": list(manifest.required_tools),
-                "requiredCapabilities": list(manifest.required_capabilities),
-                "conflictsWith": list(manifest.conflicts_with),
-            },
-            "diagnostics": [
-                {
-                    "code": diagnostic.code,
-                    "message": diagnostic.message,
-                    "path": str(diagnostic.path),
-                }
-                for diagnostic in manifest.diagnostics
-            ],
-            "scan": {
-                "worstLevel": (
-                    scan.worst_level.value if scan.worst_level is not None else None
-                ),
-                "quarantined": scan.quarantined,
-                "findings": [
-                    {
-                        "code": finding.code,
-                        "level": finding.level.value,
-                        "message": finding.message,
-                        "path": str(finding.path),
-                    }
-                    for finding in scan.findings
-                ],
-            },
-        }
-
-    @app.post("/skills/validate")
-    async def validate_skill(body: SkillValidateBody) -> dict[str, object]:
-        """S2：导入前校验（目录路径或内联内容）。"""
-        if body.path and body.content is not None:
-            raise ApiRequestError(
-                "invalid_request", "path 与 content 只能给一个。"
-            )
-        if body.content is not None:
-            return _skill_validation_payload(
-                Path("inline") / "SKILL.md", body.content
-            )
-        if not body.path:
-            raise ApiRequestError("invalid_request", "需要 path 或 content。")
-        candidate = Path(body.path).expanduser()
-        if candidate.is_dir():
-            candidate = candidate / "SKILL.md"
-        if not candidate.is_file():
-            raise ApiRequestError(
-                "skill_not_found", "目录里没有 SKILL.md。", status_code=404
-            )
-        return _skill_validation_payload(candidate, None)
-
-    @app.post("/skills/import", status_code=201)
-    async def import_skill(body: SkillImportBody) -> dict[str, object]:
-        """S2：本地目录导入（staging → 扫描门禁 → 原子激活）。"""
-        from endless_task.skills import ImportFailure, import_skill_package
-
-        source = Path(body.sourcePath).expanduser()
-        target_root = _skill_root_for(body.scope, body.workspaceId)
-        target_root.mkdir(parents=True, exist_ok=True)
-        try:
-            result = import_skill_package(
-                source, target_root, allow_upgrade=body.allowUpgrade
-            )
-        except ImportFailure as failure:
-            raise ApiRequestError(
-                failure.code, failure.message, status_code=400
-            ) from None
-        return {
-            "skill": {
-                "name": result.name,
-                "version": result.version,
-                "digest": result.digest,
-                "target": str(result.target),
-                "upgraded": result.upgraded,
-                "replacedDigest": result.replaced_digest,
-                "worstLevel": (
-                    result.scan_report.worst_level.value
-                    if result.scan_report is not None
-                    and result.scan_report.worst_level is not None
-                    else None
-                ),
-            }
-        }
-
-    @app.post("/skills/create", status_code=201)
-    async def create_skill(body: SkillCreateBody) -> dict[str, object]:
-        """S2：按 v2 模板新建技能。"""
-        name = body.name.strip()
-        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name):
-            raise ApiRequestError(
-                "invalid_name", "技能名必须为小写字母、数字或连字符。"
-            )
-        if not body.description.strip() or not body.body.strip():
-            raise ApiRequestError(
-                "invalid_request", "description 与 body 不能为空。"
-            )
-        root = _skill_root_for(body.scope, body.workspaceId)
-        package = root / name
-        if package.exists():
-            raise ApiRequestError(
-                "skill_exists",
-                f"技能 {name} 已存在；如需覆盖请用导入并确认升级。",
-                status_code=409,
-            )
-        package.mkdir(parents=True)
-        lines = [
-            "---",
-            f"name: {name}",
-            f"description: {body.description.strip()}",
-            "version: 0.1.0",
-            "schema-version: 2",
-        ]
-        if body.whenToUse and body.whenToUse.strip():
-            lines.append(f"whenToUse: {body.whenToUse.strip()}")
-        lines.append(f"model-invocable: {'true' if body.modelInvocable else 'false'}")
-        lines.append(f"user-invocable: {'true' if body.userInvocable else 'false'}")
-        lines.extend(["---", "", body.body.strip(), ""])
-        (package / "SKILL.md").write_text("\n".join(lines), encoding="utf-8")
-        return {
-            "skill": {
-                "name": name,
-                "path": str(package / "SKILL.md"),
-                "scope": body.scope,
-            }
-        }
-
-    @app.delete("/skills/{scope}/{name}")
-    async def delete_skill(
-        scope: Literal["user", "workspace"],
-        name: str,
-        workspace: Optional[str] = Query(None),
-    ) -> dict[str, object]:
-        """S2：删除技能包（移入同根 ``.trash``，可手工找回）。"""
-        import shutil
-        from datetime import datetime, timezone
-
-        package, source_label, writable = _skill_package_dir(
-            scope, name, workspace
-        )
-        if not writable:
-            raise ApiRequestError(
-                "skill_read_only",
-                f"该技能来自共享目录（{source_label}），请直接在文件系统里管理。",
-                status_code=400,
-            )
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        trash = package.parent / ".trash" / f"{stamp}-{name}"
-        trash.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(package), str(trash))
-        return {"deleted": True, "trashedTo": str(trash)}
-
-    @app.get("/skills/{scope}/{name}/usage")
-    async def skill_usage(
-        scope: Literal["user", "workspace"],
-        name: str,
-        workspace: Optional[str] = Query(None),
-    ) -> dict[str, object]:
-        """S2：使用统计（按 digest 分代）。"""
-        package, _source_label, _writable = _skill_package_dir(
-            scope, name, workspace
-        )
-        rows = container.skill_usage_repository.snapshot(scope=scope, name=name)
-        return {"items": [row.as_dict() for row in rows]}
-
-    @app.post("/skills/{scope}/{name}/cases/run")
-    async def run_skill_cases(
-        scope: Literal["user", "workspace"],
-        name: str,
-        body: SkillCasesRunBody,
-        workspace: Optional[str] = Query(None),
-    ) -> dict[str, object]:
-        """S2：跑技能包声明的用例（对给定 trace/output 或某次真实运行）。"""
-        from endless_task.skills import load_package_cases, run_package_case
-
-        package, _source_label, _writable = _skill_package_dir(
-            scope, name, workspace
-        )
-        suite = load_package_cases(package)
-        tools_used = list(body.toolsUsed)
-        output = body.output
-        if body.runId:
-            tools_used = [
-                str(record.tool_name)
-                for turn in container.runtime_v2_repository.list_model_turns(
-                    body.runId
-                )
-                for record in container.runtime_v2_repository.list_tool_executions(
-                    turn.id
-                )
-            ]
-            run_record = container.runtime_v2_repository.get_run(body.runId)
-            entries = container.runtime_v2_repository.list_entries(
-                run_record.lane_id
-            )
-            from endless_task.runtime_v2.domain import TranscriptEntryType
-
-            output = "\n".join(
-                str(entry.payload.get("content", ""))
-                for entry in entries
-                if entry.type is TranscriptEntryType.ASSISTANT_MESSAGE
-            )
-        results = [
-            run_package_case(case, tools_used=tools_used, output=output)
-            for case in suite.cases
-        ]
-        return {
-            "diagnostics": list(suite.diagnostics),
-            "cases": [
-                {
-                    "name": result.name,
-                    "passed": result.passed,
-                    "failures": list(result.failures),
-                }
-                for result in results
-            ],
-            "toolsUsed": tools_used,
-        }
-
-    @app.get("/skills/ecosystem/search")
-    async def search_ecosystem_skills(
-        query: str = Query(min_length=1, max_length=200),
-        limit: int = Query(8, ge=1, le=20),
-    ) -> dict[str, object]:
-        """S8：生态检索（只读，不落盘）。"""
-        from endless_task.skills.ecosystem import search_ecosystem
-
-        result = await asyncio.to_thread(
-            search_ecosystem, query, limit=limit
-        )
-        return {
-            "query": query,
-            "error": result.error,
-            "items": [hit.as_dict() for hit in result.hits],
-        }
-
-    @app.post("/skills/install", status_code=201)
-    async def install_skill(body: SkillInstallBody) -> dict[str, object]:
-        """S8：从生态安装技能。
-
-        流程：下载 GitHub tarball 到 staging → **静态扫描门禁** → 原子激活 →
-        记录 provenance。``ENDLESS_TASK_SKILL_INSTALL=deny`` 时直接拒绝；
-        ``ask``/``allow`` 都允许（UI 点击本身就是用户确认，模型侧工具另走审批）。
-        """
-        from endless_task.skills import ImportFailure, import_skill_package
-        from endless_task.skills.ecosystem import (
-            download_skill_package,
-            normalize_ecosystem_package,
-        )
-
-        if selected_settings.skill_install_mode == "deny":
-            raise ApiRequestError(
-                "skill_install_disabled",
-                "当前配置禁止从生态安装技能（ENDLESS_TASK_SKILL_INSTALL=deny）。",
-                status_code=403,
-            )
-        target_root = _skill_root_for(body.scope, body.workspaceId)
-        target_root.mkdir(parents=True, exist_ok=True)
-        staging = Path(
-            tempfile.mkdtemp(
-                prefix="skill-install-",
-                dir=str(container.settings.database_path.parent),
-            )
-        )
-        try:
-            source_dir = await asyncio.to_thread(
-                download_skill_package, body.source, staging
-            )
-            # 生态技能多为 v1（只有 name/description），规整成 v2 后再过扫描门禁。
-            normalized, folded_keys = await asyncio.to_thread(
-                normalize_ecosystem_package, source_dir
-            )
-            try:
-                result = await asyncio.to_thread(
-                    import_skill_package,
-                    source_dir,
-                    target_root,
-                    allow_upgrade=body.allowUpgrade,
-                )
-            except ImportFailure as failure:
-                raise ApiRequestError(
-                    failure.code, failure.message, status_code=400
-                ) from None
-        except ValueError as error:
-            raise ApiRequestError(
-                "skill_install_failed", str(error), status_code=400
-            ) from None
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-
-        worst_level = (
-            result.scan_report.worst_level.value
-            if result.scan_report is not None
-            and result.scan_report.worst_level is not None
-            else None
-        )
-        provenance = container.skill_provenance_repository.record(
-            scope=body.scope,
-            workspace_id="" if body.scope == "user" else (body.workspaceId or ""),
-            name=result.name,
-            spec=body.source,
-            source=body.source.split("@", 1)[0],
-            digest=result.digest,
-            worst_level=worst_level,
-        )
-        return {
-            "skill": {
-                "name": result.name,
-                "version": result.version,
-                "digest": result.digest,
-                "target": str(result.target),
-                "upgraded": result.upgraded,
-                "worstLevel": worst_level,
-                "normalized": normalized,
-                "foldedKeys": list(folded_keys),
-            },
-            "provenance": provenance.as_dict(),
-        }
-
-    @app.post("/skills/search")
-    async def search_skills(body: SkillSearchBody) -> dict[str, object]:
-        """S6：本地技能检索（workspace / global / all）。"""
-        root = _workspace_root_path(body.workspaceId)
-        hits = container.skill_service.search_skills(
-            body.query,
-            root,
-            workspace_id=body.workspaceId or "",
-            scope=body.scope,
-            limit=body.limit,
-        )
-        return {
-            "query": body.query,
-            "scope": body.scope,
-            "items": [
-                {
-                    "name": hit.name,
-                    "description": hit.description,
-                    "scope": hit.scope,
-                    "source": hit.source,
-                    "score": hit.score,
-                }
-                for hit in hits
-            ],
-        }
-
-    @app.get("/skills/invocable")
-    async def list_invocable_skills(
-        workspace_id: Optional[str] = Query(None, alias="workspaceId"),
-    ) -> dict[str, object]:
-        """S1：composer ``/`` 候选——用户可显式调用、未禁用、清单合法的技能。"""
-        root = None
-        if workspace_id:
-            try:
-                item = container.workspace_repository.get_workspace(workspace_id)
-                root = Path(item.root_path).expanduser() if item.root_path else None
-            except Exception:
-                root = None
-        skills = container.skill_service.invocable_skills(
-            root, workspace_id=workspace_id or ""
-        )
-        return {
-            "items": [
-                {
-                    "name": skill.name,
-                    "description": skill.description,
-                    "scope": skill.scope.value,
-                    "whenToUse": skill.when_to_use,
-                    "source": skill.source,
-                    "pinned": skill.pinned,
-                }
-                for skill in skills
-            ]
-        }
-
-    @app.patch("/skills/{scope}/{name}")
-    async def patch_skill(
-        scope: Literal["user", "workspace"],
-        name: str,
-        body: SkillPatchBody,
-        workspace: Optional[str] = Query(None),
-    ) -> dict[str, object]:
-        from endless_task.skills import SkillScope
-
-        # 用户级技能是全局开关：必须落在 workspace_id="" 上，否则读侧
-        # （list_skills 只查 (user, "")）看不到这次禁用——历史 UI 会带工作区参数。
-        target_scope = SkillScope(scope)
-        workspace_key = "" if target_scope is SkillScope.USER else (workspace or "")
-        if body.disabled is None and body.pinned is None:
-            raise ApiRequestError(
-                "invalid_request", "需要 disabled 或 pinned 之一。"
-            )
-        if body.disabled is not None:
-            container.skill_service.set_disabled(
-                scope=target_scope,
-                name=name,
-                disabled=body.disabled,
-                workspace_id=workspace_key,
-            )
-        if body.pinned is not None:
-            container.skill_service.set_pinned(
-                scope=target_scope,
-                name=name,
-                pinned=body.pinned,
-                workspace_id=workspace_key,
-            )
-        return {"disabled": body.disabled, "pinned": body.pinned}
+    # 技能域路由搬到 api/routes/skills.py（搬家不改行为，见 05-code-health 方案）
+    register_skill_routes(app, container)
 
     @app.get("/workspaces")
     async def list_workspaces() -> dict[str, object]:
