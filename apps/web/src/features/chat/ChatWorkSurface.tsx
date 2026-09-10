@@ -63,6 +63,7 @@ import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
 import { AssistantMessageRow } from "./AssistantMessageRow";
+import { EmptyConversation, LoadingState } from "./SurfaceStates";
 import { StreamNotices } from "./StreamNotices";
 import { UserMessageRow } from "./UserMessageRow";
 import {
@@ -849,37 +850,5 @@ export function ChatWorkSurface({
         />
       ) : null}
     </SurfaceRoot>
-  );
-}
-
-function EmptyConversation({ onSuggestion }: { onSuggestion: (value: string) => void }) {
-  return (
-    <section className="empty-conversation">
-      <span aria-hidden="true" className="empty-symbol">∞</span>
-      <h2>今天想聊些什么？</h2>
-      <p>从一个问题、一个想法，或一件想理清的事开始。</p>
-      <div className="prompt-suggestions">
-        <button onClick={() => onSuggestion("帮我梳理一下今天最重要的三件事")} type="button">
-          帮我梳理今天最重要的事
-        </button>
-        <button onClick={() => onSuggestion("我有一个新想法，想和你一起推敲")} type="button">
-          和我一起推敲一个想法
-        </button>
-        <button onClick={() => onSuggestion("帮我把这段内容整理成一篇可复用的文档")} type="button">
-          把内容整理成一篇可复用文档
-        </button>
-      </div>
-      <p className="empty-hint">在任意回答底部选择「从此处分叉」，可以保留当前上下文开始一次新的尝试。</p>
-    </section>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className="loading-state" aria-label="正在加载对话">
-      <span />
-      <span />
-      <span />
-    </div>
   );
 }
