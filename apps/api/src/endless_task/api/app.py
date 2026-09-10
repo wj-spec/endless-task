@@ -252,6 +252,15 @@ from .runtime_v2_support import (
     runtime_v2_product_sse,
     runtime_v2_run_variant_json,
 )
+from .routes.v2_lanes import register_v2_lanes_routes
+from .schemas.v2_lanes import (
+    RuntimeV2RenameLaneBody,
+)
+from .routes.v2_memory import register_v2_memory_routes
+from .schemas.v2_memory import (
+    RuntimeV2MemoryPromotionBody,
+    RuntimeV2MemoryPromotionResolveBody,
+)
 from .routes.v2_misc import register_v2_misc_routes
 from .schemas.v2_misc import (
     ResolveApprovalBody,
@@ -990,12 +999,6 @@ class RuntimeV2CreateLaneBody(BaseModel):
     displayName: Optional[str] = None
 
 
-class RuntimeV2RenameLaneBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    displayName: Optional[str] = None
-
-
 class RuntimeV2CreateTemporaryConversationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1023,21 +1026,6 @@ class RuntimeV2RunMemoryBody(BaseModel):
     content: str
     sourceEntryId: Optional[str] = None
     expiresAt: Optional[str] = None
-
-
-class RuntimeV2MemoryPromotionBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    targetScope: Literal[
-        "user_global", "workspace", "conversation_tree", "branch"
-    ]
-    targetLaneId: Optional[str] = None
-
-
-class RuntimeV2MemoryPromotionResolveBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    decision: Literal["accept", "reject"]
 
 
 class RuntimeV2SteerBody(BaseModel):
@@ -3769,69 +3757,12 @@ def create_app(
             "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
         }
 
-    @app.post("/api/v2/lanes/{lane_id}/promote")
-    async def promote_runtime_v2_lane(lane_id: str) -> dict[str, object]:
-        lane = container.runtime_v2_repository.get_lane(lane_id)
-        result = await container.runtime_v2_gateway.promote_lane(
-            conversation_id=lane.conversation_id,
-            target_lane_id=lane_id,
-        )
-        return {
-            "lane": runtime_v2_lane_json(result.promoted_lane),
-            "previousMainLane": runtime_v2_lane_json(result.previous_main_lane),
-            "activeLaneId": result.pointer.active_lane_id,
-        }
+    # v2 lane 路由搬到 api/routes/v2_lanes.py（搬家不改行为）
+    register_v2_lanes_routes(app, container)
 
-    @app.patch("/api/v2/lanes/{lane_id}")
-    async def rename_runtime_v2_lane(
-        lane_id: str,
-        body: RuntimeV2RenameLaneBody,
-    ) -> dict[str, object]:
-        lane = await container.runtime_v2_gateway.rename_lane(
-            lane_id,
-            body.displayName,
-        )
-        pointer = container.runtime_v2_repository.get_conversation_pointer(
-            lane.conversation_id
-        )
-        return {
-            "lane": runtime_v2_lane_json(
-                lane,
-                active_lane_id=pointer.active_lane_id if pointer is not None else None,
-            )
-        }
 
-    @app.post("/api/v2/lanes/{lane_id}/archive")
-    async def archive_runtime_v2_lane(lane_id: str) -> dict[str, object]:
-        lanes = await container.runtime_v2_gateway.archive_lane(lane_id)
-        active_lane_id = None
-        if lanes:
-            pointer = container.runtime_v2_repository.get_conversation_pointer(
-                lanes[0].conversation_id
-            )
-            active_lane_id = pointer.active_lane_id if pointer is not None else None
-        return {
-            "items": tuple(
-                runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
-                for lane in lanes
-            )
-        }
 
-    @app.post("/api/v2/lanes/{lane_id}/restore")
-    async def restore_runtime_v2_lane(lane_id: str) -> dict[str, object]:
-        lanes = await container.runtime_v2_gateway.restore_lane(lane_id)
-        active_lane_id = None
-        if lanes:
-            pointer = container.runtime_v2_repository.get_conversation_pointer(
-                lanes[0].conversation_id
-            )
-            active_lane_id = pointer.active_lane_id if pointer is not None else None
-        return {
-            "items": tuple(
-                runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
-                for lane in lanes
-            )
-        }
+
 
     @app.post(
         "/api/v2/conversations/{conversation_id}/temporary-conversations",
@@ -4079,17 +4010,9 @@ def create_app(
         )
         return {"memory": runtime_v2_memory_json(memory)}
 
-    @app.post("/api/v2/memories/{memory_id}/promotions", status_code=201)
-    async def create_runtime_v2_memory_promotion(
-        memory_id: str,
-        body: RuntimeV2MemoryPromotionBody,
-    ) -> dict[str, object]:
-        promotion = container.runtime_v2_gateway.create_memory_promotion(
-            memory_id=memory_id,
-            target_scope=MemoryScope(body.targetScope),
-            target_lane_id=body.targetLaneId,
-        )
-        return {"promotion": runtime_v2_memory_promotion_json(promotion)}
+    # v2 记忆路由搬到 api/routes/v2_memory.py（搬家不改行为）
+    register_v2_memory_routes(app, container)
+
 
     @app.get("/api/v2/conversations/{conversation_id}/memory-promotions")
     async def list_runtime_v2_memory_promotions(
@@ -4113,23 +4036,6 @@ def create_app(
             ),
         }
 
-    @app.post("/api/v2/memory-promotions/{promotion_id}/resolve")
-    async def resolve_runtime_v2_memory_promotion(
-        promotion_id: str,
-        body: RuntimeV2MemoryPromotionResolveBody,
-    ) -> dict[str, object]:
-        promotion, memory = container.runtime_v2_gateway.resolve_memory_promotion(
-            promotion_id,
-            accept=body.decision == "accept",
-        )
-        return {
-            "promotion": runtime_v2_memory_promotion_json(promotion),
-            "memory": (
-                runtime_v2_memory_json(memory)
-                if memory is not None
-                else None
-            ),
-        }
 
     @app.post("/api/v2/conversations/{conversation_id}/messages", status_code=202)
     async def create_runtime_v2_message(
