@@ -29,8 +29,11 @@ test("移动端只提供目录模型选择并以全屏页面管理模型服务",
     profile: { id: string };
   };
 
-  const { conversation } = await createCompletedConversation(request, title);
-  await openConversation(page, title, { mobile: true });
+  const { conversation, workspaceId } = await createCompletedConversation(
+    request,
+    title,
+  );
+  await openConversation(page, title, { mobile: true, workspaceId });
 
   const composer = page.locator(".composer");
   const modelSelect = composer.getByLabel("当前对话模型", { exact: true });

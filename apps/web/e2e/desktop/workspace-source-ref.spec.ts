@@ -44,13 +44,14 @@ test("工作区文件来源可溯源：来源列表 + 预览抽屉高亮行（17
   await page.goto("/");
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
   const nav = page.getByRole("navigation", { name: "会话列表" });
-  const group = nav
-    .locator(".workspace-item-main")
-    .filter({ hasText: "来源工作区" });
+  // 工作区行现在是图标 + 折叠箭头的窄栏样式（名字在悬浮浮层里），按可见文本
+  // 定位已不成立：用 data-workspace-id 定位分组。
+  const group = nav.locator(`[data-workspace-id="${ws.id}"]`);
+  const toggle = group.locator(".workspace-item-main");
+  await expect(toggle).toBeVisible();
   for (let guard = 0; guard < 20; guard += 1) {
-    const expanded = await group.getAttribute("aria-expanded");
-    if (expanded === "true") break;
-    await group.click();
+    if ((await toggle.getAttribute("aria-expanded")) === "true") break;
+    await toggle.click();
     await page.waitForTimeout(120);
   }
   const row = nav.locator(".session-item-main").filter({ hasText: title });

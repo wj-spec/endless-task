@@ -38,8 +38,8 @@ const expectSingleModalDialog = async (page: Page) => {
 test("390px 下聊天主路径完整位于视口内", async ({ page, request }) => {
   await useCompactViewport(page);
   const title = `E2E Mobile Width ${"长标题".repeat(12)} ${Date.now()}`;
-  await createCompletedConversation(request, title);
-  await openConversation(page, title, { mobile: true });
+  const { workspaceId } = await createCompletedConversation(request, title);
+  await openConversation(page, title, { mobile: true, workspaceId });
 
   const documentWidth = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
@@ -56,8 +56,8 @@ test("390px 下聊天主路径完整位于视口内", async ({ page, request }) 
 test("移动端核心聊天操作保持 44px 触控热区", async ({ page, request }) => {
   await useCompactViewport(page);
   const title = `E2E Mobile Targets ${Date.now()}`;
-  await createCompletedConversation(request, title);
-  await openConversation(page, title, { mobile: true });
+  const { workspaceId } = await createCompletedConversation(request, title);
+  await openConversation(page, title, { mobile: true, workspaceId });
 
   const controls: Array<[string, Locator]> = [
     ["展开侧栏", page.locator(".mobile-menu")],
@@ -101,10 +101,13 @@ test("移动会话抽屉限制焦点并在关闭后归还", async ({ page }) => 
 
 test("移动端 Branch 使用全屏次级工作面并可退出", async ({ page, request }) => {
   const title = `E2E Mobile ${Date.now()}`;
-  const { conversation } = await createCompletedConversation(request, title);
+  const { conversation, workspaceId } = await createCompletedConversation(
+    request,
+    title,
+  );
   const lanes = await listLanes(request, conversation.id);
   await createBranch(request, conversation.id, lanes.mainLaneId!, "移动端分支");
-  await openConversation(page, title, { mobile: true });
+  await openConversation(page, title, { mobile: true, workspaceId });
 
   await page.getByRole("button", { name: /^主线/ }).click();
   await page.getByRole("button", { name: "管理分支：移动端分支" }).click();

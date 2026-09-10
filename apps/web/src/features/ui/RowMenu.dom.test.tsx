@@ -56,6 +56,38 @@ describe("RowMenu 浮层（portal）", () => {
     clip.remove();
   });
 
+  it("菜单项获得焦点时浮层已经可见（否则 focus() 静默失败）", () => {
+    // 回归：菜单首帧是 visibility: hidden（等测量定位），而 hidden 元素**不能**
+    // 获得焦点。定位如果只写进 state、没有在同一个 layout effect 里落到 DOM，
+    // focus() 就会静默无效：菜单开了但焦点还在触发按钮上，方向键全失效
+    // （desktop/accessibility.spec.ts 的 RowMenu 用例就是这么挂的）。
+    const seen: string[] = [];
+    const original = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function patched(this: HTMLElement) {
+      const menu = document.querySelector<HTMLDivElement>(".row-menu-pop");
+      if (menu) {
+        seen.push(menu.style.visibility || getComputedStyle(menu).visibility);
+      }
+      return original.call(this);
+    };
+    try {
+      const menu = openMenu(
+        <RowMenu
+          items={[
+            { label: "重命名", onSelect: () => undefined },
+            { label: "删除", onSelect: () => undefined },
+          ]}
+        />,
+      );
+      expect(menu).not.toBeNull();
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((value) => value === "visible")).toBe(true);
+      expect(document.activeElement?.textContent).toBe("重命名");
+    } finally {
+      HTMLElement.prototype.focus = original;
+    }
+  });
+
   it("点击外部关闭，点击菜单项触发回调", () => {
     let selected = "";
     const menu = openMenu(

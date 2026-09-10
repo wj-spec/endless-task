@@ -14,6 +14,7 @@ type Conversation = {
   id: string;
   title: string;
   kind: string;
+  workspace_id?: string | null;
 };
 
 type Workspace = {
@@ -173,7 +174,8 @@ export const createCompletedConversation = async (
   const conversation = await createConversation(request, title);
   const handle = await sendMessage(request, conversation.id, content);
   await waitForRunStatus(request, conversation.id, "completed", handle.laneId);
-  return { conversation, handle };
+  // workspaceId 供 openConversation 精确定位工作区组（避免全量展开）。
+  return { conversation, handle, workspaceId: conversation.workspace_id ?? null };
 };
 
 export const createCompletedWorkspaceConversation = async (
@@ -223,7 +225,7 @@ export const createTemporaryConversationFromMenu = async (page: Page) => {
 export const openConversation = async (
   page: Page,
   title: string,
-  options: { mobile?: boolean } = {},
+  options: { mobile?: boolean; workspaceId?: string | null } = {},
 ) => {
   await page.goto("/");
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
@@ -231,16 +233,32 @@ export const openConversation = async (
     await page.getByRole("button", { name: "展开侧栏" }).click();
   }
   const navigation = page.getByRole("navigation", { name: "会话列表" });
-  // 会话归属已绑定工作区，且工作区组默认收起；展开所有收起的工作区组，
-  // 直到没有收起项，再定位目标会话行。
   const row = navigation.locator(".session-item-main").filter({ hasText: title });
-  for (let guard = 0; guard < 50; guard += 1) {
-    const collapsed = navigation.locator('.workspace-item-main[aria-expanded="false"]');
-    const count = await collapsed.count();
-    if (count === 0) break;
-    await collapsed.first().click();
+
+  if (options.workspaceId) {
+    // 已知归属：只展开目标工作区组（全量共享 DB 里可能有 60+ 个组，
+    // 逐个点开会吃掉测试超时预算）。
+    const toggle = navigation
+      .locator(`[data-workspace-id="${options.workspaceId}"]`)
+      .locator(".workspace-item-main");
+    await expect(toggle).toBeVisible();
+    if ((await toggle.getAttribute("aria-expanded")) === "false") {
+      await toggle.click();
+    }
+  } else {
+    // 未知归属：逐个展开收起的工作区组，**一找到目标行就停**（不再是有上限的
+    // 全量展开——上限一到就静默放弃，表现为后面 click 干等到超时）。
+    for (let guard = 0; guard < 200; guard += 1) {
+      if (await row.count()) break;
+      const collapsed = navigation.locator(
+        '.workspace-item-main[aria-expanded="false"]',
+      );
+      if ((await collapsed.count()) === 0) break;
+      await collapsed.first().click();
+    }
   }
-  await row.click();
+
+  await row.first().click();
   // 会话归属已绑定工作区时，标题渲染在 .heading-sub；否则为 .heading-title。
   await expectConversationHeading(page, title);
 };

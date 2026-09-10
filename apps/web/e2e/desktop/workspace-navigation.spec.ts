@@ -19,21 +19,36 @@ const navFor = (page: Page) =>
     .getByRole("region", { name: "工作区" })
     .getByRole("navigation", { name: "会话列表" });
 
+/**
+ * 工作区行现在是**图标 + 折叠箭头**的窄栏样式（工作区名/目录在悬浮或聚焦时
+ * 由浮层给出，见 WorkspaceNavigationGroup），所以按可见文本定位已不成立：
+ * 统一用 `data-workspace-id` 定位分组，再取组内的展开按钮。
+ */
+const groupFor = (page: Page, workspaceId: string) =>
+  navFor(page).locator(`[data-workspace-id="${workspaceId}"]`);
+
+const toggleFor = (page: Page, workspaceId: string) =>
+  groupFor(page, workspaceId).locator(".workspace-item-main");
+
+const ensureExpanded = async (page: Page, workspaceId: string) => {
+  const toggle = toggleFor(page, workspaceId);
+  await expect(toggle).toBeVisible();
+  if ((await toggle.getAttribute("aria-expanded")) === "false") {
+    await toggle.click();
+  }
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+};
+
 const openConversation = async (
   page: Page,
-  workspaceName: string,
+  workspaceId: string,
   subtitle: string,
 ) => {
   await page.goto("/");
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
 
-  const nav = navFor(page);
-  const group = nav.locator(".workspace-item-main").filter({
-    hasText: workspaceName,
-  });
-  await expect(group).toBeVisible();
-  await group.click();
-  await nav
+  await ensureExpanded(page, workspaceId);
+  await navFor(page)
     .locator(".session-item-main")
     .filter({ hasText: subtitle })
     .click();
@@ -65,14 +80,8 @@ test("多工作区嵌套且未绑定组为空", async ({ page, request }) => {
   const nav = navFor(page);
   // 展开两个工作区组：组可能因「自动打开活动会话」已展开，仅对尚未展开的组点击，
   // 避免把已展开组再点成收起。
-  const alphaGroup = nav.locator(".workspace-item-main").filter({ hasText: "项目 Alpha" });
-  const betaGroup = nav.locator(".workspace-item-main").filter({ hasText: "产品 Beta" });
-  if ((await alphaGroup.getAttribute("aria-expanded")) === "false") {
-    await alphaGroup.click();
-  }
-  if ((await betaGroup.getAttribute("aria-expanded")) === "false") {
-    await betaGroup.click();
-  }
+  await ensureExpanded(page, alpha.id);
+  await ensureExpanded(page, beta.id);
 
   await expect(
     nav.locator(".session-item-main").filter({ hasText: "Alpha-需求梳理" }),
@@ -102,9 +111,7 @@ test("工作区组可用键盘展开与收起", async ({ page, request }) => {
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
 
   const nav = navFor(page);
-  const group = nav.locator(".workspace-item-main").filter({
-    hasText: "键盘工作区",
-  });
+  const group = toggleFor(page, ws.id);
   await expect(group).toBeVisible();
   await expect(group).toHaveAttribute("aria-expanded", "false");
 
@@ -128,7 +135,7 @@ test("选中会话呈现 selected 态且表头显示工作区上下文", async (
   const ws = await createWorkspace(request, "上下文工作区");
   await createWorkspaceConversation(request, ws.id, title);
 
-  await openConversation(page, "上下文工作区", title);
+  await openConversation(page, ws.id, title);
 
   const nav = navFor(page);
   const active = nav
@@ -151,19 +158,25 @@ test("长标题在会话行内单行省略", async ({ page, request }) => {
   await page.goto("/");
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
   const nav = navFor(page);
-  await nav.locator(".workspace-item-main").filter({ hasText: "长标题工作区" }).click();
+  await ensureExpanded(page, ws.id);
 
-  const row = nav.locator(".session-item-main").filter({ hasText: longTitle }).first();
+  const row = nav
+    .locator(".session-item-main")
+    .filter({ hasText: longTitle })
+    .first();
   await expect(row).toBeVisible();
-  const style = await row.locator("span").first().evaluate((node) => {
-    const el = node as HTMLElement;
-    return {
-      textOverflow: getComputedStyle(el).textOverflow,
-      whiteSpace: getComputedStyle(el).whiteSpace,
-      clientWidth: el.clientWidth,
-      scrollWidth: el.scrollWidth,
-    };
-  });
+  const style = await row
+    .locator("span")
+    .first()
+    .evaluate((node) => {
+      const el = node as HTMLElement;
+      return {
+        textOverflow: getComputedStyle(el).textOverflow,
+        whiteSpace: getComputedStyle(el).whiteSpace,
+        clientWidth: el.clientWidth,
+        scrollWidth: el.scrollWidth,
+      };
+    });
   expect(style.textOverflow).toBe("ellipsis");
   expect(style.whiteSpace).toBe("nowrap");
   expect(style.scrollWidth).toBeGreaterThan(0);
@@ -182,10 +195,7 @@ test("1280 与 1440 视口下工作区导航无横向溢出", async ({ page, req
     await page.goto("/");
     await expect(page.getByText("模型服务可用").first()).toBeVisible();
     const nav = navFor(page);
-    await nav
-      .locator(".workspace-item-main")
-      .filter({ hasText: "视口工作区" })
-      .click();
+    await ensureExpanded(page, ws.id);
     await expect(
       nav.locator(".session-item-main").filter({ hasText: "视口会话" }),
     ).toBeVisible();
@@ -210,10 +220,7 @@ test("切换到另一工作区会话后目标组自动展开且选中行可见",
   const nav = navFor(page);
 
   // 打开第一个工作区会话：目标组展开、选中行可见。
-  await nav
-    .locator(".workspace-item-main")
-    .filter({ hasText: "自动展开 Alpha" })
-    .click();
+  await ensureExpanded(page, alpha.id);
   const alphaRow = nav
     .locator(".session-item-main")
     .filter({ hasText: alphaTitle });
@@ -222,10 +229,7 @@ test("切换到另一工作区会话后目标组自动展开且选中行可见",
   await expect(alphaRow).toHaveAttribute("aria-current", "page");
 
   // 切换到另一个工作区：目标组展开、新选中行可见且旧选中行取消。
-  await nav
-    .locator(".workspace-item-main")
-    .filter({ hasText: "自动展开 Beta" })
-    .click();
+  await ensureExpanded(page, beta.id);
   const betaRow = nav
     .locator(".session-item-main")
     .filter({ hasText: betaTitle });
@@ -235,9 +239,7 @@ test("切换到另一工作区会话后目标组自动展开且选中行可见",
   await expect(alphaRow).not.toHaveAttribute("aria-current", "page");
 
   // 手动收起当前组（active 未变）：应保持收起，不被 effect 强制展开。
-  const betaGroup = nav
-    .locator(".workspace-item-main")
-    .filter({ hasText: "自动展开 Beta" });
+  const betaGroup = toggleFor(page, beta.id);
   await betaGroup.click();
   await expect(betaGroup).toHaveAttribute("aria-expanded", "false");
   // 表头仍指向活动会话，说明 active 未变，只做了手动收起。
@@ -268,30 +270,31 @@ test("工作区行显示绑定目录、当前态与删除菜单", async ({ page,
 
   await page.goto("/");
   await expect(page.getByText("模型服务可用").first()).toBeVisible();
-  const nav = navFor(page);
-  const group = nav.locator(".workspace-item-main").filter({ hasText: name });
+  const group = groupFor(page, ws.id);
 
-  // 绑定目录显示于行的 meta 区域（目录名取自 rootPath 最后一段）。
+  // 窄栏样式下工作区名与绑定目录由「悬浮/聚焦浮层」给出（键盘用户聚焦即可见）。
+  const toggle = toggleFor(page, ws.id);
+  await expect(toggle).toBeVisible();
+  await toggle.focus();
+  // 浮层 portal 到 body（窄栏里放不下，且要避开 overflow 裁剪）。
+  const info = page.getByRole("tooltip");
+  await expect(info).toBeVisible();
+  await expect(info.locator(".workspace-hover-name")).toHaveText(name);
   const rootName = ws.rootPath!.split("/").filter(Boolean).at(-1)!;
-  await expect(
-    group.locator(".workspace-item-meta").filter({ hasText: rootName }),
-  ).toBeVisible();
+  await expect(info.locator(".workspace-hover-path")).toContainText(rootName);
 
   // 打开该工作区会话后，工作区行呈现当前态（is-current / aria-current）。
-  if ((await group.getAttribute("aria-expanded")) === "false") {
-    await group.click();
-  }
-  await nav.locator(".session-item-main").filter({ hasText: convTitle }).click();
-  const currentGroup = nav.locator(".workspace-item-main").filter({ hasText: name });
-  await expect(currentGroup).toHaveAttribute("aria-current", "true");
+  await ensureExpanded(page, ws.id);
+  await navFor(page)
+    .locator(".session-item-main")
+    .filter({ hasText: convTitle })
+    .click();
+  await expect(toggleFor(page, ws.id)).toHaveAttribute("aria-current", "true");
+  await expect(group).toHaveClass(/is-current/);
 
   // 工作区行菜单提供「删除工作区」快捷入口。
-  await currentGroup.hover();
-  await currentGroup
-    .locator("..")
-    .getByRole("button", { name: `管理工作区：${name}` })
-    .click();
-  await expect(page.getByRole("menuitem", { name: "删除工作区" })).toBeVisible();
+  await group.getByRole("button", { name: `管理工作区：${name}` }).click();
+  await expect(
+    page.getByRole("menuitem", { name: "删除工作区" }),
+  ).toBeVisible();
 });
-
-

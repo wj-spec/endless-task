@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { floatingLayerProps } from "./floatingLayer";
 import { MoreIcon } from "./Icons";
 
 export type RowMenuItem = {
@@ -96,35 +97,58 @@ export function RowMenu({
 
   const place = useCallback(() => {
     const trigger = triggerRef.current;
-    if (!trigger) return;
+    if (!trigger) return null;
     const rect = trigger.getBoundingClientRect();
     const menu = menuRef.current;
-    setPosition(
-      computeMenuPosition({
-        triggerRect: {
-          top: rect.top,
-          bottom: rect.bottom,
-          left: rect.left,
-          right: rect.right,
-        },
-        menu: {
-          width: menu?.offsetWidth ?? 160,
-          height: menu?.offsetHeight ?? 0,
-        },
-        viewport: {
-          width: window.innerWidth,
-          height: window.innerHeight,
-        },
-        placement,
-      }),
-    );
+    const next = computeMenuPosition({
+      triggerRect: {
+        top: rect.top,
+        bottom: rect.bottom,
+        left: rect.left,
+        right: rect.right,
+      },
+      menu: {
+        width: menu?.offsetWidth ?? 160,
+        height: menu?.offsetHeight ?? 0,
+      },
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      },
+      placement,
+    });
+    setPosition(next);
+    return next;
   }, [placement]);
 
+  const focusInitialItem = useCallback(() => {
+    const menuItems = enabledMenuItems(menuRef.current);
+    const target =
+      initialFocusRef.current === "last" ? menuItems.at(-1) : menuItems[0];
+    target?.focus();
+  }, []);
+
   // 先挂载再测量：useLayoutEffect 在绘制前完成定位，用户看不到跳动。
+  //
+  // 注意顺序：**必须先把定位结果写到 DOM，再移焦点**。菜单首次渲染时是
+  // `visibility: hidden`（等测量），而 hidden 元素无法获得焦点——此时
+  // `focus()` 会静默失败，表现为"菜单开了但焦点还在触发按钮上、方向键失效"
+  // （键盘打开菜单的用例就是这么挂的）。这里用 useLayoutEffect 同步落样式，
+  // 保证聚焦时元素已经可见。
   useLayoutEffect(() => {
-    if (open) place();
-    else setPosition(null);
-  }, [open, place]);
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    const next = place();
+    const node = menuRef.current;
+    if (node && next) {
+      node.style.top = `${next.top}px`;
+      node.style.left = `${next.left}px`;
+      node.style.visibility = "visible";
+    }
+    focusInitialItem();
+  }, [open, place, focusInitialItem]);
 
   useEffect(() => {
     if (!open) return;
@@ -148,11 +172,7 @@ export function RowMenu({
   useEffect(() => {
     if (!open) return;
 
-    const menuItems = enabledMenuItems(menuRef.current);
-    const target =
-      initialFocusRef.current === "last" ? menuItems.at(-1) : menuItems[0];
-    target?.focus();
-
+    // 聚焦已在 useLayoutEffect 里完成（必须晚于"定位 + 可见"）。
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (rootRef.current?.contains(target)) return;
@@ -164,9 +184,7 @@ export function RowMenu({
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [open]);
 
-  const openFromKeyboard = (
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-  ) => {
+  const openFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
     initialFocusRef.current = event.key === "ArrowUp" ? "last" : "first";
@@ -183,11 +201,14 @@ export function RowMenu({
 
     const menuItems = enabledMenuItems(menuRef.current);
     if (!menuItems.length) return;
-    const currentIndex = menuItems.findIndex((item) => item === document.activeElement);
+    const currentIndex = menuItems.findIndex(
+      (item) => item === document.activeElement,
+    );
     let targetIndex: number | null = null;
 
     if (event.key === "ArrowDown") {
-      targetIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % menuItems.length;
+      targetIndex =
+        currentIndex < 0 ? 0 : (currentIndex + 1) % menuItems.length;
     } else if (event.key === "ArrowUp") {
       targetIndex =
         currentIndex < 0
@@ -205,7 +226,11 @@ export function RowMenu({
     }
   };
 
-  const rootClass = ["row-menu", placement === "up" ? "pop-up" : "", className ?? ""]
+  const rootClass = [
+    "row-menu",
+    placement === "up" ? "pop-up" : "",
+    className ?? "",
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -230,45 +255,46 @@ export function RowMenu({
       </button>
       {open && typeof document !== "undefined"
         ? createPortal(
-        <div
-          aria-label={triggerAriaLabel}
-          className="row-menu-pop is-floating"
-          id={menuId}
-          onKeyDown={handleMenuKeyDown}
-          ref={menuRef}
-          role="menu"
-          style={
-            {
-              top: position?.top ?? 0,
-              left: position?.left ?? 0,
-              visibility: position ? "visible" : "hidden",
-            } as CSSProperties
-          }
-        >
-          {items.map((item) => (
-            <button
-              className={
-                [item.danger ? "danger-action" : "", item.className ?? ""]
-                  .filter(Boolean)
-                  .join(" ") || undefined
+            <div
+              {...floatingLayerProps("row-menu")}
+              aria-label={triggerAriaLabel}
+              className="row-menu-pop is-floating"
+              id={menuId}
+              onKeyDown={handleMenuKeyDown}
+              ref={menuRef}
+              role="menu"
+              style={
+                {
+                  top: position?.top ?? 0,
+                  left: position?.left ?? 0,
+                  visibility: position ? "visible" : "hidden",
+                } as CSSProperties
               }
-              disabled={item.disabled}
-              key={item.label}
-              onClick={() => {
-                setOpen(false);
-                triggerRef.current?.focus();
-                item.onSelect();
-              }}
-              role="menuitem"
-              tabIndex={-1}
-              type="button"
             >
-              {item.label}
-            </button>
-          ))}
-        </div>,
-        document.body,
-      )
+              {items.map((item) => (
+                <button
+                  className={
+                    [item.danger ? "danger-action" : "", item.className ?? ""]
+                      .filter(Boolean)
+                      .join(" ") || undefined
+                  }
+                  disabled={item.disabled}
+                  key={item.label}
+                  onClick={() => {
+                    setOpen(false);
+                    triggerRef.current?.focus();
+                    item.onSelect();
+                  }}
+                  role="menuitem"
+                  tabIndex={-1}
+                  type="button"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
         : null}
     </div>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RuntimeV2Lane } from "./apiTypes";
+import { isInsideFloatingLayer } from "../ui/floatingLayer";
 import { RowMenu } from "../ui/RowMenu";
 import { friendlyLaneName } from "./laneLabel";
 
@@ -92,6 +93,9 @@ export function BranchNavigator({
   useEffect(() => {
     if (!open) return;
     const closeOnPointerDown = (event: MouseEvent) => {
+      // 行内菜单 portal 到 body：不忽略它的话，mousedown 落在菜单项上会被当成
+      // "点外部" → 弹层连同菜单一起卸载 → click 事件不再派发（菜单项点了没反应）。
+      if (isInsideFloatingLayer(event.target)) return;
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
         setOpen(false);
         setRenamingLaneId(null);
