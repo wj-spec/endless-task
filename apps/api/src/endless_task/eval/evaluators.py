@@ -32,6 +32,7 @@ DEFAULT_READ_ONLY_TOOLS = frozenset(
         "read_text_file",
         "read_workspace_file",
         "list_workspace_dir",
+        "skill_search",
         "terminal_list",
         "terminal_read",
         "workspace_search",

@@ -15,6 +15,13 @@ from .invocation import (
     parse_skill_commands,
 )
 from .loader import discover_skills
+from .search import (
+    MAX_SEARCH_RESULTS,
+    SkillSearchHit,
+    rank_skills,
+    score_skill,
+    tokenize,
+)
 from .scanner import (
     QUARANTINE_LEVELS,
     RiskLevel,
@@ -67,6 +74,11 @@ __all__ = [
     "MAX_SKILL_REQUESTS",
     "SKILL_COMMAND_RE",
     "parse_skill_commands",
+    "MAX_SEARCH_RESULTS",
+    "SkillSearchHit",
+    "rank_skills",
+    "score_skill",
+    "tokenize",
     "Skill",
     "SkillDiagnostic",
     "SkillScope",

@@ -6,6 +6,7 @@ from typing import Optional, Sequence, Tuple
 from xml.sax.saxutils import escape
 
 from ..storage.sqlite_skill_override_repository import SqliteSkillOverrideRepository
+from .search import MAX_SEARCH_RESULTS, SkillSearchHit
 from .loader import (
     SkillRootSpec,
     default_skill_root_specs,
@@ -264,6 +265,59 @@ class SkillService:
             name=name,
             disabled=disabled,
         )
+
+    def search_skills(
+        self,
+        query: str,
+        workspace_root: Optional[Path] = None,
+        *,
+        workspace_id: str = "",
+        scope: str = "all",
+        limit: int = MAX_SEARCH_RESULTS,
+    ) -> Tuple[SkillSearchHit, ...]:
+        """S6：在本地技能根里检索（scope: workspace / global / all）。"""
+        from .search import rank_skills
+
+        if scope not in ("workspace", "global", "all"):
+            raise ValueError("scope must be workspace, global or all")
+        candidates: list[tuple[str, str, str, str]] = []
+        for skill in self.visible_skills(workspace_root, workspace_id=workspace_id):
+            if skill.disable_model_invocation:
+                continue
+            if scope == "workspace" and skill.scope is not SkillScope.WORKSPACE:
+                continue
+            if scope == "global" and skill.scope is not SkillScope.USER:
+                continue
+            candidates.append(
+                (
+                    skill.name,
+                    skill.description,
+                    skill.scope.value,
+                    skill.source,
+                )
+            )
+        hits = rank_skills(candidates, query=query, limit=limit)
+        if hits and self._usage_repository is not None:
+            digests = {
+                (skill.scope.value, skill.name): skill.digest
+                for skill in self.visible_skills(
+                    workspace_root, workspace_id=workspace_id
+                )
+            }
+            for hit in hits:
+                digest = digests.get((hit.scope, hit.name)) or ""
+                if not digest:
+                    continue
+                try:
+                    self._usage_repository.record(
+                        scope=hit.scope,
+                        name=hit.name,
+                        digest=digest,
+                        kind="search_hit",
+                    )
+                except Exception:  # noqa: BLE001 统计失败不影响检索
+                    pass
+        return hits
 
     def set_pinned(
         self,

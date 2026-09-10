@@ -57,6 +57,11 @@ class WorkspaceToolFilterTest(unittest.TestCase):
     def test_missing_resolver_does_not_filter(self) -> None:
         self.assertIsNone(workspace_tool_filter(None, "conv_any"))
 
+    def test_skill_search_works_without_binding(self) -> None:
+        # S6：技能检索对"全局共享技能"同样有效，所以不放进工作区工具集，
+        # 未绑定工作区的会话也应当能看到它。
+        self.assertNotIn("skill_search", WORKSPACE_TOOLS)
+
     def test_workspace_tools_set_matches_v1_surface(self) -> None:
         # v1/v2 共用的工作区工具集；S7 起新增 edit/manage 两个动词。
         # v1 未注册这两个名字，多过滤掉它们不影响 v1 行为。

@@ -17,6 +17,8 @@ USAGE_KINDS: Tuple[str, ...] = (
     "invoked",
     "body_read",
     "missing_dependencies",
+    #: S6：skill_search 命中该技能（用于校准默认目录的精选集）。
+    "search_hit",
 )
 
 

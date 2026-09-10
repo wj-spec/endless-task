@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, AsyncIterator, Callable, Literal, Mapping, Opt
 from fastapi import WebSocket, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from endless_task.domain.task_schedule import ReminderDue
@@ -133,6 +133,7 @@ from endless_task.workspace_runtime import (
 )
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
 from endless_task.workspace_runtime.browse import browse_directory
+from endless_task.workspace_runtime.skill_search_tool import SkillSearchTool
 from endless_task.workspace_runtime.system_terminal import open_system_terminal
 from endless_task.workspace_runtime.terminal import (
     DEFAULT_COLS as TERMINAL_DEFAULT_COLS,
@@ -1147,6 +1148,17 @@ class SkillPatchBody(BaseModel):
     disabled: Optional[bool] = None
     #: S5：固定/取消固定进默认目录。
     pinned: Optional[bool] = None
+
+
+class SkillSearchBody(BaseModel):
+    """S6：本地技能检索。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=200)
+    scope: Literal["all", "workspace", "global"] = "all"
+    workspaceId: Optional[str] = None
+    limit: int = Field(default=8, ge=1, le=20)
 
 
 class SkillValidateBody(BaseModel):
@@ -2928,6 +2940,10 @@ def _build_container(
                 name_resolver_provider=skill_name_resolver,
                 max_file_bytes=settings.max_file_bytes,
             )
+        )
+        # S6：目录只列精选技能，其余靠检索发现（Level 1）。
+        selected_tool_registry.register(
+            SkillSearchTool(workspace_resolver, skill_service)
         )
         selected_tool_registry.register(
             DeleteWorkspaceFileTool(
@@ -5456,6 +5472,32 @@ def create_app(
                 for result in results
             ],
             "toolsUsed": tools_used,
+        }
+
+    @app.post("/skills/search")
+    async def search_skills(body: SkillSearchBody) -> dict[str, object]:
+        """S6：本地技能检索（workspace / global / all）。"""
+        root = _workspace_root_path(body.workspaceId)
+        hits = container.skill_service.search_skills(
+            body.query,
+            root,
+            workspace_id=body.workspaceId or "",
+            scope=body.scope,
+            limit=body.limit,
+        )
+        return {
+            "query": body.query,
+            "scope": body.scope,
+            "items": [
+                {
+                    "name": hit.name,
+                    "description": hit.description,
+                    "scope": hit.scope,
+                    "source": hit.source,
+                    "score": hit.score,
+                }
+                for hit in hits
+            ],
         }
 
     @app.get("/skills/invocable")
