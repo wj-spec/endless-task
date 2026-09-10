@@ -207,6 +207,11 @@ export function useChatApplication() {
   const workspaceCanCreate = Boolean(currentWorkspace?.rootPath);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
+  // 通知/引用跳转：打开会话后需要滚动定位到的轮次（turnId = v2 run id）。
+  const [focusTarget, setFocusTarget] = useState<
+    { conversationId: string; turnId: string; nonce: number } | null
+  >(null);
+  const focusNonce = useRef(0);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
@@ -568,9 +573,20 @@ export function useChatApplication() {
   );
 
   const openConversation = useCallback(
-    async (conversationId: string) => {
+    async (
+      conversationId: string,
+      options?: { focusTurnId?: string | null },
+    ) => {
       hasOpenedConversationRef.current = true;
       setActiveConversationId(conversationId);
+      // 先清空再设置：同一轮次重复点击也要能重新滚动（用 nonce 触发 effect）。
+      const focusTurnId = options?.focusTurnId ?? null;
+      focusNonce.current += 1;
+      setFocusTarget(
+        focusTurnId
+          ? { conversationId, turnId: focusTurnId, nonce: focusNonce.current }
+          : null,
+      );
       await loadConversation(conversationId);
     },
     [loadConversation],
@@ -2073,6 +2089,7 @@ export function useChatApplication() {
     loading,
     newConversation,
     openConversation,
+    focusTarget,
     editedUserMessages,
     pendingAction: primaryCommandState?.pendingAction ?? pendingAction,
     sidePendingAction: sideCommandState?.pendingAction ?? null,

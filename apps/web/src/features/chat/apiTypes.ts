@@ -1133,6 +1133,8 @@ export type TaskNotification = {
   kind: "run_completed" | "run_failed" | "run_awaiting";
   taskId: string;
   runId: string;
+  /** 触发这条通知的 v2 run id（= 定位用的 turnId）；旧数据可能为空。 */
+  turnId?: string | null;
   conversationId: string;
   title: string;
   body: string;

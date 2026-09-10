@@ -61,6 +61,7 @@ class TaskNotificationService:
         conversation_id: str,
         title: str,
         body: str,
+        turn_id: Optional[str] = None,
     ) -> None:
         created = self._repository.record(
             kind=kind,
@@ -69,6 +70,7 @@ class TaskNotificationService:
             conversation_id=conversation_id,
             title=title,
             body=body,
+            turn_id=turn_id,
         )
         if created and self._hub_events is not None:
             try:
@@ -79,6 +81,7 @@ class TaskNotificationService:
                         "kind": kind.value,
                         "taskId": task_id,
                         "runId": run_id,
+                        "turnId": turn_id,
                         "conversationId": conversation_id,
                         "title": title,
                     },
@@ -121,6 +124,7 @@ class TaskNotificationService:
             conversation_id=run.conversation_id,
             title=title,
             body=body,
+            turn_id=run.turn_id,
         )
 
     def notify_reminder(
@@ -153,4 +157,5 @@ class TaskNotificationService:
             conversation_id=run.conversation_id,
             title=title,
             body=body,
+            turn_id=run.turn_id,
         )

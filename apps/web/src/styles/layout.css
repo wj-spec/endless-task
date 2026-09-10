@@ -809,3 +809,11 @@
     padding-bottom: max(18px, env(safe-area-inset-bottom));
   }
 }
+
+/* 通知/引用跳转定位：目标轮次短暂高亮，便于一眼找到 */
+.turn.is-focus-target {
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+  transition: background 240ms ease, box-shadow 240ms ease;
+}

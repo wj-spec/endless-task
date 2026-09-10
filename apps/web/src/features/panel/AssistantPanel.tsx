@@ -65,7 +65,7 @@ type AssistantPanelProps = {
   conversationId: string | null;
   onCapabilitiesChanged: () => void | Promise<void>;
   onClose: () => void;
-  onOpenConversation: (conversationId: string) => void;
+  onOpenConversation: (conversationId: string, focusTurnId?: string | null) => void;
   onTabChange: (tab: AssistantPanelTab) => void;
   pendingProposals: PendingProposal[];
   onProvidersChanged: () => void | Promise<void>;

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
 
 from endless_task.domain.models import Notification, NotificationKind
 from endless_task.domain.repositories import NotFoundError, ValidationError
@@ -26,6 +26,7 @@ def notification_from_row(row) -> Notification:
         body=row["body"],
         created_at=row["created_at"],
         read_at=row["read_at"],
+        turn_id=(row["turn_id"] if "turn_id" in row.keys() else None),
     )
 
 
@@ -50,6 +51,7 @@ class SqliteNotificationRepository:
         conversation_id: str,
         title: str,
         body: str,
+        turn_id: Optional[str] = None,
     ) -> bool:
         if not title.strip() or not body.strip():
             raise ValidationError("Notification title and body are required.")
@@ -59,9 +61,9 @@ class SqliteNotificationRepository:
                 """
                 INSERT OR IGNORE INTO notifications (
                     id, kind, task_id, run_id, conversation_id,
-                    title, body, created_at
+                    title, body, created_at, turn_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._id_factory("note"),
@@ -72,6 +74,7 @@ class SqliteNotificationRepository:
                     title.strip(),
                     body.strip(),
                     now,
+                    turn_id,
                 ),
             )
         return (cursor.rowcount or 0) > 0

@@ -4,7 +4,8 @@ import type { PendingProposal, TaskNotification } from "../chat/apiTypes";
 import { EmptyState } from "../ui/EmptyState";
 
 type NotificationsContentProps = {
-  onOpenConversation: (conversationId: string) => void;
+  /** 打开会话；可选 focusTurnId 用于滚动定位到触发通知的那一轮。 */
+  onOpenConversation: (conversationId: string, focusTurnId?: string | null) => void;
   pendingProposals: PendingProposal[];
 };
 
@@ -56,7 +57,7 @@ export function NotificationsContent({
     } finally {
       setBusyId(null);
     }
-    onOpenConversation(item.conversationId);
+    onOpenConversation(item.conversationId, item.turnId ?? item.runId);
   };
 
   const markAll = async () => {

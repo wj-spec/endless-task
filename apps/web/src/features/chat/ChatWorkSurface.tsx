@@ -61,6 +61,7 @@ import { BranchIcon, ChevronIcon } from "../ui/Icons";
 import { StatusBadge } from "../ui/StatusBadge";
 import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
+import { useTurnFocus } from "./useTurnFocus";
 
 type ChatWorkSurfaceProps = {
   conversation: ConversationSnapshot | null;
@@ -75,6 +76,8 @@ type ChatWorkSurfaceProps = {
   runtimeConnectionPhase?: RuntimeConnectionPhase;
   runtimeEvents?: RuntimeV2ProductEvent[];
   runtimeSnapshot?: RuntimeV2Snapshot | null;
+  /** 通知/引用跳转的定位目标：打开会话后滚动到这一轮并高亮。 */
+  focusTarget?: { conversationId: string; turnId: string; nonce: number } | null;
   onArchive: () => void;
   onCancel: () => void;
   onCancelRunningRun?: (runId: string) => void;
@@ -126,7 +129,10 @@ type ChatWorkSurfaceProps = {
     tab: "memory" | "knowledge" | "providers" | "scheduled",
   ) => void;
   workspaces?: Workspace[];
-  onOpenConversation?: (conversationId: string) => void;
+  onOpenConversation?: (
+    conversationId: string,
+    focusTurnId?: string | null,
+  ) => void;
   onOpenRunningLane?: (laneId: string) => void;
   onOpenWorkspace?: () => void;
   onToggleWorkspace?: () => void;
@@ -278,6 +284,7 @@ export function ChatWorkSurface({
   providers,
   runtimeConnectionPhase = "idle",
   runtimeEvents = [],
+  focusTarget = null,
   runtimeSnapshot = null,
   onArchive,
   onCancel,
@@ -491,15 +498,13 @@ export function ChatWorkSurface({
     };
   }, [conversationId]);
 
-  useEffect(() => {
-    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto"
-      : "smooth";
-    streamRef.current?.scrollTo({
-      top: streamRef.current.scrollHeight,
-      behavior,
-    });
-  }, [conversation?.turns.length, latestLiveContent]);
+  // 通知/引用跳转：定位目标轮次（定位期间暂停自动滚底，避免被顶掉）。
+  const turnFocus = useTurnFocus({
+    containerRef: streamRef,
+    conversationId,
+    focusTarget,
+    turnCount: conversation?.turns.length ?? 0,
+  });
 
   const submitTitle = () => {
     const title = titleDraft.trim();
@@ -891,7 +896,13 @@ export function ChatWorkSurface({
                   以上继承自《{conversation.parentTitle ?? "主会话"}》，以下是本会话内容
                 </div>
               ) : null}
-              <section className="turn">
+              <section
+                className="turn"
+                data-turn-id={turnSnapshot.turn.id}
+                data-variant-ids={turnSnapshot.responseVariants
+                  .map((item) => item.variant.id)
+                  .join(" ")}
+              >
                 <article className="message-row user-row">
                   <div className="speaker-mark user-mark">你</div>
                   <div className="user-row-body">

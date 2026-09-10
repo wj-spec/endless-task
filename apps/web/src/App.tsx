@@ -251,7 +251,10 @@ export function App() {
     } catch {
       // 标记已读失败不阻断跳转。
     }
-    void chat.openConversation(item.conversationId);
+    // 通知 → 精确定位到触发它的那一轮（turnId = 该轮的 v2 run id）。
+    void chat.openConversation(item.conversationId, {
+      focusTurnId: item.turnId ?? item.runId,
+    });
   };
 
   return (
@@ -389,8 +392,8 @@ export function App() {
         }
         onUploadFile={(file) => void chat.uploadFile(file)}
         onOpenAssistantTab={openAssistantPanel}
-        onOpenConversation={(conversationId) =>
-          void chat.openConversation(conversationId)
+        onOpenConversation={(conversationId, focusTurnId) =>
+          void chat.openConversation(conversationId, { focusTurnId })
         }
         onOpenRunningLane={(laneId) => {
           if (!chat.activeConversationId) return;
@@ -466,6 +469,7 @@ export function App() {
         onResolveTaskProposal={(proposalId, decision) =>
           void proposals.resolveTaskProposal(proposalId, decision).then(hub.refresh)
         }
+        focusTarget={chat.focusTarget}
       />
       {chat.sideConversationId ? (
         <section
@@ -673,8 +677,8 @@ export function App() {
           conversationId={chat.activeConversationId}
           onCapabilitiesChanged={() => void chat.refreshCapabilities()}
           onClose={() => dispatchSurface({ type: "close" })}
-          onOpenConversation={(conversationId) => {
-            void chat.openConversation(conversationId);
+          onOpenConversation={(conversationId, focusTurnId) => {
+            void chat.openConversation(conversationId, { focusTurnId });
           }}
           onTabChange={(tab) =>
             dispatchSurface({ type: "open-assistant", tab })

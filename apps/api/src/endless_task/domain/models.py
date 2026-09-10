@@ -423,6 +423,8 @@ class Notification:
     body: str
     created_at: str
     read_at: Optional[str] = None
+    #: 触发这条通知的 v2 run id（= task run 的 turn_id），供前端精确滚动定位。
+    turn_id: Optional[str] = None
 
 
 class KnowledgeSourceKind(str, Enum):

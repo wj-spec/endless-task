@@ -314,6 +314,7 @@ def notification_json(record) -> dict[str, object]:
         "kind": record.kind.value,
         "taskId": record.task_id,
         "runId": record.run_id,
+        "turnId": getattr(record, "turn_id", None),
         "conversationId": record.conversation_id,
         "title": record.title,
         "body": record.body,

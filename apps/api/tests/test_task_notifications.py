@@ -243,3 +243,53 @@ class TaskNotificationsApiTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class NotificationTurnTargetTest(unittest.TestCase):
+    """通知定位：payload 必须带 turnId（= 该轮的 v2 run id）。"""
+
+    def test_notification_payload_carries_turn_id(self) -> None:
+        import tempfile
+        from pathlib import Path as _Path
+
+        from endless_task.api.serialization import notification_json
+        from endless_task.domain.models import Notification, NotificationKind
+        from endless_task.storage import Database
+        from endless_task.storage.sqlite_notification_repository import (
+            SqliteNotificationRepository,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Database(_Path(tmp) / "notes.db")
+            database.initialize()
+            repository = SqliteNotificationRepository(database)
+            repository.record(
+                kind=NotificationKind.RUN_COMPLETED,
+                task_id="task_1",
+                run_id="taskrun_1",
+                conversation_id="conv_1",
+                title="标题",
+                body="正文",
+                turn_id="run_v2_abc",
+            )
+            record = repository.list_notifications()[0]
+            self.assertEqual("run_v2_abc", record.turn_id)
+            self.assertEqual("run_v2_abc", notification_json(record)["turnId"])
+
+            # 旧数据（无 turn_id）不报错，字段为 None
+            repository.record(
+                kind=NotificationKind.RUN_FAILED,
+                task_id="task_2",
+                run_id="taskrun_2",
+                conversation_id="conv_2",
+                title="标题",
+                body="正文",
+            )
+            legacy = [
+                item
+                for item in repository.list_notifications()
+                if item.run_id == "taskrun_2"
+            ][0]
+            self.assertIsNone(legacy.turn_id)
+            self.assertIsNone(notification_json(legacy)["turnId"])
+
+        del Notification
