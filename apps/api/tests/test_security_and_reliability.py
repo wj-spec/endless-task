@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from endless_task.api import AppSettings
-from endless_task.api.app import CONFIG_VERSION
+from endless_task.api.app_settings import CONFIG_VERSION
 from endless_task.security import RedactingFormatter
 from endless_task.storage import Database, SqliteChatRepository
 

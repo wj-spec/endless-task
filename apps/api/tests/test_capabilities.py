@@ -200,7 +200,7 @@ class ToolPlatformV2CapabilitiesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("openai_compatible_default", payload["profileName"])
 
     def test_strict_flag_parsing_fails_closed_on_illegal_values(self) -> None:
-        from endless_task.api.app import _parse_strict_flag
+        from endless_task.api.app_settings import _parse_strict_flag
 
         self.assertTrue(_parse_strict_flag("1", name="F"))
         self.assertTrue(_parse_strict_flag("TRUE", name="F"))

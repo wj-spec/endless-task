@@ -354,7 +354,7 @@ class EnforcementCompositionTest(unittest.IsolatedAsyncioTestCase):
     async def test_illegal_mode_fails_startup(self) -> None:
         # The strict gate lives in env parsing (startup path); illegal values
         # fail like the other strict parsers.
-        from endless_task.api.app import _parse_execution_backend_mode
+        from endless_task.api.app_settings import _parse_execution_backend_mode
 
         for illegal in ("docker", "sandbox", "yes-please"):
             with self.assertRaises(ValueError):

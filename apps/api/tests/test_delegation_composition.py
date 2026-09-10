@@ -113,7 +113,7 @@ class DelegationDefaultTest(unittest.TestCase):
 
 class DelegationFlagParsingTest(unittest.TestCase):
     def test_strict_mode_parse(self) -> None:
-        from endless_task.api.app import _parse_delegation_mode
+        from endless_task.api.app_settings import _parse_delegation_mode
 
         self.assertEqual("0", _parse_delegation_mode("0"))
         self.assertEqual("readonly", _parse_delegation_mode("readonly"))

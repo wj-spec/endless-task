@@ -7,10 +7,8 @@ import unittest
 from pathlib import Path
 
 from endless_task.api import AppSettings
-from endless_task.api.app import (
-    _build_container,
-    _parse_runtime_trace_mode,
-)
+from endless_task.api.app import _build_container
+from endless_task.api.app_settings import _parse_runtime_trace_mode
 from endless_task.runtime import FakeProvider
 
 
@@ -162,7 +160,7 @@ class OtelCompositionTest(unittest.TestCase):
         )
 
     def test_strict_otel_mode_parse(self) -> None:
-        from endless_task.api.app import _parse_otel_export_mode
+        from endless_task.api.app_settings import _parse_otel_export_mode
 
         self.assertEqual("0", _parse_otel_export_mode("0"))
         self.assertEqual("0", _parse_otel_export_mode("off"))
@@ -199,7 +197,7 @@ class ProviderRetryCompositionTest(unittest.TestCase):
         )
 
     def test_strict_mode_parse(self) -> None:
-        from endless_task.api.app import _parse_strict_mode
+        from endless_task.api.app_settings import _parse_strict_mode
 
         self.assertEqual("0", _parse_strict_mode("0", name="X"))
         self.assertEqual("1", _parse_strict_mode("1", name="X"))
