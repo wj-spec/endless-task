@@ -238,6 +238,7 @@ from endless_task.skills import (
 )
 from .container import AppContainer
 from .errors import ApiRequestError
+from .routes.notifications import register_notifications_routes
 from .routes.filesystem import register_filesystem_routes
 from .schemas.filesystem import (
     RevealPathBody,
@@ -4817,39 +4818,11 @@ def create_app(
 
 
 
-    @app.get("/notifications")
-    async def list_notifications(
-        unread_only: bool = False,
-    ) -> dict[str, object]:
-        items = container.notification_repository.list_notifications(
-            unread_only=unread_only
-        )
-        return {"items": [notification_json(item) for item in items]}
+    # notifications 域路由搬到 api/routes/notifications.py（搬家不改行为）
+    register_notifications_routes(app, container)
 
-    @app.post("/notifications/read-all")
-    async def read_all_notifications() -> dict[str, object]:
-        count = container.notification_repository.mark_all_read()
-        if count > 0:
-            container.hub_event_repository.append(
-                "notification.read_all",
-                data={"count": count},
-            )
-        return {"count": count}
 
-    @app.post("/notifications/{notification_id}/read")
-    async def read_notification(notification_id: str) -> dict[str, object]:
-        notification = container.notification_repository.mark_read(
-            notification_id
-        )
-        container.hub_event_repository.append(
-            "notification.read",
-            conversation_id=notification.conversation_id,
-            data={
-                "id": notification.id,
-                "conversationId": notification.conversation_id,
-            },
-        )
-        return {"notification": notification_json(notification)}
+
 
     @app.get("/proposals/pending")
     async def list_pending_proposals() -> dict[str, object]:
