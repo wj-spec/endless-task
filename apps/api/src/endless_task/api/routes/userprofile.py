@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from endless_task.storage import GENERAL_SCOPE_KEY
+
 from ..container import AppContainer
 from ..errors import ApiRequestError
 from ..schemas.userprofile import UserProfileBody
