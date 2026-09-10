@@ -26,157 +26,26 @@ import {
   useConversationRuntimeController,
 } from "./runtimeController";
 
-const WORKSPACE_STORAGE_KEY = "endless-task.workspace";
-const ACTIVE_CONVERSATION_STORAGE_KEY = "endless-task.active-conversation";
-const VIEW_LANE_STORAGE_KEY = "endless-task.view-lanes";
-const conversationIdFromHash = (): string | null => {
-  try {
-    const match = /^#\/conversation\/([^/]+)/.exec(globalThis.location?.hash ?? "");
-    return match?.[1] ? decodeURIComponent(match[1]) : null;
-  } catch {
-    return null;
-  }
-};
-
-
-const readStoredWorkspace = (): string | null => {
-  try {
-    const value = globalThis.localStorage?.getItem(WORKSPACE_STORAGE_KEY);
-    return value && value !== "general" ? value : null;
-  } catch {
-    return null;
-  }
-};
-
-// 刷新恢复上次会话：持久化最近一次激活的会话 id 及其工作区 id。
-const readStoredActiveConversation = (): {
-  conversationId: string;
-  workspaceId: string | null;
-} | null => {
-  try {
-    const raw = globalThis.localStorage?.getItem(
-      ACTIVE_CONVERSATION_STORAGE_KEY,
-    );
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as {
-      conversationId?: string;
-      workspaceId?: string | null;
-    };
-    if (!parsed.conversationId) return null;
-    return {
-      conversationId: parsed.conversationId,
-      workspaceId: parsed.workspaceId ?? null,
-    };
-  } catch {
-    return null;
-  }
-};
-
-// 刷新后仍停留在上次查看的车道：持久化「conversationId -> 当前查看的车道 id」。
-// 这样在分支上刷新（或临时对话对照刷新）后，主视图不会跳回主线，避免排版突变。
-const readStoredViewLanes = (): Record<string, string> => {
-  try {
-    const raw = globalThis.localStorage?.getItem(VIEW_LANE_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) => typeof value === "string"),
-    ) as Record<string, string>;
-  } catch {
-    return {};
-  }
-};
-
-const writeStoredViewLanes = (value: Record<string, string>): void => {
-  try {
-    globalThis.localStorage?.setItem(VIEW_LANE_STORAGE_KEY, JSON.stringify(value));
-  } catch {
-    // 持久化失败不影响交互。
-  }
-};
-
-const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
-const activeRuntimeStatuses = new Set([
-  "created",
-  "queued",
-  "running",
-  "waiting_approval",
-  "compacting",
-  "cancelling",
-]);
-
+import {
+  ACTIVE_CONVERSATION_STORAGE_KEY,
+  VIEW_LANE_STORAGE_KEY,
+  WORKSPACE_STORAGE_KEY,
+  activeRuntimeStatuses,
+  conversationIdFromHash,
+  liveFromRuntimeSnapshot,
+  readStoredActiveConversation,
+  readStoredViewLanes,
+  readStoredWorkspace,
+  requestId,
+  terminalStatuses,
+  writeStoredViewLanes,
+  type SideLaneTarget,
+  type SnapshotTarget,
+} from "./chatApplicationSupport";
 import {
   runtimeSnapshotToConversationSnapshot,
   runtimeStatusToTurnStatus,
 } from "./conversationSnapshotMapper";
-const requestId = () =>
-  globalThis.crypto?.randomUUID?.() ??
-  `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-type SnapshotTarget = "main" | "side";
-
-type SideLaneTarget = {
-  conversationId: string;
-  laneId: string;
-  mode: "temporary_conversation" | "branch_lane";
-};
-
-const pendingApprovalFromRuntime = (
-  runtime: RuntimeV2Snapshot,
-): LiveTurn["pendingApproval"] => {
-  const approval = runtime.pendingApprovals[0];
-  if (!approval) return undefined;
-  return {
-    id: approval.id,
-    toolCallId: approval.toolExecutionId,
-    summary: approval.summary,
-    reason: approval.reason,
-    status: "pending",
-    createdAt: runtime.lastEventSeq ? new Date().toISOString() : "",
-    resolvedAt: null,
-    metadata: {
-      toolName: approval.toolName,
-      effect: approval.effect ?? null,
-      risk: approval.risk ?? null,
-    },
-  };
-};
-
-const liveFromRuntimeSnapshot = (runtime: RuntimeV2Snapshot): LiveTurn | null => {
-  const run = runtime.runState;
-  if (!run) return null;
-  return {
-    turnId: run.runId,
-    responseVariantId: run.runId,
-    status: runtimeStatusToTurnStatus(run.status),
-    content: run.partialContent,
-    lastSequence: runtime.lastEventSeq,
-    error: run.errorCode
-      ? {
-          code: run.errorCode,
-          message: run.safeMessage ?? "Runtime v2 执行失败。",
-          retryable: false,
-          correlationId: run.runId,
-        }
-      : undefined,
-    pendingApproval: pendingApprovalFromRuntime(runtime),
-    activities: runtime.toolStates.map((tool) => ({
-      id: tool.id,
-      status:
-        tool.status === "completed"
-          ? "completed"
-          : tool.status === "failed"
-            ? "failed"
-            : tool.status === "cancelled" || tool.status === "rejected"
-              ? "cancelled"
-              : "running",
-      message: `${tool.toolName} ${tool.status}`,
-      startedAt: "",
-      updatedAt: "",
-    })),
-  };
-};
-
 export function useChatApplication() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   // 侧栏（SessionRail）走独立的数据源（useWorkspaceNavigation 按工作区并发拉取），
