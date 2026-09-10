@@ -63,6 +63,11 @@ import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
 import { AssistantMessageRow } from "./AssistantMessageRow";
+import {
+  LineageDivider,
+  LineageSummary,
+  LineageTailDivider,
+} from "./LineageSummary";
 import { EmptyConversation, LoadingState } from "./SurfaceStates";
 import { StreamNotices } from "./StreamNotices";
 import { UserMessageRow } from "./UserMessageRow";
@@ -526,19 +531,12 @@ export function ChatWorkSurface({
 
         <div className="message-column">
           {hasInheritedTurns ? (
-            <section className="lineage-summary" role="note">
-              <div>
-                <strong>继承自《{conversation?.parentTitle ?? "主会话"}》</strong>
-                <span>{inheritedTurnCount} 轮上下文已随临时会话复制并隔离保存</span>
-              </div>
-              <button
-                aria-expanded={inheritedHistoryOpen}
-                onClick={() => setInheritedHistoryOpen((open) => !open)}
-                type="button"
-              >
-                {inheritedHistoryOpen ? "收起继承内容" : "查看继承内容"}
-              </button>
-            </section>
+            <LineageSummary
+              inheritedTurnCount={inheritedTurnCount}
+              onToggle={() => setInheritedHistoryOpen((open) => !open)}
+              open={inheritedHistoryOpen}
+              parentTitle={conversation?.parentTitle}
+            />
           ) : null}
           {conversation?.turns.map((turnSnapshot, turnIndex) => {
             const inheritedTurn =
@@ -603,9 +601,7 @@ export function ChatWorkSurface({
             return (
               <Fragment key={turnSnapshot.turn.id}>
               {dividerHere ? (
-                <div className="lineage-divider" role="note">
-                  以上继承自《{conversation.parentTitle ?? "主会话"}》，以下是本会话内容
-                </div>
+                <LineageDivider parentTitle={conversation.parentTitle} />
               ) : null}
               <section
                 className="turn"
@@ -772,9 +768,7 @@ export function ChatWorkSurface({
           {hasInheritedTurns &&
           inheritedHistoryOpen &&
           firstOwnTurnIndex === -1 ? (
-            <div className="lineage-divider" role="note">
-              以上全部继承自《{conversation?.parentTitle ?? "主会话"}》，从这里开始是新内容
-            </div>
+            <LineageTailDivider parentTitle={conversation?.parentTitle} />
           ) : null}
         </div>
       </div>
