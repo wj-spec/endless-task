@@ -238,6 +238,12 @@ from endless_task.skills import (
 )
 from .container import AppContainer
 from .errors import ApiRequestError, correlation_id, error_response
+from .knowledge_support import emit_knowledge_duplicates
+from .routes.knowledge import register_knowledge_routes
+from .schemas.knowledge import (
+    KnowledgeSourceBody,
+    KnowledgeSourcePatch,
+)
 from .routes.artifacts import register_artifacts_routes
 from .schemas.artifacts import (
     CreateArtifactVersionBody,
@@ -2915,22 +2921,6 @@ def _provider_from_settings(settings: AppSettings) -> ModelProvider:
     )
 
 
-class KnowledgeSourceBody(BaseModel):
-    kind: str
-    title: str
-    content: str
-    fileName: Optional[str] = None
-    expiresAt: Optional[str] = None
-    workspaceId: Optional[str] = None
-
-
-class KnowledgeSourcePatch(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    fileName: Optional[str] = None
-    expiresAt: Optional[str] = None
-
-
 class ResendRuntimeV2RunBody(BaseModel):
     content: str
 
@@ -3491,8 +3481,8 @@ def create_app(
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(_: Request, error: Exception) -> JSONResponse:
-        correlation_id = correlation_id()
-        logger.exception("Unhandled local API error", extra={"correlation_id": correlation_id})
+        correlation = correlation_id()
+        logger.exception("Unhandled local API error", extra={"correlation_id": correlation})
         return JSONResponse(
             status_code=500,
             content={
@@ -3500,7 +3490,7 @@ def create_app(
                     "code": "internal_error",
                     "message": "本地服务发生错误。",
                     "retryable": True,
-                    "correlationId": correlation_id,
+                    "correlationId": correlation,
                 }
             },
         )
@@ -3533,14 +3523,9 @@ def create_app(
 
     # ---------- P5 知识源与联合检索 ----------
 
-    def _emit_knowledge_duplicates(source) -> None:
-        service = container.knowledge_lifecycle_service
-        if service is None:
-            return
-        try:
-            service.detect_duplicates(source)
-        except Exception:  # noqa: BLE001 去重检测不影响写入本身
-            logger.debug("Knowledge duplicate detection failed", exc_info=True)
+    # knowledge 域路由搬到 api/routes/knowledge.py（搬家不改行为）
+    register_knowledge_routes(app, container)
+
 
     # providers 域路由搬到 api/routes/providers.py（搬家不改行为）
     register_providers_routes(app, container)
@@ -3782,102 +3767,12 @@ def create_app(
 
 
 
-    @app.get("/knowledge-sources")
-    async def list_knowledge_sources(
-        status: str = "active", workspace: Optional[str] = Query(None)
-    ) -> dict[str, object]:
-        try:
-            status_enum = KnowledgeSourceStatus(status)
-        except ValueError as error:
-            raise ValidationError(f"Unknown knowledge source status: {status}") from error
-        workspace_value = (workspace or "").strip() or None
-        workspace_filter: Optional[str] = None
-        if workspace_value is not None:
-            if workspace_value == "general":
-                workspace_filter = container.knowledge_repository.WORKSPACE_GENERAL
-            else:
-                workspace_filter = resolve_workspace_reference(container, workspace_value)
-        sources = container.knowledge_repository.list_sources(
-            status=status_enum, workspace_id=workspace_filter
-        )
-        return {"items": [knowledge_source_json(item) for item in sources]}
 
-    @app.post("/knowledge-sources", status_code=201)
-    async def create_knowledge_source(body: KnowledgeSourceBody) -> dict[str, object]:
-        try:
-            kind = KnowledgeSourceKind(body.kind)
-        except ValueError as error:
-            raise ValidationError(f"Unknown knowledge source kind: {body.kind}") from error
-        source = container.knowledge_repository.create_source(
-            kind=kind,
-            origin=KnowledgeSourceOrigin.USER,
-            title=body.title,
-            content=body.content,
-            file_name=body.fileName,
-            expires_at=body.expiresAt,
-            workspace_id=resolve_workspace_reference(container, body.workspaceId),
-        )
-        _emit_knowledge_duplicates(source)
-        return {"source": knowledge_source_json(source)}
 
-    @app.patch("/knowledge-sources/{source_id}")
-    async def update_knowledge_source(
-        source_id: str, body: KnowledgeSourcePatch
-    ) -> dict[str, object]:
-        source = container.knowledge_repository.update_source(
-            source_id,
-            title=body.title,
-            content=body.content,
-            file_name=body.fileName,
-            expires_at=body.expiresAt,
-        )
-        return {"source": knowledge_source_json(source)}
 
-    @app.post("/knowledge-sources/{source_id}/expire")
-    async def expire_knowledge_source(source_id: str) -> dict[str, object]:
-        source = container.knowledge_repository.expire_source(source_id)
-        return {"source": knowledge_source_json(source)}
 
-    @app.post("/knowledge-sources/{source_id}/restore")
-    async def restore_knowledge_source(source_id: str) -> dict[str, object]:
-        source = container.knowledge_repository.restore_source(source_id)
-        return {"source": knowledge_source_json(source)}
 
-    @app.delete("/knowledge-sources/{source_id}", status_code=204)
-    async def delete_knowledge_source(source_id: str) -> Response:
-        container.knowledge_repository.delete_source(source_id)
-        return Response(status_code=204)
 
-    @app.post("/knowledge-sources/import", status_code=201)
-    async def import_knowledge_source(
-        file: UploadFile = File(...),
-        title: Optional[str] = Form(default=None),
-        workspaceId: Optional[str] = Form(default=None),
-    ) -> dict[str, object]:
-        raw = await file.read()
-        file_name = (file.filename or "").strip() or "未命名文件"
-        try:
-            ingested = ingest_file_bytes(raw, file_name=file_name)
-        except IngestionError as error:
-            raise ApiRequestError(
-                error.code, error.safe_message, status_code=400
-            ) from error
-        source = container.knowledge_repository.create_source(
-            kind=KnowledgeSourceKind.FILE,
-            origin=KnowledgeSourceOrigin.USER,
-            title=(title or "").strip() or file_name,
-            content=ingested.text,
-            file_name=file_name,
-            file_size=ingested.size,
-            file_sha256=ingested.sha256,
-            workspace_id=resolve_workspace_reference(container, workspaceId),
-        )
-        _emit_knowledge_duplicates(source)
-        return {
-            "source": knowledge_source_json(source),
-            "truncated": ingested.truncated,
-            "encoding": ingested.encoding,
-        }
 
 
     # retrieval 域路由搬到 api/routes/retrieval.py（搬家不改行为）
@@ -4176,7 +4071,7 @@ def create_app(
             container, kind="knowledge", proposal=proposal, decision="accept"
         )
         if proposal.proposal_type is KnowledgeProposalType.ADD_SOURCE:
-            _emit_knowledge_duplicates(source)
+            emit_knowledge_duplicates(container, source)
         return {
             "proposal": knowledge_proposal_json(proposal),
             "source": knowledge_source_json(source),
