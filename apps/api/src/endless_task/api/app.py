@@ -269,6 +269,10 @@ from .schemas.memories import (
 )
 from .routes.tasks import register_tasks_routes
 from .routes.system import register_system_routes
+from .workspace_support import (
+    require_bound_workspace,
+    resolve_workspace_reference,
+)
 from .schemas.system import SetPermissionBody
 from .routes.skills import register_skill_routes
 from .schemas.skills import (
@@ -3623,8 +3627,8 @@ def create_app(
         body: Optional[CreateConversationBody] = None,
     ) -> dict[str, object]:
         # 必选绑定设定：新建会话必须归属到一个已绑定目录的工作区。
-        workspace_id = _require_bound_workspace(
-            body.workspaceId if body is not None else None
+        workspace_id = require_bound_workspace(
+            container, body.workspaceId if body is not None else None
         )
         return conversation_json(
             container.chat_repository.create_or_reuse_empty_conversation(
@@ -3644,7 +3648,7 @@ def create_app(
         if text == "general":
             general_only = True
         elif text:
-            workspace_id = _resolve_workspace_reference(text)
+            workspace_id = resolve_workspace_reference(container, text)
             if workspace_id is None:
                 general_only = True
         conversations = container.chat_repository.list_conversations(
@@ -3814,7 +3818,7 @@ def create_app(
                     "临时/分支会话不允许跨工作区迁移。",
                     status_code=409,
                 )
-            workspace_id = _require_bound_workspace(body.workspaceId)
+            workspace_id = require_bound_workspace(container, body.workspaceId)
             conversation = container.chat_repository.set_conversation_workspace(
                 conversation_id,
                 workspace_id,
@@ -3875,43 +3879,6 @@ def create_app(
 
 
     # ---------- P5 知识源与联合检索 ----------
-
-    def _resolve_workspace_reference(value: Optional[str]) -> Optional[str]:
-        """把请求里的归属值落为列值："general"/空 → None（全局）；其余校验存在。"""
-        text = (value or "").strip()
-        if not text or text == "general":
-            return None
-        container.workspace_repository.get_workspace(text)
-        return text
-
-    def _require_bound_workspace(value: Optional[str]) -> str:
-        """校验目标工作区存在且已绑定本地目录，返回其 id。
-
-        会话必须归属到已绑定目录的工作区（必选绑定产品设定）。失败抛出
-        ApiRequestError（409），不返回 None。
-        """
-        text = (value or "").strip()
-        if not text or text == "general":
-            raise ApiRequestError(
-                "workspace_required",
-                "会话必须归属到一个工作区，请先选择并绑定工作区目录。",
-                status_code=409,
-            )
-        try:
-            workspace = container.workspace_repository.get_workspace(text)
-        except NotFoundError as error:
-            raise ApiRequestError(
-                "workspace_not_found",
-                "所选工作区已不存在，请重新选择。",
-                status_code=404,
-            ) from error
-        if not workspace.root_path:
-            raise ApiRequestError(
-                "workspace_not_bound",
-                "该工作区尚未绑定本地目录，请先绑定目录后再创建/迁移会话。",
-                status_code=409,
-            )
-        return text
 
     def _emit_knowledge_duplicates(source) -> None:
         service = container.knowledge_lifecycle_service
@@ -4302,7 +4269,7 @@ def create_app(
             if workspace_value == "general":
                 workspace_filter = container.knowledge_repository.WORKSPACE_GENERAL
             else:
-                workspace_filter = _resolve_workspace_reference(workspace_value)
+                workspace_filter = resolve_workspace_reference(container, workspace_value)
         sources = container.knowledge_repository.list_sources(
             status=status_enum, workspace_id=workspace_filter
         )
@@ -4321,7 +4288,7 @@ def create_app(
             content=body.content,
             file_name=body.fileName,
             expires_at=body.expiresAt,
-            workspace_id=_resolve_workspace_reference(body.workspaceId),
+            workspace_id=resolve_workspace_reference(container, body.workspaceId),
         )
         _emit_knowledge_duplicates(source)
         return {"source": knowledge_source_json(source)}
@@ -4376,7 +4343,7 @@ def create_app(
             file_name=file_name,
             file_size=ingested.size,
             file_sha256=ingested.sha256,
-            workspace_id=_resolve_workspace_reference(workspaceId),
+            workspace_id=resolve_workspace_reference(container, workspaceId),
         )
         _emit_knowledge_duplicates(source)
         return {
@@ -4481,7 +4448,7 @@ def create_app(
             if text == "general":
                 workspace_filter = container.knowledge_repository.WORKSPACE_GENERAL
             elif text:
-                workspace_filter = _resolve_workspace_reference(text)
+                workspace_filter = resolve_workspace_reference(container, text)
         grouped = container.knowledge_repository.search(
             body.query, scopes, limit, workspace_id=workspace_filter
         )
@@ -4765,7 +4732,7 @@ def create_app(
             return {"proposal": knowledge_proposal_json(proposal)}
         workspace_override = container.knowledge_proposal_repository._UNSET_WORKSPACE
         if body.workspaceId is not None:
-            workspace_override = _resolve_workspace_reference(body.workspaceId)
+            workspace_override = resolve_workspace_reference(container, body.workspaceId)
         proposal, source = container.knowledge_proposal_repository.accept_proposal(
             proposal_id, workspace_override=workspace_override
         )
