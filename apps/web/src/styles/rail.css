@@ -676,6 +676,22 @@
   height: 18px;
 }
 
+.workspace-item-main .workspace-item-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-2);
+}
+
+.workspace-item-main .workspace-item-chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+}
+
 .workspace-item-name {
   overflow: hidden;
   text-overflow: ellipsis;

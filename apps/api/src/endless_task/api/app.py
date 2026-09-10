@@ -1785,6 +1785,28 @@ def _mcp_call_status(detail: str) -> str:
     return "ok"
 
 
+def _title_conversation_from_first_message(
+    container, conversation_id: str, content: str
+) -> None:
+    """用首条用户消息给会话命名（v1 时代的行为，v2 路径补齐）。
+
+    为什么需要：v1 在 `create_turn` 里会自动命名，v2 消息路径不经过那里，
+    于是会话永远叫「新对话」——侧栏里一堆同名条目（用户反馈"摘要设计丢了"）。
+
+    规则与 v1 一致（前 30 字、空白折叠）；手动命名过的标题不动；非首条消息
+    不动。命名属于侧信道，失败不影响消息发送。
+    """
+    try:
+        conversation = container.chat_repository.get_conversation(conversation_id)
+        if conversation.title_is_manual:
+            return
+        if container.runtime_v2_repository.has_user_message(conversation_id):
+            return
+        container.chat_repository.set_automatic_title(conversation_id, content)
+    except Exception:  # noqa: BLE001 命名失败不该阻塞发消息
+        pass
+
+
 def resolve_skill_requests(
     skill_service: "SkillService",
     workspace_resolver: "WorkspaceResolver",
@@ -7739,6 +7761,9 @@ def create_app(
             target_conversation_id,
             body.content,
             include_bodies=False,
+        )
+        _title_conversation_from_first_message(
+            container, target_conversation_id, body.content
         )
         handle = await container.runtime_v2_gateway.send(
             target_conversation_id,

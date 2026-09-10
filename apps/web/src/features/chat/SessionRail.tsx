@@ -31,6 +31,8 @@ type SessionRailProps = {
   workspaceCanCreate: boolean;
   currentWorkspace: Workspace | null;
   pendingTotal: number;
+  /** 会话数据变更信号（新建会话 / 首条消息命名等）：变化即重新拉取侧栏列表。 */
+  refreshToken?: number;
   onCreateWorkspace: () => void;
   onOpenAssistant: (tab: "notifications" | "memory") => void;
   onOpenSettings: () => void;
@@ -61,6 +63,7 @@ export function SessionRail({
   workspaceCanCreate,
   currentWorkspace,
   pendingTotal,
+  refreshToken = 0,
   onCreateWorkspace,
   onOpenAssistant,
   onOpenSettings,
@@ -94,6 +97,14 @@ export function SessionRail({
   });
 
   const nav = useWorkspaceNavigation(workspaces, statusFilter, search);
+  // 侧栏有独立数据源：主流程新建会话/自动命名后要主动刷新，否则列表停在旧状态
+  // （新建的会话不出现、标题一直显示「新对话」）。
+  const lastRefreshToken = useRef(refreshToken);
+  useEffect(() => {
+    if (lastRefreshToken.current === refreshToken) return;
+    lastRefreshToken.current = refreshToken;
+    nav.refresh();
+  }, [refreshToken, nav]);
 
   const model = useMemo(
     () =>

@@ -179,6 +179,14 @@ const liveFromRuntimeSnapshot = (runtime: RuntimeV2Snapshot): LiveTurn | null =>
 
 export function useChatApplication() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  // 侧栏（SessionRail）走独立的数据源（useWorkspaceNavigation 按工作区并发拉取），
+  // 所以"新建会话/会话改名"这类变化必须显式通知它刷新，否则侧栏要等下次整体加载。
+  const [conversationsRevision, setConversationsRevision] = useState(0);
+  // 供 loadConversationList 决策（见下方同步 effect）：避免列表刷新抢走用户当前所在会话。
+  const bumpConversationsRevision = useCallback(
+    () => setConversationsRevision((value) => value + 1),
+    [],
+  );
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, ConversationSnapshot>>({});
   const [sideSnapshots, setSideSnapshots] = useState<
@@ -800,6 +808,10 @@ export function useChatApplication() {
       const requestVersion = conversationListVersion.current + 1;
       conversationListVersion.current = requestVersion;
       const isCurrent = () => conversationListVersion.current === requestVersion;
+      // 请求发出时的活动会话：响应回来时若用户/代码已经切到别的会话，
+      // 这次响应就只能更新列表，**不能**再按旧意图打开会话——否则一个迟到的
+      // 响应会把"刚新建/刚点开"的会话顶掉（表现为 + 新建后跳回上一段对话）。
+      const activeAtRequest = activeConversationIdRef.current;
       setLoading(true);
       setError(null);
       try {
@@ -811,12 +823,31 @@ export function useChatApplication() {
           items = [created];
         }
         setConversations(items);
+        // 选择打开哪一个：显式 preferred 优先 → 否则保留**当前仍在列表里的会话**
+        // → 再退回第一项。此前是无条件打开 items[0]，于是列表刷新（页面初始加载、
+        // 工作区刷新等）会把用户"刚点开/刚新建"的会话顶掉——表现为点了「+ 新建会话」
+        // 之后主对话又跳回上一段对话。
+        const current = activeConversationIdRef.current;
+        const superseded = current !== activeAtRequest;
+        const preferred = superseded
+          ? null
+          : (items.find((item) => item.id === preferredId)?.id ?? null);
+        // 同工作区的刷新即使没包含刚新建的会话（请求早于创建发出），也要保留它。
+        const known = conversationsRef.current.find((item) => item.id === current);
+        const currentStillValid =
+          Boolean(current) &&
+          (items.some((item) => item.id === current) ||
+            (known?.workspaceId ?? null) === (workspaceId ?? null));
         const target =
-          items.find((item) => item.id === preferredId)?.id ?? items[0]?.id ?? null;
+          preferred ??
+          (currentStillValid ? current : null) ??
+          (superseded ? null : (items[0]?.id ?? null));
         if (isCurrent()) {
-          if (target) await openConversation(target);
-          else {
+          if (target && target !== current) await openConversation(target);
+          else if (!target) {
             setActiveConversationId(null);
+            setLoading(false);
+          } else {
             setLoading(false);
           }
         }
@@ -829,6 +860,10 @@ export function useChatApplication() {
     },
     [openConversation, workspaceId, workspaceCanCreate],
   );
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
 
   useEffect(() => {
     void chatApi.health().then(setHealth).catch(() => setHealth(null));
@@ -962,9 +997,13 @@ export function useChatApplication() {
   }, [activeConversationId, snapshots]);
 
   const activeConversationIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   useEffect(() => {
     // 支持浏览器前进/后退与手动改地址打开其他会话。
@@ -1066,6 +1105,16 @@ export function useChatApplication() {
     });
     if (!isCurrent()) return result;
     applyRuntimeSnapshot(legacy, runtime, target);
+    // 首条消息会给会话自动命名（"摘要式标题"，与后端同一规则）：把侧栏行同步刷新，
+    // 否则列表要等下次整体加载才更新，用户看到的一直是「新对话」。
+    setConversations((current) =>
+      current.some((item) => item.id === conversationId)
+        ? current.map((item) =>
+            item.id === conversationId ? { ...item, ...legacy.conversation } : item,
+          )
+        : current,
+    );
+    bumpConversationsRevision();
     followRuntimeConversation(
       conversationId,
       before.lastEventSeq,
@@ -1209,6 +1258,7 @@ export function useChatApplication() {
         conversation,
         ...current.filter((item) => item.id !== conversation.id),
       ]);
+      bumpConversationsRevision();
       await openConversation(conversation.id);
     } catch (createError) {
       setError(readableError(createError));
@@ -1655,6 +1705,7 @@ export function useChatApplication() {
         nextFilter,
         status === "active" ? updated.id : undefined,
       );
+      bumpConversationsRevision();
     } catch (statusError) {
       setError(readableError(statusError));
     } finally {
@@ -2060,6 +2111,7 @@ export function useChatApplication() {
     changeConversationStatus,
     closeSideConversation,
     conversations: visibleConversations,
+    conversationsRevision,
     createTemporaryConversation,
     focusTemporaryConversation,
     openLaneInSide,

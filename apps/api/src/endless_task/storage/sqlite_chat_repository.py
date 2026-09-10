@@ -203,6 +203,31 @@ class SqliteChatRepository:
             )
             return self._get_conversation(connection, conversation_id)
 
+    def set_automatic_title(
+        self, conversation_id: str, content: str
+    ) -> Optional[Conversation]:
+        """用首条用户消息给会话命名（与 v1 `create_turn` 同一规则）。
+
+        只在标题**不是手动命名**时生效；返回更新后的会话（未改动则返回 None）。
+        v2 消息路径此前完全不命名，会话永远停在「新对话」。
+        """
+        with self._database.transaction() as connection:
+            conversation = self._get_conversation(connection, conversation_id)
+            if conversation.title_is_manual:
+                return None
+            title = self._automatic_title(content)
+            if title == conversation.title:
+                return None
+            connection.execute(
+                """
+                UPDATE conversations
+                SET title = ?, updated_at = ?
+                WHERE id = ? AND title_is_manual = 0
+                """,
+                (title, self._clock(), conversation_id),
+            )
+            return self._get_conversation(connection, conversation_id)
+
     def set_conversation_status(
         self,
         conversation_id: str,

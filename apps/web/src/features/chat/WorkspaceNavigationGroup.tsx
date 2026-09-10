@@ -127,6 +127,13 @@ export function WorkspaceNavigationGroup({
           <span aria-hidden="true" className="workspace-item-chevron">
             <ChevronIcon direction={open ? "down" : "right"} size={16} />
           </span>
+          {/* 名称常显：只留图标时无法分辨工作区（悬浮浮层只作补充信息）。 */}
+          <span className="workspace-item-name" title={group.name}>
+            {group.name}
+          </span>
+          {unbound ? (
+            <span className="workspace-item-meta is-unbound">未绑定</span>
+          ) : null}
         </button>
         <RowMenu
           className="workspace-row-menu"

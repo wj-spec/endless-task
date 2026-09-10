@@ -585,6 +585,19 @@ class SqliteRuntimeV2Repository:
             ).fetchall()
         return tuple(self._entry_from_row(row) for row in rows)
 
+    def has_user_message(self, conversation_id: str) -> bool:
+        """该会话是否已经有用户消息（用于"首条消息命名会话"的判断）。"""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM v2_transcript_entries
+                WHERE conversation_id = ? AND type = ?
+                LIMIT 1
+                """,
+                (conversation_id, TranscriptEntryType.USER_MESSAGE.value),
+            ).fetchone()
+        return row is not None
+
     def list_lane_context_entries(
         self,
         lane_id: str,

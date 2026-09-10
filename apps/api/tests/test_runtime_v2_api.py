@@ -314,6 +314,48 @@ class RuntimeV2ApiTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertLess(elapsed, 2.0)
 
+    async def test_first_message_titles_conversation(self) -> None:
+        """首条消息命名会话：v2 路径此前不命名，会话永远叫「新对话」。"""
+        client, app = await self._client()
+        container = app.state.container
+        conversation = container.chat_repository.create_conversation()
+        self.assertEqual("新对话", conversation.title)
+
+        await client.post(
+            f"/api/v2/conversations/{conversation.id}/messages",
+            json={"content": "帮我梳理一下这个项目的上下文工程分层设计，越详细越好"},
+            headers={"Idempotency-Key": "title-1"},
+        )
+
+        titled = container.chat_repository.get_conversation(conversation.id)
+        # 与 v1 同一规则：前 30 字、空白折叠、不是手动命名
+        self.assertEqual("帮我梳理一下这个项目的上下文工程分层设计，越详细越好"[:30], titled.title)
+        self.assertFalse(titled.title_is_manual)
+
+        # 第二条消息不改标题
+        await client.post(
+            f"/api/v2/conversations/{conversation.id}/messages",
+            json={"content": "换一个完全不同的主题"},
+            headers={"Idempotency-Key": "title-2"},
+        )
+        self.assertEqual(titled.title, container.chat_repository.get_conversation(conversation.id).title)
+
+    async def test_manual_title_survives_first_message(self) -> None:
+        client, app = await self._client()
+        container = app.state.container
+        conversation = container.chat_repository.create_conversation()
+        container.chat_repository.rename_conversation(conversation.id, "我自己起的名字")
+
+        await client.post(
+            f"/api/v2/conversations/{conversation.id}/messages",
+            json={"content": "这条消息不应该覆盖手动标题"},
+            headers={"Idempotency-Key": "title-3"},
+        )
+
+        titled = container.chat_repository.get_conversation(conversation.id)
+        self.assertEqual("我自己起的名字", titled.title)
+        self.assertTrue(titled.title_is_manual)
+
     async def test_lane_event_stream_validates_conversation_global_cursor(
         self,
     ) -> None:

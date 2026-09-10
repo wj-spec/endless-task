@@ -272,13 +272,14 @@ export function App() {
         workspaceVisible && !workspaceCollapsed ? " workspace-open" : ""
       }${chat.sideConversationId ? " side-open" : ""}${
         railCollapsed ? " rail-collapsed" : ""
-      }`}
+      }${assistantOpen ? " assistant-open" : ""}`}
     >
       <SessionRail
         activeConversationId={chat.activeConversationId}
         collapsed={railCollapsed}
         open={railOpen}
         pendingTotal={hub.total}
+        refreshToken={chat.conversationsRevision}
         search={chat.search}
         statusFilter={chat.statusFilter}
         workspaceId={chat.workspaceId}
