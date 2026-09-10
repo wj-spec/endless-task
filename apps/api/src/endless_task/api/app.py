@@ -238,6 +238,7 @@ from endless_task.skills import (
 )
 from .container import AppContainer
 from .errors import ApiRequestError
+from .routes.tasks import register_tasks_routes
 from .routes.system import register_system_routes
 from .schemas.system import SetPermissionBody
 from .routes.skills import register_skill_routes
@@ -5924,43 +5925,15 @@ def create_app(
             "source": knowledge_source_json(source),
         }
 
-    @app.get("/tasks")
-    async def list_tasks(include_cancelled: bool = False) -> dict[str, object]:
-        tasks = container.task_repository.list_tasks(
-            include_cancelled=include_cancelled
-        )
-        return {"items": [task_json(item) for item in tasks]}
+    # tasks 域路由搬到 api/routes/tasks.py（搬家不改行为）
+    register_tasks_routes(app, container)
 
-    @app.get("/tasks/{task_id}")
-    async def get_task(task_id: str) -> dict[str, object]:
-        return {"task": task_json(container.task_repository.get_task(task_id))}
 
-    @app.post("/tasks/{task_id}/run", status_code=202)
-    async def run_task(task_id: str) -> dict[str, object]:
-        run = await container.task_worker.start(
-            task_id, trigger=TaskRunTrigger.MANUAL
-        )
-        return {"run": task_run_json(run)}
 
-    @app.post("/tasks/{task_id}/pause")
-    async def pause_task(task_id: str) -> dict[str, object]:
-        task = container.task_repository.pause_task(task_id)
-        return {"task": task_json(task)}
 
-    @app.post("/tasks/{task_id}/resume")
-    async def resume_task(task_id: str) -> dict[str, object]:
-        task = container.task_repository.resume_task(task_id)
-        return {"task": task_json(task)}
 
-    @app.post("/tasks/{task_id}/cancel")
-    async def cancel_task(task_id: str) -> dict[str, object]:
-        task = container.task_repository.cancel_task(task_id)
-        return {"task": task_json(task)}
 
-    @app.get("/tasks/{task_id}/runs")
-    async def list_task_runs(task_id: str) -> dict[str, object]:
-        runs = container.task_run_repository.list_runs(task_id=task_id)
-        return {"items": [task_run_json(item) for item in runs]}
+
 
     @app.get("/notifications")
     async def list_notifications(
