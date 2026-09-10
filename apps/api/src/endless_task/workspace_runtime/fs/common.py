@@ -16,8 +16,10 @@ from endless_task.tooling import ToolCall, ToolError
 from ..effect_log import EffectLog, EffectReceipt
 from ..resolver import WorkspaceBinding
 
-#: 撤销记录失败只记日志、不影响写入结果（与拆分前的模块级 logger 同名同义）。
-logger = logging.getLogger(__name__)
+#: 撤销记录失败只记日志、不影响写入结果。
+#: 日志名沿用拆分前的 `endless_task.workspace_runtime.fs_tools`：日志过滤/告警按名字
+#: 配置，用 `__name__` 会静默变成 `...workspace_runtime.fs.common`。
+logger = logging.getLogger("endless_task.workspace_runtime.fs_tools")
 
 
 def _sha256_bytes(content: bytes) -> str:

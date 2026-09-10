@@ -21,7 +21,11 @@ import pathlib
 import sys
 
 BUILTINS = set(dir(builtins))
-ALLOWED = {"self", "cls", "logger", "__name__", "__file__", "__doc__", "__package__", "__all__"}
+#: 允许"未定义即使用"的特殊名字。
+#: 注意**不含 `logger`**：拆分时最容易漏的就是模块级 `logger`，如果把它放进白名单，
+#: `logger.exception(...)` 这种漏 import 就查不出来了——拆 `fs_tools.py` 与
+#: `execution.py` 各踩过一次（都是运行期 NameError，静态检查全绿）。
+ALLOWED = {"self", "cls", "__name__", "__file__", "__doc__", "__package__", "__all__"}
 
 
 def _local_names(node: ast.AST) -> set[str]:

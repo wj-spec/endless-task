@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import inspect
@@ -24,6 +25,13 @@ import unittest
 from pathlib import Path
 
 SNAPSHOT_PATH = Path(__file__).parent / "fixtures" / "module_surface_inventory.json"
+
+#: 上一版快照（聚合门面的 re-export 名单靠它维持；新模块留空即可）。
+_SNAPSHOT_CACHE: dict[str, dict[str, str]] = (
+    json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    if SNAPSHOT_PATH.exists()
+    else {}
+)
 
 #: 被冻结的模块：拆到哪个就加哪个（值为冻结时的行数，纯粹给人看）。
 TRACKED_MODULES = {
@@ -67,20 +75,43 @@ def _constant_fingerprint(value: object) -> str:
     return f"<{type(value).__name__}>"
 
 
-def collect_module_surface(module_name: str) -> dict[str, str]:
+def _defined_here(module_name: str) -> set[str]:
+    """本模块源码里"亲手定义/赋值"的顶层名字（AST 口径，不看运行时）。"""
     module = importlib.import_module(module_name)
-    own_file = getattr(module, "__file__", "")
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(target := node.target, ast.Name):
+            names.add(target.id)
+    return names
+
+
+def collect_module_surface(module_name: str) -> dict[str, str]:
+    """模块级公开面：函数（含签名）、类、模块级常量（值指纹）。
+
+    只收**本模块亲手定义**的名字（AST）或**上一版快照里已经在册**的名字：拆分后
+    这些模块变成"聚合门面"，对外契约正是那些从子模块 re-export 回来的名字，必须
+    继续在册；而 `from typing import Optional` 这种顺带泄漏进模块作用域的名字
+    不算契约（否则快照会被几十个 `dataclass` / `Protocol` 噪音淹没）。
+    """
+    module = importlib.import_module(module_name)
+    defined_here = _defined_here(module_name)
+    known_before = set(_SNAPSHOT_CACHE.get(module_name, {}))
     surface: dict[str, str] = {}
     for name, member in vars(module).items():
         if name.startswith("__"):
             continue
+        if name not in defined_here and name not in known_before:
+            continue
         if inspect.isfunction(member):
-            if getattr(inspect.getmodule(member), "__file__", "") != own_file:
-                continue  # 从别处 import 进来的名字不算本模块的面
             surface[name] = f"def{_signature_text(member)}"
         elif inspect.isclass(member):
-            if getattr(inspect.getmodule(member), "__file__", "") != own_file:
-                continue
             surface[name] = "class"
         elif isinstance(member, (str, int, float, bool, bytes, tuple, list, dict, set, frozenset, type(None))):
             fingerprint = _constant_fingerprint(member)
@@ -91,20 +122,25 @@ def collect_module_surface(module_name: str) -> dict[str, str]:
 
 class ModuleSurfaceInventoryTest(unittest.TestCase):
     def test_module_surface_matches_frozen_snapshot(self) -> None:
+        expected = _SNAPSHOT_CACHE
         current = {
             module_name: collect_module_surface(module_name)
             for module_name in TRACKED_MODULES
         }
         if os.environ.get("ENDLESS_TASK_UPDATE_SURFACE"):
+            # 重新生成时取"旧 + 新"的并集：在册的名字不会因为某次生成而掉出去。
+            merged = {
+                module_name: {**expected.get(module_name, {}), **members}
+                for module_name, members in current.items()
+            }
             SNAPSHOT_PATH.write_text(
-                json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             self.skipTest(
                 "module surface snapshot updated: "
-                + ", ".join(f"{k.split('.')[-1]}={len(v)}" for k, v in current.items())
+                + ", ".join(f"{k.split('.')[-1]}={len(v)}" for k, v in merged.items())
             )
-        expected = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
         for module_name, members in current.items():
             short = module_name.split(".")[-1]
             with self.subTest(module=short):
