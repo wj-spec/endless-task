@@ -168,6 +168,121 @@ class SkillSearchToolTest(unittest.IsolatedAsyncioTestCase):
                 await tool.execute(call(query="x", scope="bogus"), CancellationToken())
 
 
+class SkillSearchEcosystemScopeTest(unittest.IsolatedAsyncioTestCase):
+    """S8：Local 没有时用 scope=ecosystem 找生态技能（只发查询、不落盘）。"""
+
+    def _tool(self, base: Path, searcher) -> SkillSearchTool:
+        user_dir = base / "skills"
+        _write_skill(user_dir, "local-only", "本地技能")
+        service = SkillService(
+            user_dir=user_dir,
+            database_path=base / "app.db",
+            override_repository=SqliteSkillOverrideRepository(_database(base)),
+            usage_repository=SqliteSkillUsageRepository(_database(base, "u.db")),
+            home_dir=base / "empty-home",
+        )
+        return SkillSearchTool(
+            _NoBindingResolver(), service, ecosystem_search=searcher
+        )
+
+    def _call(self, **arguments) -> ToolCall:
+        return ToolCall(
+            id="call_search",
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            response_variant_id="variant_1",
+            tool_name="skill_search",
+            arguments=arguments,
+            status=ToolCallStatus.CREATED,
+            created_at="2026-09-10T00:00:00.000Z",
+        )
+
+    async def test_ecosystem_scope_returns_specs_and_install_hint(self) -> None:
+        from endless_task.skills.ecosystem import EcosystemHit
+
+        calls: list[tuple[str, int]] = []
+
+        def fake_search(query: str, *, limit: int):
+            calls.append((query, limit))
+
+            class _Result:
+                error = None
+                hits = (
+                    EcosystemHit(
+                        spec="obra/superpowers@brainstorming",
+                        owner="obra",
+                        repo="superpowers",
+                        skill="brainstorming",
+                        installs="357.3K",
+                        url="https://skills.sh/obra/superpowers/brainstorming",
+                    ),
+                )
+
+            return _Result()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = self._tool(Path(tmp), fake_search)
+            result = await tool.execute(
+                self._call(query="brainstorming", scope="ecosystem"),
+                CancellationToken(),
+            )
+            self.assertEqual([("brainstorming", 8)], calls)
+            self.assertIn("obra/superpowers@brainstorming", result.content)
+            self.assertIn("357.3K", result.content)
+            self.assertIn("skill_install", result.content)
+            self.assertEqual("ecosystem", result.structured_content["scope"])
+            self.assertEqual(
+                "obra/superpowers@brainstorming",
+                result.structured_content["items"][0]["spec"],
+            )
+
+    async def test_local_scope_never_touches_ecosystem(self) -> None:
+        def exploding_search(query: str, *, limit: int):
+            raise AssertionError("本地检索不应该联网")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = self._tool(Path(tmp), exploding_search)
+            result = await tool.execute(
+                self._call(query="本地"), CancellationToken()
+            )
+            self.assertIn("local-only", result.content)
+
+    async def test_ecosystem_failure_degrades_and_cools_down(self) -> None:
+        attempts: list[str] = []
+
+        def failing_search(query: str, *, limit: int):
+            attempts.append(query)
+            raise RuntimeError("npx 不存在")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = self._tool(Path(tmp), failing_search)
+            first = await tool.execute(
+                self._call(query="podcast", scope="ecosystem"), CancellationToken()
+            )
+            self.assertIn("生态检索暂不可用", first.content)
+            second = await tool.execute(
+                self._call(query="podcast", scope="ecosystem"), CancellationToken()
+            )
+            self.assertIn("刚刚失败过", second.content)
+            self.assertEqual(["podcast"], attempts)
+
+    async def test_ecosystem_empty_result_suggests_other_keywords(self) -> None:
+        def empty_search(query: str, *, limit: int):
+            class _Result:
+                error = None
+                hits = ()
+
+            return _Result()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = self._tool(Path(tmp), empty_search)
+            result = await tool.execute(
+                self._call(query="量子计算", scope="ecosystem"), CancellationToken()
+            )
+            self.assertIn("生态里没有匹配", result.content)
+            self.assertEqual([], result.structured_content["items"])
+
+
 class _NoBindingResolver:
     def resolve_binding(self, conversation_id: str):
         del conversation_id

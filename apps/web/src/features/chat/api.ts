@@ -60,9 +60,11 @@ import type { KnowledgeProposal,
   WorkspaceFileContent,
   WorkspaceFileWriteResult,
   WorkspaceTreeListing,
+  EcosystemSearchResult,
   McpCallRecord,
   SkillCaseResult,
   SkillImportResult,
+  SkillInstallOutcome,
   SkillInvocationCandidate,
   SkillUsageRow,
   SkillValidation,
@@ -340,6 +342,22 @@ export const chatApi = {
     }>(`/skills${suffix}`);
     return response;
   },
+  searchEcosystemSkills: (query: string, limit = 8) => {
+    const parameters = new URLSearchParams({ query, limit: String(limit) });
+    return request<EcosystemSearchResult>(
+      `/skills/ecosystem/search?${parameters.toString()}`,
+    );
+  },
+  installSkillFromEcosystem: (body: {
+    source: string;
+    scope?: "user" | "workspace";
+    workspaceId?: string | null;
+    allowUpgrade?: boolean;
+  }) =>
+    request<SkillInstallOutcome>(`/skills/install`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   validateSkill: (body: { path?: string; content?: string }) =>
     request<SkillValidation>(`/skills/validate`, {
       method: "POST",

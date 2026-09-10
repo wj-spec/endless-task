@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import uuid
 import contextlib
 from contextlib import asynccontextmanager
@@ -133,6 +135,10 @@ from endless_task.workspace_runtime import (
 )
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
 from endless_task.workspace_runtime.browse import browse_directory
+from endless_task.workspace_runtime.skill_install_tool import (
+    SkillInstallTool,
+    SkillInstallTrustPolicy,
+)
 from endless_task.workspace_runtime.skill_search_tool import SkillSearchTool
 from endless_task.workspace_runtime.system_terminal import open_system_terminal
 from endless_task.workspace_runtime.terminal import (
@@ -211,6 +217,9 @@ from endless_task.storage.sqlite_provider_profile_repository import (
     SqliteProviderProfileRepository,
 )
 from endless_task.storage.provider_secret_store import ProviderSecretStore
+from endless_task.storage.sqlite_skill_provenance_repository import (
+    SqliteSkillProvenanceRepository,
+)
 from endless_task.storage.sqlite_skill_usage_repository import (
     SqliteSkillUsageRepository,
 )
@@ -414,6 +423,8 @@ class AppSettings:
     # S5：默认技能目录预算（展开条目数 / 总字符）。见 05 文档 §3.2。
     skill_catalog_limit: int = 8
     skill_catalog_budget: int = 3_000
+    # S8：生态安装权限（ask=逐次审批 / allow=用户已全局授权 / deny=禁止）。
+    skill_install_mode: str = "ask"
     # M6 W6-2/W6-8: runtime trace mode (08 §OE-1). Default "all" after
     # real-provider validation (2026-09-05 deepseek E2E: usage rows +
     # run/model-turn spans + trajectory export all verified). "0" disables
@@ -623,6 +634,9 @@ class AppSettings:
             provider_retry_mode=_parse_strict_mode(
                 env.get("ENDLESS_TASK_PROVIDER_RETRY_V2", "0"),
                 name="ENDLESS_TASK_PROVIDER_RETRY_V2",
+            ),
+            skill_install_mode=_parse_skill_install_mode(
+                env.get("ENDLESS_TASK_SKILL_INSTALL", "ask")
             ),
             skill_catalog_limit=int(
                 os.environ.get("ENDLESS_TASK_SKILL_CATALOG_LIMIT") or 8
@@ -891,6 +905,8 @@ class AppContainer:
     skill_service: SkillService
     #: S2：技能使用统计（按 digest 分代持久化）。
     skill_usage_repository: SqliteSkillUsageRepository
+    #: S8：生态安装来源记录。
+    skill_provenance_repository: SqliteSkillProvenanceRepository
     provider_profile_repository: SqliteProviderProfileRepository
     provider_secret_store: ProviderSecretStore
     provider_manager: ProviderManager
@@ -1148,6 +1164,17 @@ class SkillPatchBody(BaseModel):
     disabled: Optional[bool] = None
     #: S5：固定/取消固定进默认目录。
     pinned: Optional[bool] = None
+
+
+class SkillInstallBody(BaseModel):
+    """S8：从生态安装技能（owner/repo 或 owner/repo@skill）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=3, max_length=200)
+    scope: Literal["user", "workspace"] = "user"
+    workspaceId: Optional[str] = None
+    allowUpgrade: bool = False
 
 
 class SkillSearchBody(BaseModel):
@@ -1705,6 +1732,35 @@ def _runtime_v2_memory_promotion_json(
         "updatedAt": promotion.updated_at,
         "resolvedAt": promotion.resolved_at,
     }
+
+
+class _CompositeTrustPolicy:
+    """把多个信任策略合成一个（任一放行即放行）。"""
+
+    def __init__(self, *policies: object) -> None:
+        self._policies = policies
+
+    def allows(self, tool_name: str, call: object) -> bool:
+        for policy in self._policies:
+            allows = getattr(policy, "allows", None)
+            if not callable(allows):
+                continue
+            try:
+                if allows(tool_name, call):
+                    return True
+            except Exception:  # noqa: BLE001 单个策略异常按"不放行"
+                continue
+        return False
+
+
+def _parse_skill_install_mode(raw: str) -> str:
+    """S8：`ENDLESS_TASK_SKILL_INSTALL=ask|allow|deny`；非法值启动即失败。"""
+    value = (raw or "ask").strip().lower()
+    if value not in ("ask", "allow", "deny"):
+        raise ValueError(
+            "ENDLESS_TASK_SKILL_INSTALL 只能是 ask / allow / deny。"
+        )
+    return value
 
 
 def _skill_home_dir() -> Path:
@@ -2510,7 +2566,12 @@ def _build_container(
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
         provider_retry_evaluator=runtime_v2_provider_retry_evaluator,
-        tool_trust_policy=shell_trust_policy,
+        tool_trust_policy=_CompositeTrustPolicy(
+            shell_trust_policy,
+            # S8：allow 模式下用户已全局授权生态安装（每次仍需协议层 REQUIRED，
+            # 由信任策略放行并记录证据）。
+            SkillInstallTrustPolicy(mode=settings.skill_install_mode),
+        ),
         no_progress_enforcement_enabled=settings.stop_policy_enforcement,
         escalation_budget_ratio=settings.escalation_budget_ratio,
         verifier_mode=settings.verifier_mode,
@@ -2720,6 +2781,7 @@ def _build_container(
     else:
         delegation_handler_ref = None
     skill_usage_repository = SqliteSkillUsageRepository(database)
+    skill_provenance_repository = SqliteSkillProvenanceRepository(database)
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
         extra_skill_dirs=_parse_skill_dirs(os.environ.get("ENDLESS_TASK_SKILL_DIRS")),
@@ -2945,6 +3007,17 @@ def _build_container(
         selected_tool_registry.register(
             SkillSearchTool(workspace_resolver, skill_service)
         )
+        # S8：生态安装（Level 2）。deny 模式不注册（模型侧看不到）。
+        if settings.skill_install_mode != "deny":
+            selected_tool_registry.register(
+                SkillInstallTool(
+                    skill_service,
+                    skill_provenance_repository,
+                    mode=settings.skill_install_mode,
+                    # 只装进应用自己的可写技能目录；共享目录（~/.claude/skills 等）只读。
+                    target_root=settings.database_path.parent / "skills",
+                )
+            )
         selected_tool_registry.register(
             DeleteWorkspaceFileTool(
                 workspace_resolver,
@@ -3546,6 +3619,7 @@ def _build_container(
         execution_backend_mode=settings.execution_backend_mode,
         terminal_service=terminal_service,
         skill_usage_repository=skill_usage_repository,
+        skill_provenance_repository=skill_provenance_repository,
     )
 
 
@@ -4918,7 +4992,7 @@ def create_app(
         rank 语义：workspace 优先于 user）。包体内容与校验由 M5 离线单测覆盖，
         这里只暴露 registry 的可见视图，不执行导入/回滚。
         """
-        if not settings.skill_packages_enabled:
+        if not selected_settings.skill_packages_enabled:
             return {
                 "enabled": False,
                 "mode": "legacy",
@@ -4928,7 +5002,7 @@ def create_app(
         from endless_task.skills import InMemorySkillRegistry, SkillRoot
 
         roots: list[SkillRoot] = []
-        user_skills_dir = settings.database_path.parent / "skills"
+        user_skills_dir = selected_settings.database_path.parent / "skills"
         if user_skills_dir.exists():
             roots.append(SkillRoot(user_skills_dir, "user", 2))
         if workspace_id is not None:
@@ -4982,7 +5056,7 @@ def create_app(
     )
 
     def _trajectory_export_root() -> Path:
-        return settings.database_path.parent / "v2_trajectory_exports"
+        return selected_settings.database_path.parent / "v2_trajectory_exports"
 
     @app.get("/api/v2/trajectory")
     async def list_trajectory_bundles() -> dict[str, object]:
@@ -5135,6 +5209,19 @@ def create_app(
                     "pinned": skill.pinned,
                     # 是否出现在模型的默认目录里（未出现仍可用 /技能名 或 skill_search）
                     "inCatalog": skill.name in catalog_names,
+                    "provenance": (
+                        lambda item: item.as_dict() if item is not None else None
+                    )(
+                        container.skill_provenance_repository.get(
+                            scope=skill.scope.value,
+                            workspace_id=(
+                                ""
+                                if skill.scope is SkillScope.USER
+                                else (workspace or "")
+                            ),
+                            name=skill.name,
+                        )
+                    ),
                     "disabled": skill.disabled,
                     "disableModelInvocation": skill.disable_model_invocation,
                     "diagnostics": [
@@ -5472,6 +5559,106 @@ def create_app(
                 for result in results
             ],
             "toolsUsed": tools_used,
+        }
+
+    @app.get("/skills/ecosystem/search")
+    async def search_ecosystem_skills(
+        query: str = Query(min_length=1, max_length=200),
+        limit: int = Query(8, ge=1, le=20),
+    ) -> dict[str, object]:
+        """S8：生态检索（只读，不落盘）。"""
+        from endless_task.skills.ecosystem import search_ecosystem
+
+        result = await asyncio.to_thread(
+            search_ecosystem, query, limit=limit
+        )
+        return {
+            "query": query,
+            "error": result.error,
+            "items": [hit.as_dict() for hit in result.hits],
+        }
+
+    @app.post("/skills/install", status_code=201)
+    async def install_skill(body: SkillInstallBody) -> dict[str, object]:
+        """S8：从生态安装技能。
+
+        流程：下载 GitHub tarball 到 staging → **静态扫描门禁** → 原子激活 →
+        记录 provenance。``ENDLESS_TASK_SKILL_INSTALL=deny`` 时直接拒绝；
+        ``ask``/``allow`` 都允许（UI 点击本身就是用户确认，模型侧工具另走审批）。
+        """
+        from endless_task.skills import ImportFailure, import_skill_package
+        from endless_task.skills.ecosystem import (
+            download_skill_package,
+            normalize_ecosystem_package,
+        )
+
+        if selected_settings.skill_install_mode == "deny":
+            raise ApiRequestError(
+                "skill_install_disabled",
+                "当前配置禁止从生态安装技能（ENDLESS_TASK_SKILL_INSTALL=deny）。",
+                status_code=403,
+            )
+        target_root = _skill_root_for(body.scope, body.workspaceId)
+        target_root.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix="skill-install-",
+                dir=str(container.settings.database_path.parent),
+            )
+        )
+        try:
+            source_dir = await asyncio.to_thread(
+                download_skill_package, body.source, staging
+            )
+            # 生态技能多为 v1（只有 name/description），规整成 v2 后再过扫描门禁。
+            normalized, folded_keys = await asyncio.to_thread(
+                normalize_ecosystem_package, source_dir
+            )
+            try:
+                result = await asyncio.to_thread(
+                    import_skill_package,
+                    source_dir,
+                    target_root,
+                    allow_upgrade=body.allowUpgrade,
+                )
+            except ImportFailure as failure:
+                raise ApiRequestError(
+                    failure.code, failure.message, status_code=400
+                ) from None
+        except ValueError as error:
+            raise ApiRequestError(
+                "skill_install_failed", str(error), status_code=400
+            ) from None
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        worst_level = (
+            result.scan_report.worst_level.value
+            if result.scan_report is not None
+            and result.scan_report.worst_level is not None
+            else None
+        )
+        provenance = container.skill_provenance_repository.record(
+            scope=body.scope,
+            workspace_id="" if body.scope == "user" else (body.workspaceId or ""),
+            name=result.name,
+            spec=body.source,
+            source=body.source.split("@", 1)[0],
+            digest=result.digest,
+            worst_level=worst_level,
+        )
+        return {
+            "skill": {
+                "name": result.name,
+                "version": result.version,
+                "digest": result.digest,
+                "target": str(result.target),
+                "upgraded": result.upgraded,
+                "worstLevel": worst_level,
+                "normalized": normalized,
+                "foldedKeys": list(folded_keys),
+            },
+            "provenance": provenance.as_dict(),
         }
 
     @app.post("/skills/search")

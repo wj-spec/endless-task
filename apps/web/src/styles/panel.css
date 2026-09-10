@@ -3331,6 +3331,85 @@
   margin: 0 0 2px;
 }
 
+/* ---------- S8 生态检索与安装 ---------- */
+
+.skill-ecosystem-hint {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-1);
+  line-height: 1.5;
+}
+
+.skill-ecosystem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skill-ecosystem-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 4px var(--space-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-s);
+  background: var(--paper);
+}
+
+.skill-ecosystem-list li:hover {
+  border-color: var(--line);
+}
+
+.skill-ecosystem-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.skill-ecosystem-main code {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--fs-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-ecosystem-main a {
+  color: var(--muted);
+  font-size: var(--fs-1);
+}
+
+.skill-ecosystem-main a:hover {
+  color: var(--accent);
+}
+
+.skill-ecosystem-list button {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--paper);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.skill-ecosystem-list button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.skill-ecosystem-list button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .skill-detail {
   display: flex;
   flex-direction: column;

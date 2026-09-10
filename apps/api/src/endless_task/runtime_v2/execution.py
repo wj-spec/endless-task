@@ -895,9 +895,21 @@ class ToolExecutionCoordinator:
                     allows = getattr(policy, "allows", None)
                     if callable(allows):
                         try:
-                            needs_approval = not bool(
-                                allows(tool.definition.name, call)
-                            )
+                            waived = bool(allows(tool.definition.name, call))
+                            needs_approval = not waived
+                            if waived:
+                                # 把"策略放行"也记成审批证据：否则 eval 的
+                                # approval_gate 会把 REQUIRED 工具的执行判成
+                                # "未审批执行"（策略放行不是绕过审批，而是用户
+                                # 通过配置做出的全局授权）。
+                                try:
+                                    self._repository.mark_tool_execution_approved(
+                                        item.record_id,
+                                        f"policy:{tool.definition.name}",
+                                        event_type="tool_execution_policy_approved",
+                                    )
+                                except Exception:  # noqa: BLE001 证据写入失败不阻断
+                                    pass
                         except Exception:
                             needs_approval = True
             except ToolValidationError as error:

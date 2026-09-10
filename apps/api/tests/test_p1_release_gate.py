@@ -152,6 +152,7 @@ class P1ReleaseGateTest(unittest.IsolatedAsyncioTestCase):
                     "read_text_file",
                     "read_workspace_file",
                     "run_shell",
+                    "skill_install",
                     "skill_search",
                     "spawn_agent",
                     "update_plan",

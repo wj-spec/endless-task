@@ -5,6 +5,7 @@ import { chatApi } from "../chat/api";
 import { readableError } from "../chat/apiErrorText";
 import type { Skill, SkillPackagesResponse } from "../chat/apiTypes";
 import { SkillCreateForm } from "./SkillCreateForm";
+import { SkillEcosystemForm } from "./SkillEcosystemForm";
 import { SkillDetailPanel } from "./SkillDetailPanel";
 import { SkillImportForm } from "./SkillImportForm";
 
@@ -18,7 +19,7 @@ type SkillsContentProps = {
   onInjectSkill?: (name: string) => void;
 };
 
-type FormMode = "none" | "import" | "create";
+type FormMode = "none" | "import" | "create" | "ecosystem";
 
 export function SkillsContent({
   onChanged,
@@ -142,6 +143,13 @@ export function SkillsContent({
         >
           新建技能
         </button>
+        <button
+          onClick={() => setForm(form === "ecosystem" ? "none" : "ecosystem")}
+          title="从 skills.sh 生态检索并安装（服务端下载 + 扫描门禁 + 来源记录）"
+          type="button"
+        >
+          从生态安装
+        </button>
       </div>
 
       {form === "import" ? (
@@ -153,6 +161,13 @@ export function SkillsContent({
       ) : null}
       {form === "create" ? (
         <SkillCreateForm
+          onCancel={() => setForm("none")}
+          onDone={() => void refreshAll()}
+          workspaceId={workspaceId ?? ""}
+        />
+      ) : null}
+      {form === "ecosystem" ? (
+        <SkillEcosystemForm
           onCancel={() => setForm("none")}
           onDone={() => void refreshAll()}
           workspaceId={workspaceId ?? ""}
@@ -207,7 +222,7 @@ export function SkillsContent({
       ) : null}
       {!loading && !loadError && skills.length === 0 ? (
         <EmptyState
-          desc="点上方「新建技能」按模板创建，或「导入技能」把已有目录装进来。"
+          desc="点上方「新建技能」按模板创建、「导入技能」装本地目录，或「从生态安装」搜 skills.sh。"
           title="还没有技能"
         />
       ) : null}
@@ -219,7 +234,9 @@ export function SkillsContent({
             <p className="memory-content knowledge-title">{skill.name}</p>
             <p className="memory-content">{skill.description}</p>
             {skill.whenToUse ? (
-              <p className="memory-content skill-when">适用：{skill.whenToUse}</p>
+              <p className="memory-content skill-when">
+                适用：{skill.whenToUse}
+              </p>
             ) : null}
             <div className="memory-meta">
               <span
@@ -255,6 +272,18 @@ export function SkillsContent({
               ) : null}
               {skill.disableModelInvocation ? (
                 <span className="knowledge-badge">仅手动</span>
+              ) : null}
+              {skill.provenance ? (
+                <span
+                  className="knowledge-badge"
+                  title={`来源 ${skill.provenance.source} · 摘要 ${skill.provenance.digest.slice(0, 8)}…${
+                    skill.provenance.installedAt
+                      ? ` · 安装于 ${skill.provenance.installedAt}`
+                      : ""
+                  }`}
+                >
+                  来自生态
+                </span>
               ) : null}
               {skill.disabled ? (
                 <span className="memory-status is-expired">已禁用</span>

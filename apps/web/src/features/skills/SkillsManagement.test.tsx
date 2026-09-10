@@ -16,7 +16,22 @@ const skill = {
 const listSkills = vi.fn(async () => ({
   userSkillsDirectory: "/tmp/skills",
   items: [
-    { ...skill, pinned: true, inCatalog: true, source: "~/.agents/skills" },
+    {
+      ...skill,
+      pinned: true,
+      inCatalog: true,
+      source: "~/.agents/skills",
+      provenance: {
+        scope: "user",
+        workspaceId: "",
+        name: "review-notes",
+        spec: "obra/superpowers@brainstorming",
+        source: "obra/superpowers",
+        digest: "deadbeef0000",
+        worstLevel: null,
+        installedAt: "2026-09-10T10:00:00.000Z",
+      },
+    },
     {
       ...skill,
       name: "folded-skill",
@@ -52,6 +67,42 @@ const skillUsage = vi.fn(async () => [
     lastAt: "2026-09-09T10:00:00.000Z",
   },
 ]);
+const searchEcosystemSkills = vi.fn(
+  async (query: string): Promise<EcosystemSearchResult> => ({
+    query,
+    error: null,
+    items: [
+      {
+        spec: "obra/superpowers@brainstorming",
+        owner: "obra",
+        repo: "superpowers",
+        skill: "brainstorming",
+        installs: "12.3K",
+        url: "https://skills.sh/obra/superpowers/brainstorming",
+      },
+    ],
+  }),
+);
+const installSkillFromEcosystem = vi.fn(async () => ({
+  skill: {
+    name: "brainstorming",
+    version: "1.0.0",
+    digest: "deadbeef0000",
+    target: "/tmp/skills/brainstorming",
+    upgraded: false,
+    worstLevel: null,
+  },
+  provenance: {
+    scope: "workspace",
+    workspaceId: "ws_1",
+    name: "brainstorming",
+    spec: "obra/superpowers@brainstorming",
+    source: "obra/superpowers",
+    digest: "deadbeef0000",
+    worstLevel: null,
+    installedAt: "2026-09-10T10:00:00.000Z",
+  },
+}));
 const runSkillCases = vi.fn(async () => ({
   diagnostics: [],
   cases: [{ name: "review", passed: true, failures: [] }],
@@ -65,14 +116,23 @@ vi.mock("../chat/api", () => ({
     skillUsage: () => skillUsage(),
     runSkillCases: () => runSkillCases(),
     patchSkill: vi.fn(async () => ({ disabled: true })),
-    deleteSkill: vi.fn(async () => ({ deleted: true, trashedTo: "/tmp/.trash/x" })),
+    searchEcosystemSkills: (query: string) => searchEcosystemSkills(query),
+    installSkillFromEcosystem: () => installSkillFromEcosystem(),
+    deleteSkill: vi.fn(async () => ({
+      deleted: true,
+      trashedTo: "/tmp/.trash/x",
+    })),
     revealInFinder: vi.fn(async () => undefined),
   },
 }));
 
+import type { EcosystemSearchResult } from "../chat/apiTypes";
+
 const { SkillsContent } = await import("./SkillsManagement");
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let root: Root;
@@ -179,5 +239,67 @@ describe("技能工作台（S2）", () => {
     await act(async () => byText("新建技能")!.click());
     const create = byText("创建")!;
     expect(create.disabled).toBe(true);
+  });
+
+  it("已从生态安装的技能带「来自生态」标记", async () => {
+    await render();
+    expect(container.textContent).toContain("来自生态");
+  });
+
+  it("从生态检索 → 确认 → 安装并刷新", async () => {
+    await render();
+    await act(async () => byText("从生态安装")!.click());
+    const keyword = container.querySelector<HTMLInputElement>(
+      'input[aria-label="生态检索关键词"]',
+    );
+    expect(keyword).toBeTruthy();
+    expect(container.textContent).toContain("静态扫描门禁");
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(keyword, "brainstorming");
+      keyword!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => byText("检索生态")!.click());
+    await flush();
+    expect(searchEcosystemSkills).toHaveBeenCalledWith("brainstorming");
+    expect(container.textContent).toContain("obra/superpowers@brainstorming");
+    expect(container.textContent).toContain("12.3K");
+
+    // 安装前必须再确认一次
+    await act(async () => byText("安装")!.click());
+    expect(container.textContent).toContain("从生态安装这个技能？");
+    await act(async () => byText("确认安装")!.click());
+    await flush();
+    expect(installSkillFromEcosystem).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("已安装 brainstorming@1.0.0");
+    expect(container.textContent).toContain("扫描通过");
+  });
+
+  it("检索失败时给出错误提示", async () => {
+    searchEcosystemSkills.mockResolvedValueOnce({
+      query: "x",
+      error: "未找到 npx，请先安装 Node.js。",
+      items: [],
+    });
+    await render();
+    await act(async () => byText("从生态安装")!.click());
+    const keyword = container.querySelector<HTMLInputElement>(
+      'input[aria-label="生态检索关键词"]',
+    )!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(keyword, "x");
+      keyword.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => byText("检索生态")!.click());
+    await flush();
+    expect(container.textContent).toContain("未找到 npx");
   });
 });

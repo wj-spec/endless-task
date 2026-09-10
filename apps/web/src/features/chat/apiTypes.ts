@@ -123,6 +123,49 @@ export type Skill = {
   pinned?: boolean;
   /** S5：是否出现在模型的默认目录里。 */
   inCatalog?: boolean;
+  /** S8：从生态安装时记录的来源（本地技能为 null）。 */
+  provenance?: SkillProvenance | null;
+};
+
+/** S8：技能来源溯源（从生态安装时写入）。 */
+export type SkillProvenance = {
+  scope: string;
+  workspaceId: string;
+  name: string;
+  spec: string;
+  source: string;
+  digest: string;
+  worstLevel: string | null;
+  installedAt: string | null;
+};
+
+/** S8：生态检索结果（skills.sh）。 */
+export type EcosystemSkillHit = {
+  spec: string;
+  owner: string;
+  repo: string;
+  skill: string;
+  installs: string;
+  url: string;
+};
+
+export type EcosystemSearchResult = {
+  query: string;
+  error: string | null;
+  items: EcosystemSkillHit[];
+};
+
+/** S8：从生态安装的结果。 */
+export type SkillInstallOutcome = {
+  skill: {
+    name: string;
+    version: string;
+    digest: string;
+    target: string;
+    upgraded: boolean;
+    worstLevel: string | null;
+  };
+  provenance: SkillProvenance;
 };
 
 export type McpToolStatus = {
