@@ -62,6 +62,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
+import { RuntimeStatusStrip } from "./RuntimeStatusStrip";
 import { useTurnFocus } from "./useTurnFocus";
 import { skillCommandsOf } from "../skills/skillCommand";
 
@@ -616,42 +617,21 @@ export function ChatWorkSurface({
           refreshKey={runtimeSnapshot?.lastEventSeq ?? null}
         />
 
-        {usageState ? <UsageMeter usage={usageState} /> : null}
-
-        <AuditTrailPanel
-          refreshKey={runtimeSnapshot?.lastEventSeq ?? null}
-          runId={
+        <RuntimeStatusStrip
+          activeRunId={
             runtimeSnapshot?.activeRunId ??
             runtimeSnapshot?.runningRunId ??
             null
           }
+          escalationState={escalationState}
+          lastEventSeq={runtimeSnapshot?.lastEventSeq ?? null}
+          onCancelRunningRun={onCancelRunningRun}
+          onSteerRun={onSteerRun}
+          pending={pendingAction !== null}
+          stuckState={stuckState}
+          usage={usageState}
+          verificationState={verificationState}
         />
-
-        {verificationState ? (
-          <VerificationBadge
-            onRetry={onSteerRun}
-            onTakeOver={onCancelRunningRun}
-            pending={pendingAction !== null}
-            state={verificationState}
-          />
-        ) : null}
-
-        {escalationState ? (
-          <EscalationNotice
-            onChangeApproach={onSteerRun}
-            onContinue={onSteerRun}
-            onTakeOver={onCancelRunningRun}
-            pending={pendingAction !== null}
-            state={escalationState}
-          />
-        ) : stuckState ? (
-          <StuckNotice
-            onSteer={onSteerRun}
-            onTakeOver={onCancelRunningRun}
-            pending={pendingAction !== null}
-            state={stuckState}
-          />
-        ) : null}
 
         <RuntimeRecoveryNotices
           connectionPhase={runtimeConnectionPhase}
