@@ -85,8 +85,8 @@ from endless_task.workspace_runtime import (
 )
 from endless_task.workspace_runtime.artifact_store import ArtifactFileStore
 
-if TYPE_CHECKING:  # AppSettings 仍在 app.py（后续步骤搬到 api/app_settings.py）
-    from .app import AppSettings
+if TYPE_CHECKING:  # 仅供注解使用：AppSettings 在 api/app_settings.py（app.py 仍 re-export）
+    from .app_settings import AppSettings
 
 
 @dataclass(frozen=True)

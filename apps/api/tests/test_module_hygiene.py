@@ -18,52 +18,21 @@ pydantic 或 dataclass 之类一旦求值就会 ImportError。
 
 from __future__ import annotations
 
-import ast
-import builtins
 import unittest
 from pathlib import Path
 
 import endless_task
 
+from tests.module_scope import check_file
+
 PACKAGE_ROOT = Path(endless_task.__file__).parent
-
-#: 允许"未定义即使用"的内建/特殊名字。
-ALLOWED = {"self", "cls", "logger", "__name__", "__file__", "__doc__"}
-
-#: 内建名字（模块里的 __builtins__ 可能是 dict，必须显式取 builtins 模块）。
-BUILTINS = set(dir(builtins))
-
-
-def _check_module(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    defined: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            defined.add(node.name)
-        elif isinstance(node, ast.arg):
-            defined.add(node.arg)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            defined.add(node.id)
-        elif isinstance(node, ast.alias):
-            defined.add((node.asname or node.name).split(".")[0])
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            defined.add(node.name)
-        elif isinstance(node, ast.Global):
-            defined.update(node.names)
-    used = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    }
-    known = defined | BUILTINS | ALLOWED
-    return sorted(used - known)
 
 
 class ModuleHygieneTest(unittest.TestCase):
     def test_no_undefined_names_in_package(self) -> None:
         problems: dict[str, list[str]] = {}
         for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-            missing = _check_module(path)
+            missing = check_file(path)
             if missing:
                 problems[str(path.relative_to(PACKAGE_ROOT))] = missing
         self.assertEqual(

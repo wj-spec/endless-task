@@ -24,12 +24,29 @@ from endless_task.storage import Database
 from endless_task.storage.sqlite_runtime_v2_repository import (
     SqliteRuntimeV2Repository,
 )
+from endless_task.workspace_runtime.fs_tools import (
+    DeleteWorkspaceFileTool,
+    EditWorkspaceFileTool,
+    ListWorkspaceDirTool,
+    ManageWorkspacePathsTool,
+    ReadSkillFileTool,
+    ReadWorkspaceFileTool,
+    WriteWorkspaceFileTool,
+)
 
 SNAPSHOT_PATH = Path(__file__).parent / "fixtures" / "storage_method_inventory.json"
 
 #: 被冻结的类：拆到哪个就加哪个。
 TRACKED = {
     "SqliteRuntimeV2Repository": SqliteRuntimeV2Repository,
+    # 文件类工具（拆 fs_tools.py 时冻结；方法与签名对外可见，改名即红）
+    "ReadSkillFileTool": ReadSkillFileTool,
+    "ReadWorkspaceFileTool": ReadWorkspaceFileTool,
+    "WriteWorkspaceFileTool": WriteWorkspaceFileTool,
+    "ListWorkspaceDirTool": ListWorkspaceDirTool,
+    "EditWorkspaceFileTool": EditWorkspaceFileTool,
+    "ManageWorkspacePathsTool": ManageWorkspacePathsTool,
+    "DeleteWorkspaceFileTool": DeleteWorkspaceFileTool,
 }
 
 

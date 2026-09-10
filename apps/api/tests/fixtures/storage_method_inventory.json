@@ -1,4 +1,54 @@
 {
+  "DeleteWorkspaceFileTool": [
+    "__init__(resolver, effect_log, checkpoint_coordinator=..., execution_backend=..., undo_service=...)",
+    "_ensure_checkpoint(call, binding)",
+    "_execute_backend_delete(call, token, binding, resolved)",
+    "activity_copy(call)",
+    "approval_prompt(call)",
+    "execute(call, token)",
+    "requires_explicit_confirmation(call)"
+  ],
+  "EditWorkspaceFileTool": [
+    "__init__(resolver, effect_log, max_write_bytes=..., checkpoint_coordinator=..., undo_service=...)",
+    "_ensure_checkpoint(call, binding)",
+    "activity_copy(call)",
+    "approval_prompt(call)",
+    "execute(call, token)",
+    "requires_explicit_confirmation(call)"
+  ],
+  "ListWorkspaceDirTool": [
+    "__init__(resolver)",
+    "activity_copy(call)",
+    "execute(call, token)"
+  ],
+  "ManageWorkspacePathsTool": [
+    "__init__(resolver, effect_log, max_write_bytes=..., checkpoint_coordinator=..., undo_service=...)",
+    "_copy(call, binding, source, target, overwrite, token)",
+    "_ensure_checkpoint(call, binding)",
+    "_mkdir(call, binding, source, token)",
+    "_move(call, binding, source, target, overwrite, token)",
+    "activity_copy(call)",
+    "approval_prompt(call)",
+    "execute(call, token)",
+    "requires_explicit_confirmation(call)"
+  ],
+  "ReadSkillFileTool": [
+    "__init__(skill_root_provider, locator_resolver_provider=..., name_resolver_provider=..., max_file_bytes=...)",
+    "_guard_containment(canonical, call)",
+    "_resolve_locator(locator, call)",
+    "_resolve_name(name, call)",
+    "activity_copy(call)",
+    "execute(call, token)"
+  ],
+  "ReadWorkspaceFileTool": [
+    "__init__(resolver, max_file_bytes=...)",
+    "_label(resolved, start_line, end_line)",
+    "_read_bounded(call, resolved, start_line, explicit_count)",
+    "_read_large_window(call, resolved, start_line, explicit_count)",
+    "_slice_with_budget(lines, start_line, explicit_count, prefix)",
+    "activity_copy(call)",
+    "execute(call, token)"
+  ],
   "SqliteRuntimeV2Repository": [
     "__init__(database, clock=..., id_factory=...)",
     "_context_compaction_from_row(row)",
@@ -83,5 +133,14 @@
     "update_run_status(run_id, status, error_code=..., safe_message=..., cancelled_by=...)",
     "update_tool_execution_arguments(execution_id, arguments)",
     "update_tool_execution_status(execution_id, status, error_code=..., safe_message=..., result_entry_id=...)"
+  ],
+  "WriteWorkspaceFileTool": [
+    "__init__(resolver, effect_log, max_write_bytes=..., checkpoint_coordinator=..., execution_backend=..., undo_service=...)",
+    "_ensure_checkpoint(call, binding)",
+    "_execute_backend_write(call, token, binding, path, content, resolved)",
+    "activity_copy(call)",
+    "approval_prompt(call)",
+    "execute(call, token)",
+    "requires_explicit_confirmation(call)"
   ]
 }
