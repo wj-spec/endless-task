@@ -592,6 +592,9 @@ export function App() {
               )
             }
             onUploadFile={() => {}}
+            // 侧边面板（临时对话/分支）同样支持 `/技能名`：候选列表必须一起给，
+            // 否则输入 `/` 只会看到"还没有可调用的技能"的空态（列表其实有 38 条）。
+            skillCandidates={skillCandidates}
             proposalBusyId={proposals.busyProposalId}
             proposalErrors={proposals.resolveErrors}
             resolvedArtifacts={proposals.resolvedArtifacts}

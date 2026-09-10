@@ -1,4 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { createPortal } from "react-dom";
 import type {
   ConversationSnapshot,
   HealthSnapshot,
@@ -8,6 +17,7 @@ import type {
 } from "./apiTypes";
 import { ContextBudgetMeter } from "./ContextBudgetMeter";
 import { AddIcon, CloseIcon, FileIcon, SendIcon } from "../ui/Icons";
+import { computeMenuPosition } from "../ui/RowMenu";
 
 type ChatComposerProps = {
   conversation: ConversationSnapshot | null;
@@ -87,6 +97,55 @@ export function ChatComposer({
   const slashOpen = slashQuery !== null && slashMatches.length > 0;
   // 输入了 `/` 但没有任何候选时，也要给用户一个明确反馈（否则像"没反应"）。
   const slashEmpty = slashQuery !== null && slashMatches.length === 0;
+  // 候选浮层 portal 到 body：`.composer` 是 `overflow: hidden`，绝对定位在
+  // 输入行上方的菜单会被整块裁掉（只看得见"阴影"，看不见列表）。
+  const slashMenuVisible = slashOpen || slashEmpty;
+  const [slashMenuPosition, setSlashMenuPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+  const inputRowRef = useRef<HTMLDivElement>(null);
+  const slashMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const placeSlashMenu = useCallback(() => {
+    const row = inputRowRef.current;
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    const menu = slashMenuRef.current;
+    const { top, left } = computeMenuPosition({
+      triggerRect: {
+        top: rect.top,
+        bottom: rect.bottom,
+        left: rect.left,
+        right: rect.right,
+      },
+      menu: {
+        width: Math.min(420, rect.width),
+        height: menu?.offsetHeight ?? 0,
+      },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      // 菜单放在输入行上方（与原来一致），但不再受祖先裁剪。
+      placement: "up",
+    });
+    setSlashMenuPosition({ top, left, width: Math.min(420, rect.width) });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (slashMenuVisible) placeSlashMenu();
+    else setSlashMenuPosition(null);
+  }, [slashMenuVisible, placeSlashMenu]);
+
+  useEffect(() => {
+    if (!slashMenuVisible) return;
+    const onViewportChange = () => placeSlashMenu();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    return () => {
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+    };
+  }, [slashMenuVisible, placeSlashMenu]);
 
   /** 只在"行首或空白后的 /token"上触发候选（避免路径误触发）。 */
   const syncSlash = (value: string, caret: number | null) => {
@@ -206,49 +265,81 @@ export function ChatComposer({
             ))}
           </div>
         ) : null}
-        <div className="composer-input-row">
-          {slashEmpty ? (
-            <div className="composer-slash-menu is-empty" role="status">
-              <p>
-                {slashQuery
-                  ? `没有匹配“/${slashQuery}”的技能`
-                  : "还没有可调用的技能"}
-              </p>
-              <p className="composer-slash-hint">
-                放到 ~/.claude/skills、~/.agents/skills 或应用技能目录即可；也可在「技能」页签导入。
-              </p>
-            </div>
-          ) : null}
-          {slashOpen ? (
-            <ul
-              aria-label="技能候选"
-              className="composer-slash-menu"
-              role="listbox"
-            >
-              {slashMatches.map((candidate, index) => (
-                <li key={candidate.name}>
-                  <button
-                    aria-selected={index === slashIndex}
-                    className={index === slashIndex ? "is-active" : undefined}
-                    onClick={() => acceptSlash(candidate.name)}
-                    role="option"
-                    type="button"
-                  >
-                    <span className="composer-slash-name">/{candidate.name}</span>
-                    <span className="composer-slash-desc">{candidate.description}</span>
-                    {candidate.pinned ? (
-                      <span className="composer-slash-pin" title="已固定进模型的默认技能目录">
-                        已固定
-                      </span>
-                    ) : null}
-                    {candidate.source ? (
-                      <span className="composer-slash-source">{candidate.source}</span>
-                    ) : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+        <div className="composer-input-row" ref={inputRowRef}>
+          {slashMenuVisible && typeof document !== "undefined"
+            ? createPortal(
+                <div
+                  className="composer-slash-menu-anchor"
+                  ref={slashMenuRef}
+                  style={
+                    {
+                      top: slashMenuPosition?.top ?? 0,
+                      left: slashMenuPosition?.left ?? 0,
+                      width: slashMenuPosition?.width ?? 420,
+                      visibility: slashMenuPosition ? "visible" : "hidden",
+                    } as CSSProperties
+                  }
+                >
+                  {slashEmpty ? (
+                    <div className="composer-slash-menu is-empty" role="status">
+                      <p>
+                        {slashQuery
+                          ? `没有匹配“/${slashQuery}”的技能`
+                          : "还没有可调用的技能"}
+                      </p>
+                      <p className="composer-slash-hint">
+                        放到 ~/.claude/skills、~/.agents/skills
+                        或应用技能目录即可；也可在「技能」页签导入。
+                      </p>
+                    </div>
+                  ) : null}
+                  {slashOpen ? (
+                    <ul
+                      aria-label="技能候选"
+                      className="composer-slash-menu"
+                      role="listbox"
+                    >
+                      {slashMatches.map((candidate, index) => (
+                        <li key={candidate.name}>
+                          <button
+                            aria-selected={index === slashIndex}
+                            className={
+                              index === slashIndex ? "is-active" : undefined
+                            }
+                            // 别把焦点从输入框抢走：否则点击瞬间菜单会关、方向键也断。
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => acceptSlash(candidate.name)}
+                            role="option"
+                            type="button"
+                          >
+                            <span className="composer-slash-name">
+                              /{candidate.name}
+                            </span>
+                            <span className="composer-slash-desc">
+                              {candidate.description}
+                            </span>
+                            {candidate.pinned ? (
+                              <span
+                                className="composer-slash-pin"
+                                title="已固定进模型的默认技能目录"
+                              >
+                                已固定
+                              </span>
+                            ) : null}
+                            {candidate.source ? (
+                              <span className="composer-slash-source">
+                                {candidate.source}
+                              </span>
+                            ) : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>,
+                document.body,
+              )
+            : null}
           <textarea
             aria-label="给 Endless 发送消息"
             ref={composerRef}

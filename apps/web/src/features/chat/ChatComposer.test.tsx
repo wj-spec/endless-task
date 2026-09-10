@@ -73,11 +73,13 @@ const type = (value: string) => {
   });
 };
 
+// S14b：候选浮层 portal 到 body（`.composer` 是 overflow: hidden，留在里面会被裁掉），
+// 所以断言一律查 document 而不是测试容器。
 const menu = () =>
-  container.querySelector<HTMLUListElement>("ul.composer-slash-menu");
+  document.querySelector<HTMLUListElement>("ul.composer-slash-menu");
 
 const options = () =>
-  Array.from(container.querySelectorAll(".composer-slash-menu button")).map(
+  Array.from(document.querySelectorAll(".composer-slash-menu button")).map(
     (node) => node.querySelector(".composer-slash-name")?.textContent,
   );
 
@@ -136,7 +138,7 @@ describe("ChatComposer `/技能名` 候选（S1）", () => {
   it("固定进目录的候选带已固定标记", () => {
     renderComposer();
     type("/review");
-    expect(container.querySelector(".composer-slash-pin")?.textContent).toBe(
+    expect(document.querySelector(".composer-slash-pin")?.textContent).toBe(
       "已固定",
     );
   });
@@ -144,15 +146,32 @@ describe("ChatComposer `/技能名` 候选（S1）", () => {
   it("候选项展示来源标签", () => {
     renderComposer();
     type("/review");
-    expect(container.querySelector(".composer-slash-source")?.textContent).toBe(
+    expect(document.querySelector(".composer-slash-source")?.textContent).toBe(
       "~/.agents/skills",
     );
+  });
+
+  it("候选浮层 portal 到 body，不受 .composer 的 overflow 裁剪", () => {
+    renderComposer(() => undefined);
+    type("/");
+    const menuNode = menu();
+    expect(menuNode).not.toBeNull();
+    // 关键回归：菜单不能留在 .composer 里（它的 overflow: hidden 会把菜单整块裁掉，
+    // 用户只看得见"阴影"看不见列表）。
+    expect(document.querySelector(".composer .composer-slash-menu")).toBeNull();
+    expect(menuNode!.closest(".composer")).toBeNull();
+    const anchor = menuNode!.closest(".composer-slash-menu-anchor");
+    expect(anchor).not.toBeNull();
+    expect(anchor!.parentElement).toBe(document.body);
+    // fixed 定位来自 .composer-slash-menu-anchor（jsdom 不加载样式表），
+    // 真实可见性由 e2e `slash-menu.spec.ts` 在浏览器里断言。
+    expect(anchor!.className).toContain("composer-slash-menu-anchor");
   });
 
   it("没有候选时给出明确提示（不是没反应）", () => {
     renderComposer(() => undefined, []);
     type("/");
-    const empty = container.querySelector(".composer-slash-menu.is-empty");
+    const empty = document.querySelector(".composer-slash-menu.is-empty");
     expect(empty).not.toBeNull();
     expect(empty!.textContent).toContain("还没有可调用的技能");
     expect(empty!.textContent).toContain("~/.claude/skills");
