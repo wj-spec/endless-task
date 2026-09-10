@@ -238,6 +238,10 @@ from endless_task.skills import (
 )
 from .container import AppContainer
 from .errors import ApiRequestError
+from .routes.filesystem import register_filesystem_routes
+from .schemas.filesystem import (
+    RevealPathBody,
+)
 from .routes.workspaces import register_workspaces_routes
 from .schemas.workspaces import (
     TerminalCreateBody,
@@ -1080,15 +1084,6 @@ class McpServerPatchBody(BaseModel):
     headers: Optional[dict[str, str]] = None
     enabled: Optional[bool] = None
     toolCallTimeoutSeconds: Optional[float] = None
-
-
-class RevealPathBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str
-    sourceConversationId: str
-    sourceTurnId: str
-    note: Optional[str] = None
 
 
 class ResolveArtifactProposalBody(BaseModel):
@@ -4289,43 +4284,10 @@ def create_app(
 
 
 
-    @app.get("/filesystem/browse")
-    async def browse_filesystem(
-        path: Optional[str] = Query(None),
-        show_hidden: bool = Query(False),
-    ) -> dict[str, object]:
-        current, items = browse_directory(
-            path, show_hidden=show_hidden, home=Path.home()
-        )
-        return {
-            "currentPath": current,
-            "items": [
-                {
-                    "name": item.name,
-                    "path": item.path,
-                    "kind": item.kind,
-                    "size": item.size,
-                    "writable": item.writable,
-                    "isHidden": item.is_hidden,
-                }
-                for item in items
-            ],
-        }
+    # filesystem 域路由搬到 api/routes/filesystem.py（搬家不改行为）
+    register_filesystem_routes(app, container)
 
-    @app.post("/filesystem/reveal")
-    async def reveal_path(body: RevealPathBody) -> dict[str, object]:
-        import subprocess
 
-        target = Path(body.path).expanduser().resolve()
-        if not target.exists():
-            raise ValidationError("路径不存在，无法在访达中显示。")
-        if sys.platform != "darwin":
-            return {"revealed": False, "message": "当前平台不支持打开系统文件管理器。"}
-        try:
-            subprocess.Popen(["open", "-R", str(target)])
-        except OSError as error:
-            raise ValidationError("无法打开系统文件管理器。") from error
-        return {"revealed": True}
 
 
     @app.get("/knowledge-sources")
