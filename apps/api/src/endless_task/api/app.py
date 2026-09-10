@@ -238,6 +238,12 @@ from endless_task.skills import (
 )
 from .container import AppContainer
 from .errors import ApiRequestError, correlation_id, error_response
+from .routes.retrieval import register_retrieval_routes
+from .schemas.retrieval import (
+    RetrievalEventBody,
+)
+from .routes.proposals import register_proposals_routes
+from .routes.reminders import register_reminders_routes
 from .routes.conversations import register_conversations_routes
 from .schemas.conversations import (
     ConversationPatch,
@@ -2985,18 +2991,6 @@ class SearchBody(BaseModel):
     workspaceId: Optional[str] = None
 
 
-class RetrievalEventBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: str
-    label: Optional[str] = None
-    scope: Optional[str] = None
-    refId: Optional[str] = None
-    query: Optional[str] = None
-    turnId: Optional[str] = None
-    conversationId: Optional[str] = None
-
-
 class ResponseFeedbackBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -4056,26 +4050,9 @@ def create_app(
         }
 
 
-    @app.post("/retrieval-events", status_code=201)
-    async def create_retrieval_event(
-        body: RetrievalEventBody,
-    ) -> dict[str, object]:
-        if body.kind != "citation_click":
-            raise ApiRequestError(
-                "invalid_request", "仅支持记录角标点击事件。", status_code=400
-            )
-        event = container.retrieval_event_repository.record(
-            RetrievalEventKind.CITATION_CLICK,
-            body.query or "",
-            conversation_id=body.conversationId,
-            turn_id=body.turnId,
-            detail={
-                "label": body.label,
-                "scope": body.scope,
-                "refId": body.refId,
-            },
-        )
-        return {"id": event.id}
+    # retrieval 域路由搬到 api/routes/retrieval.py（搬家不改行为）
+    register_retrieval_routes(app, container)
+
 
     @app.get("/retrieval-stats")
     async def get_retrieval_stats() -> dict[str, object]:
@@ -4115,18 +4092,6 @@ def create_app(
         }
 
 
-    @app.post("/knowledge-lifecycle/decay-check")
-    async def run_knowledge_decay_check() -> dict[str, object]:
-        service = container.knowledge_lifecycle_service
-        if service is None:
-            raise ApiRequestError(
-                "not_available", "知识生命周期服务未启用。", status_code=400
-            )
-        proposals = service.check_decay()
-        return {
-            "created": len(proposals),
-            "items": [knowledge_proposal_json(item) for item in proposals],
-        }
 
     @app.post("/search")
     async def search_knowledge(body: SearchBody) -> dict[str, object]:
@@ -4403,69 +4368,14 @@ def create_app(
 
 
 
-    @app.get("/proposals/pending")
-    async def list_pending_proposals() -> dict[str, object]:
-        items: list[dict[str, object]] = []
-        for proposal in container.artifact_proposal_repository.list_pending(limit=50):
-            items.append(
-                {
-                    "id": proposal.id,
-                    "kind": "artifact",
-                    "conversationId": proposal.conversation_id,
-                    "title": proposal.title,
-                    "createdAt": proposal.created_at,
-                }
-            )
-        for proposal in container.task_proposal_repository.list_pending(limit=50):
-            items.append(
-                {
-                    "id": proposal.id,
-                    "kind": "task",
-                    "conversationId": proposal.conversation_id,
-                    "title": proposal.title,
-                    "createdAt": proposal.created_at,
-                }
-            )
-        for proposal in container.proposal_repository.list_pending(limit=50):
-            items.append(
-                {
-                    "id": proposal.id,
-                    "kind": "memory",
-                    "conversationId": proposal.conversation_id,
-                    "title": proposal.content[:60],
-                    "createdAt": proposal.created_at,
-                }
-            )
-        for proposal in container.knowledge_proposal_repository.list_pending(
-            limit=50
-        ):
-            if proposal.proposal_type is KnowledgeProposalType.ADD_SOURCE:
-                title = f"知识：{str(proposal.payload.get('title', ''))[:50]}"
-            else:
-                title = f"知识过期：{str(proposal.payload.get('title', ''))[:50]}"
-            items.append(
-                {
-                    "id": proposal.id,
-                    "kind": "knowledge",
-                    "conversationId": proposal.conversation_id,
-                    "title": title,
-                    "createdAt": proposal.created_at,
-                }
-            )
-        items.sort(key=lambda item: str(item["createdAt"]))
-        return {"items": items}
+    # proposals 域路由搬到 api/routes/proposals.py（搬家不改行为）
+    register_proposals_routes(app, container)
 
-    @app.get("/reminders")
-    async def list_reminders(include_cancelled: bool = False) -> dict[str, object]:
-        items = container.reminder_repository.list_reminders(
-            include_cancelled=include_cancelled
-        )
-        return {"items": [reminder_json(item) for item in items]}
 
-    @app.post("/reminders/{reminder_id}/cancel")
-    async def cancel_reminder(reminder_id: str) -> dict[str, object]:
-        reminder = container.reminder_repository.cancel_reminder(reminder_id)
-        return {"reminder": reminder_json(reminder)}
+    # reminders 域路由搬到 api/routes/reminders.py（搬家不改行为）
+    register_reminders_routes(app, container)
+
+
 
 
     @app.post("/task-proposals/{proposal_id}/resolve")
