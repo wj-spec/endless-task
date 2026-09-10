@@ -237,7 +237,7 @@ from endless_task.skills import (
     parse_skill_commands,
 )
 from .container import AppContainer
-from .errors import ApiRequestError
+from .errors import ApiRequestError, correlation_id, error_response
 from .routes.conversations import register_conversations_routes
 from .schemas.conversations import (
     ConversationPatch,
@@ -1178,30 +1178,8 @@ def _resolve_runtime_v2_conversation(
     return conversation_id
 
 
-def _error_response(
-    *,
-    status_code: int,
-    code: str,
-    message: str,
-    retryable: bool = False,
-    details: Optional[Mapping[str, object]] = None,
-) -> JSONResponse:
-    payload: dict[str, object] = {
-        "code": code,
-        "message": message,
-        "retryable": retryable,
-        "correlationId": _correlation_id(),
-    }
-    if details is not None:
-        payload["details"] = dict(details)
-    return JSONResponse(
-        status_code=status_code,
-        content={"error": payload},
-    )
 
 
-def _correlation_id() -> str:
-    return f"corr_{uuid.uuid4().hex}"
 
 
 def _parse_flag(value: str) -> bool:
@@ -3526,7 +3504,7 @@ def create_app(
         _: Request,
         error: RepositoryError,
     ) -> JSONResponse:
-        return _error_response(
+        return error_response(
             status_code=_repository_error_status(error),
             code=error.code,
             message=str(error),
@@ -3534,7 +3512,7 @@ def create_app(
 
     @app.exception_handler(ApiRequestError)
     async def handle_api_error(_: Request, error: ApiRequestError) -> JSONResponse:
-        return _error_response(
+        return error_response(
             status_code=error.status_code,
             code=error.code,
             message=error.message,
@@ -3543,7 +3521,7 @@ def create_app(
 
     @app.exception_handler(FileError)
     async def handle_file_error(_: Request, error: FileError) -> JSONResponse:
-        return _error_response(
+        return error_response(
             status_code=error.status_code,
             code=error.code,
             message=error.safe_message,
@@ -3555,7 +3533,7 @@ def create_app(
         error: RequestValidationError,
     ) -> JSONResponse:
         del error
-        return _error_response(
+        return error_response(
             status_code=400,
             code="invalid_request",
             message="请求参数格式不正确。",
@@ -3563,7 +3541,7 @@ def create_app(
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(_: Request, error: Exception) -> JSONResponse:
-        correlation_id = _correlation_id()
+        correlation_id = correlation_id()
         logger.exception("Unhandled local API error", extra={"correlation_id": correlation_id})
         return JSONResponse(
             status_code=500,
@@ -4605,7 +4583,7 @@ def create_app(
             data, media_type = build_export(artifact, version, fmt=format)
             filename = export_filename(artifact, fmt=format)
         except ExportError as error:
-            return _error_response(
+            return error_response(
                 status_code=error.status_code,
                 code=error.code,
                 message=error.message,

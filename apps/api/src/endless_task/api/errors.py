@@ -6,7 +6,10 @@ HTTP 响应；如果错误类留在 app.py，`routes/*` 与 `app.py` 就会互�
 
 from __future__ import annotations
 
+import uuid
 from typing import Mapping, Optional
+
+from fastapi.responses import JSONResponse
 
 
 class ApiRequestError(RuntimeError):
@@ -23,3 +26,29 @@ class ApiRequestError(RuntimeError):
         self.message = message
         self.status_code = status_code
         self.details = details
+
+
+def error_response(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    retryable: bool = False,
+    details: Optional[Mapping[str, object]] = None,
+) -> JSONResponse:
+    payload: dict[str, object] = {
+        "code": code,
+        "message": message,
+        "retryable": retryable,
+        "correlationId": correlation_id(),
+    }
+    if details is not None:
+        payload["details"] = dict(details)
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": payload},
+    )
+
+
+def correlation_id() -> str:
+    return f"corr_{uuid.uuid4().hex}"
