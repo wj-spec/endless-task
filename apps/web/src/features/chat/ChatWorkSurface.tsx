@@ -63,6 +63,7 @@ import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
 import { StreamNotices } from "./StreamNotices";
+import { UserMessageRow } from "./UserMessageRow";
 import {
   APPROVAL_RISK_LABELS,
   approvalRisk,
@@ -611,104 +612,29 @@ export function ChatWorkSurface({
                   .map((item) => item.variant.id)
                   .join(" ")}
               >
-                <article className="message-row user-row">
-                  <div className="speaker-mark user-mark">你</div>
-                  <div className="user-row-body">
-                    {editTurnId === turnSnapshot.turn.id ? (
-                      <>
-                        <textarea
-                          aria-label="编辑这条消息"
-                          className="user-edit-input"
-                          onChange={(event) => setEditDraft(event.target.value)}
-                          rows={3}
-                          value={editDraft}
-                        />
-                        <div className="user-edit-actions">
-                          <button
-                            disabled={
-                              editDraft.trim().length === 0 ||
-                              editDraft.trim() ===
-                                (editedUserMessages?.[turnSnapshot.turn.id] ??
-                                  turnSnapshot.userMessage.content) ||
-                              pendingAction !== null ||
-                              laneBusy ||
-                              isGenerating
-                            }
-                            onClick={() => {
-                              onEditResendMessage?.(
-                                turnSnapshot.turn.id,
-                                editDraft.trim(),
-                              );
-                              setEditTurnId(null);
-                            }}
-                            type="button"
-                          >
-                            保存并重新生成
-                          </button>
-                          <button
-                            onClick={() => setEditTurnId(null)}
-                            type="button"
-                          >
-                            取消
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        {skillCommandsOf(
-                          editedUserMessages?.[turnSnapshot.turn.id] ??
-                            turnSnapshot.userMessage.content,
-                        ).length > 0 ? (
-                          <div className="user-skill-chips">
-                            {skillCommandsOf(
-                              editedUserMessages?.[turnSnapshot.turn.id] ??
-                                turnSnapshot.userMessage.content,
-                            ).map((name) => (
-                              <span className="user-skill-chip" key={name}>
-                                已加载技能 /{name}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        <div className="user-copy">
-                          {editedUserMessages?.[turnSnapshot.turn.id] ??
-                            turnSnapshot.userMessage.content}
-                        </div>
-                        <div className="user-row-actions">
-                          <CopyButton
-                            ariaLabel="复制这条消息"
-                            text={
-                              editedUserMessages?.[turnSnapshot.turn.id] ??
-                              turnSnapshot.userMessage.content
-                            }
-                          />
-                          {turnSnapshot.turn.conversationId ===
-                            conversation?.conversation.id &&
-                          isLatest &&
-                          onEditResendMessage &&
-                          !["created", "running"].includes(status) ? (
-                            <button
-                              className="user-edit-trigger"
-                              disabled={
-                                laneBusy || isGenerating || pendingAction !== null
-                              }
-                              onClick={() => {
-                                setEditTurnId(turnSnapshot.turn.id);
-                                setEditDraft(
-                                  editedUserMessages?.[turnSnapshot.turn.id] ??
-                                    turnSnapshot.userMessage.content,
-                                );
-                              }}
-                              type="button"
-                            >
-                              编辑
-                            </button>
-                          ) : null}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </article>
+                <UserMessageRow
+                  belongsToConversation={
+                    turnSnapshot.turn.conversationId ===
+                    conversation?.conversation.id
+                  }
+                  content={turnSnapshot.userMessage.content}
+                  editDraft={editDraft}
+                  editedContent={editedUserMessages?.[turnSnapshot.turn.id]}
+                  editing={editTurnId === turnSnapshot.turn.id}
+                  isGenerating={isGenerating}
+                  isLatest={isLatest}
+                  laneBusy={laneBusy}
+                  onCancelEdit={() => setEditTurnId(null)}
+                  onEditDraftChange={setEditDraft}
+                  onEditResend={onEditResendMessage}
+                  onStartEdit={(value) => {
+                    setEditTurnId(turnSnapshot.turn.id);
+                    setEditDraft(value);
+                  }}
+                  pending={pendingAction !== null}
+                  status={status}
+                  turnId={turnSnapshot.turn.id}
+                />
 
                 <article className="message-row assistant-row">
                   <div className="speaker-mark assistant-mark" aria-label="Endless">
