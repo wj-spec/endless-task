@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from endless_task.runtime.provider import ProviderToolDefinition
+
 import asyncio
 import json
 import logging

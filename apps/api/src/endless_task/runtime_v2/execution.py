@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from endless_task.tool_platform.protocol import ToolOutcome
+
 import asyncio
 import hashlib
 import json

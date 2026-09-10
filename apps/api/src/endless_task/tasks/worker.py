@@ -11,6 +11,8 @@ and executes that run through an ``AgentRunExecutor``.
 
 from __future__ import annotations
 
+from endless_task.domain.models import TaskRecord
+
 import asyncio
 import logging
 import uuid

@@ -22,6 +22,8 @@ connection) alike.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 from dataclasses import dataclass, field
 from datetime import date

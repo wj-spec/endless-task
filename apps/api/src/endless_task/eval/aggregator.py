@@ -10,6 +10,7 @@ from .models import (
     MetricAggregation,
     MetricDelta,
     RunEvaluation,
+    ScoreCard,
 )
 
 
