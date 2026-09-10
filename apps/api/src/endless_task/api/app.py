@@ -303,6 +303,8 @@ from .serialization import (
     knowledge_proposal_json,
     knowledge_source_json,
     memory_record_json,
+    memory_reflection_json,
+    undo_entry_json,
     workspace_json,
     conversation_json,
     conversation_snapshot_json,
@@ -3123,20 +3125,6 @@ def _hub_append_proposal_resolved(
     )
 
 
-def _memory_reflection_json(record) -> dict[str, object]:
-    return {
-        "id": record.id,
-        "conversationId": record.conversation_id,
-        "runId": record.run_id,
-        "trigger": record.trigger,
-        "status": record.status,
-        "insight": record.insight_content,
-        "proposalId": record.proposal_id,
-        "insightMemoryId": record.insight_memory_id,
-        "createdAt": record.created_at,
-        "resolvedAt": record.resolved_at,
-        "sources": [dict(item) for item in record.source_refs],
-    }
 
 
 def _audit_fact_from_event(container, event) -> Optional[AuditFact]:
@@ -3326,20 +3314,6 @@ def _audit_tool_effect(container, tool_name: str) -> str:
     return str(effect or "")
 
 
-def _undo_entry_json(entry) -> dict[str, object]:
-    return {
-        "id": entry.id,
-        "conversationId": entry.conversation_id,
-        "workspaceId": entry.workspace_id,
-        "runId": entry.run_id,
-        "kind": entry.kind,
-        "target": entry.target,
-        "description": entry.description,
-        "status": entry.status,
-        "undoable": entry.undoable,
-        "createdAt": entry.created_at,
-        "undoneAt": entry.undone_at,
-    }
 
 
 def _hub_append_memory_consolidated(
@@ -4625,7 +4599,7 @@ def create_app(
             return {"items": []}
         return {
             "items": [
-                _memory_reflection_json(record)
+                memory_reflection_json(record)
                 for record in service.list_records(
                     include_resolved=include_resolved, limit=limit
                 )
@@ -4644,7 +4618,7 @@ def create_app(
             return {"items": []}
         return {
             "items": [
-                _memory_reflection_json(record)
+                memory_reflection_json(record)
                 for record in service.list_records(
                     conversation_id=conversation_id,
                     include_resolved=include_resolved,
@@ -4662,7 +4636,7 @@ def create_app(
             conversation_id, limit=limit
         )
         return {
-            "items": [_undo_entry_json(entry) for entry in entries],
+            "items": [undo_entry_json(entry) for entry in entries],
             "latestAvailableId": (
                 entries[0].id
                 if entries and entries[0].undoable
@@ -4693,7 +4667,7 @@ def create_app(
                 },
             )
         return {
-            "entry": _undo_entry_json(entry),
+            "entry": undo_entry_json(entry),
             "performed": performed,
             "alreadyUndone": not performed,
         }

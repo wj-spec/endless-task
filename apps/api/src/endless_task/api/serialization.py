@@ -516,3 +516,35 @@ def hub_event_json(record) -> dict[str, object]:
         "createdAt": record.occurred_at,
         "data": record.data,
     }
+
+
+def memory_reflection_json(record) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "conversationId": record.conversation_id,
+        "runId": record.run_id,
+        "trigger": record.trigger,
+        "status": record.status,
+        "insight": record.insight_content,
+        "proposalId": record.proposal_id,
+        "insightMemoryId": record.insight_memory_id,
+        "createdAt": record.created_at,
+        "resolvedAt": record.resolved_at,
+        "sources": [dict(item) for item in record.source_refs],
+    }
+
+
+def undo_entry_json(entry) -> dict[str, object]:
+    return {
+        "id": entry.id,
+        "conversationId": entry.conversation_id,
+        "workspaceId": entry.workspace_id,
+        "runId": entry.run_id,
+        "kind": entry.kind,
+        "target": entry.target,
+        "description": entry.description,
+        "status": entry.status,
+        "undoable": entry.undoable,
+        "createdAt": entry.created_at,
+        "undoneAt": entry.undone_at,
+    }
