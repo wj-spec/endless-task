@@ -204,6 +204,9 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
               >
                 {skill.scope === "user" ? "用户级" : "工作区"}
               </span>
+              {skill.source ? (
+                <span className="knowledge-badge">{skill.source}</span>
+              ) : null}
               {pack ? (
                 <span className="knowledge-badge">v{pack.version}</span>
               ) : skill.version ? (

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Iterable, Optional, Sequence, Tuple
 
 from .manifest import parse_skill_manifest
 from .models import Skill, SkillDiagnostic, SkillScope
@@ -89,12 +90,92 @@ def _discover_in_root(root: Path, scope: SkillScope) -> Tuple[Skill, ...]:
     return tuple(skills)
 
 
+#: 共享/全局技能根（按优先级从低到高）。
+_SHARED_USER_ROOTS: Tuple[Tuple[str, int], ...] = (
+    (".claude/skills", 10),
+    (".codex/skills", 20),
+    (".dsh/skills", 30),
+    # `.agents` 视为本地 agent 之间最通用的约定，同名时优先级最高。
+    (".agents/skills", 40),
+)
+
+#: 工作区级技能根（优先级高于所有全局根）。
+_WORKSPACE_ROOTS: Tuple[Tuple[str, int], ...] = (
+    (".claude/skills", 200),
+    (".agents/skills", 210),
+    (".dsh/skills", 220),
+    (".endless-task/skills", 230),
+)
+
+
+@dataclass(frozen=True)
+class SkillRootSpec:
+    """一个技能根：路径 + 作用域 + 展示标签 + 优先级（越大越优先）。"""
+
+    path: Path
+    scope: SkillScope
+    label: str
+    rank: int
+
+
+def default_skill_root_specs(
+    *,
+    user_dir: Path,
+    workspace_root: Optional[Path] = None,
+    extra_dirs: Sequence[Path] = (),
+    home: Optional[Path] = None,
+) -> Tuple[SkillRootSpec, ...]:
+    """默认技能根清单：**工作区 → 全局共享 → 应用自带**（同名时高优先级胜出）。
+
+    除应用自己的技能目录外，还识别其它本地 agent 的共享技能目录
+    （`~/.claude/skills`、`~/.agents/skills`、`~/.dsh/skills`、`~/.codex/skills`），
+    以及 `ENDLESS_TASK_SKILL_DIRS` 指定的额外目录。
+    """
+    base = home if home is not None else Path.home()
+    specs: list[SkillRootSpec] = [
+        SkillRootSpec(
+            base / relative,
+            SkillScope.USER,
+            f"~/{relative}",
+            rank,
+        )
+        for relative, rank in _SHARED_USER_ROOTS
+    ]
+    specs.append(SkillRootSpec(user_dir, SkillScope.USER, "应用技能目录", 100))
+    for index, raw in enumerate(extra_dirs):
+        path = Path(raw).expanduser()
+        specs.append(
+            SkillRootSpec(path, SkillScope.USER, str(path), 110 + index)
+        )
+    if workspace_root is not None:
+        specs.extend(
+            SkillRootSpec(
+                workspace_root / relative,
+                SkillScope.WORKSPACE,
+                relative,
+                rank,
+            )
+            for relative, rank in _WORKSPACE_ROOTS
+        )
+    return tuple(specs)
+
+
+def discover_from_roots(specs: Iterable[SkillRootSpec]) -> Tuple[Skill, ...]:
+    """按优先级合并多个技能根；同名技能由高优先级根覆盖。"""
+    by_name: dict[str, Skill] = {}
+    for spec in sorted(specs, key=lambda item: item.rank):
+        for skill in _discover_in_root(spec.path, spec.scope):
+            by_name[skill.name] = replace(
+                skill, source=spec.label, source_rank=spec.rank
+            )
+    return tuple(sorted(by_name.values(), key=lambda s: s.name))
+
+
 def discover_skills(user_dir: Path, workspace_dir: Optional[Path] = None) -> Tuple[Skill, ...]:
-    """发现用户级与工作区级技能；工作区同名技能覆盖用户级。"""
-    skills: dict[str, Skill] = {}
-    for skill in _discover_in_root(user_dir, SkillScope.USER):
-        skills[skill.name] = skill
+    """兼容入口：仅应用目录 + 单个工作区目录（旧签名，无共享根）。"""
+    specs = [SkillRootSpec(user_dir, SkillScope.USER, "应用技能目录", 10)]
     if workspace_dir is not None:
-        for skill in _discover_in_root(workspace_dir, SkillScope.WORKSPACE):
-            skills[skill.name] = skill
-    return tuple(sorted(skills.values(), key=lambda s: s.name))
+        specs.append(
+            SkillRootSpec(workspace_dir, SkillScope.WORKSPACE, "工作区技能", 20)
+        )
+    return discover_from_roots(specs)

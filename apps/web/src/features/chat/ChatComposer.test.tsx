@@ -8,7 +8,12 @@ import { ChatComposer } from "./ChatComposer";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const candidates: SkillInvocationCandidate[] = [
-  { name: "review-notes", description: "评审笔记", scope: "user" },
+  {
+    name: "review-notes",
+    description: "评审笔记",
+    scope: "user",
+    source: "~/.agents/skills",
+  },
   { name: "release-check", description: "发布检查", scope: "user" },
   { name: "other-skill", description: "别的", scope: "workspace" },
 ];
@@ -17,7 +22,10 @@ let container: HTMLDivElement;
 let root: Root;
 let draft = "";
 
-const renderComposer = (onSend: () => void = () => undefined) => {
+const renderComposer = (
+  onSend: () => void = () => undefined,
+  skills: SkillInvocationCandidate[] = candidates,
+) => {
   const element = () => (
     <ChatComposer
       conversation={null}
@@ -30,7 +38,7 @@ const renderComposer = (onSend: () => void = () => undefined) => {
       providers={[]}
       runningLaneLabel=""
       sideMode={null}
-      skillCandidates={candidates}
+      skillCandidates={skills}
       steerable={false}
       variant="main"
       onCancel={() => undefined}
@@ -64,7 +72,8 @@ const type = (value: string) => {
   });
 };
 
-const menu = () => container.querySelector<HTMLUListElement>(".composer-slash-menu");
+const menu = () =>
+  container.querySelector<HTMLUListElement>("ul.composer-slash-menu");
 
 const options = () =>
   Array.from(container.querySelectorAll(".composer-slash-menu button")).map(
@@ -121,6 +130,24 @@ describe("ChatComposer `/技能名` 候选（S1）", () => {
     press("Enter");
     expect(draft).toBe("/release-check ");
     expect(sent).toBe(0);
+  });
+
+  it("候选项展示来源标签", () => {
+    renderComposer();
+    type("/review");
+    expect(container.querySelector(".composer-slash-source")?.textContent).toBe(
+      "~/.agents/skills",
+    );
+  });
+
+  it("没有候选时给出明确提示（不是没反应）", () => {
+    renderComposer(() => undefined, []);
+    type("/");
+    const empty = container.querySelector(".composer-slash-menu.is-empty");
+    expect(empty).not.toBeNull();
+    expect(empty!.textContent).toContain("还没有可调用的技能");
+    expect(empty!.textContent).toContain("~/.claude/skills");
+    expect(menu()).toBeNull();
   });
 
   it("Escape 关闭候选，Enter 恢复发送", () => {

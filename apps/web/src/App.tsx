@@ -201,11 +201,8 @@ export function App() {
   >([]);
 
   useEffect(() => {
-    const workspaceId = chat.workspaceId;
-    if (!workspaceId) {
-      setSkillCandidates([]);
-      return;
-    }
+    // 没有绑定工作区也要拉：全局共享技能（~/.claude/skills 等）同样可显式调用。
+    const workspaceId = chat.workspaceId ?? null;
     let cancelled = false;
     void chatApi
       .listInvocableSkills(workspaceId)

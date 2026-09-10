@@ -192,7 +192,15 @@ def parse_skill_manifest(
 
 
 def _frontmatter_bool(value: object, *, default: bool = False) -> bool:
-    """frontmatter 布尔文法（与参考项目一致）：true/1/yes/on 为真。"""
+    """frontmatter 布尔文法：YAML 真布尔直接采用；字符串按 true/1/yes/on 判定。
+
+    注意：YAML 解析后拿到的可能是 ``False``，而 ``False or ""`` 会退化成空串，
+    因此必须先判断类型，否则 ``user-invocable: false`` 会被当成未提供。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
     text = str(value or "").strip().lower()
     if not text:
         return default
@@ -204,8 +212,11 @@ def _extract_frontmatter(
 ) -> tuple[Mapping[str, Any], str, Optional[str], int]:
     """Split frontmatter from body; return (parsed, body, error, schema_version).
 
-    v1 keeps the historical plain-key parser. v2 uses the safe YAML subset
-    (scalar keys/values, no custom tags) so list fields parse correctly.
+    v1 与 v2 都优先用 ``yaml.safe_load``：真实世界的技能 frontmatter 常见
+    列表、嵌套 metadata、注释（例如 ``~/.claude/skills`` 里的共享技能会有
+    ``metadata.openclaw.requires.bins:`` 这样的嵌套块），手写的逐行解析会把
+    这些完全合法的 YAML 判成格式错误。只有在 YAML 解析失败时才退回逐行
+    plain-key 解析（保持历史兼容）。
     """
     if not text.startswith("---"):
         return {}, text, "missing_frontmatter", 1
@@ -219,28 +230,36 @@ def _extract_frontmatter(
         return {}, text, "missing_frontmatter", 1
     frontmatter_text = "\n".join(lines[1:end])
     body = "\n".join(lines[end + 1 :]).strip()
+    declares_schema = "schema-version:" in frontmatter_text
 
-    if "schema-version:" not in frontmatter_text:
-        parsed: dict[str, Any] = {}
-        for line in lines[1:end]:
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            if ":" not in line:
-                return {}, text, "invalid_frontmatter", 1
-            key, value = line.split(":", 1)
-            parsed[key.strip()] = value.strip().strip("\"'")
-        return parsed, body, None, 1
-
+    loaded: Any = None
+    yaml_failed = False
     try:
         loaded = yaml.safe_load(frontmatter_text)
     except yaml.YAMLError:
-        return {}, body, "invalid_frontmatter", 2
-    if not isinstance(loaded, Mapping):
-        return {}, body, "invalid_frontmatter", 2
-    schema_version = loaded.get("schema-version")
-    if not isinstance(schema_version, int):
-        return {}, body, "invalid_frontmatter", 2
-    return loaded, body, None, schema_version
+        yaml_failed = True
+    if isinstance(loaded, Mapping):
+        schema_version = loaded.get("schema-version")
+        if isinstance(schema_version, int) and schema_version != 1:
+            return dict(loaded), body, None, schema_version
+        if declares_schema and not isinstance(schema_version, int):
+            # 声明了 schema-version 但不是整数：保持"按 v2 处理并报错"的历史语义。
+            return {}, body, "invalid_frontmatter", 2
+        # 其余情况一律按 v1 适配（开放字段直接可用）。
+        return dict(loaded), body, None, 1
+    if declares_schema or not yaml_failed:
+        return {}, body, "invalid_frontmatter", 2 if declares_schema else 1
+
+    # YAML 解析失败：退回逐行 plain-key 解析。
+    parsed: dict[str, Any] = {}
+    for line in lines[1:end]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if ":" not in line:
+            return {}, text, "invalid_frontmatter", 1
+        key, value = line.split(":", 1)
+        parsed[key.strip()] = value.strip().strip("\"'")
+    return parsed, body, None, 1
 
 
 def _validate_v2(

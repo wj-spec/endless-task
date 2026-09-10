@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 from xml.sax.saxutils import escape
 
 from ..storage.sqlite_skill_override_repository import SqliteSkillOverrideRepository
-from .loader import discover_skills
+from .loader import (
+    SkillRootSpec,
+    default_skill_root_specs,
+    discover_from_roots,
+    discover_skills,
+)
 from .models import Skill, SkillScope
 
 #: 单次注入的技能正文上限（字节）；超出按字符安全截断并标注。
@@ -22,6 +28,11 @@ INVOKE_INVALID = "invalid"
 #: S3：目录里单条描述的上限（避免一个技能吃掉整个前缀预算）。
 MAX_CATALOG_DESCRIPTION_CHARACTERS = 500
 
+#: S4：整个技能目录的字符预算。装了共享技能后目录可能很大（41 个技能 ≈ 14KB），
+#: 每轮都注入会稳定吃掉上下文，所以超预算时先压缩描述、再截断条目。
+MAX_CATALOG_CHARACTERS = 12_000
+_CATALOG_DESCRIPTION_STEPS = (500, 240, 160, 100, 60)
+
 
 def build_available_skills_prompt(
     skills: Tuple[Skill, ...],
@@ -37,26 +48,49 @@ def build_available_skills_prompt(
     visible = [skill for skill in skills if skill.valid and not skill.disable_model_invocation]
     if not visible:
         return ""
-    lines = [
-        "以下技能为特定任务提供专门指引（这里只有摘要，未读取正文前不要据其行动）。"
-        "任务与某技能描述匹配时，先调用 read_skill_file（传 name）读取全文，"
-        "再按其中步骤执行；技能内相对路径以其所在目录解析。",
-        "<available_skills>",
-    ]
+    def render(entries: tuple[Skill, ...], description_cap: int) -> str:
+        lines = [
+            "以下技能为特定任务提供专门指引（这里只有摘要，未读取正文前不要据其行动）。"
+            "任务与某技能描述匹配时，先调用 read_skill_file（传 name）读取全文，"
+            "再按其中步骤执行；技能内相对路径以其所在目录解析。",
+            "<available_skills>",
+        ]
+        for skill in entries:
+            description = skill.description.strip()
+            if len(description) > description_cap:
+                description = description[:description_cap].rstrip() + "…"
+            lines.extend(
+                [
+                    "  <skill>",
+                    f"    <name>{escape(skill.name)}</name>",
+                    f"    <description>{escape(description)}</description>",
+                    "  </skill>",
+                ]
+            )
+        lines.append("</available_skills>")
+        return "\n".join(lines)
+
+    cap = MAX_CATALOG_DESCRIPTION_CHARACTERS
+    for candidate_cap in _CATALOG_DESCRIPTION_STEPS:
+        cap = candidate_cap
+        text = render(tuple(visible), cap)
+        if len(text) <= MAX_CATALOG_CHARACTERS:
+            return text
+    # 描述压到最小仍超预算：保留前 N 个，其余提示用 /技能名 显式调用。
+    kept: list[Skill] = []
     for skill in visible:
-        description = skill.description.strip()
-        if len(description) > MAX_CATALOG_DESCRIPTION_CHARACTERS:
-            description = description[:MAX_CATALOG_DESCRIPTION_CHARACTERS] + "…"
-        lines.extend(
-            [
-                "  <skill>",
-                f"    <name>{escape(skill.name)}</name>",
-                f"    <description>{escape(description)}</description>",
-                "  </skill>",
-            ]
+        attempt = render(tuple([*kept, skill]), cap)
+        if len(attempt) > MAX_CATALOG_CHARACTERS - 160:
+            break
+        kept.append(skill)
+    remaining = len(visible) - len(kept)
+    text = render(tuple(kept), cap)
+    if remaining > 0:
+        text += (
+            f"\n（另有 {remaining} 个技能未列出：可用 /技能名 显式调用，"
+            "或让用户说明任务后按需提供。）"
         )
-    lines.append("</available_skills>")
-    return "\n".join(lines)
+    return text
 
 
 class SkillService:
@@ -66,10 +100,30 @@ class SkillService:
         user_dir: Path,
         database_path: Path,
         override_repository: SqliteSkillOverrideRepository,
+        extra_skill_dirs: Sequence[Path] = (),
+        home_dir: Optional[Path] = None,
     ) -> None:
         self._user_dir = user_dir
         self._database_path = database_path
         self._override_repository = override_repository
+        #: S4：除应用目录外的共享技能根（~/.claude/skills 等 + 环境变量追加）。
+        self._extra_skill_dirs = tuple(extra_skill_dirs)
+        #: 共享根使用的 home；显式传入优先，其次 `ENDLESS_TASK_SKILL_HOME`（测试隔离）。
+        override = (os.environ.get("ENDLESS_TASK_SKILL_HOME") or "").strip()
+        self._home_dir = (
+            home_dir
+            if home_dir is not None
+            else (Path(override).expanduser() if override else None)
+        )
+
+    def root_specs(self, workspace_root: Optional[Path] = None) -> Tuple[SkillRootSpec, ...]:
+        """S4：技能根清单（工作区 → 全局共享 → 应用自带）。"""
+        return default_skill_root_specs(
+            user_dir=self._user_dir,
+            workspace_root=workspace_root,
+            extra_dirs=self._extra_skill_dirs,
+            home=self._home_dir,
+        )
 
     def list_skills(
         self,
@@ -77,10 +131,7 @@ class SkillService:
         *,
         workspace_id: str = "",
     ) -> Tuple[Skill, ...]:
-        workspace_dir = (
-            workspace_root / ".endless-task" / "skills" if workspace_root else None
-        )
-        skills = discover_skills(self._user_dir, workspace_dir)
+        skills = discover_from_roots(self.root_specs(workspace_root))
         disabled = self._override_repository.disabled_index()
         user_disabled = disabled.get((SkillScope.USER.value, ""), set())
         workspace_disabled = disabled.get(
@@ -95,6 +146,8 @@ class SkillService:
                 digest=skill.digest,
                 version=skill.version,
                 when_to_use=skill.when_to_use,
+                source=skill.source,
+                source_rank=skill.source_rank,
                 disabled=skill.name in (
                     workspace_disabled if skill.scope == SkillScope.WORKSPACE else user_disabled
                 ),
@@ -203,7 +256,5 @@ class SkillService:
         return ""
 
     def skill_roots(self, workspace_root: Optional[Path] = None) -> tuple[Path, ...]:
-        roots = [self._user_dir]
-        if workspace_root is not None:
-            roots.append(workspace_root / ".endless-task" / "skills")
-        return tuple(roots)
+        """所有技能根（含共享目录）：读取正文时的根包含性校验用。"""
+        return tuple(spec.path for spec in self.root_specs(workspace_root))

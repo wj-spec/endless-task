@@ -74,6 +74,8 @@ export function ChatComposer({
   }, [skillCandidates, slashQuery]);
 
   const slashOpen = slashQuery !== null && slashMatches.length > 0;
+  // 输入了 `/` 但没有任何候选时，也要给用户一个明确反馈（否则像"没反应"）。
+  const slashEmpty = slashQuery !== null && slashMatches.length === 0;
 
   /** 只在"行首或空白后的 /token"上触发候选（避免路径误触发）。 */
   const syncSlash = (value: string, caret: number | null) => {
@@ -194,6 +196,18 @@ export function ChatComposer({
           </div>
         ) : null}
         <div className="composer-input-row">
+          {slashEmpty ? (
+            <div className="composer-slash-menu is-empty" role="status">
+              <p>
+                {slashQuery
+                  ? `没有匹配“/${slashQuery}”的技能`
+                  : "还没有可调用的技能"}
+              </p>
+              <p className="composer-slash-hint">
+                放到 ~/.claude/skills、~/.agents/skills 或应用技能目录即可；也可在「技能」页签导入。
+              </p>
+            </div>
+          ) : null}
           {slashOpen ? (
             <ul
               aria-label="技能候选"
@@ -211,6 +225,9 @@ export function ChatComposer({
                   >
                     <span className="composer-slash-name">/{candidate.name}</span>
                     <span className="composer-slash-desc">{candidate.description}</span>
+                    {candidate.source ? (
+                      <span className="composer-slash-source">{candidate.source}</span>
+                    ) : null}
                   </button>
                 </li>
               ))}

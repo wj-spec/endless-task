@@ -117,6 +117,8 @@ export type Skill = {
   version?: string;
   digest?: string;
   whenToUse?: string;
+  /** S4：技能来源标签（如 `~/.claude/skills`）。 */
+  source?: string;
 };
 
 export type McpToolStatus = {
@@ -987,6 +989,8 @@ export type SkillInvocationCandidate = {
   description: string;
   scope: "user" | "workspace";
   whenToUse?: string;
+  /** 技能来源标签（如 `~/.claude/skills`）。 */
+  source?: string;
 };
 
 export type RuntimeV2RecoveryResponse = {

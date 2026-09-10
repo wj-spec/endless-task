@@ -221,6 +221,7 @@ from endless_task.skills import (
     INVOKE_OK,
     INVOKE_UNKNOWN,
     Skill,
+    SkillScope,
     SkillService,
     build_available_skills_prompt,
     parse_skill_commands,
@@ -1683,6 +1684,20 @@ def _runtime_v2_memory_promotion_json(
     }
 
 
+def _skill_home_dir() -> Path:
+    """共享技能根使用的 home；`ENDLESS_TASK_SKILL_HOME` 可覆盖（测试隔离用）。"""
+    override = (os.environ.get("ENDLESS_TASK_SKILL_HOME") or "").strip()
+    return Path(override).expanduser() if override else Path.home()
+
+
+def _parse_skill_dirs(raw: Optional[str]) -> tuple[Path, ...]:
+    """S4：`ENDLESS_TASK_SKILL_DIRS`（冒号分隔）→ 额外技能根。"""
+    if not raw:
+        return ()
+    parts = [item.strip() for item in raw.split(":")]
+    return tuple(Path(item).expanduser() for item in parts if item)
+
+
 def _mcp_call_status(detail: str) -> str:
     for part in detail.split(";"):
         text = part.strip()
@@ -2683,6 +2698,8 @@ def _build_container(
         delegation_handler_ref = None
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
+        extra_skill_dirs=_parse_skill_dirs(os.environ.get("ENDLESS_TASK_SKILL_DIRS")),
+        home_dir=_skill_home_dir(),
         database_path=settings.database_path,
         override_repository=skill_override_repository,
     )
@@ -5073,6 +5090,7 @@ def create_app(
                     "version": skill.version,
                     "digest": skill.digest,
                     "whenToUse": skill.when_to_use,
+                    "source": skill.source,
                     "disabled": skill.disabled,
                     "disableModelInvocation": skill.disable_model_invocation,
                     "diagnostics": [
@@ -5108,14 +5126,55 @@ def create_app(
             )
         return Path(workspace.root_path).expanduser() / ".endless-task" / "skills"
 
-    def _skill_package_dir(scope: str, name: str, workspace_id: Optional[str]) -> Path:
-        root = _skill_root_for(scope, workspace_id)
-        package = root / name
-        if not (package / "SKILL.md").is_file():
-            raise ApiRequestError(
-                "skill_not_found", f"技能不存在：{scope}/{name}。", status_code=404
-            )
-        return package
+    def _workspace_root_path(workspace_id: Optional[str]) -> Optional[Path]:
+        if not workspace_id:
+            return None
+        try:
+            workspace = container.workspace_repository.get_workspace(workspace_id)
+        except NotFoundError as error:
+            raise NotFoundError(f"Unknown workspace: {workspace_id}") from error
+        return (
+            Path(workspace.root_path).expanduser()
+            if workspace.root_path
+            else None
+        )
+
+    def _skill_package_dir(
+        scope: str, name: str, workspace_id: Optional[str]
+    ) -> tuple[Path, str, bool]:
+        """定位技能包目录。
+
+        S4：技能可能来自共享目录（~/.claude/skills 等），所以按**发现结果**定位，
+        而不是拼应用技能目录。返回 (包目录, 来源标签, 是否可写)。
+
+        可写 = 应用技能目录或工作区技能根；共享目录里的技能只读管理
+        （避免误删其它 agent 正在用的技能）。
+        """
+        workspace_root = _workspace_root_path(workspace_id)
+        target_scope = SkillScope(scope)
+        for skill in container.skill_service.list_skills(
+            workspace_root, workspace_id=workspace_id or ""
+        ):
+            if skill.name != name or skill.scope is not target_scope:
+                continue
+            package = skill.file_path.parent
+            label = skill.source or str(package)
+            writable = _skill_source_is_writable(skill.source, label)
+            return package, label, writable
+        raise ApiRequestError(
+            "skill_not_found", f"技能不存在：{scope}/{name}。", status_code=404
+        )
+
+    def _skill_source_is_writable(source: str, label: str) -> bool:
+        """共享目录（~/.claude/skills 等）与工作区外目录视为只读。"""
+        if not source:
+            return True
+        if source.startswith("~/"):
+            return False
+        return source in {
+            "应用技能目录",
+            label,
+        } and not source.startswith("~")
 
     def _skill_validation_payload(path: Path, text: Optional[str]) -> dict[str, object]:
         """解析 + 扫描一份技能包，返回 UI 可直接渲染的结果。"""
@@ -5289,7 +5348,15 @@ def create_app(
         import shutil
         from datetime import datetime, timezone
 
-        package = _skill_package_dir(scope, name, workspace)
+        package, source_label, writable = _skill_package_dir(
+            scope, name, workspace
+        )
+        if not writable:
+            raise ApiRequestError(
+                "skill_read_only",
+                f"该技能来自共享目录（{source_label}），请直接在文件系统里管理。",
+                status_code=400,
+            )
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         trash = package.parent / ".trash" / f"{stamp}-{name}"
         trash.parent.mkdir(parents=True, exist_ok=True)
@@ -5303,7 +5370,9 @@ def create_app(
         workspace: Optional[str] = Query(None),
     ) -> dict[str, object]:
         """S2：使用统计（按 digest 分代）。"""
-        _skill_package_dir(scope, name, workspace)
+        package, _source_label, _writable = _skill_package_dir(
+            scope, name, workspace
+        )
         rows = container.skill_usage_repository.snapshot(scope=scope, name=name)
         return {"items": [row.as_dict() for row in rows]}
 
@@ -5317,7 +5386,9 @@ def create_app(
         """S2：跑技能包声明的用例（对给定 trace/output 或某次真实运行）。"""
         from endless_task.skills import load_package_cases, run_package_case
 
-        package = _skill_package_dir(scope, name, workspace)
+        package, _source_label, _writable = _skill_package_dir(
+            scope, name, workspace
+        )
         suite = load_package_cases(package)
         tools_used = list(body.toolsUsed)
         output = body.output
@@ -5381,6 +5452,7 @@ def create_app(
                     "description": skill.description,
                     "scope": skill.scope.value,
                     "whenToUse": skill.when_to_use,
+                    "source": skill.source,
                 }
                 for skill in skills
             ]

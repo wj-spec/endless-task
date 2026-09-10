@@ -29,6 +29,10 @@ class Skill:
     version: str = ""
     #: S3：适用场景（人工可读；不进模型目录）。
     when_to_use: str = ""
+    #: S4：技能来源标签（如 `~/.claude/skills` / `.endless-task/skills`）。
+    source: str = ""
+    #: 来源优先级（越大越优先，用于同名覆盖）。
+    source_rank: int = 0
     disabled: bool = False
     disable_model_invocation: bool = False
     #: S1：调用策略（与模型调用解耦）。user_invocable 决定"用户 /技能名"是否可用。
