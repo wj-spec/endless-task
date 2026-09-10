@@ -62,6 +62,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
+import { AssistantMessageRow } from "./AssistantMessageRow";
 import { StreamNotices } from "./StreamNotices";
 import { UserMessageRow } from "./UserMessageRow";
 import {
@@ -636,405 +637,48 @@ export function ChatWorkSurface({
                   turnId={turnSnapshot.turn.id}
                 />
 
-                <article className="message-row assistant-row">
-                  <div className="speaker-mark assistant-mark" aria-label="Endless">
-                    ∞
-                  </div>
-                  <div className="assistant-content">
-                    {(() => {
-                      if (!isLatest) return null;
-                      const runState = runtimeSnapshot?.runState;
-                      const running =
-                        runState?.runId === turnSnapshot.turn.id &&
-                        Boolean(runState.status) &&
-                        !["completed", "failed", "cancelled"].includes(
-                          runState.status,
-                        );
-                      const stage = runStageLabel({
-                        runId: turnSnapshot.turn.id,
-                        running,
-                        events: runtimeEvents,
-                        plan: isLatest
-                          ? latestPlanForRun(runtimeSnapshot, turnSnapshot.turn.id)
-                          : null,
-                      });
-                      return stage ? (
-                        <p aria-live="polite" className="activity-stage">
-                          {stage}
-                        </p>
-                      ) : null;
-                    })()}
-                    {timeline ? (
-                      <div
-                        className="turn-timeline"
-                        aria-label="执行时间流"
-                        aria-live={status === "created" || status === "running" ? "polite" : undefined}
-                      >
-                        {groupTimeline(timeline).map((group) =>
-                          group.kind === "text" ? (
-                            <div className="timeline-text" key={group.key}>
-                              <MessageContent
-                                content={group.text}
-                                resolvableCitationLabels={resolvableCitationLabels}
-                              />
-                            </div>
-                          ) : (
-                            <ToolTraceGroup
-                              active={status === "created" || status === "running"}
-                              key={group.key}
-                              tools={group.tools}
-                            />
-                          ),
-                        )}
-                      </div>
-                    ) : content ? (
-                      <div
-                        className={
-                          status === "created" || status === "running"
-                            ? "message-streaming"
-                            : undefined
-                        }
-                      >
-                        <MessageContent
-                          content={content}
-                          onCitationClick={(label) =>
-                            void handleCitationClick(turnSnapshot.turn.id, label)
-                          }
-                          resolvableCitationLabels={resolvableCitationLabels}
-                        />
-                      </div>
-                    ) : null}
-                    {openCitation?.turnId === turnSnapshot.turn.id ? (
-                      <CitationCard
-                        citation={
-                          (citationsByTurn[turnSnapshot.turn.id] ?? []).find(
-                            (item) => item.label === openCitation.label,
-                          ) ?? null
-                        }
-                        jumpDisabled={variant === "side"}
-                        onClose={() => setOpenCitation(null)}
-                        onJump={jumpCitation}
-                      />
-                    ) : null}
-                    {workspaceRefs.length > 0 &&
-                    isLatest &&
-                    variant === "main" ? (
-                      <WorkspaceRefList
-                        refs={workspaceRefs}
-                        workspaceId={
-                          conversation?.conversation.workspaceId ?? ""
-                        }
-                        onOpen={(ref: WorkspaceSourceRef) => {
-                          const workspaceId =
-                            conversation?.conversation.workspaceId ?? "";
-                          if (!workspaceId) return;
-                          setPreviewTarget({
-                            workspaceId,
-                            path: ref.path,
-                            startLine: ref.startLine,
-                            endLine: ref.endLine,
-                          });
-                        }}
-                      />
-                    ) : null}
-                    {previewTarget && isLatest && variant === "main" ? (
-                      <WorkspaceFilePreviewDrawer
-                        target={previewTarget}
-                        onClose={() => setPreviewTarget(null)}
-                      />
-                    ) : null}
-                    {!timeline && activeSnapshot && isLatest ? (
-                      <RuntimeTracePanel tools={runtimeTools} />
-                    ) : !timeline && activities.length ? (
-                      <div className="activity-list" aria-label="操作状态">
-                        {activities.map((activity) => (
-                          <div
-                            className={`activity-line is-${activity.status}`}
-                            key={activity.id}
-                          >
-                            <span aria-hidden="true" />
-                            {activity.message}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {statusPresentation ? (
-                      <div
-                        aria-atomic="true"
-                        aria-live={status === "failed" ? "assertive" : "polite"}
-                        className="turn-status"
-                        role={status === "failed" ? "alert" : "status"}
-                      >
-                        <StatusBadge
-                          label={statusPresentation.label}
-                          pulse={statusPresentation.pulse}
-                          tone={statusPresentation.tone}
-                        />
-                        {status === "failed" ? (
-                          <span className="turn-status-detail">
-                            {turnError?.message ?? "回答没有完成，请重试。"}
-                          </span>
-                        ) : null}
-                        {status === "cancelled" ? (
-                          <span className="turn-status-detail">
-                            已生成的内容会保留。
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {pendingApproval ? (
-                      <div
-                        className={`approval-prompt is-${
-                          approvalRisk(pendingApproval.metadata)
-                        }`}
-                        role="group"
-                        aria-label="操作确认"
-                      >
-                        <div className="approval-head">
-                          <span className="approval-risk-badge">
-                            {APPROVAL_RISK_LABELS[approvalRisk(pendingApproval.metadata)]}
-                          </span>
-                          <strong className="approval-summary">
-                            {pendingApproval.summary}
-                          </strong>
-                        </div>
-                        <p className="approval-reason">{pendingApproval.reason}</p>
-                        <details className="approval-context">
-                          <summary>为什么？</summary>
-                          <div className="approval-context-body">
-                            工具：
-                            {String(pendingApproval.metadata?.toolName ?? "未知")}
-                            {pendingApproval.metadata?.effect
-                              ? ` · 影响范围：${String(pendingApproval.metadata.effect)}`
-                              : ""}
-                          </div>
-                        </details>
-                        <div className="approval-actions">
-                          <button
-                            className="approval-allow"
-                            disabled={pendingAction !== null}
-                            onClick={() =>
-                              onResolveApproval(
-                                turnSnapshot.turn.id,
-                                pendingApproval.id,
-                                "approve",
-                              )
-                            }
-                            type="button"
-                          >
-                            允许一次
-                          </button>
-                          <button
-                            className="approval-deny"
-                            disabled={pendingAction !== null}
-                            onClick={() =>
-                              onResolveApproval(
-                                turnSnapshot.turn.id,
-                                pendingApproval.id,
-                                "deny",
-                              )
-                            }
-                            type="button"
-                          >
-                            不允许
-                          </button>
-                          {approvalRisk(pendingApproval.metadata) !== "high" ? (
-                            <button
-                              className="approval-modify"
-                              disabled={pendingAction !== null}
-                              onClick={() => {
-                                setModifyApprovalId(pendingApproval.id);
-                                setModifyDraft("{}");
-                                setModifyError(null);
-                              }}
-                              type="button"
-                            >
-                              修改参数
-                            </button>
-                          ) : null}
-                        </div>
-                        {modifyApprovalId === pendingApproval.id ? (
-                          <div
-                            className="approval-modify-panel"
-                            role="group"
-                            aria-label="修改工具参数"
-                          >
-                            <span className="approval-modify-label">修改参数（JSON）</span>
-                            <textarea
-                              aria-label="修改工具参数"
-                              className="approval-modify-input"
-                              onChange={(event) => setModifyDraft(event.target.value)}
-                              rows={4}
-                              spellCheck={false}
-                              value={modifyDraft}
-                            />
-                            {modifyError ? (
-                              <span className="approval-modify-error">{modifyError}</span>
-                            ) : null}
-                            <div className="approval-modify-actions">
-                              <button
-                                className="approval-modify-submit"
-                                disabled={pendingAction !== null}
-                                onClick={() => {
-                                  try {
-                                    const parsed = JSON.parse(modifyDraft);
-                                    if (
-                                      !parsed ||
-                                      typeof parsed !== "object" ||
-                                      Array.isArray(parsed)
-                                    ) {
-                                      setModifyError("参数必须是 JSON 对象。");
-                                      return;
-                                    }
-                                    onResolveApproval(
-                                      turnSnapshot.turn.id,
-                                      pendingApproval.id,
-                                      "modify",
-                                      parsed,
-                                    );
-                                    setModifyApprovalId(null);
-                                  } catch {
-                                    setModifyError("JSON 解析失败，请检查格式。");
-                                  }
-                                }}
-                                type="button"
-                              >
-                                确认修改并执行
-                              </button>
-                              <button
-                                className="approval-modify-cancel"
-                                disabled={pendingAction !== null}
-                                onClick={() => setModifyApprovalId(null)}
-                                type="button"
-                              >
-                                取消
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                        <span className="approval-timeout">
-                          不响应则暂停，不会执行。
-                        </span>
-                      </div>
-                    ) : null}
-                    {persistedVariant.variant.finishReason === "length" ? (
-                      <div className="turn-notice">回答达到长度上限，内容可能不完整。</div>
-                    ) : null}
-
-                    {(() => {
-                      const plan = isLatest
-                        ? latestPlanForRun(runtimeSnapshot, turnSnapshot.turn.id)
-                        : null;
-                      return plan ? (
-                        <PlanLine
-                          active={["created", "running"].includes(status)}
-                          busy={laneBusy}
-                          plan={plan}
-                        />
-                      ) : null;
-                    })()}
-                    {turnSnapshot.turn.conversationId ===
-                      conversation?.conversation.id &&
-                    (status === "completed" ||
-                      (isLatest && (status === "failed" || status === "cancelled"))) ? (
-                      <div className="response-actions">
-                        {content.length > 0 ? (
-                          <CopyButton ariaLabel="复制这段回答" text={content} />
-                        ) : null}
-                        {status === "completed" && content.length > 0 ? (
-                          <ResponseFeedbackControl
-                            conversationId={conversation?.conversation.id ?? null}
-                            disabled={
-                              pendingAction !== null || laneBusy || isGenerating
-                            }
-                            turnId={turnSnapshot.turn.id}
-                            variantId={persistedVariant.variant.id}
-                          />
-                        ) : null}
-                        {isLatest && (status === "failed" || status === "cancelled") ? (
-                          <button
-                            disabled={pendingAction !== null}
-                            onClick={() => onRetry(turnSnapshot.turn.id)}
-                            type="button"
-                          >
-                            重试
-                          </button>
-                        ) : null}
-                        {isLatest && status === "completed" ? (
-                          <button
-                            disabled={
-                              pendingAction !== null || laneBusy || isGenerating
-                            }
-                            onClick={() => onRegenerate(turnSnapshot.turn.id)}
-                            type="button"
-                          >
-                            重新生成
-                          </button>
-                        ) : null}
-                        {isLatest &&
-                        turnSnapshot.responseVariants.length > 1 &&
-                        status === "completed" ? (
-                          <div className="variant-switcher" aria-label="其他回答">
-                            <button
-                              aria-label="上一个回答"
-                              disabled={
-                                selectedIndex <= 0 ||
-                                pendingAction !== null ||
-                                laneBusy
-                              }
-                              onClick={() =>
-                                onSelectVariant(
-                                  turnSnapshot.turn.id,
-                                  turnSnapshot.responseVariants[selectedIndex - 1]
-                                    .variant.id,
-                                )
-                              }
-                              type="button"
-                            >
-                              <ChevronIcon direction="left" size={16} />
-                            </button>
-                            <span>
-                              {selectedIndex + 1} / {turnSnapshot.responseVariants.length}
-                            </span>
-                            <button
-                              aria-label="下一个回答"
-                              disabled={
-                                selectedIndex >=
-                                  turnSnapshot.responseVariants.length - 1 ||
-                                pendingAction !== null ||
-                                laneBusy
-                              }
-                              onClick={() =>
-                                onSelectVariant(
-                                  turnSnapshot.turn.id,
-                                  turnSnapshot.responseVariants[selectedIndex + 1]
-                                    .variant.id,
-                                )
-                              }
-                              type="button"
-                            >
-                              <ChevronIcon direction="right" size={16} />
-                            </button>
-                          </div>
-                        ) : null}
-                        {status === "completed" && onCreateBranch ? (
-                          <button
-                            aria-busy={pendingAction === "fork-lane"}
-                            aria-label="从此回答创建分支"
-                            className="branch-from-answer"
-                            disabled={isGenerating || pendingAction !== null || laneBusy}
-                            onClick={() => onCreateBranch(turnSnapshot.turn.id)}
-                            title="保留到这条完整回答，在右侧开始分支"
-                            type="button"
-                          >
-                            <BranchIcon size={16} />
-                            {pendingAction === "fork-lane" ? "正在创建…" : "创建分支"}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </article>
+                <AssistantMessageRow
+                  activeSnapshot={activeSnapshot}
+                  activities={activities}
+                  content={content}
+                  conversation={conversation}
+                  isGenerating={isGenerating}
+                  isLatest={isLatest}
+                  jumpCitation={jumpCitation}
+                  laneBusy={laneBusy}
+                  onCitationClick={(tid, label) => {
+                    void handleCitationClick(tid, label);
+                  }}
+                  onCreateBranch={onCreateBranch}
+                  onRegenerate={onRegenerate}
+                  onResolveApproval={onResolveApproval}
+                  onResolveArtifactProposal={onResolveArtifactProposal}
+                  onResolveKnowledgeProposal={onResolveKnowledgeProposal}
+                  onResolveMemoryProposal={onResolveMemoryProposal}
+                  onResolveTaskProposal={onResolveTaskProposal}
+                  onRetry={onRetry}
+                  onSelectVariant={onSelectVariant}
+                  pendingAction={pendingAction}
+                  pendingApproval={pendingApproval}
+                  persistedVariant={persistedVariant}
+                  proposalBusyId={proposalBusyId}
+                  proposalErrors={proposalErrors}
+                  resolvableCitationLabels={resolvableCitationLabels}
+                  resolvedArtifacts={resolvedArtifacts}
+                  responseVariants={turnSnapshot.responseVariants}
+                  selectedIndex={selectedIndex}
+                  turnError={turnError}
+                  runtimeEvents={runtimeEvents}
+                  runtimeSnapshot={runtimeSnapshot}
+                  runtimeTools={runtimeTools}
+                  status={status}
+                  timeline={timeline}
+                  turnId={turnSnapshot.turn.id}
+                  turnProposals={turnProposals}
+                  variant={variant}
+                  workspaceRefs={workspaceRefs}
+                  interactions={turnInteractions}
+                />
 
                 {(() => {
                   const proposals = turnProposals(turnSnapshot.turn.id);
@@ -1064,7 +708,7 @@ export function ChatWorkSurface({
                       {proposals.knowledge.map((proposal) => (
                         <KnowledgeProposalCard
                           busy={proposalBusyId === proposal.id}
-                          conversationWorkspaceId={
+                          data-conversation-workspace-id={
                             conversation?.conversation.workspaceId ?? null
                           }
                           error={proposalErrors[proposal.id] ?? null}
