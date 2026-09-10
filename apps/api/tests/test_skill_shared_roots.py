@@ -209,18 +209,27 @@ class CatalogBudgetTest(unittest.TestCase):
             file_path=Path(f"/tmp/skills/skill-{index:03d}/SKILL.md"),
         )
 
-    def test_large_catalog_is_bounded(self) -> None:
+    def test_large_catalog_is_bounded_by_folding(self) -> None:
+        """S5 之后默认路径靠"精选 + 折叠"，旧的字数阶梯仅作为兼容路径保留。"""
         from endless_task.skills.service import (
-            MAX_CATALOG_CHARACTERS,
+            DEFAULT_CATALOG_LIMIT,
             build_available_skills_prompt,
         )
 
         skills = tuple(self._skill(index) for index in range(200))
-        text = build_available_skills_prompt(skills)
-        self.assertLessEqual(len(text), MAX_CATALOG_CHARACTERS)
-        # 截断后必须告诉模型还有哪些技能可以显式调用
+        selected = skills[:DEFAULT_CATALOG_LIMIT]
+        text = build_available_skills_prompt(
+            selected, folded=len(skills) - len(selected)
+        )
+        # 折叠后必须告诉模型还有哪些技能、以及怎么找
         self.assertIn("未列出", text)
         self.assertIn("/技能名", text)
+        self.assertIn("skill_search", text)
+        # 兼容路径（legacy_steps）仍然受总字符上限约束
+        legacy = build_available_skills_prompt(skills, legacy_steps=True)
+        from endless_task.skills.service import MAX_CATALOG_CHARACTERS
+
+        self.assertLessEqual(len(legacy), MAX_CATALOG_CHARACTERS)
 
     def test_small_catalog_keeps_full_descriptions(self) -> None:
         from endless_task.skills.service import build_available_skills_prompt

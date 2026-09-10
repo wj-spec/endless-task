@@ -15,7 +15,15 @@ const skill = {
 
 const listSkills = vi.fn(async () => ({
   userSkillsDirectory: "/tmp/skills",
-  items: [skill],
+  items: [
+    { ...skill, pinned: true, inCatalog: true, source: "~/.agents/skills" },
+    {
+      ...skill,
+      name: "folded-skill",
+      pinned: false,
+      inCatalog: false,
+    },
+  ],
 }));
 const listSkillPackages = vi.fn(async () => ({
   enabled: true,
@@ -100,6 +108,15 @@ const render = async () => {
 };
 
 describe("技能工作台（S2）", () => {
+  it("展示来源、固定状态与未进目录说明", async () => {
+    await render();
+    expect(container.textContent).toContain("~/.agents/skills");
+    expect(container.textContent).toContain("已固定");
+    expect(container.textContent).toContain("未进目录");
+    expect(byText("取消固定")).toBeTruthy();
+    expect(byText("固定到目录")).toBeTruthy();
+  });
+
   it("工具栏提供导入/新建，卡片显示版本与操作", async () => {
     await render();
     expect(byText("导入技能")).toBeTruthy();

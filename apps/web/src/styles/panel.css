@@ -3422,3 +3422,10 @@
   color: var(--muted);
   font-size: var(--fs-1);
 }
+
+/* S5：固定到默认目录 */
+.knowledge-badge.is-pinned {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}

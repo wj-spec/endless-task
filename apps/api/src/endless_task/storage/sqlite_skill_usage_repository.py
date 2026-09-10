@@ -80,6 +80,32 @@ class SqliteSkillUsageRepository:
             ).fetchall()
         return _group(rows)
 
+    def activity_index(self, *, since: str) -> Dict[Tuple[str, str], Tuple[int, str]]:
+        """S5：按 (scope, name) 汇总 `since` 之后的调用/读取次数与最近时间。
+
+        只统计 `invoked`/`body_read`（真的用过），不统计 `surfaced`（只是进过目录）。
+        """
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT scope, name, kind, count, last_at
+                FROM skill_usage
+                WHERE kind IN ('invoked', 'body_read')
+                """
+            ).fetchall()
+        index: Dict[Tuple[str, str], Tuple[int, str]] = {}
+        for row in rows:
+            last_at = row["last_at"]
+            if not isinstance(last_at, str) or last_at < since:
+                continue
+            key = (str(row["scope"]), str(row["name"]))
+            count, previous = index.get(key, (0, ""))
+            index[key] = (
+                count + int(row["count"]),
+                max(previous, last_at),
+            )
+        return index
+
     def snapshot_all(self) -> Tuple[SkillUsageRow, ...]:
         with self._database.connect() as connection:
             rows = connection.execute(

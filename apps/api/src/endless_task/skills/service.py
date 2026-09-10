@@ -28,16 +28,84 @@ INVOKE_INVALID = "invalid"
 #: S3：目录里单条描述的上限（避免一个技能吃掉整个前缀预算）。
 MAX_CATALOG_DESCRIPTION_CHARACTERS = 500
 
-#: S4：整个技能目录的字符预算。装了共享技能后目录可能很大（41 个技能 ≈ 14KB），
-#: 每轮都注入会稳定吃掉上下文，所以超预算时先压缩描述、再截断条目。
+#: S5：默认目录预算（见 05 文档）——展开条目数 / 单条摘要 / 总字符。
+DEFAULT_CATALOG_LIMIT = 8
+DEFAULT_CATALOG_SUMMARY_CHARACTERS = 160
+DEFAULT_CATALOG_BUDGET_CHARACTERS = 3_000
+#: 兼容旧调用方（不再用于默认路径）。
 MAX_CATALOG_CHARACTERS = 12_000
 _CATALOG_DESCRIPTION_STEPS = (500, 240, 160, 100, 60)
+
+#: "最近常用"的时间窗。
+_RECENT_USAGE_DAYS = 30
+
+
+def _render_catalog(
+    visible: Tuple[Skill, ...],
+    *,
+    folded: int,
+    summary_characters: int,
+    budget: int,
+) -> str:
+    """S5：默认目录渲染——精选条目 + 折叠时的能力感知行。"""
+    lines = [
+        "以下技能为特定任务提供专门指引（这里只有摘要，未读取正文前不要据其行动）。"
+        "任务与某技能描述匹配时，先调用 read_skill_file（传 name）读取全文，"
+        "再按其中步骤执行；技能内相对路径以其所在目录解析。",
+        "<available_skills>",
+    ]
+    for skill in visible:
+        description = skill.description.strip()
+        if len(description) > summary_characters:
+            description = description[:summary_characters].rstrip() + "…"
+        lines.extend(
+            [
+                "  <skill>",
+                f"    <name>{escape(skill.name)}</name>",
+                f"    <description>{escape(description)}</description>",
+                "  </skill>",
+            ]
+        )
+    lines.append("</available_skills>")
+    if folded > 0:
+        lines.append(
+            f"本地还有 {folded} 个技能未列出。需要特定领域做法时，先用 skill_search "
+            "在「工作区 / 全局」检索（含 ~/.claude/skills 等共享目录）找出技能名，"
+            "再用 read_skill_file(name) 读正文；本地确实没有时，可以提议从生态安装"
+            "（安装需要用户确认）。用户用 /技能名 指定的技能会直接加载，不必检索。"
+        )
+    text = "\n".join(lines)
+    if len(text) > budget and folded > 0:
+        # 兜底：只保留能力感知行 + 最前面的条目，绝不超预算。
+        head = "\n".join(lines[: len(lines) - 1])
+        trimmed: list[str] = []
+        for line in lines[2 : len(lines) - 1]:
+            attempt = "\n".join([*lines[:2], *trimmed, line, lines[-2]])
+            if len(attempt) > budget - len(lines[-1]) - 2:
+                break
+            trimmed.append(line)
+        del head
+        text = "\n".join([*lines[:2], *trimmed, lines[-2], lines[-1]])
+    return text
+
+
+def _iso_days_ago(days: int, *, now: Optional[str] = None) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    if now:
+        return now
+    moment = datetime.now(timezone.utc) - timedelta(days=max(0, days))
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def build_available_skills_prompt(
     skills: Tuple[Skill, ...],
     *,
     locator_mode: bool = False,
+    folded: int = 0,
+    summary_characters: int = DEFAULT_CATALOG_SUMMARY_CHARACTERS,
+    budget: int = DEFAULT_CATALOG_BUDGET_CHARACTERS,
+    legacy_steps: bool = False,
 ) -> str:
     """技能目录：**只给名称 + 截断描述，不给路径**（S3）。
 
@@ -48,6 +116,14 @@ def build_available_skills_prompt(
     visible = [skill for skill in skills if skill.valid and not skill.disable_model_invocation]
     if not visible:
         return ""
+    if not legacy_steps:
+        return _render_catalog(
+            tuple(visible),
+            folded=folded,
+            summary_characters=summary_characters,
+            budget=budget,
+        )
+
     def render(entries: tuple[Skill, ...], description_cap: int) -> str:
         lines = [
             "以下技能为特定任务提供专门指引（这里只有摘要，未读取正文前不要据其行动）。"
@@ -102,12 +178,15 @@ class SkillService:
         override_repository: SqliteSkillOverrideRepository,
         extra_skill_dirs: Sequence[Path] = (),
         home_dir: Optional[Path] = None,
+        usage_repository=None,
     ) -> None:
         self._user_dir = user_dir
         self._database_path = database_path
         self._override_repository = override_repository
         #: S4：除应用目录外的共享技能根（~/.claude/skills 等 + 环境变量追加）。
         self._extra_skill_dirs = tuple(extra_skill_dirs)
+        #: S5：使用统计（决定"最近常用"进入默认目录）。
+        self._usage_repository = usage_repository
         #: 共享根使用的 home；显式传入优先，其次 `ENDLESS_TASK_SKILL_HOME`（测试隔离）。
         override = (os.environ.get("ENDLESS_TASK_SKILL_HOME") or "").strip()
         self._home_dir = (
@@ -137,6 +216,11 @@ class SkillService:
         workspace_disabled = disabled.get(
             (SkillScope.WORKSPACE.value, workspace_id), set()
         )
+        pinned = self._override_repository.pinned_index()
+        user_pinned = pinned.get((SkillScope.USER.value, ""), set())
+        workspace_disabled_pinned = pinned.get(
+            (SkillScope.WORKSPACE.value, workspace_id), set()
+        )
         return tuple(
             Skill(
                 name=skill.name,
@@ -148,6 +232,13 @@ class SkillService:
                 when_to_use=skill.when_to_use,
                 source=skill.source,
                 source_rank=skill.source_rank,
+                pinned=(
+                    skill.name in (
+                        workspace_disabled_pinned
+                        if skill.scope == SkillScope.WORKSPACE
+                        else user_pinned
+                    )
+                ),
                 disabled=skill.name in (
                     workspace_disabled if skill.scope == SkillScope.WORKSPACE else user_disabled
                 ),
@@ -174,6 +265,22 @@ class SkillService:
             disabled=disabled,
         )
 
+    def set_pinned(
+        self,
+        *,
+        scope: SkillScope,
+        name: str,
+        pinned: bool,
+        workspace_id: str = "",
+    ) -> None:
+        """S5：固定/取消固定进默认目录。"""
+        self._override_repository.set_pinned(
+            scope=scope.value,
+            workspace_id="" if scope is SkillScope.USER else workspace_id,
+            name=name,
+            pinned=pinned,
+        )
+
     def visible_skills(
         self,
         workspace_root: Optional[Path] = None,
@@ -187,6 +294,69 @@ class SkillService:
             )
             if skill.valid and not skill.disabled
         )
+
+    def catalog_skills(
+        self,
+        workspace_root: Optional[Path] = None,
+        *,
+        workspace_id: str = "",
+        limit: int = DEFAULT_CATALOG_LIMIT,
+        recent_days: int = _RECENT_USAGE_DAYS,
+        now: Optional[str] = None,
+    ) -> Tuple[Tuple[Skill, ...], int]:
+        """S5：挑出进默认目录的精选技能，返回 (精选, 被折叠数量)。
+
+        规则（05 §3.1）：工作区技能 > 用户固定 > 最近常用（invoked/body_read），
+        同级按使用次数降序、名称升序；其余折叠但不删除——
+        仍可被 ``/技能名`` 显式调用或 ``skill_search`` 检索到。
+        """
+        candidates = [
+            skill
+            for skill in self.visible_skills(
+                workspace_root, workspace_id=workspace_id
+            )
+            if not skill.disable_model_invocation
+        ]
+        if not candidates:
+            return (), 0
+        pinned = self._override_repository.pinned_index()
+        pinned_names = pinned.get((SkillScope.USER.value, ""), set()) | pinned.get(
+            (SkillScope.WORKSPACE.value, workspace_id), set()
+        )
+        since = _iso_days_ago(recent_days, now=now)
+        activity = self._usage_activity(since)
+
+        def activity_count(skill: Skill) -> int:
+            return activity.get((skill.scope.value, skill.name), (0, ""))[0]
+
+        # 必进项：工作区技能（项目专属）+ 用户固定（用户意图优先于统计）。
+        # 它们不受 limit 挤占，只受一个安全上限约束，避免目录重新膨胀。
+        hard_max = max(limit, limit * 2)
+        always = [
+            skill
+            for skill in candidates
+            if skill.scope is SkillScope.WORKSPACE or skill.name in pinned_names
+        ]
+        always.sort(key=lambda skill: (0 if skill.scope is SkillScope.WORKSPACE else 1, skill.name))
+        always = always[:hard_max]
+        always_names = {skill.name for skill in always}
+
+        rest = sorted(
+            (skill for skill in candidates if skill.name not in always_names),
+            key=lambda skill: (-activity_count(skill), skill.name),
+        )
+        remaining_slots = max(0, max(1, limit) - len(always))
+        selected = tuple([*always, *rest[:remaining_slots]])
+        return selected, max(0, len(candidates) - len(selected))
+
+    def _usage_activity(self, since: str):
+        repository = getattr(self, "_usage_repository", None)
+        if repository is None:
+            return {}
+        try:
+            return repository.activity_index(since=since)
+        except Exception:  # noqa: BLE001 统计不可用不影响目录生成
+            return {}
 
     def invocable_skills(
         self,

@@ -415,17 +415,17 @@ export const chatApi = {
   patchSkill: (
     scope: "user" | "workspace",
     name: string,
-    disabled: boolean,
+    body: { disabled?: boolean; pinned?: boolean },
     workspaceId?: string | null,
   ) => {
     const parameters = new URLSearchParams();
     if (workspaceId) parameters.set("workspace", workspaceId);
     const suffix = parameters.size > 0 ? `?${parameters.toString()}` : "";
-    return request<{ disabled: boolean }>(
+    return request<{ disabled?: boolean; pinned?: boolean }>(
       `/skills/${scope}/${encodeURIComponent(name)}${suffix}`,
       {
         method: "PATCH",
-        body: JSON.stringify({ disabled }),
+        body: JSON.stringify(body),
       },
     );
   },

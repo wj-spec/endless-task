@@ -33,6 +33,8 @@ class Skill:
     source: str = ""
     #: 来源优先级（越大越优先，用于同名覆盖）。
     source_rank: int = 0
+    #: S5：是否被用户固定进默认目录。
+    pinned: bool = False
     disabled: bool = False
     disable_model_invocation: bool = False
     #: S1：调用策略（与模型调用解耦）。user_invocable 决定"用户 /技能名"是否可用。

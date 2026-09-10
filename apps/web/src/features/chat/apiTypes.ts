@@ -119,6 +119,10 @@ export type Skill = {
   whenToUse?: string;
   /** S4：技能来源标签（如 `~/.claude/skills`）。 */
   source?: string;
+  /** S5：是否固定进默认目录。 */
+  pinned?: boolean;
+  /** S5：是否出现在模型的默认目录里。 */
+  inCatalog?: boolean;
 };
 
 export type McpToolStatus = {

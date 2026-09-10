@@ -410,6 +410,9 @@ class AppSettings:
     # locator-based prompt exposure. Default off keeps the legacy absolute
     # path behavior unchanged. Illegal env values fail startup.
     skill_packages_enabled: bool = False
+    # S5：默认技能目录预算（展开条目数 / 总字符）。见 05 文档 §3.2。
+    skill_catalog_limit: int = 8
+    skill_catalog_budget: int = 3_000
     # M6 W6-2/W6-8: runtime trace mode (08 §OE-1). Default "all" after
     # real-provider validation (2026-09-05 deepseek E2E: usage rows +
     # run/model-turn spans + trajectory export all verified). "0" disables
@@ -619,6 +622,12 @@ class AppSettings:
             provider_retry_mode=_parse_strict_mode(
                 env.get("ENDLESS_TASK_PROVIDER_RETRY_V2", "0"),
                 name="ENDLESS_TASK_PROVIDER_RETRY_V2",
+            ),
+            skill_catalog_limit=int(
+                os.environ.get("ENDLESS_TASK_SKILL_CATALOG_LIMIT") or 8
+            ),
+            skill_catalog_budget=int(
+                os.environ.get("ENDLESS_TASK_SKILL_CATALOG_BUDGET") or 3_000
             ),
             skill_packages_enabled=_parse_strict_flag(
                 env.get("ENDLESS_TASK_SKILL_PACKAGES", "0"),
@@ -1135,7 +1144,9 @@ class ProviderDefaultModelBody(BaseModel):
 class SkillPatchBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    disabled: bool
+    disabled: Optional[bool] = None
+    #: S5：固定/取消固定进默认目录。
+    pinned: Optional[bool] = None
 
 
 class SkillValidateBody(BaseModel):
@@ -2696,15 +2707,15 @@ def _build_container(
         delegation_handler_ref = delegation_handler
     else:
         delegation_handler_ref = None
+    skill_usage_repository = SqliteSkillUsageRepository(database)
     skill_service = SkillService(
         user_dir=settings.database_path.parent / "skills",
         extra_skill_dirs=_parse_skill_dirs(os.environ.get("ENDLESS_TASK_SKILL_DIRS")),
         home_dir=_skill_home_dir(),
         database_path=settings.database_path,
         override_repository=skill_override_repository,
+        usage_repository=skill_usage_repository,
     )
-
-    skill_usage_repository = SqliteSkillUsageRepository(database)
 
     def _record_skill_usage(
         skill: Skill, kind: str, *, workspace_id: str = ""
@@ -2735,13 +2746,19 @@ def _build_container(
                 root = Path(workspace.root_path).expanduser() if workspace.root_path else None
             except Exception:
                 root = None
-        visible = skill_service.visible_skills(
-            root, workspace_id=workspace_id or ""
+        # S5：默认目录只放精选技能（工作区 + pin + 最近常用），其余折叠成
+        # 一行"能力感知"，由 skill_search 兜底。
+        selected, folded = skill_service.catalog_skills(
+            root,
+            workspace_id=workspace_id or "",
+            limit=settings.skill_catalog_limit,
         )
-        for skill in visible:
+        for skill in selected:
             _record_skill_usage(skill, "surfaced", workspace_id=workspace_id or "")
         return build_available_skills_prompt(
-            visible,
+            selected,
+            folded=folded,
+            budget=settings.skill_catalog_budget,
             locator_mode=settings.skill_packages_enabled,
         )
 
@@ -5077,6 +5094,14 @@ def create_app(
         items = container.skill_service.list_skills(
             root, workspace_id=workspace or ""
         )
+        catalog_names = {
+            skill.name
+            for skill in container.skill_service.catalog_skills(
+                root,
+                workspace_id=workspace or "",
+                limit=container.settings.skill_catalog_limit,
+            )[0]
+        }
         return {
             "userSkillsDirectory": str(
                 container.settings.database_path.parent / "skills"
@@ -5091,6 +5116,9 @@ def create_app(
                     "digest": skill.digest,
                     "whenToUse": skill.when_to_use,
                     "source": skill.source,
+                    "pinned": skill.pinned,
+                    # 是否出现在模型的默认目录里（未出现仍可用 /技能名 或 skill_search）
+                    "inCatalog": skill.name in catalog_names,
                     "disabled": skill.disabled,
                     "disableModelInvocation": skill.disable_model_invocation,
                     "diagnostics": [
@@ -5471,13 +5499,25 @@ def create_app(
         # （list_skills 只查 (user, "")）看不到这次禁用——历史 UI 会带工作区参数。
         target_scope = SkillScope(scope)
         workspace_key = "" if target_scope is SkillScope.USER else (workspace or "")
-        container.skill_service.set_disabled(
-            scope=target_scope,
-            name=name,
-            disabled=body.disabled,
-            workspace_id=workspace_key,
-        )
-        return {"disabled": body.disabled}
+        if body.disabled is None and body.pinned is None:
+            raise ApiRequestError(
+                "invalid_request", "需要 disabled 或 pinned 之一。"
+            )
+        if body.disabled is not None:
+            container.skill_service.set_disabled(
+                scope=target_scope,
+                name=name,
+                disabled=body.disabled,
+                workspace_id=workspace_key,
+            )
+        if body.pinned is not None:
+            container.skill_service.set_pinned(
+                scope=target_scope,
+                name=name,
+                pinned=body.pinned,
+                workspace_id=workspace_key,
+            )
+        return {"disabled": body.disabled, "pinned": body.pinned}
 
     @app.get("/workspaces")
     async def list_workspaces() -> dict[str, object]:

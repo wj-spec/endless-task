@@ -66,12 +66,30 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
       await chatApi.patchSkill(
         skill.scope,
         skill.name,
-        !skill.disabled,
+        { disabled: !skill.disabled },
         workspaceId,
       );
       await refreshAll();
     } catch {
       setActionError("更新技能状态失败，请重试。");
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  const togglePinned = async (skill: Skill) => {
+    setBusyName(skill.name);
+    setActionError(null);
+    try {
+      await chatApi.patchSkill(
+        skill.scope,
+        skill.name,
+        { pinned: !skill.pinned },
+        workspaceId,
+      );
+      await refreshAll();
+    } catch {
+      setActionError("更新固定状态失败，请重试。");
     } finally {
       setBusyName(null);
     }
@@ -207,6 +225,17 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
               {skill.source ? (
                 <span className="knowledge-badge">{skill.source}</span>
               ) : null}
+              {skill.pinned ? (
+                <span className="knowledge-badge is-pinned">已固定</span>
+              ) : null}
+              {skill.inCatalog === false ? (
+                <span
+                  className="knowledge-badge"
+                  title="不在模型的默认目录里；可用 /技能名 显式调用，模型也能通过 skill_search 检索到"
+                >
+                  未进目录
+                </span>
+              ) : null}
               {pack ? (
                 <span className="knowledge-badge">v{pack.version}</span>
               ) : skill.version ? (
@@ -239,6 +268,14 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
                   : skill.disabled
                     ? "启用"
                     : "禁用"}
+              </button>
+              <button
+                disabled={busyName === skill.name}
+                onClick={() => void togglePinned(skill)}
+                title="固定后进入模型的默认技能目录"
+                type="button"
+              >
+                {skill.pinned ? "取消固定" : "固定到目录"}
               </button>
               <button
                 aria-expanded={expanded === key}
