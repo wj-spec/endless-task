@@ -20,6 +20,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from endless_task.runtime_v2.execution import (
+    AgentRunExecutor,
+    ModelTurnRunner,
+    ToolExecutionCoordinator,
+)
+from endless_task.runtime_v2.gateway import (
+    AgentSessionConnection,
+    AgentSessionDriver,
+    GatewayToolApprovalGate,
+    ProductRuntimeEventProjection,
+    RuntimeV2SessionGateway,
+)
 from endless_task.storage import Database
 from endless_task.storage.sqlite_runtime_v2_repository import (
     SqliteRuntimeV2Repository,
@@ -47,6 +59,15 @@ TRACKED = {
     "EditWorkspaceFileTool": EditWorkspaceFileTool,
     "ManageWorkspacePathsTool": ManageWorkspacePathsTool,
     "DeleteWorkspaceFileTool": DeleteWorkspaceFileTool,
+    # 引擎类（拆 execution.py / gateway.py 时冻结）
+    "ToolExecutionCoordinator": ToolExecutionCoordinator,
+    "ModelTurnRunner": ModelTurnRunner,
+    "AgentRunExecutor": AgentRunExecutor,
+    "GatewayToolApprovalGate": GatewayToolApprovalGate,
+    "ProductRuntimeEventProjection": ProductRuntimeEventProjection,
+    "AgentSessionConnection": AgentSessionConnection,
+    "AgentSessionDriver": AgentSessionDriver,
+    "RuntimeV2SessionGateway": RuntimeV2SessionGateway,
 }
 
 
