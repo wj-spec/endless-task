@@ -8,7 +8,6 @@ import type {
   ProviderProfile,
   ResponseVariantSnapshot,
   RuntimeV2Lane,
-  RuntimeV2RecoveryReport,
   RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
   TurnStatus,
@@ -62,6 +61,7 @@ import { StatusBadge } from "../ui/StatusBadge";
 import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
+import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
 import { useTurnFocus } from "./useTurnFocus";
 import { skillCommandsOf } from "../skills/skillCommand";
 
@@ -187,47 +187,6 @@ const turnStatusPresentation = (
   return null;
 };
 
-const recoveryPresentation = (report: RuntimeV2RecoveryReport) => {
-  const reasons = new Set(report.findings.map((finding) => finding.reason));
-  if (
-    reasons.has("waiting_approval") ||
-    reasons.has("tool_side_effect_uncertain") ||
-    reasons.has("tool_result_missing")
-  ) {
-    return {
-      title: "上次操作需要确认",
-      message: "应用中断时可能正在执行工具。请先检查相关结果，再结束这次运行。",
-      canRetry: false,
-    };
-  }
-  if (reasons.has("cancellation_pending")) {
-    return {
-      title: "上次停止操作未完成",
-      message: "应用在停止运行时中断，请结束这次运行后再继续。",
-      canRetry: false,
-    };
-  }
-  if (report.classification === "non_recoverable") {
-    return {
-      title: "上次运行无法恢复",
-      message: "运行记录不完整，请结束这次运行后重新发送消息。",
-      canRetry: false,
-    };
-  }
-  if (reasons.has("interrupted_model_turn")) {
-    return {
-      title: "上一条回复未完成",
-      message: "应用在生成回复时中断，可以重新生成这条回复。",
-      canRetry: report.action === "resume",
-    };
-  }
-  return {
-    title: "上次运行未完成",
-    message: "应用在运行完成前中断，可以重新尝试或结束这次运行。",
-    canRetry:
-      report.classification === "recoverable" && report.action === "resume",
-  };
-};
 
 const APPROVAL_RISK_LABELS: Record<"low" | "medium" | "high", string> = {
   low: "低风险",
@@ -694,53 +653,12 @@ export function ChatWorkSurface({
           />
         ) : null}
 
-        {runtimeConnectionPhase === "reconnecting" ? (
-          <section
-            aria-atomic="true"
-            aria-live="polite"
-            className="runtime-recovery-card is-connecting"
-            role="status"
-          >
-            <strong>正在恢复连接</strong>
-            <p>现有运行仍被保留，连接恢复前不会重复提交消息。</p>
-          </section>
-        ) : null}
-
-        {onResolveRuntimeRecovery
-          ? runtimeSnapshot?.interruptedRuns.map((report) => {
-              const presentation = recoveryPresentation(report);
-              return (
-                <section
-                  className="runtime-recovery-card"
-                  key={report.runId}
-                  role="alert"
-                >
-                  <strong>{presentation.title}</strong>
-                  <p>{presentation.message}</p>
-                  <div className="runtime-recovery-actions">
-                    {presentation.canRetry ? (
-                      <button
-                        disabled={pendingAction !== null}
-                        onClick={() => onResolveRuntimeRecovery(report.runId, "retry")}
-                        type="button"
-                      >
-                        重新生成
-                      </button>
-                    ) : null}
-                    <button
-                      disabled={pendingAction !== null}
-                      onClick={() =>
-                        onResolveRuntimeRecovery(report.runId, "mark_failed")
-                      }
-                      type="button"
-                    >
-                      结束本次运行
-                    </button>
-                  </div>
-                </section>
-              );
-            })
-          : null}
+        <RuntimeRecoveryNotices
+          connectionPhase={runtimeConnectionPhase}
+          onResolveRuntimeRecovery={onResolveRuntimeRecovery}
+          pending={pendingAction !== null}
+          runtimeSnapshot={runtimeSnapshot ?? null}
+        />
 
         {loading && !conversation ? <LoadingState /> : null}
         {!loading && conversation?.turns.length === 0 ? (
