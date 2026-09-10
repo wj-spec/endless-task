@@ -13,6 +13,7 @@ const candidates: SkillInvocationCandidate[] = [
     description: "评审笔记",
     scope: "user",
     source: "~/.agents/skills",
+    pinned: true,
   },
   { name: "release-check", description: "发布检查", scope: "user" },
   { name: "other-skill", description: "别的", scope: "workspace" },
@@ -130,6 +131,14 @@ describe("ChatComposer `/技能名` 候选（S1）", () => {
     press("Enter");
     expect(draft).toBe("/release-check ");
     expect(sent).toBe(0);
+  });
+
+  it("固定进目录的候选带已固定标记", () => {
+    renderComposer();
+    type("/review");
+    expect(container.querySelector(".composer-slash-pin")?.textContent).toBe(
+      "已固定",
+    );
   });
 
   it("候选项展示来源标签", () => {

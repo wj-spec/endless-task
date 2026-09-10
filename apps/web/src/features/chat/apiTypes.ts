@@ -995,6 +995,8 @@ export type SkillInvocationCandidate = {
   whenToUse?: string;
   /** 技能来源标签（如 `~/.claude/skills`）。 */
   source?: string;
+  /** S7：是否已固定进默认目录。 */
+  pinned?: boolean;
 };
 
 export type RuntimeV2RecoveryResponse = {

@@ -3429,3 +3429,30 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
+
+/* S7：用户指定技能的回执 + 候选固定标记 */
+.composer-slash-pin {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+}
+
+.user-skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: 4px;
+}
+
+.user-skill-chip {
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+}

@@ -36,6 +36,8 @@ type ChatComposerProps = {
   contextBudget?: RuntimeV2Snapshot["contextBudget"];
   /** S1：`/技能名` 候选。 */
   skillCandidates?: SkillInvocationCandidate[];
+  /** S7：值变化时聚焦输入框并把光标放到末尾（注入技能后用）。 */
+  focusNonce?: number;
 };
 
 export function ChatComposer({
@@ -60,10 +62,19 @@ export function ChatComposer({
   onUploadFile,
   contextBudget,
   skillCandidates = [],
+  focusNonce = 0,
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+
+  useEffect(() => {
+    if (!focusNonce) return;
+    const node = composerRef.current;
+    if (!node) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, [focusNonce]);
 
   const slashMatches = useMemo(() => {
     if (slashQuery === null) return [];
@@ -225,6 +236,11 @@ export function ChatComposer({
                   >
                     <span className="composer-slash-name">/{candidate.name}</span>
                     <span className="composer-slash-desc">{candidate.description}</span>
+                    {candidate.pinned ? (
+                      <span className="composer-slash-pin" title="已固定进模型的默认技能目录">
+                        已固定
+                      </span>
+                    ) : null}
                     {candidate.source ? (
                       <span className="composer-slash-source">{candidate.source}</span>
                     ) : null}

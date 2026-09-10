@@ -5523,6 +5523,7 @@ def create_app(
                     "scope": skill.scope.value,
                     "whenToUse": skill.when_to_use,
                     "source": skill.source,
+                    "pinned": skill.pinned,
                 }
                 for skill in skills
             ]

@@ -66,6 +66,8 @@ type AssistantPanelProps = {
   onCapabilitiesChanged: () => void | Promise<void>;
   onClose: () => void;
   onOpenConversation: (conversationId: string, focusTurnId?: string | null) => void;
+  /** S7：把技能注入当前会话输入框。 */
+  onInjectSkill?: (name: string) => void;
   onTabChange: (tab: AssistantPanelTab) => void;
   pendingProposals: PendingProposal[];
   onProvidersChanged: () => void | Promise<void>;
@@ -88,6 +90,7 @@ export function AssistantPanel({
   onCapabilitiesChanged,
   onClose,
   onOpenConversation,
+  onInjectSkill,
   onTabChange,
   pendingProposals,
   onProvidersChanged,
@@ -224,6 +227,7 @@ export function AssistantPanel({
           <KnowledgeContent workspaceId={workspaceId} workspaces={workspaces} />
         ) : tab === "skills" ? (
           <SkillsContent
+            onInjectSkill={onInjectSkill}
             onChanged={onCapabilitiesChanged}
             workspaceId={workspaceId}
           />

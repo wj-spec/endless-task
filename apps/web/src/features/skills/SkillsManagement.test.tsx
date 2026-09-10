@@ -100,9 +100,11 @@ afterEach(() => {
   container.remove();
 });
 
-const render = async () => {
+const render = async (onInjectSkill?: (name: string) => void) => {
   await act(async () => {
-    root.render(<SkillsContent workspaceId="ws_1" />);
+    root.render(
+      <SkillsContent onInjectSkill={onInjectSkill} workspaceId="ws_1" />,
+    );
   });
   await flush();
 };
@@ -115,6 +117,25 @@ describe("技能工作台（S2）", () => {
     expect(container.textContent).toContain("未进目录");
     expect(byText("取消固定")).toBeTruthy();
     expect(byText("固定到目录")).toBeTruthy();
+  });
+
+  it("点「注入到对话」把技能名交给上层", async () => {
+    const injected: string[] = [];
+    await render((name) => injected.push(name));
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).filter((node) => node.textContent?.trim() === "注入到对话");
+    expect(buttons.length).toBe(2);
+    await act(async () => buttons[0].click());
+    expect(injected).toEqual(["review-notes"]);
+  });
+
+  it("未提供注入回调时不渲染注入按钮", async () => {
+    await render();
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).filter((node) => node.textContent?.trim() === "注入到对话");
+    expect(buttons.length).toBe(0);
   });
 
   it("工具栏提供导入/新建，卡片显示版本与操作", async () => {

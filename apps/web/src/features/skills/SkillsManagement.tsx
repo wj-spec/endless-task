@@ -11,11 +11,20 @@ import { SkillImportForm } from "./SkillImportForm";
 type SkillsContentProps = {
   onChanged?: () => void | Promise<void>;
   workspaceId: string | null;
+  /**
+   * S7：把技能注入当前会话的下一轮（等价于在输入框预置 `/技能名 `）。
+   * 由 App 提供，实现"用户指定 → 直接注入"这条通道。
+   */
+  onInjectSkill?: (name: string) => void;
 };
 
 type FormMode = "none" | "import" | "create";
 
-export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
+export function SkillsContent({
+  onChanged,
+  workspaceId,
+  onInjectSkill,
+}: SkillsContentProps) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [userDirectory, setUserDirectory] = useState("");
   const [loading, setLoading] = useState(true);
@@ -269,6 +278,15 @@ export function SkillsContent({ onChanged, workspaceId }: SkillsContentProps) {
                     ? "启用"
                     : "禁用"}
               </button>
+              {onInjectSkill ? (
+                <button
+                  onClick={() => onInjectSkill(skill.name)}
+                  title="在输入框预置 /技能名，发送时直接注入该技能正文"
+                  type="button"
+                >
+                  注入到对话
+                </button>
+              ) : null}
               <button
                 disabled={busyName === skill.name}
                 onClick={() => void togglePinned(skill)}

@@ -62,6 +62,7 @@ import { StatusBadge } from "../ui/StatusBadge";
 import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { useTurnFocus } from "./useTurnFocus";
+import { skillCommandsOf } from "../skills/skillCommand";
 
 type ChatWorkSurfaceProps = {
   conversation: ConversationSnapshot | null;
@@ -139,6 +140,8 @@ type ChatWorkSurfaceProps = {
   workspacePanelOpen?: boolean;
   /** S1：`/技能名` 候选。 */
   skillCandidates?: SkillInvocationCandidate[];
+  /** S7：注入技能后聚焦输入框（值变化即聚焦）。 */
+  composerFocusNonce?: number;
   onOpenWorkspaceSettings?: () => void;
   onEditResendMessage?: (turnId: string, content: string) => void;
   editedUserMessages?: Record<string, string>;
@@ -325,6 +328,7 @@ export function ChatWorkSurface({
   onToggleWorkspace,
   workspacePanelOpen,
   skillCandidates = [],
+  composerFocusNonce = 0,
   onEditResendMessage,
   editedUserMessages,
   workspaces,
@@ -947,6 +951,21 @@ export function ChatWorkSurface({
                       </>
                     ) : (
                       <>
+                        {skillCommandsOf(
+                          editedUserMessages?.[turnSnapshot.turn.id] ??
+                            turnSnapshot.userMessage.content,
+                        ).length > 0 ? (
+                          <div className="user-skill-chips">
+                            {skillCommandsOf(
+                              editedUserMessages?.[turnSnapshot.turn.id] ??
+                                turnSnapshot.userMessage.content,
+                            ).map((name) => (
+                              <span className="user-skill-chip" key={name}>
+                                已加载技能 /{name}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                         <div className="user-copy">
                           {editedUserMessages?.[turnSnapshot.turn.id] ??
                             turnSnapshot.userMessage.content}
@@ -1506,6 +1525,7 @@ export function ChatWorkSurface({
         onSend={onSend}
         onUploadFile={onUploadFile}
         skillCandidates={skillCandidates}
+        focusNonce={composerFocusNonce}
         steerable={currentLaneHasActiveRun}
       />
 

@@ -153,6 +153,7 @@ export function App() {
   const railCollapsed = railPreferredCollapsed;
 
   const [toasts, setToasts] = useState<TaskNotification[]>([]);
+  const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const activeWorkspace = useMemo(
     () =>
       chat.workspaces.find(
@@ -216,6 +217,17 @@ export function App() {
       cancelled = true;
     };
   }, [chat.workspaceId]);
+
+  /** S7：把技能注入当前会话输入框（用户指定 → 发送时直接注入正文）。 */
+  const injectSkillIntoComposer = (name: string) => {
+    const existing = chat.draft.trim();
+    if (!existing.startsWith(`/${name} `) && existing !== `/${name}`) {
+      chat.setDraft(existing ? `/${name} ${existing}` : `/${name} `);
+    }
+    dispatchSurface({ type: "close" });
+    // 通过 nonce 让 composer 自己聚焦并把光标放到末尾。
+    setComposerFocusNonce((value) => value + 1);
+  };
 
   const openAssistantPanel = (tab: AssistantPanelTab = "notifications") => {
     void chat.refreshCapabilities();
@@ -400,6 +412,7 @@ export function App() {
         onToggleWorkspace={workspaceVisible ? toggleWorkspacePanel : undefined}
         workspacePanelOpen={workspaceVisible && !workspaceCollapsed}
         skillCandidates={skillCandidates}
+        composerFocusNonce={composerFocusNonce}
         onOpenWorkspaceSettings={
           activeWorkspace
             ? () => {
@@ -677,6 +690,7 @@ export function App() {
           onOpenConversation={(conversationId, focusTurnId) => {
             void chat.openConversation(conversationId, { focusTurnId });
           }}
+          onInjectSkill={injectSkillIntoComposer}
           onTabChange={(tab) =>
             dispatchSurface({ type: "open-assistant", tab })
           }
