@@ -104,7 +104,29 @@ class EvaluationService:
                 for item in citations
                 if isinstance(item, dict) and item.get("label")
             )
+        # v2 的注入按 **run id** 记账：`build_runtime_v2_context_prefix` 传
+        # `turn_id=run_id`（前端 conversationSnapshotMapper 也把
+        # `sourceRunId` 当作 `turn.id`，所以 UI 侧天然对齐）。评测侧却按
+        # **model turn id** 遍历回答，于是真实注入的 `[K#]` 会被判成杜撰。
+        # 把 run 级标签下发给该 run 的每个 model turn（已有 turn 级记录优先）。
+        run_labels = labels.get(str(run.id))
+        if run_labels:
+            for turn_id in self._model_turn_ids(run.id):
+                labels.setdefault(turn_id, run_labels)
         return labels
+
+    def _model_turn_ids(self, run_id: str) -> tuple[str, ...]:
+        """该 run 的 model turn id（失败一律返回空，保持 fail-open）。"""
+        try:
+            turns = self._repository.list_model_turns(run_id)
+        except Exception:  # noqa: BLE001 事实采集失败不影响其它指标
+            return ()
+        ids: list[str] = []
+        for turn in turns:
+            turn_id = getattr(turn, "id", None)
+            if turn_id:
+                ids.append(str(turn_id))
+        return tuple(ids)
 
     def _memory_writes(self, run: RunRecord) -> tuple[MemoryWriteFact, ...]:
         repository = self.memory_repository

@@ -261,20 +261,77 @@ class EvaluationServiceDimensionTest(unittest.TestCase):
         result = self.service.evaluate_run(self.run)
         return {metric.key: metric for metric in result.score_card.metrics}
 
-    def test_citation_metric_uses_injected_labels(self) -> None:
-        turn = self.runtime.start_model_turn(run_id=self.run.id)
+    def _inject(self, *, turn_id: str, labels: tuple[str, ...]) -> None:
         self.retrieval.record(
             self._RetrievalEventKind.INJECTION,
             "查询",
             conversation_id=self.run.conversation_id,
-            turn_id=turn.id,
-            detail={"citations": [{"label": "K1"}]},
+            turn_id=turn_id,
+            detail={"citations": [{"label": label} for label in labels]},
         )
+
+    def _say(self, turn_id: str, text: str) -> None:
+        self.runtime.append_runtime_event(
+            run_id=self.run.id,
+            event_type="model_text_delta",
+            payload={"delta": text},
+            model_turn_id=turn_id,
+        )
+
+    def test_citation_metric_uses_injected_labels(self) -> None:
+        """生产契约：v2 注入按 run id 记账（app.py 传 turn_id=run_id）。"""
+        turn = self.runtime.start_model_turn(run_id=self.run.id)
+        self._inject(turn_id=self.run.id, labels=("K1",))
         labels = self.service._citation_labels(self.run)
         self.assertEqual({"K1"}, set(labels[turn.id]))
         # 无回答内容 → 没有标记，引用正确性为通过。
         metrics = self._metrics()
         self.assertTrue(metrics["citation_correctness"].value)
+
+    def test_run_scoped_injection_resolves_turn_markers(self) -> None:
+        """回归 HV-1：真实注入的 [K#] 不能被判成杜撰。"""
+        turn = self.runtime.start_model_turn(run_id=self.run.id)
+        self._inject(turn_id=self.run.id, labels=("K1", "K2", "K3"))
+        self._say(turn.id, "结论见 [K2]。")
+        metrics = self._metrics()
+        self.assertTrue(metrics["citation_correctness"].value)
+        self.assertEqual(EvalSeverity.INFO, metrics["citation_correctness"].severity)
+        self.assertIn("markers=1, unresolved=0", metrics["citation_correctness"].notes)
+        self.assertEqual(0, metrics["citation_unresolved_count"].value)
+
+    def test_fabricated_marker_outside_injected_set_is_blocker(self) -> None:
+        turn = self.runtime.start_model_turn(run_id=self.run.id)
+        self._inject(turn_id=self.run.id, labels=("K1",))
+        self._say(turn.id, "结论见 [K1] 与 [K9]。")
+        metrics = self._metrics()
+        self.assertFalse(metrics["citation_correctness"].value)
+        self.assertEqual(EvalSeverity.BLOCKER, metrics["citation_correctness"].severity)
+        self.assertEqual(1, metrics["citation_unresolved_count"].value)
+
+    def test_marker_without_any_injection_is_blocker(self) -> None:
+        turn = self.runtime.start_model_turn(run_id=self.run.id)
+        self._say(turn.id, "结论见 [K1]。")
+        metrics = self._metrics()
+        self.assertFalse(metrics["citation_correctness"].value)
+        self.assertEqual(1, metrics["citation_unresolved_count"].value)
+
+    def test_labels_from_other_runs_do_not_resolve(self) -> None:
+        """同一会话里别的 run 注入的编号仍然算误标（指向上文其他轮）。"""
+        turn = self.runtime.start_model_turn(run_id=self.run.id)
+        self._inject(turn_id=self.run.id, labels=("K1",))
+        self._inject(turn_id="run_other", labels=("K9",))
+        self._say(turn.id, "结论见 [K1] 与 [K9]。")
+        metrics = self._metrics()
+        self.assertFalse(metrics["citation_correctness"].value)
+        self.assertEqual(1, metrics["citation_unresolved_count"].value)
+
+    def test_turn_scoped_entry_wins_over_run_scoped_inheritance(self) -> None:
+        """若某 turn 自己就有记录，不被 run 级标签覆盖。"""
+        turn = self.runtime.start_model_turn(run_id=self.run.id)
+        self._inject(turn_id=self.run.id, labels=("K1",))
+        self._inject(turn_id=turn.id, labels=("K7",))
+        labels = self.service._citation_labels(self.run)
+        self.assertEqual({"K7"}, set(labels[turn.id]))
 
     def test_memory_writes_are_measured(self) -> None:
         from endless_task.runtime_v2 import MemoryScope
