@@ -153,7 +153,7 @@ class TerminalOpenApiTest(unittest.IsolatedAsyncioTestCase):
             workspace_id = await create_bound_workspace(client)
             spawn = _Recorder()
             with mock.patch(
-                "endless_task.api.app.open_system_terminal",
+                "endless_task.api.routes.workspaces.open_system_terminal",
                 side_effect=lambda root: open_system_terminal(
                     root, platform="darwin", spawn=spawn
                 ),
