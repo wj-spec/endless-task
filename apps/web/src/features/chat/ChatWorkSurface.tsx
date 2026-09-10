@@ -61,6 +61,7 @@ import { BranchIcon, ChevronIcon } from "../ui/Icons";
 import { StatusBadge } from "../ui/StatusBadge";
 import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
+import { SurfaceBanners } from "./SurfaceBanners";
 import { useTurnFocus } from "./useTurnFocus";
 import { skillCommandsOf } from "../skills/skillCommand";
 
@@ -588,98 +589,27 @@ export function ChatWorkSurface({
       workspacePanelOpen={workspacePanelOpen}
     />
 
-        {conversation?.conversation.kind === "ephemeral" ? (
-          <div className="branch-banner" role="note">
-            <span className="branch-banner-text">
-              临时会话
-              {conversation.parentTitle
-                ? ` · 源自《${conversation.parentTitle}》`
-                : ""}
-              {" "}· 不写入记忆，用完可丢弃
-            </span>
-            <button
-              disabled={pendingAction !== null}
-              onClick={onPromote}
-              type="button"
-            >
-              升级为正式
-            </button>
-          </div>
-        ) : null}
-
-        {viewingBranch ? (
-          <div className="branch-banner" role="note">
-            <span className="branch-banner-text">
-              <span aria-hidden="true" className="branch-banner-glyph">⑂</span>
-              <span
-                className="branch-banner-label"
-                title={
-                  currentLane?.displayName ??
-                  currentLane?.title ??
-                  currentLane?.summary ??
-                  ""
-                }
-              >
-                正在查看分支「{currentLaneLabel}」
-              </span>
-              <span className="branch-banner-hint">查看不会改变主线。</span>
-            </span>
-            <div className="branch-banner-actions">
-              {mainLane && onSwitchLane ? (
-                <button
-                  disabled={pendingAction !== null}
-                  onClick={() => onSwitchLane(mainLane.id)}
-                  type="button"
-                >
-                  返回主线
-                </button>
-              ) : null}
-              {currentLane && onPromoteLane ? (
-                <button
-                  disabled={pendingAction !== null}
-                  onClick={() => onPromoteLane(currentLane.id)}
-                  type="button"
-                >
-                  设为主线
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
-        {otherLaneRunning ? (
-          <div
-            aria-atomic="true"
-            aria-live="polite"
-            className="branch-banner runtime-conflict-banner"
-            role="status"
-          >
-            <span className="branch-banner-text">
-              「{runningLaneLabel}」正在运行；同一会话暂不支持多分支并行。
-            </span>
-            <div className="branch-banner-actions">
-              {runtimeSnapshot?.runningLaneId && onOpenRunningLane ? (
-                <button
-                  disabled={pendingAction !== null}
-                  onClick={() => onOpenRunningLane(runtimeSnapshot.runningLaneId!)}
-                  type="button"
-                >
-                  查看运行位置
-                </button>
-              ) : null}
-              {runtimeSnapshot?.runningRunId && onCancelRunningRun ? (
-                <button
-                  disabled={pendingAction !== null}
-                  onClick={() => onCancelRunningRun(runtimeSnapshot.runningRunId!)}
-                  type="button"
-                >
-                  停止后继续
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
+        <SurfaceBanners
+          canCancelRunningRun={Boolean(onCancelRunningRun)}
+          canOpenRunningLane={Boolean(onOpenRunningLane)}
+          canSwitchToMain={Boolean(mainLane && onSwitchLane)}
+          currentLane={currentLane ?? null}
+          currentLaneLabel={currentLaneLabel}
+          ephemeral={conversation?.conversation.kind === "ephemeral"}
+          mainLaneId={mainLane?.id ?? null}
+          onCancelRunningRun={onCancelRunningRun}
+          onOpenRunningLane={onOpenRunningLane}
+          onPromote={onPromote}
+          onPromoteLane={onPromoteLane}
+          onSwitchLane={onSwitchLane}
+          otherLaneRunning={otherLaneRunning}
+          parentTitle={conversation?.parentTitle ?? null}
+          pending={pendingAction !== null}
+          runningLaneId={runtimeSnapshot?.runningLaneId ?? null}
+          runningLaneLabel={runningLaneLabel}
+          runningRunId={runtimeSnapshot?.runningRunId ?? null}
+          viewingBranch={viewingBranch}
+        />
         {search.open ? (
           <SearchBar
             current={search.current}
