@@ -238,7 +238,20 @@ from endless_task.skills import (
 )
 from .container import AppContainer
 from .errors import ApiRequestError, correlation_id, error_response
+from .audit_support import audit_fact_from_event
+from .hub_support import (
+    hub_append_memory_consolidated,
+    hub_append_proposal_resolved,
+    hub_event_sse,
+)
 from .knowledge_support import emit_knowledge_duplicates
+from .runtime_v2_support import (
+    runtime_v2_lane_json,
+    runtime_v2_memory_json,
+    runtime_v2_memory_promotion_json,
+    runtime_v2_product_sse,
+    runtime_v2_run_variant_json,
+)
 from .routes.knowledge import register_knowledge_routes
 from .schemas.knowledge import (
     KnowledgeSourceBody,
@@ -2989,334 +3002,37 @@ def _repository_error_status(error: RepositoryError) -> int:
     return 500
 
 
-def _runtime_v2_product_sse(event: ProductRuntimeEventRecord) -> str:
-    payload = json.dumps(
-        product_event_json(event),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"id: {event.event_seq}\nevent: {event.event_type}\ndata: {payload}\n\n"
-
-
-def _hub_event_sse(event) -> str:
-    payload = json.dumps(
-        hub_event_json(event),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"id: {event.event_seq}\nevent: hub.{event.event_type}\ndata: {payload}\n\n"
-
-
-def _hub_append_proposal_resolved(
-    container,
-    *,
-    kind: str,
-    proposal,
-    decision: str,
-) -> None:
-    """P1-2 resolve 写点：提案 accept/reject 后推 hub 事件（pending 集合变化）。"""
-    container.hub_event_repository.append(
-        "proposal.resolved",
-        conversation_id=proposal.conversation_id,
-        data={
-            "kind": kind,
-            "proposalId": proposal.id,
-            "conversationId": proposal.conversation_id,
-            "decision": decision,
-        },
-    )
 
 
 
 
-def _audit_fact_from_event(container, event) -> Optional[AuditFact]:
-    """把一条运行事件归一化成审计事实（不认识的类型返回 None）。"""
-    event_type = getattr(event, "event_type", "")
-    payload = dict(getattr(event, "payload", {}) or {})
-    occurred_at = getattr(event, "occurred_at", "") or ""
-    fact_id = getattr(event, "event_id", "") or f"{event_type}:{occurred_at}"
-    if event_type in ("run_started", "run_completed", "run_failed", "run_cancelled"):
-        titles = {
-            "run_started": "开始运行",
-            "run_completed": "运行完成",
-            "run_failed": "运行失败",
-            "run_cancelled": "运行被取消",
-        }
-        return AuditFact(
-            fact_id=fact_id,
-            kind="run",
-            occurred_at=occurred_at,
-            title=titles[event_type],
-            summary=str(payload.get("safeMessage") or ""),
-            error_code=str(payload.get("errorCode") or ""),
-        )
-    if event_type in _AUDIT_TERMINAL_TOOL_EVENTS:
-        # 只保留终态，避免同一次调用出现 4 条（created/status/started/completed）。
-        tool_name = _audit_tool_name(container, payload)
-        return AuditFact(
-            fact_id=fact_id,
-            kind="tool",
-            occurred_at=occurred_at,
-            title=_audit_tool_title(event_type, tool_name),
-            summary=str(payload.get("safeMessage") or ""),
-            tool_name=tool_name,
-            effect=_audit_tool_effect(container, tool_name),
-            error_code=str(payload.get("errorCode") or ""),
-            payload={
-                "refs": {
-                    "toolExecutionId": payload.get("toolExecutionId"),
-                    "callId": payload.get("callId"),
-                }
-            },
-        )
-    if event_type == "approval_requested":
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        tool_name = str(metadata.get("toolName") or "")
-        effect = str(metadata.get("effect") or "")
-        return AuditFact(
-            fact_id=fact_id,
-            kind="approval",
-            occurred_at=occurred_at,
-            title="请求确认",
-            summary=str(payload.get("summary") or ""),
-            tool_name=tool_name,
-            effect=effect,
-            risk=str(metadata.get("risk") or derive_approval_risk(effect, tool_name)),
-            payload={
-                "refs": {
-                    "approvalId": payload.get("approvalId"),
-                    "toolExecutionId": payload.get("toolExecutionId"),
-                }
-            },
-        )
-    if event_type == "approval_resolved":
-        decision = str(payload.get("decision") or "")
-        tool_name = _audit_tool_name(container, payload)
-        effect = _audit_tool_effect(container, tool_name)
-        return AuditFact(
-            fact_id=fact_id,
-            kind="approval",
-            occurred_at=occurred_at,
-            title=_audit_approval_title(decision),
-            decision=decision,
-            tool_name=tool_name,
-            effect=effect,
-            risk=derive_approval_risk(effect, tool_name) if tool_name else "",
-            payload={
-                "refs": {
-                    "approvalId": payload.get("approvalId"),
-                    "toolExecutionId": payload.get("toolExecutionId"),
-                }
-            },
-        )
-    if event_type == "plan_updated":
-        steps = payload.get("steps")
-        return AuditFact(
-            fact_id=fact_id,
-            kind="plan",
-            occurred_at=occurred_at,
-            title="更新执行计划",
-            summary=str(payload.get("title") or ""),
-            payload={"refs": {"planEntryId": payload.get("planEntryId")}, "steps": steps},
-        )
-    if event_type == "run_stuck":
-        return AuditFact(
-            fact_id=fact_id,
-            kind="escalation",
-            occurred_at=occurred_at,
-            title="检测到卡住",
-            summary=str(payload.get("guidance") or ""),
-            payload={
-                "reason": "no_progress",
-                "summary": "；".join(
-                    str(item) for item in (payload.get("reasons") or ())
-                ),
-            },
-        )
-    if event_type == "run_awaiting_user":
-        return AuditFact(
-            fact_id=fact_id,
-            kind="escalation",
-            occurred_at=occurred_at,
-            title="升级：需要你决定下一步",
-            summary=str(payload.get("summary") or ""),
-            payload={
-                "reason": payload.get("reason"),
-                "summary": payload.get("summary"),
-                "options": payload.get("options"),
-            },
-        )
-    if event_type == "run_verified":
-        return AuditFact(
-            fact_id=fact_id,
-            kind="verification",
-            occurred_at=occurred_at,
-            title=f"独立验证：{payload.get('verdict') or '未知'}",
-            summary=str(payload.get("model") or ""),
-            payload={
-                "verdict": payload.get("verdict"),
-                "reasons": payload.get("reasons"),
-                "missing": payload.get("missing"),
-            },
-        )
-    return None
 
 
-#: 只有终态工具事件才进轨迹（同一次调用会产生多条状态事件）。
-_AUDIT_TERMINAL_TOOL_EVENTS = (
-    "tool_execution_completed",
-    "tool_execution_failed",
-    "tool_execution_rejected",
-    "tool_execution_expired",
-    "tool_execution_cancelled",
-)
-
-
-def _audit_tool_name(container, payload) -> str:
-    """工具名优先取事件载荷，其次回查工具执行记录（终态事件不带 toolName）。"""
-    name = str(payload.get("toolName") or "")
-    if name:
-        return name
-    execution_id = payload.get("toolExecutionId")
-    if not execution_id:
-        return ""
-    try:
-        return container.runtime_v2_repository.get_tool_execution(
-            str(execution_id)
-        ).tool_name
-    except Exception:  # noqa: BLE001 记录缺失时不影响轨迹
-        return ""
-
-
-def _audit_tool_title(event_type: str, tool_name: str) -> str:
-    label = tool_name or "工具"
-    if event_type == "tool_execution_failed":
-        return f"{label} 执行失败"
-    if event_type == "tool_execution_completed":
-        return f"{label} 执行完成"
-    return f"{label} 状态变化"
-
-
-def _audit_approval_title(decision: str) -> str:
-    return {
-        "approve": "你批准了这次操作",
-        "deny": "你拒绝了这次操作",
-        "modify": "你修改参数后批准",
-    }.get(decision, "审批状态变化")
-
-
-def _audit_tool_effect(container, tool_name: str) -> str:
-    if not tool_name:
-        return ""
-    try:
-        definition = container.tool_registry.resolve(tool_name).definition
-    except Exception:  # noqa: BLE001 动态工具可能不在注册表里
-        return ""
-    effect = getattr(definition.effect, "value", definition.effect)
-    return str(effect or "")
 
 
 
 
-def _hub_append_memory_consolidated(
-    container,
-    *,
-    proposal,
-    memory,
-    source_memory_ids,
-) -> None:
-    """B2：巩固落地后推 hub 事件（记忆面板/审计轨迹据此刷新）。"""
-    container.hub_event_repository.append(
-        "memory.consolidated",
-        conversation_id=proposal.conversation_id,
-        data={
-            "proposalId": proposal.id,
-            "conversationId": proposal.conversation_id,
-            "insightMemoryId": memory.id,
-            "sourceMemoryIds": list(source_memory_ids),
-            "sourceCount": len(source_memory_ids),
-        },
-    )
+#: 只有终态工具事件才进轨迹（同一次调用会产生多条状态事件）。
 
 
-def _runtime_v2_lane_json(
-    lane: LaneRecord,
-    *,
-    active_lane_id: Optional[str] = None,
-) -> dict[str, object]:
-    source_lane_id = lane.source_lane_id
-    title = lane.display_name or lane.summary
-    return {
-        "id": lane.id,
-        "conversationId": lane.conversation_id,
-        "kind": lane.kind.value,
-        "status": lane.status.value,
-        "archived": lane.is_archived,
-        "archivedAt": lane.archived_at,
-        "displayName": lane.display_name,
-        "summary": lane.summary,
-        "title": title,
-        "baseEntryExcerpt": lane.summary,
-        "baseEntryId": lane.base_entry_id,
-        "leafEntryId": lane.leaf_entry_id,
-        "createdFromEntryId": lane.created_from_entry_id,
-        "createdAt": lane.created_at,
-        "sourceLaneId": source_lane_id,
-        "isMain": lane.id == active_lane_id or (
-            active_lane_id is None and lane.kind is LaneKind.MAIN
-        ),
-    }
 
 
-def _runtime_v2_run_variant_json(run: RunRecord) -> dict[str, object]:
-    return {
-        "runId": run.id,
-        "conversationId": run.conversation_id,
-        "laneId": run.lane_id,
-        "triggerEntryId": run.trigger_entry_id,
-        "siblingGroupId": run.sibling_group_id,
-        "assistantEntryId": run.assistant_entry_id,
-        "status": run.status.value,
-        "isActiveVariant": run.is_active_variant,
-        "createdAt": run.created_at,
-        "finishedAt": run.finished_at,
-    }
 
 
-def _runtime_v2_memory_json(memory: RuntimeV2MemoryRecord) -> dict[str, object]:
-    return {
-        "id": memory.id,
-        "scope": memory.scope.value,
-        "kind": memory.kind,
-        "content": memory.content,
-        "status": memory.status,
-        "conversationId": memory.conversation_id,
-        "workspaceId": memory.workspace_id,
-        "laneId": memory.lane_id,
-        "runId": memory.run_id,
-        "sourceMemoryId": memory.source_memory_id,
-        "sourceEntryId": memory.source_entry_id,
-        "createdAt": memory.created_at,
-        "updatedAt": memory.updated_at,
-    }
 
 
-def _runtime_v2_memory_promotion_json(
-    promotion: RuntimeV2MemoryPromotion,
-) -> dict[str, object]:
-    return {
-        "id": promotion.id,
-        "memoryId": promotion.source_memory_id,
-        "targetScope": promotion.target_scope.value,
-        "targetWorkspaceId": promotion.target_workspace_id,
-        "targetLaneId": promotion.target_lane_id,
-        "status": promotion.status.value,
-        "resolvedMemoryId": promotion.resolved_memory_id,
-        "conflictMemoryId": promotion.conflict_memory_id,
-        "createdAt": promotion.created_at,
-        "updatedAt": promotion.updated_at,
-        "resolvedAt": promotion.resolved_at,
-    }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def create_app(
@@ -3959,7 +3675,7 @@ def create_app(
                 container.memory_consolidation_service.reject(proposal_id)
             if container.memory_reflection_service is not None:
                 container.memory_reflection_service.reject(proposal_id)
-            _hub_append_proposal_resolved(
+            hub_append_proposal_resolved(
                 container, kind="memory", proposal=proposal, decision="reject"
             )
             return {"proposal": memory_proposal_json(proposal)}
@@ -3973,7 +3689,7 @@ def create_app(
             )
             if merged:
                 consolidated_ids = list(merged)
-                _hub_append_memory_consolidated(
+                hub_append_memory_consolidated(
                     container,
                     proposal=proposal,
                     memory=memory,
@@ -3981,7 +3697,7 @@ def create_app(
                 )
         if container.memory_reflection_service is not None:
             container.memory_reflection_service.finalize(proposal_id, memory)
-        _hub_append_proposal_resolved(
+        hub_append_proposal_resolved(
             container, kind="memory", proposal=proposal, decision="accept"
         )
         if container.memory_conflict_service is not None:
@@ -4057,7 +3773,7 @@ def create_app(
             proposal = container.knowledge_proposal_repository.reject_proposal(
                 proposal_id
             )
-            _hub_append_proposal_resolved(
+            hub_append_proposal_resolved(
                 container, kind="knowledge", proposal=proposal, decision="reject"
             )
             return {"proposal": knowledge_proposal_json(proposal)}
@@ -4067,7 +3783,7 @@ def create_app(
         proposal, source = container.knowledge_proposal_repository.accept_proposal(
             proposal_id, workspace_override=workspace_override
         )
-        _hub_append_proposal_resolved(
+        hub_append_proposal_resolved(
             container, kind="knowledge", proposal=proposal, decision="accept"
         )
         if proposal.proposal_type is KnowledgeProposalType.ADD_SOURCE:
@@ -4111,7 +3827,7 @@ def create_app(
             proposal = container.task_proposal_repository.reject_proposal(
                 proposal_id
             )
-            _hub_append_proposal_resolved(
+            hub_append_proposal_resolved(
                 container, kind="task", proposal=proposal, decision="reject"
             )
             return {"proposal": task_proposal_json(proposal)}
@@ -4122,7 +3838,7 @@ def create_app(
                     proposal_id
                 )
             )
-            _hub_append_proposal_resolved(
+            hub_append_proposal_resolved(
                 container, kind="task", proposal=proposal, decision="accept"
             )
             return {
@@ -4132,7 +3848,7 @@ def create_app(
         proposal, task = container.task_proposal_repository.accept_proposal(
             proposal_id
         )
-        _hub_append_proposal_resolved(
+        hub_append_proposal_resolved(
             container, kind="task", proposal=proposal, decision="accept"
         )
         return {
@@ -4188,7 +3904,7 @@ def create_app(
             "runningLaneId": running_run.lane_id if running_run is not None else None,
             "runningRunId": running_run.id if running_run is not None else None,
             "items": tuple(
-                _runtime_v2_lane_json(lane, active_lane_id=main_lane_id)
+                runtime_v2_lane_json(lane, active_lane_id=main_lane_id)
                 for lane in lanes
             ),
         }
@@ -4223,8 +3939,8 @@ def create_app(
             display_name=body.displayName,
         )
         return {
-            "lane": _runtime_v2_lane_json(result.lane),
-            "sourceLane": _runtime_v2_lane_json(result.source_lane),
+            "lane": runtime_v2_lane_json(result.lane),
+            "sourceLane": runtime_v2_lane_json(result.source_lane),
             "baseEntryId": result.base_entry_id,
             "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
         }
@@ -4237,8 +3953,8 @@ def create_app(
             target_lane_id=lane_id,
         )
         return {
-            "lane": _runtime_v2_lane_json(result.promoted_lane),
-            "previousMainLane": _runtime_v2_lane_json(result.previous_main_lane),
+            "lane": runtime_v2_lane_json(result.promoted_lane),
+            "previousMainLane": runtime_v2_lane_json(result.previous_main_lane),
             "activeLaneId": result.pointer.active_lane_id,
         }
 
@@ -4255,7 +3971,7 @@ def create_app(
             lane.conversation_id
         )
         return {
-            "lane": _runtime_v2_lane_json(
+            "lane": runtime_v2_lane_json(
                 lane,
                 active_lane_id=pointer.active_lane_id if pointer is not None else None,
             )
@@ -4272,7 +3988,7 @@ def create_app(
             active_lane_id = pointer.active_lane_id if pointer is not None else None
         return {
             "items": tuple(
-                _runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
+                runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
                 for lane in lanes
             )
         }
@@ -4288,7 +4004,7 @@ def create_app(
             active_lane_id = pointer.active_lane_id if pointer is not None else None
         return {
             "items": tuple(
-                _runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
+                runtime_v2_lane_json(lane, active_lane_id=active_lane_id)
                 for lane in lanes
             )
         }
@@ -4327,7 +4043,7 @@ def create_app(
         )
         return {
             "conversation": conversation_json(conversation),
-            "lane": _runtime_v2_lane_json(lane, active_lane_id=lane.id),
+            "lane": runtime_v2_lane_json(lane, active_lane_id=lane.id),
         }
 
     @app.post("/api/v2/temporary-conversations/{conversation_id}/promote")
@@ -4361,7 +4077,7 @@ def create_app(
         return {
             "runId": run_id,
             "siblingGroupId": variants[0].sibling_group_id if variants else None,
-            "items": tuple(_runtime_v2_run_variant_json(variant) for variant in variants),
+            "items": tuple(runtime_v2_run_variant_json(variant) for variant in variants),
         }
 
     @app.post("/api/v2/runs/{run_id}/resend", status_code=202)
@@ -4441,7 +4157,7 @@ def create_app(
         run = container.runtime_v2_repository.get_run(run_id)  # 404 if unknown
         facts: list[AuditFact] = []
         for event in container.runtime_v2_repository.list_runtime_events(run_id):
-            fact = _audit_fact_from_event(container, event)
+            fact = audit_fact_from_event(container, event)
             if fact is not None:
                 facts.append(fact)
         for entry in container.undo_journal_repository.list_for_conversation(
@@ -4517,7 +4233,7 @@ def create_app(
         return {
             "conversationId": target_conversation_id,
             "laneId": lane_id,
-            "items": tuple(_runtime_v2_memory_json(memory) for memory in memories),
+            "items": tuple(runtime_v2_memory_json(memory) for memory in memories),
         }
 
     @app.post("/api/v2/conversations/{conversation_id}/memories", status_code=201)
@@ -4544,7 +4260,7 @@ def create_app(
             source_entry_id=body.sourceEntryId,
             expires_at=body.expiresAt,
         )
-        return {"memory": _runtime_v2_memory_json(memory)}
+        return {"memory": runtime_v2_memory_json(memory)}
 
     @app.post("/api/v2/runs/{run_id}/memories", status_code=201)
     async def create_runtime_v2_run_memory(
@@ -4560,7 +4276,7 @@ def create_app(
             source_entry_id=body.sourceEntryId,
             expires_at=body.expiresAt,
         )
-        return {"memory": _runtime_v2_memory_json(memory)}
+        return {"memory": runtime_v2_memory_json(memory)}
 
     @app.post("/api/v2/memories/{memory_id}/promotions", status_code=201)
     async def create_runtime_v2_memory_promotion(
@@ -4572,7 +4288,7 @@ def create_app(
             target_scope=MemoryScope(body.targetScope),
             target_lane_id=body.targetLaneId,
         )
-        return {"promotion": _runtime_v2_memory_promotion_json(promotion)}
+        return {"promotion": runtime_v2_memory_promotion_json(promotion)}
 
     @app.get("/api/v2/conversations/{conversation_id}/memory-promotions")
     async def list_runtime_v2_memory_promotions(
@@ -4591,7 +4307,7 @@ def create_app(
         return {
             "conversationId": target_conversation_id,
             "items": tuple(
-                _runtime_v2_memory_promotion_json(promotion)
+                runtime_v2_memory_promotion_json(promotion)
                 for promotion in promotions
             ),
         }
@@ -4606,9 +4322,9 @@ def create_app(
             accept=body.decision == "accept",
         )
         return {
-            "promotion": _runtime_v2_memory_promotion_json(promotion),
+            "promotion": runtime_v2_memory_promotion_json(promotion),
             "memory": (
-                _runtime_v2_memory_json(memory)
+                runtime_v2_memory_json(memory)
                 if memory is not None
                 else None
             ),
@@ -4780,7 +4496,7 @@ def create_app(
                         continue
                     cursor = event.event_seq
                     emitted = True
-                    yield _runtime_v2_product_sse(event)
+                    yield runtime_v2_product_sse(event)
                 if not container.runtime_v2_gateway.has_active_run(
                     target_conversation_id
                 ):
@@ -4797,7 +4513,7 @@ def create_app(
                         if event.event_seq <= cursor:
                             continue
                         cursor = event.event_seq
-                        yield _runtime_v2_product_sse(event)
+                        yield runtime_v2_product_sse(event)
                     return
                 now = asyncio.get_running_loop().time()
                 if (
@@ -4850,7 +4566,7 @@ def create_app(
                         continue
                     cursor = event.event_seq
                     emitted = True
-                    yield _hub_event_sse(event)
+                    yield hub_event_sse(event)
                 now = asyncio.get_running_loop().time()
                 if emitted:
                     last_activity = now
@@ -4919,14 +4635,14 @@ def create_app(
             proposal = container.artifact_proposal_repository.reject_proposal(
                 proposal_id
             )
-            _hub_append_proposal_resolved(
+            hub_append_proposal_resolved(
                 container, kind="artifact", proposal=proposal, decision="reject"
             )
             return {"proposal": artifact_proposal_json(proposal)}
         proposal, artifact = container.artifact_proposal_repository.accept_proposal(
             proposal_id
         )
-        _hub_append_proposal_resolved(
+        hub_append_proposal_resolved(
             container, kind="artifact", proposal=proposal, decision="accept"
         )
         return {
