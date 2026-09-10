@@ -11,10 +11,15 @@ from typing import Optional
 from fastapi import FastAPI, Header
 
 from endless_task.runtime_v2 import MemoryScope
+from endless_task.runtime_v2.audit_trail import AuditFact, build_audit_trail
 
 from ..container import AppContainer
 from ..errors import ApiRequestError
-from ..runtime_v2_support import runtime_v2_run_variant_json
+from ..audit_support import audit_fact_from_event
+from ..runtime_v2_support import (
+    runtime_v2_memory_json,
+    runtime_v2_run_variant_json,
+)
 from ..schemas.v2_runs import (
     ResendRuntimeV2RunBody,
     RuntimeV2RecoveryBody,

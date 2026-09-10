@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import FastAPI
+
+from endless_task.domain.repositories import ValidationError
 
 from endless_task.storage import GENERAL_SCOPE_KEY
 

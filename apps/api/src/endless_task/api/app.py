@@ -24,6 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from endless_task.domain.task_schedule import ReminderDue
 from endless_task.domain.models import (
+    MemoryKind,
     ArtifactVersionOperation,
     ConversationKind,
     ConversationSnapshot,
@@ -152,6 +153,7 @@ from endless_task.workspace_runtime.terminal_tools import (
 )
 from endless_task.workspace_runtime.visibility import workspace_tool_filter
 from endless_task.security import configure_safe_logging
+from endless_task.knowledge.embeddings import Embedder
 from endless_task.knowledge import (
     CitationFeedbackProvider,
     EmbeddingIndexer,
