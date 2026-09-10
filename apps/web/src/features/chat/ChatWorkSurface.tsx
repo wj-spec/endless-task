@@ -62,6 +62,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
+import { StreamNotices } from "./StreamNotices";
 import { RuntimeStatusStrip } from "./RuntimeStatusStrip";
 import { useTurnInteractions } from "./useTurnInteractions";
 import { useTurnFocus } from "./useTurnFocus";
@@ -307,17 +308,6 @@ export function ChatWorkSurface({
   variant = "main",
 }: ChatWorkSurfaceProps) {
   // G1 item 2: latest run_auto_restored event -> visible rollback notice.
-  const autoRestoreEvent = [...runtimeEvents]
-    .reverse()
-    .find(
-      (event) =>
-        event.type === "run.auto_restored" ||
-        event.type === "run_auto_restored",
-    );
-  const autoRestoreNotice =
-    autoRestoreEvent && typeof autoRestoreEvent.data === "object"
-      ? (autoRestoreEvent.data as Record<string, unknown>)
-      : null;
   // C2 失败记忆：卡住态 = 快照 + 实时 run.stuck / run.progress_resumed 折叠。
   const stuckState = deriveStuckState(runtimeSnapshot, runtimeEvents);
   // C4 终止与升级：无进展/预算将尽时优先展示升级视图（含三条出路）。
@@ -558,23 +548,11 @@ export function ChatWorkSurface({
         ref={streamRef}
         role="log"
       >
-        {error ? (
-          <div className="inline-error" role="alert">
-            <span>{error}</span>
-            <button onClick={onDismissError} type="button">关闭</button>
-          </div>
-        ) : null}
-
-        {autoRestoreNotice ? (
-          <div className="inline-notice" role="status">
-            <strong>已自动回滚</strong>
-            <span>
-              本次失败的改动已自动恢复（{String(autoRestoreNotice.restored ?? "?")}
-              {" "}个文件恢复，{String(autoRestoreNotice.skipped ?? "?")}
-              {" "}个跳过）；你的修改未受影响。
-            </span>
-          </div>
-        ) : null}
+        <StreamNotices
+          error={error}
+          onDismissError={onDismissError}
+          runtimeEvents={runtimeEvents}
+        />
 
         <UndoNotice
           conversationId={conversationId ?? null}
