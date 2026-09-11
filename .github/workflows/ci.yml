@@ -45,8 +45,11 @@ jobs:
           status=$?
           tail -n 40 "$RUNNER_TEMP/backend-tests.log"
           if [ "$status" -ne 0 ]; then
-            grep -E -A 3 "^(FAIL|ERROR):" "$RUNNER_TEMP/backend-tests.log" | head -n 60 | while IFS= read -r line; do
-              echo "::error title=backend test failed::$line"
+            grep -E "^(Ran |OK|FAILED)" "$RUNNER_TEMP/backend-tests.log" | tail -n 2 | while IFS= read -r line; do
+              echo "::error title=backend summary::$line"
+            done
+            awk '/^(FAIL|ERROR): /{hdr=$0; last=$0; next} hdr!="" && NF{last=$0} /^$/{if(hdr!=""){print hdr " || " last; hdr=""}} END{if(hdr!="")print hdr " || " last}' "$RUNNER_TEMP/backend-tests.log" | head -n 20 | while IFS= read -r line; do
+              echo "::error title=backend case::$line"
             done
           fi
           exit "$status"
