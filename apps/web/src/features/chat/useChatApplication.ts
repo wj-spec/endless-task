@@ -23,6 +23,7 @@ import type {
 import { readableError } from "./apiErrorText";
 import { useRuntimeEventBridge } from "./useRuntimeEventBridge";
 import { useSideConversation } from "./useSideConversation";
+import { useLaneActions } from "./useLaneActions";
 import {
   runtimeTargetKey,
   useConversationRuntimeController,
@@ -332,6 +333,35 @@ export function useChatApplication() {
     workspaceId,
     sideIsGenerating,
     sendRuntimeV2Message,
+  });
+
+  // 车道路由动作：依赖运行时事件桥与侧栏的 openLaneInSide，故在两者之后调用。
+  const {
+    refreshLaneTree,
+    switchLane,
+    forkLane,
+    promoteLane,
+    renameLane,
+    setLaneArchived,
+    setArchivedLanesVisible,
+  } = useLaneActions({
+    runtimeController,
+    mainLaneIds,
+    viewLaneIds,
+    snapshots,
+    sideLane,
+    setLaneTrees,
+    setMainLaneIds,
+    setViewLaneIds,
+    applyRuntimeSnapshot,
+    followRuntimeConversation,
+    openLaneInSide,
+    primarySurfaceRequestVersion,
+    unbindRuntimeTarget,
+    setPendingAction,
+    setError,
+    dismissSideConversation,
+    loadConversation,
   });
 
 
@@ -776,226 +806,12 @@ export function useChatApplication() {
     }
   };
 
-  const refreshLaneTree = useCallback(async (conversationId: string) => {
-    try {
-      const laneList = await chatApi.listRuntimeV2Lanes(conversationId);
-      setLaneTrees((current) => ({ ...current, [conversationId]: laneList.items }));
-      const activeLaneId = laneList.activeLaneId;
-      if (activeLaneId) {
-        setMainLaneIds((current) => ({
-          ...current,
-          [conversationId]: activeLaneId,
-        }));
-      }
-    } catch {
-      // lane 树刷新失败不阻断交互。
-    }
-  }, []);
 
-  const switchLane = useCallback(
-    async (conversationId: string, laneId: string) => {
-      const requestVersion = primarySurfaceRequestVersion.current + 1;
-      primarySurfaceRequestVersion.current = requestVersion;
-      setPendingAction("switch-lane");
-      setError(null);
-      try {
-        const previousLaneId =
-          viewLaneIds[conversationId] ?? mainLaneIds[conversationId] ?? null;
-        if (previousLaneId && previousLaneId !== laneId) {
-          unbindRuntimeTarget(
-            { conversationId, laneId: previousLaneId },
-            "main",
-          );
-        }
-        setViewLaneIds((current) => ({
-          ...current,
-          [conversationId]: laneId,
-        }));
-        const [legacy, runtime] = await Promise.all([
-          chatApi.getConversation(conversationId),
-          runtimeController.loadSnapshot({ conversationId, laneId }),
-        ]);
-        if (primarySurfaceRequestVersion.current !== requestVersion) {
-          unbindRuntimeTarget({ conversationId, laneId }, "main");
-          return;
-        }
-        applyRuntimeSnapshot(legacy, runtime);
-        followRuntimeConversation(conversationId, runtime.lastEventSeq, laneId);
-      } catch (loadError) {
-        if (primarySurfaceRequestVersion.current === requestVersion) {
-          setError(readableError(loadError));
-        }
-      } finally {
-        if (primarySurfaceRequestVersion.current === requestVersion) {
-          setPendingAction(null);
-        }
-      }
-    },
-    [
-      applyRuntimeSnapshot,
-      followRuntimeConversation,
-      mainLaneIds,
-      runtimeController.loadSnapshot,
-      unbindRuntimeTarget,
-      viewLaneIds,
-    ],
-  );
 
-  const forkLane = useCallback(
-    async (
-      conversationId: string,
-      sourceLaneId: string | null | undefined,
-      forkTurnId?: string,
-    ) => {
-      setPendingAction("fork-lane");
-      setError(null);
-      try {
-        if (!forkTurnId) {
-          throw new Error("请从一条已完成的回答创建分支。");
-        }
-        const turnSnapshot = snapshots[conversationId]?.turns.find(
-          (item) => item.turn.id === forkTurnId,
-        );
-        const baseEntryId = turnSnapshot?.responseVariants.find(
-          (item) => item.variant.id === turnSnapshot.turn.activeResponseVariantId,
-        )?.assistantMessage.id;
-        if (!baseEntryId || turnSnapshot?.turn.status !== "completed") {
-          throw new Error("只能从完整回答结束处创建分支。");
-        }
-        const resolvedSourceLaneId =
-          sourceLaneId ?? viewLaneIds[conversationId] ?? mainLaneIds[conversationId];
-        if (!resolvedSourceLaneId) {
-          throw new Error("当前会话暂不支持创建分支，请确认会话已加载主线。");
-        }
-        const created = await chatApi.createRuntimeV2Lane(conversationId, {
-          sourceLaneId: resolvedSourceLaneId,
-          baseEntryId,
-        });
-        await refreshLaneTree(conversationId);
-        await openLaneInSide(conversationId, created.lane.id);
-      } catch (forkError) {
-        setError(readableError(forkError));
-      } finally {
-        setPendingAction(null);
-      }
-    },
-    [mainLaneIds, openLaneInSide, refreshLaneTree, snapshots, viewLaneIds],
-  );
 
-  const promoteLane = useCallback(
-    async (conversationId: string, laneId: string) => {
-      setPendingAction("promote-lane");
-      setError(null);
-      try {
-        await chatApi.promoteRuntimeV2Lane(laneId);
-        if (sideLane?.conversationId === conversationId && sideLane.laneId === laneId) {
-          dismissSideConversation();
-        }
-        await refreshLaneTree(conversationId);
-        await loadConversation(conversationId);
-      } catch (promoteError) {
-        setError(readableError(promoteError));
-      } finally {
-        setPendingAction(null);
-      }
-    },
-    [dismissSideConversation, loadConversation, refreshLaneTree, sideLane],
-  );
 
-  const renameLane = useCallback(
-    async (conversationId: string, laneId: string, displayName: string | null) => {
-      setPendingAction("rename-lane");
-      setError(null);
-      try {
-        await chatApi.renameRuntimeV2Lane(laneId, displayName);
-        await refreshLaneTree(conversationId);
-      } catch (renameError) {
-        setError(readableError(renameError));
-      } finally {
-        setPendingAction(null);
-      }
-    },
-    [refreshLaneTree],
-  );
 
-  const setLaneArchived = useCallback(
-    async (
-      conversationId: string,
-      laneId: string,
-      archived: boolean,
-      includeArchived = false,
-    ) => {
-      setPendingAction(archived ? "archive-lane" : "restore-lane");
-      setError(null);
-      try {
-        const updated = archived
-          ? await chatApi.archiveRuntimeV2Lane(laneId)
-          : await chatApi.restoreRuntimeV2Lane(laneId);
-        const laneList = await chatApi.listRuntimeV2Lanes(
-          conversationId,
-          includeArchived,
-        );
-        setLaneTrees((current) => ({
-          ...current,
-          [conversationId]: laneList.items,
-        }));
-        const affectedLaneIds = new Set(updated.items.map((lane) => lane.id));
-        if (
-          archived &&
-          sideLane?.conversationId === conversationId &&
-          affectedLaneIds.has(sideLane.laneId)
-        ) {
-          dismissSideConversation();
-        }
-        const visibleLaneId = viewLaneIds[conversationId];
-        if (
-          archived &&
-          visibleLaneId &&
-          updated.items.some((lane) => lane.id === visibleLaneId)
-        ) {
-          const nextLaneId = laneList.activeLaneId;
-          if (nextLaneId) {
-            setViewLaneIds((current) => ({
-              ...current,
-              [conversationId]: nextLaneId,
-            }));
-            const [legacy, runtime] = await Promise.all([
-              chatApi.getConversation(conversationId),
-              runtimeController.loadSnapshot({
-                conversationId,
-                laneId: nextLaneId,
-              }),
-            ]);
-            applyRuntimeSnapshot(legacy, runtime);
-          }
-        }
-      } catch (archiveError) {
-        setError(readableError(archiveError));
-      } finally {
-        setPendingAction(null);
-      }
-    },
-    [applyRuntimeSnapshot, dismissSideConversation, sideLane, viewLaneIds],
-  );
 
-  const setArchivedLanesVisible = useCallback(
-    async (conversationId: string, visible: boolean) => {
-      setError(null);
-      try {
-        const laneList = await chatApi.listRuntimeV2Lanes(
-          conversationId,
-          visible,
-        );
-        setLaneTrees((current) => ({
-          ...current,
-          [conversationId]: laneList.items,
-        }));
-      } catch (loadError) {
-        setError(readableError(loadError));
-      }
-    },
-    [],
-  );
 
   const promoteConversation = async (
     conversationId?: string,
