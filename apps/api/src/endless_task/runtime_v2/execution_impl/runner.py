@@ -44,7 +44,7 @@ from .progress import (
     _no_progress_evaluation_for_run,
 )
 from .turns import ModelTurnRunner
-from ..context import ContextProjection
+from ..projection import ContextProjection
 from ..domain import ModelTurnRecord, ModelTurnStatus, RunRecord, RunStatus, ToolExecutionRecord, ToolExecutionStatus
 from ..escalation import BUDGET_REASON, COST_REASON, DEFAULT_BUDGET_RATIO, NO_PROGRESS_REASON, VERIFICATION_REASON, EscalationBudget, EscalationProgress, build_escalation_report, budget_exhausted
 from ..failure_memory import FailureMemoryAccumulator

@@ -48,7 +48,7 @@ from ._base import (
 )
 from ._base import logger
 from .progress import _messages_fingerprint
-from ..context import ContextProjection
+from ..projection import ContextProjection
 from ..domain import ModelTurnRecord, ModelTurnStatus, RunRecord, RunStatus, ToolExecutionRecord, ToolExecutionStatus
 from ..escalation import BUDGET_REASON, COST_REASON, DEFAULT_BUDGET_RATIO, NO_PROGRESS_REASON, VERIFICATION_REASON, EscalationBudget, EscalationProgress, build_escalation_report, budget_exhausted
 from ..failure_memory import FailureMemoryAccumulator

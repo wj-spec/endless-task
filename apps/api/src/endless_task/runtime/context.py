@@ -1,3 +1,9 @@
+"""v1 的上下文拼装（`P0ContextBuilder` + token 估算）。
+
+与 `endless_task/runtime_v2/projection.py` 的区别：这里负责**拼装**（把检索到的片段、
+记忆、历史按预算拼成请求），那边负责**投影**（按策略决定 transcript 条目如何进入模型
+消息）。两者同名过（都叫 `context.py`）已在该文件顶部注明改名原因。
+"""
 from __future__ import annotations
 
 import math

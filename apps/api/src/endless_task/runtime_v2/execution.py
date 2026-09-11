@@ -49,7 +49,7 @@ from endless_task.tooling import (
 )
 from endless_task.tooling.schema import ToolSchemaError, validate_tool_arguments
 
-from .context import ContextProjection
+from .projection import ContextProjection
 from .domain import (
     ModelTurnRecord,
     ModelTurnStatus,

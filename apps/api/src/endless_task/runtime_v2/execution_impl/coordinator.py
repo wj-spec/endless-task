@@ -44,7 +44,7 @@ from .tool_gates import (
     WaitingToolApprovalGate,
 )
 from .tool_limits import ToolExecutionLimits, _json_value_size
-from ..context import ContextProjection
+from ..projection import ContextProjection
 from ..domain import ModelTurnRecord, ModelTurnStatus, RunRecord, RunStatus, ToolExecutionRecord, ToolExecutionStatus
 from ..escalation import BUDGET_REASON, COST_REASON, DEFAULT_BUDGET_RATIO, NO_PROGRESS_REASON, VERIFICATION_REASON, EscalationBudget, EscalationProgress, build_escalation_report, budget_exhausted
 from ..failure_memory import FailureMemoryAccumulator

@@ -30,7 +30,7 @@ from .domain import (
     TranscriptEntryStatus,
     TranscriptEntryType,
 )
-from .context import ContextPolicy, ContextProjection, ContextProjectionResult
+from .projection import ContextPolicy, ContextProjection, ContextProjectionResult
 from .compaction import RuntimeV2ContextCompactionService
 from .escalation import (
     BUDGET_REASON,

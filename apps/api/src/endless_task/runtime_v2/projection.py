@@ -1,3 +1,13 @@
+"""v2 的上下文投影：把 transcript 条目按策略投影成模型消息。
+
+**命名说明（2026-09 改名）**：这个文件原叫 `context.py`，与 `endless_task/runtime/context.py`
+（v1 的 `P0ContextBuilder`，做上下文拼装）同名不同义，读代码时很难判断某个 `context`
+指哪一层——`runtime_v2/compaction.py` 甚至同时用到两者。改名后语义一目了然：
+**投影**（本模块）vs **拼装**（`runtime/context.py`）。
+
+对外入口不变：`endless_task.runtime_v2` 仍从这里 re-export
+`ContextPolicy` / `ContextProjection` / `ContextProjectionResult`。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
