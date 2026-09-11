@@ -26,43 +26,26 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv .venv
-          # vec extra：sqlite-vec 原生向量 KNN 测试所需；
+          # vec extra：sqlite-vec 原生向量 KNN 测试所需。
           # httpx2：starlette 1.6 起 TestClient 的首选依赖（缺失时会回退并发出弃用警告）。
           uv pip install --python .venv/bin/python -e '.[dev,vec]' httpx2
 
       - name: Run backend tests
-        # 不加 `-W error`：starlette / anyio 在导入期就会发出第三方弃用警告，
+        # 直接调用 .venv/bin/python（不用 `uv run`），避免 uv 在运行阶段重新同步环境、
+        # 丢掉上面手动安装的 extra。
+        # 也不加 `-W error`：starlette / anyio 在导入期就会发出第三方弃用警告，
         # 升级为错误会导致测试模块导入失败（与本仓库代码无关）。
         run: |
           set +e
-          uv run python -m unittest discover -s tests > "$RUNNER_TEMP/backend-tests.log" 2>&1
+          .venv/bin/python -m unittest discover -s tests > "$RUNNER_TEMP/backend-tests.log" 2>&1
           status=$?
           tail -n 40 "$RUNNER_TEMP/backend-tests.log"
-          if [ $status -ne 0 ]; then
-            # 失败时把用例名与断言要点转成 GitHub 注解，便于在提交页直接定位问题。
-            python3 - "$RUNNER_TEMP/backend-tests.log" <<'PY'
-import re
-import sys
-import pathlib
-
-log = pathlib.Path(sys.argv[1]).read_text(errors="replace")
-blocks = [b.strip() for b in re.split(r"^={70}$", log, flags=re.M)]
-issues = [b for b in blocks if b.startswith(("FAIL:", "ERROR:"))]
-summary = re.search(r"^(Ran .*|FAILED .*|OK .*)$", log, flags=re.M)
-print(f"::error title=后端测试失败::失败/错误用例 {len(issues)} 个"
-      + (f"；{summary.group(1)}" if summary else ""))
-
-def esc(text: str) -> str:
-    return text.replace("%", "%25").replace("\r", "").replace("\n", " ")
-
-for block in issues[:12]:
-    lines = [l.strip() for l in block.splitlines() if l.strip()]
-    head = lines[0]
-    detail = " | ".join(lines[1:8])
-    print(f"::error title=backend test::{esc((head + ' — ' + detail))[:900]}")
-PY
+          if [ "$status" -ne 0 ]; then
+            grep -E "^(FAIL|ERROR|Ran |OK|FAILED)" "$RUNNER_TEMP/backend-tests.log" | head -n 30 | while IFS= read -r line; do
+              echo "::error title=backend test failed::$line"
+            done
           fi
-          exit $status
+          exit "$status"
 
   web:
     name: Web build & unit tests
@@ -88,30 +71,3 @@ PY
 
       - name: Unit tests
         run: npm run test:unit
-
-  # 浏览器 E2E 需要安装 Playwright 浏览器并启动前后端，首次接入建议单独手动触发，
-  # 稳定后再打开下面的 job（去掉注释并确认 `npm run test:e2e` 在 CI 环境可跑通）。
-  #
-  # e2e:
-  #   name: Browser E2E
-  #   runs-on: ubuntu-latest
-  #   defaults:
-  #     run:
-  #       working-directory: apps/web
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: "22"
-  #         cache: npm
-  #         cache-dependency-path: apps/web/package-lock.json
-  #     - uses: astral-sh/setup-uv@v5
-  #       with:
-  #         python-version: "3.12"
-  #     - run: npm ci
-  #     - run: npx playwright install --with-deps chromium
-  #     - run: |
-  #         cd ../api
-  #         uv venv .venv
-  #         uv pip install --python .venv/bin/python -e '.[dev,vec]' httpx2
-  #     - run: npm run test:e2e
