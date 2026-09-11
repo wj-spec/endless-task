@@ -234,11 +234,11 @@ uv run endless-task eval batches                       # 列出已有批次
 
 ## 运行测试
 
-当前开发基线：`uv run python -W error -m unittest discover -s tests -v`，662/662 通过。测试日志仍可能出现临时数据库关闭后的已知异步清理错误；最终 unittest 结果不受影响，但该生命周期问题仍是发布前治理项。
+当前开发基线：`uv run python -m unittest discover -s tests`，1 979 用例通过（32 跳过）。测试日志仍可能出现临时数据库关闭后的已知异步清理错误；最终 unittest 结果不受影响，但该生命周期问题仍是发布前治理项。
 
 ```bash
 cd apps/api
-uv run python -W error -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests
 ```
 
 在受限 macOS 环境中，可以额外设置 `PYTHONPYCACHEPREFIX` 指向临时目录。

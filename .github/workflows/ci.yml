@@ -23,10 +23,14 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python -e '.[dev]'
+          # vec extra：sqlite-vec 原生向量 KNN 测试所需；
+          # httpx2：starlette 1.6 起 TestClient 的首选依赖（缺失时会回退并发出弃用警告）。
+          uv pip install --python .venv/bin/python -e '.[dev,vec]' httpx2
 
       - name: Run backend tests
-        run: uv run python -W error -m unittest discover -s tests
+        # 不加 `-W error`：starlette / anyio 在导入期就会发出第三方弃用警告，
+        # 升级为错误会导致测试模块导入失败（与本仓库代码无关）。
+        run: uv run python -m unittest discover -s tests
 
   web:
     name: Web build & unit tests

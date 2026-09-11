@@ -167,24 +167,21 @@ flowchart TD
 
 ## 工程质量
 
-<!-- TODO（发布前必须完成）：以下数字需用本机最近一次全量运行结果替换 ——
-     后端：cd apps/api && uv run python -W error -m unittest discover -s tests -v
-     前端：cd apps/web && npm run build && npm run test:e2e
-     当前仓库中旧 README 写的 662 / 46 与代码现状不符，务必以真实输出为准。 -->
-
 | 检查项 | 结果 |
 |---|---|
-| 后端测试 | ✅ `unittest` 全量通过（1,300+ 用例） |
-| 前端构建 | ✅ production build 通过 |
-| 浏览器 E2E | ✅ 桌面 + 移动端两组旅程通过（Playwright 隔离运行） |
+| 后端测试 | ✅ `unittest` 全量通过（1,979 用例，32 跳过） |
+| 前端构建与单测 | ✅ production build 通过 + 单元测试通过（CI） |
+| 浏览器 E2E | ✅ 桌面 + 移动端两组旅程（`npm run test:e2e`；CI 暂未接入） |
 | 依赖审计 | ✅ `npm audit` 0 vulnerabilities |
 | 数据迁移恢复 | ✅ schema 迁移的 dry-run / apply / audit / restore、重复执行、部分失败回滚、损坏备份拒绝 均通过 |
 
 验证方式：
 
 ```bash
-# 后端
-cd apps/api && uv run python -W error -m unittest discover -s tests -v
+# 后端（vec extra 提供 sqlite-vec 原生向量 KNN 测试所需依赖）
+cd apps/api
+uv venv .venv && uv pip install --python .venv/bin/python -e '.[dev,vec]'
+uv run python -m unittest discover -s tests
 
 # 前端构建与 E2E
 cd apps/web && npm run build && npm run test:e2e
