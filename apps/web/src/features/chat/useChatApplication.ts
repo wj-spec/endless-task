@@ -148,18 +148,24 @@ export function useChatApplication() {
     ? runtimeController.commands[runtimeTargetKey(sideCommandTarget)]
     : undefined;
 
-  const setCommandFeedback = (
-    target: { conversationId: string; laneId: string | null } | null,
-    nextPendingAction: string | null,
-    nextError: string | null,
-  ) => {
-    if (target) {
-      runtimeController.setCommand(target, nextPendingAction, nextError);
-      return;
-    }
-    setPendingAction(nextPendingAction);
-    setError(nextError);
-  };
+  // 命令反馈的**唯一出口**：有 runtime target 时写进 controller（按会话/车道维度保存），
+  // 否则退回主工作面的本地状态。包成 `useCallback` 是为了让它的身份稳定——侧栏簇与
+  // 发送/变体/提案等回调都会把它列进依赖数组，普通函数会让那些数组每次渲染都失效。
+  const setCommandFeedback = useCallback(
+    (
+      target: { conversationId: string; laneId: string | null } | null,
+      nextPendingAction: string | null,
+      nextError: string | null,
+    ) => {
+      if (target) {
+        runtimeController.setCommand(target, nextPendingAction, nextError);
+        return;
+      }
+      setPendingAction(nextPendingAction);
+      setError(nextError);
+    },
+    [runtimeController.setCommand],
+  );
   const dismissPrimaryError = () => {
     if (primaryCommandTarget && primaryCommandState) {
       runtimeController.setCommand(
