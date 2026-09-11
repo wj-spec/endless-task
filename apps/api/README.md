@@ -230,7 +230,7 @@ uv run endless-task eval diff --baseline A --candidate B --tolerance approval_ga
 uv run endless-task eval batches                       # 列出已有批次
 ```
 
-确定性指标：`completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`。设计见 [`docs/v2/evaluation-layer-design.md`](../docs/v2/evaluation-layer-design.md)，实现位于 `src/endless_task/eval/`。
+确定性指标：`completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`。设计要点见仓库根 README 的「关键设计决策」一节，实现位于 `src/endless_task/eval/`。
 
 ## 运行测试
 

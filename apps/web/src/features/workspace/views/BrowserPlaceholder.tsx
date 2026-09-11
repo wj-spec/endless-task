@@ -7,8 +7,7 @@ export type BrowserPlaceholderProps = {
 /**
  * S10：浏览器视图占位。
  *
- * 浏览器能力（只读抓取 / 引用入库 / 内嵌渲染）在
- * `docs/product-improvements/PERSONAL-WORKBENCH-CAPABILITIES.md` §5 有独立路线，
+ * 浏览器能力（只读抓取 / 引用入库 / 内嵌渲染）有独立路线，
  * 这里先给出占位与"用系统浏览器打开"的降级入口，避免为了一个标签推迟整体重构。
  */
 export function BrowserPlaceholder({ onOpenExternal }: BrowserPlaceholderProps) {

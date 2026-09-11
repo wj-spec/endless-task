@@ -13,7 +13,6 @@
 `from __future__ import annotations` 一直没炸，但 `typing.get_type_hints()`、
 pydantic 或 dataclass 之类一旦求值就会 ImportError。
 
-见 docs/product-improvements/05-code-health/01-monolith-audit.md。
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """S3 系统终端入口：在绑定的工作区目录打开用户自己的终端。
 
-定位（见 `docs/product-improvements/workspace-files-and-terminal/02-terminal.md`）：
+定位：
 
 - 这是**用户的终端**，命令不经过应用的逐条确认——UI 必须明示；
 - 打开失败不抛 500，返回 ``opened=False`` + 可读原因；

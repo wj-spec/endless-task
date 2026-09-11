@@ -2,7 +2,7 @@
 
 这是"搬家"而不是重构：每个 handler 依旧闭包在 `container` 上，位置参数与
 搬家前完全一致；区别只有文件边界——以后技能相关的改动不必在 8 000 行的
-`app.py` 里翻找。见 docs/product-improvements/05-code-health/01-monolith-audit.md。
+`app.py` 里翻找。
 """
 
 from __future__ import annotations

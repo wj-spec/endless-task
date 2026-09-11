@@ -118,7 +118,7 @@ describe("ChatComposer `/技能名` 候选（S1）", () => {
 
   it("路径与普通文本不触发", () => {
     renderComposer();
-    type("看看 /Users/endless 目录");
+    type("看看 /Users/example 目录");
     expect(menu()).toBeNull();
     type("3/4 的比例");
     expect(menu()).toBeNull();

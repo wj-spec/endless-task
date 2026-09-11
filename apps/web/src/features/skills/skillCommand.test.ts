@@ -11,7 +11,7 @@ describe("skillCommandsOf（用户显式指定技能）", () => {
   });
 
   it("路径与普通文本不算技能", () => {
-    expect(skillCommandsOf("看看 /Users/endless/x")).toEqual([]);
+    expect(skillCommandsOf("看看 /Users/example/x")).toEqual([]);
     expect(skillCommandsOf("3/4 比例")).toEqual([]);
   });
 

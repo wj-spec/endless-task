@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e '.[dev]'
+
+      - name: Run backend tests
+        run: uv run python -W error -m unittest discover -s tests
+
+  web:
+    name: Web build & unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check & build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test:unit
+
+  # 浏览器 E2E 需要安装 Playwright 浏览器并启动前后端，首次接入建议单独手动触发，
+  # 稳定后再打开下面的 job（去掉注释并确认 `npm run test:e2e` 在 CI 环境可跑通）。
+  #
+  # e2e:
+  #   name: Browser E2E
+  #   runs-on: ubuntu-latest
+  #   defaults:
+  #     run:
+  #       working-directory: apps/web
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: "22"
+  #         cache: npm
+  #         cache-dependency-path: apps/web/package-lock.json
+  #     - uses: astral-sh/setup-uv@v5
+  #       with:
+  #         python-version: "3.12"
+  #     - run: npm ci
+  #     - run: npx playwright install --with-deps chromium
+  #     - run: |
+  #         cd ../api
+  #         uv venv .venv
+  #         uv pip install --python .venv/bin/python -e '.[dev]'
+  #     - run: npm run test:e2e

@@ -1,7 +1,6 @@
 """providers 域路由（从 app.py 搬出；路径、状态码、响应体零改动）。
 
 搬家而非重构：每个 handler 仍闭包在 `container` 上，行为与搬家前一致。
-见 docs/product-improvements/05-code-health/01-monolith-audit.md。
 """
 
 from typing import Optional

@@ -32,7 +32,7 @@ function formatCreatedDate(iso: string): string {
   return `创建于${y}年${m}月${d}日`;
 }
 
-/** 把绝对路径里<宿主机根目录>前缀替换成 ~，例如 /Users/endless/… → ~/…。 */
+/** 把绝对路径里<宿主机根目录>前缀替换成 ~，例如 /Users/example/… → ~/…。 */
 export function displayRootPath(rootPath: string, homePath: string): string {
   if (!homePath) return rootPath;
   const home = homePath.replace(/\/+$/, "");

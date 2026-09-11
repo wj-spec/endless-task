@@ -32,7 +32,7 @@ class ParseSkillCommandsTest(unittest.TestCase):
 
     def test_ignores_paths_and_prose(self) -> None:
         # 路径里 /Users、/tmp 后面紧跟 / 或非空白，不能当成技能名
-        self.assertEqual((), parse_skill_commands("看看 /Users/endless/x 和 /tmp/a"))
+        self.assertEqual((), parse_skill_commands("看看 /Users/example/x 和 /tmp/a"))
         self.assertEqual((), parse_skill_commands("3/4 的比例"))
         self.assertEqual((), parse_skill_commands("/My-Skill 大写不认"))
 

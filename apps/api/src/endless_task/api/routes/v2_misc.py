@@ -5,7 +5,6 @@
 `/api/v2/temporary-conversations/{id}/promote`。
 
 搬家而非重构：每个 handler 仍闭包在 `container` 上，行为与搬家前一致。
-见 docs/product-improvements/05-code-health/01-monolith-audit.md。
 """
 
 from __future__ import annotations
