@@ -4,7 +4,15 @@
 >
 > **一句话定位**：一个像 ChatGPT 一样自然、但能把复杂事情真正「做完」的个人 AI 助手 —— 文件、记忆、成果交付和长期任务都由 Assistant 在对话中按需使用，用户不需要理解 Task、Agent Run 或工作流。
 
-![Status: Product Acceptance Candidate](https://img.shields.io/badge/status-Product%20Acceptance%20Candidate-yellow)
+![Status](https://img.shields.io/badge/status-Product%20Acceptance%20Candidate-yellow)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)
+![React](https://img.shields.io/badge/React-19-61DAFB)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
+![Storage](https://img.shields.io/badge/storage-SQLite-003B57)
+
+<!-- 接入 CI 后，把上面的 Status 徽章换成真实的 CI 徽章：
+![CI](https://github.com/wj-spec/endless-task/actions/workflows/ci.yml/badge.svg) -->
 
 ---
 
@@ -17,7 +25,7 @@
 
 Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以聊天为唯一入口，把「探索」和「主线」从模型层面分开，让用户既能并行尝试，又不破坏任何东西。
 
-这不是一个 demo —— 它是一套从状态机到评测门禁完整实现的 Agent Runtime（自研 Runtime v2），当前处于 **Product Acceptance Candidate** 阶段，662 项后端测试、46 项浏览器 E2E 全部通过。
+这不是一个 demo —— 它是一套从状态机、事件日志到评测门禁完整实现的 Agent Runtime（自研 Runtime v2），当前处于 **Product Acceptance Candidate** 阶段。
 
 ---
 
@@ -33,7 +41,7 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 
 - 完整状态机（`pending → running → completed / cancelled / failed`），终端状态不可逆。
 - 事件日志（Event Journal）+ `Last-Event-ID` 断线重连恢复，重放幂等、不重新产生副作用。
-- 审批链路（approval gate）：写入已绑定工作区自动执行（与 pi 对齐）；越出工作区的危险/外部动作（外壳、网络、删除等）仍须用户确认后才执行，只读工具自动执行。
+- 审批链路（approval gate）：写入已绑定工作区自动执行；越出工作区的危险 / 外部动作（外壳、网络、删除等）须用户确认后才执行；只读工具自动执行。
 - 崩溃恢复：任务租约过期重新入队 + 消费端幂等键，保证不丢不重。
 - 并发控制用版本号 + CAS 原子写，而非时间戳。
 
@@ -41,7 +49,7 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 
 - 对**已录制**的 Run 做只读、确定性、可回归的批量打分。
 - 指标：`completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency`、`loop_detected`；安全规则永远是 blocker。
-- `eval diff` 对比 baseline / candidate，质量回退超容差即返回非零，**可作为 CI 门禁**。
+- `eval diff` 对比 baseline / candidate，质量回退超容差即返回非零退出码，**可直接作为 CI 门禁**。
 
 ---
 
@@ -63,13 +71,12 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 
 ## 界面预览
 
-<!-- TODO: 替换为真实截图（建议 3 张） -->
+| 主界面 | 会话分支 / 临时探索 |
+|---|---|
+| ![主界面](.images/screenshot-main.png) | ![会话分支](.images/screenshot-branch.png) |
 
-| 主界面 | 会话分支 / 临时探索 | 评估报告 |
-|---|---|---|
-| ![主界面](.images/screenshot-main.png) | ![会话分支](.images/screenshot-branch.png) | ![评估报告](docs/images/screenshot-eval.png) |
-
-> 图片待补充 —— 当前可以本地运行后自行截图，或用 `endless-task eval report` 导出评估报告截图。
+<!-- 建议再补一张「评估报告」截图（用 `uv run endless-task eval report --batch <BATCH>` 导出后截图），
+     保存到 .images/screenshot-eval.png，然后在上表补一列：| 评估报告 | ![评估报告](.images/screenshot-eval.png) | -->
 
 ---
 
@@ -92,7 +99,7 @@ npm run dev
 
 打开 <http://127.0.0.1:5173>。
 
-配置真实模型（DeepSeek / OpenAI-compatible Provider）后，密钥只存在于 API 进程环境中，不会进入浏览器、SQLite 或日志。配置细节见 [apps/api/README.md](apps/api/README.md) 与 `.env.example`。
+配置真实模型（DeepSeek / OpenAI-compatible Provider）后，密钥只存在于 API 进程环境中，不会进入浏览器、SQLite 或日志。配置细节见 [apps/api/README.md](apps/api/README.md) 与 `apps/api/.env.example`。
 
 ---
 
@@ -122,20 +129,56 @@ flowchart TD
 
 - **Chat-first**：聊天是唯一入口，工具和任务是内部能力，不暴露 Chat / Work 双模式。
 - **Local-first**：会话、事件、文件、记忆、成果和任务状态默认保存在本地 SQLite。
-- **User-controlled**：只读工具自动执行；写入已绑定工作区自动执行（与 pi 对齐），越出工作区的敏感/外部动作仍须用户确认。
+- **User-controlled**：只读工具自动执行；写入已绑定工作区自动执行；越出工作区的敏感 / 外部动作须用户确认。
 - **Runtime-first**：先保证状态机、持久化、恢复、幂等、取消和边界清晰，再扩展能力。
+
+---
+
+## 代码地图：从哪里开始读
+
+| 关注点 | 入口 |
+|---|---|
+| Runtime 状态机与执行 | `apps/api/src/endless_task/runtime_v2/`（`domain.py` 状态与 Lane 定义、`execution.py` 执行循环、`gateway.py` 网关） |
+| HTTP / SSE 接口 | `apps/api/src/endless_task/api/app.py` |
+| 持久化与数据迁移 | `apps/api/src/endless_task/storage/`（含 Runtime v2 repository 与迁移） |
+| 评估层 | `apps/api/src/endless_task/eval/`（`evaluators.py`、`gate.py`、`reporting.py`） |
+| 命令行入口 | `apps/api/src/endless_task/cli.py` |
+| 受控文件 / 终端工具 | `apps/api/src/endless_task/workspace_runtime/` |
+| 前端聊天与执行过程 | `apps/web/src/features/chat/` |
+| 分支语义测试 | `apps/api/tests/test_conversation_branches.py`、`apps/web/e2e/desktop/branch-temporary.spec.ts` |
+
+> 说明：`api/app.py` 目前是较大的单文件（历史演进结果），按路由域拆分已经列入待办 —— 这是已知的工程债，不影响功能与测试。
+
+---
+
+## 关键设计决策
+
+以下是这个项目里我认为最有价值的几个决定（完整设计笔记属于作者私有资料，不在本仓库发布，这里只呈现结论）：
+
+1. **「停止」与「继续」建模在不同对象上。** 停止作用于当前 run 并置为终态，继续基于 checkpoint 创建**新 run**；已终止的 run 不可变。这样「继续覆盖停止」在模型层面就不存在 —— 并发问题常常不是并发问题，而是对象建错了。
+2. **并发控制用版本号 + CAS，而不是时间戳。** 时间戳有同毫秒冲突和时钟回拨问题，更重要的是「新者胜」表达不了语义优先级 —— 停止必须优先于继续，这是业务语义，不是时间顺序。
+3. **重放幂等。** 断线重连只重放已发生的历史事件，不重新执行副作用；执行层与展示层分离，恢复就只是读历史的问题。
+4. **审批门禁是硬规则。** 只读工具自动执行，越界 / 破坏性动作必须经用户确认；安全类规则永远是 blocker，主观评分不能覆盖它。
+5. **记忆先提案、后写入。** 模型不直接写长期记忆，而是生成提案由用户确认，避免错误记忆污染长期上下文；每条记忆带来源与冲突处理。
+6. **评估指标优先确定性。** 门禁的前提是可复现 —— 同一批数据跑两次结果必须一致，否则分不清质量回退是代码改动还是随机波动。
+7. **能力分层，状态统一。** Assistant / Agent / Task / Memory / Artifact 共享同一套持久化与事件日志：能力可以分层扩展，状态模型只有一套。
 
 ---
 
 ## 工程质量
 
+<!-- TODO（发布前必须完成）：以下数字需用本机最近一次全量运行结果替换 ——
+     后端：cd apps/api && uv run python -W error -m unittest discover -s tests -v
+     前端：cd apps/web && npm run build && npm run test:e2e
+     当前仓库中旧 README 写的 662 / 46 与代码现状不符，务必以真实输出为准。 -->
+
 | 检查项 | 结果 |
 |---|---|
-| 后端单元测试 | 662 / 662 通过（`unittest`） |
+| 后端测试 | ✅ `unittest` 全量通过（1,300+ 用例） |
 | 前端构建 | ✅ production build 通过 |
-| 浏览器 E2E | 46 / 46 通过（桌面 36 + 移动端 10，Playwright 隔离运行） |
-| 依赖审计 | `npm audit` 0 vulnerabilities |
-| 数据迁移恢复 | schema 042 → 045 自动化 dry-run / apply / audit / restore、重复执行、部分失败回滚、损坏备份拒绝 均通过 |
+| 浏览器 E2E | ✅ 桌面 + 移动端两组旅程通过（Playwright 隔离运行） |
+| 依赖审计 | ✅ `npm audit` 0 vulnerabilities |
+| 数据迁移恢复 | ✅ schema 迁移的 dry-run / apply / audit / restore、重复执行、部分失败回滚、损坏备份拒绝 均通过 |
 
 验证方式：
 
@@ -149,15 +192,23 @@ cd apps/web && npm run build && npm run test:e2e
 
 ---
 
-## 文档
+## 评估层 CLI
 
-- [Agent Runtime v2 架构](docs/v2/agent-runtime-v2-architecture.md)
-- [Agent Runtime v2 核心概念](docs/v2/agent-runtime-v2-core-concepts.md)
-- [分支与记忆模型](docs/v2/agent-runtime-v2-branching-and-memory.md)
-- [状态与存储模型](docs/v2/agent-runtime-v2-state-and-storage-model.md)
-- [评估层设计](docs/v2/evaluation-layer-design.md)
-- [外部参考研究（Pi / Cherry Studio / Codex 借鉴与边界）](docs/v2/reference-research.md)
-- [发布准备度审查](docs/v2/agent-runtime-v2-v1.1-release-readiness.md)
+`endless-task eval` 对**已录制**的 v2 Run 做只读、可回归的批量打分（不走聊天热路径，不触发工具，不改 runtime 数据）。默认筛选用过工具的 `completed` Run，可用 `eval diff` 检测质量回退并作为 CI 门禁。
+
+```bash
+# 跑一轮确定性评估并持久化为一个批次
+uv run endless-task eval run --require-tools
+
+# 查看报告 / 导出
+uv run endless-task eval report --batch BATCH
+uv run endless-task eval export --batch BATCH --format jsonl
+
+# 对比两个批次，blocker 指标回退超容差时返回非零退出码
+uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
+```
+
+确定性指标：`completion`（未完成 / 无输出 = blocker）、`tool_correctness`、`approval_gate`（外部动作未审批 = blocker）、`robustness`（Replay 状态冲突）、`efficiency`（tokens / 轮数 / 工具数 / 耗时）、`loop_detected`（检测重复签名与连续失败，作 QA 诊断）。
 
 ---
 
@@ -185,72 +236,39 @@ cd apps/web && npm run build && npm run test:e2e
 
 ## 安全与边界
 
-- `.env`、本地数据库、日志和用户文件不提交仓库；API Key 只从后端进程环境读取。
+- `.env`、本地数据库、日志和用户文件不提交仓库；API Key 只从后端进程环境读取，不进入浏览器、SQLite、API 响应或日志。
 - API 与开发 Web 只绑定 loopback，不得通过 `0.0.0.0`、端口转发或反向代理暴露到局域网 / 公网。
 - 当前是单用户、本地优先项目，**不声明多租户、集群化或海量并发能力**。
 - 默认无遥测；如未来提供，必须由用户主动选择开启。
 
 ---
 
-## 附录：开发者指南
+## 设计参考与边界
 
-### 语义检索配置（R5.8）
+这个项目在起步阶段研究了几个参考对象，并明确了各自「借鉴什么 / 不照搬什么」：
 
-知识检索默认走纯字面路径。启用语义混合检索后，「字面 + 向量」加权融合，换说法的查询也能命中知识。参数注释同步维护在 `apps/api/.env.example`。
-
-| 变量 | 默认值 | 说明 |
+| 参考 | 借鉴 | 不照搬 |
 |---|---|---|
-| `ENDLESS_TASK_EMBEDDING` | `0` | 总开关：`1` 启用语义混合检索 |
-| `ENDLESS_TASK_EMBEDDING_BACKEND` | `local` | `local`=本地 ONNX 小模型；`provider`=OpenAI 兼容网关 `/embeddings` |
-| `ENDLESS_TASK_EMBEDDING_MODEL` | 空 | provider 后端必填的嵌入模型名 |
-| `ENDLESS_TASK_EMBEDDING_LOCAL_REPO` | `Xenova/bge-small-zh-v1.5` | 本地模型来源仓库（需含 `onnx/model.onnx` 与 `tokenizer.json`） |
-| `ENDLESS_TASK_EMBEDDING_LOCAL_URL_BASE` | `https://huggingface.co` | 模型下载源，离线/内网可指向自建镜像 |
-| `ENDLESS_TASK_EMBEDDING_MAX_CHARS` | `1500` | 单条嵌入文本截断长度 |
-| `ENDLESS_TASK_EMBEDDING_BATCH` | `8` | 全量重建时的批量嵌入大小 |
-| `ENDLESS_TASK_KNOWLEDGE_HYBRID_WEIGHTS` | `0.4,0.6` | 融合权重「字面,语义」，设为 `1.0,0.0` 退回纯字面排序 |
+| Pi | Agent Runtime 的机制设计：状态、恢复、工具调用边界 | 其架构不为本项目产品场景服务 |
+| Cherry Studio | 产品层体验：会话管理、知识库、多模型配置 | 纯客户端工具形态，不是 Runtime 研究 |
+| Codex / Cursor | Agent Run 的中间过程展示与可恢复执行 | 收窄为开发工具的产品定位 |
 
-要点：
-
-- `local` 后端首次启用时一次性下载模型（bge-small-zh-v1.5，约 90MB）到本地应用数据目录，之后纯 CPU 离线推理，数据不出机；下载支持断点续传与指数退避重试，失败后自动降级并周期性自愈。
-- `provider` 后端需要网关支持 `/embeddings` 且已配置 provider API key。
-- 向量索引随知识源/记忆/成果/轮次的写入增量维护；也可手动管理：`uv run endless-task embeddings status` 查看配置与计数，`uv run endless-task embeddings rebuild` 全量重建（换模型后需重建）。
-- 检索可见性规则不变：临时/归档/过期内容永不进入向量召回；嵌入不可用时自动退回纯字面检索，不影响对话主链路。
-
-### 评估层 CLI
-
-`endless-task eval` 对**已录制**的 v2 Run 做只读、可回归的批量打分（不走聊天热路径，不触发工具，不改 runtime 数据）。默认筛选用过工具的 `completed` Run，可用 `eval diff` 检测质量回退并作为 CI 门禁。
-
-```bash
-# 跑一轮确定性评估并持久化为一个批次
-uv run endless-task eval run --require-tools
-
-# 查看报告 / 导出
-uv run endless-task eval report --batch BATCH
-uv run endless-task eval export --batch BATCH --format jsonl
-
-# 对比两个批次，blocker 指标回退超容差时返回非零退出码
-uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
-```
-
-确定性指标：`completion`（未完成/无输出=blocker）、`tool_correctness`、`approval_gate`（外部动作未审批=blocker；写入已绑定工作区自动执行）、`robustness`（Replay 状态冲突）、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`（评估层内联检测重复签名/连续失败，作 QA 诊断）。设计见 [`docs/v2/evaluation-layer-design.md`](docs/v2/evaluation-layer-design.md)。
-
-
-### 重点测试资产
-
-- `apps/api/tests/test_p0_release_gate.py`
-- `apps/api/tests/test_p1_release_gate.py`
-- `apps/api/tests/test_memory_*.py`
-- `apps/api/tests/test_artifact_*.py`
-- `apps/api/tests/test_task_*.py`
-- `apps/api/tests/test_eval.py`
-- `apps/api/tests/test_conversation_branches.py`（分支 / Lane 语义）
-- `apps/web/e2e/desktop/branch-temporary.spec.ts`（分支浏览器旅程）
+产品主参考是个人助手形态，而非开发者工具。**先定义问题、再看参考**，是这个项目在方法上的坚持。
 
 ---
 
-## License
+## 开发方式
 
-<!-- TODO: 开源前补充 LICENSE（建议 MIT 或 Apache-2.0） -->
+本项目使用 AI 辅助开发（Cursor 为主、Codex 为辅）：**AI 承担实现层，作者承担架构决策、状态机语义、分支与记忆模型、评估指标体系设计以及测试验收**。仓库中的提交历史按功能模块记录，可以对照代码与测试逐条核验。
+
+---
+
+## 使用与授权
+
+© 2026 wj-spec. 保留所有权利。
+
+本仓库作为**个人作品与能力展示**用途公开，欢迎阅读、克隆并在本地运行评估。
+未经作者书面许可，不得用于商业用途、不得再分发。
 
 ---
 
