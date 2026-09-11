@@ -22,6 +22,7 @@ import type {
 } from "./apiTypes";
 import { readableError } from "./apiErrorText";
 import { useRuntimeEventBridge } from "./useRuntimeEventBridge";
+import { useSideConversation } from "./useSideConversation";
 import {
   runtimeTargetKey,
   useConversationRuntimeController,
@@ -233,206 +234,111 @@ export function useChatApplication() {
     [loadConversation],
   );
 
-  const openSideConversation = useCallback(
-    async (conversationId: string) => {
-      const requestVersion = sideRequestVersion.current + 1;
-      sideRequestVersion.current = requestVersion;
-      const isCurrent = () => sideRequestVersion.current === requestVersion;
-      const target = { conversationId, laneId: null };
-      setSideConversationId(conversationId);
-      setSideDraft("");
-      setSideLoading(true);
-      setCommandFeedback(target, "open-conversation", null);
-      try {
-        const snapshot = await chatApi.getConversation(conversationId);
-        if (!isCurrent()) return;
-        setSnapshots((current) => ({ ...current, [conversationId]: snapshot }));
-        await hydrateActiveTurn(snapshot, "main", isCurrent);
-        if (isCurrent()) setCommandFeedback(target, null, null);
-      } catch (loadError) {
-        if (isCurrent()) {
-          setCommandFeedback(target, null, readableError(loadError));
-        }
-      } finally {
-        if (isCurrent()) setSideLoading(false);
-      }
-    },
-    [hydrateActiveTurn],
-  );
-
-  const dismissSideConversation = useCallback((preserveTemporary = false) => {
-    sideRequestVersion.current += 1;
-    if (sideLane) {
-      const target = {
-        conversationId: sideLane.conversationId,
-        laneId: sideLane.laneId,
-      };
-      unbindRuntimeTarget(target, "side");
-      if (sideLane.mode === "temporary_conversation" && !preserveTemporary) {
-        runtimeController.stopConversation(sideLane.conversationId);
-      }
-      setSideSnapshots((current) => {
-        const next = { ...current };
-        delete next[sideLane.laneId];
-        return next;
-      });
-    }
-    setSideLane(null);
-    setSideConversationId(null);
-  }, [
-    runtimeController.stopConversation,
-    sideLane,
-    unbindRuntimeTarget,
-  ]);
-
-  const focusTemporaryConversation = useCallback(async () => {
-    if (!sideLane || sideLane.mode !== "temporary_conversation") return false;
-    await openConversation(sideLane.conversationId);
-    dismissSideConversation(true);
-    return true;
-  }, [dismissSideConversation, openConversation, sideLane]);
-
-  const waitForRuntimeRunToStop = useCallback(
-    async (target: { conversationId: string; laneId: string | null }, runId: string) => {
-      for (let attempt = 0; attempt < 25; attempt += 1) {
-        const snapshot = await runtimeController.loadSnapshot(target);
-        if (snapshot.runningRunId !== runId) return;
-        await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 200));
-      }
-      throw new Error("运行仍在取消中，请稍后重试关闭。");
-    },
-    [runtimeController.loadSnapshot],
-  );
-
-  const closeSideConversation = useCallback(async () => {
-    if (!sideLane) {
-      dismissSideConversation();
-      return true;
-    }
-
-    const target = {
-      conversationId: sideLane.conversationId,
-      laneId: sideLane.laneId,
-    };
-    const runtime = runtimeController.snapshots[runtimeTargetKey(target)];
-    const runningRunId =
-      runtime?.runningLaneId === sideLane.laneId ? runtime.runningRunId : null;
-    if (!runningRunId && sideLane.mode === "branch_lane") {
-      dismissSideConversation();
-      return true;
-    }
-
-    setCommandFeedback(
-      target,
-      sideLane.mode === "temporary_conversation"
-        ? "delete-temporary-conversation"
-        : "close-running-branch",
-      null,
+  const sendRuntimeV2Message = async (
+    conversationId: string,
+    content: string,
+    laneId?: string | null,
+    target: SnapshotTarget = "main",
+  ) => {
+    const requestVersion =
+      target === "side"
+        ? sideRequestVersion.current
+        : primarySurfaceRequestVersion.current;
+    const isCurrent = () =>
+      target === "side"
+        ? sideRequestVersion.current === requestVersion
+        : primarySurfaceRequestVersion.current === requestVersion;
+    const runtimeTarget = { conversationId, laneId: laneId ?? null };
+    const before = await runtimeController.loadSnapshot(runtimeTarget);
+    const result = await chatApi.createRuntimeV2Message(
+      conversationId,
+      content,
+      laneId ?? before.activeLaneId,
+      requestId(),
     );
-    try {
-      if (runningRunId) {
-        await chatApi.cancelRuntimeV2Run(runningRunId);
-        await waitForRuntimeRunToStop(target, runningRunId);
-      }
-      if (sideLane.mode === "temporary_conversation") {
-        await chatApi.deleteRuntimeV2TemporaryConversation(
-          sideLane.conversationId,
-        );
-        try {
-          const items = await chatApi.listConversations(
-            statusFilter,
-            undefined,
-            workspaceId,
-          );
-          setConversations(items);
-        } catch {
-          // 临时对话已删除；列表刷新失败不应阻止右侧状态清理。
-        }
-        setMainLaneIds((current) => {
-          const next = { ...current };
-          delete next[sideLane.conversationId];
-          return next;
-        });
-        setViewLaneIds((current) => {
-          const next = { ...current };
-          delete next[sideLane.conversationId];
-          return next;
-        });
-        setLaneTrees((current) => {
-          const next = { ...current };
-          delete next[sideLane.conversationId];
-          return next;
-        });
-      }
-    } catch (closeError) {
-      setCommandFeedback(target, null, readableError(closeError));
-      return false;
-    }
-    dismissSideConversation();
-    return true;
-  }, [
-    dismissSideConversation,
-    runtimeController.snapshots,
-    sideLane,
-    statusFilter,
-    waitForRuntimeRunToStop,
-    workspaceId,
-  ]);
-
-  const openLaneInSide = useCallback(
-    async (conversationId: string, laneId: string) => {
-      if (sideLane?.mode === "temporary_conversation") {
-        const closed = await closeSideConversation();
-        if (!closed) return;
-      } else {
-        dismissSideConversation();
-      }
-
-      const requestVersion = sideRequestVersion.current + 1;
-      sideRequestVersion.current = requestVersion;
-      const target = { conversationId, laneId };
-      setSideLane({
-        ...target,
-        mode: "branch_lane",
-      });
-      setSideConversationId(conversationId);
-      setSideDraft("");
-      setSideLoading(true);
-      setCommandFeedback(target, "open-lane", null);
-      try {
-        const [legacy, runtime] = await Promise.all([
-          chatApi.getConversation(conversationId),
-          runtimeController.loadSnapshot(target),
-        ]);
-        if (sideRequestVersion.current !== requestVersion) return;
-        applyRuntimeSnapshot(legacy, runtime, "side");
-        if (runtime.runningRunId) {
-          followRuntimeConversation(
-            conversationId,
-            runtime.lastEventSeq,
-            laneId,
-            "side",
-          );
-        }
-        setCommandFeedback(target, null, null);
-      } catch (loadError) {
-        if (sideRequestVersion.current === requestVersion) {
-          setCommandFeedback(target, null, readableError(loadError));
-        }
-      } finally {
-        if (sideRequestVersion.current === requestVersion) {
-          setSideLoading(false);
-        }
-      }
-    },
-    [
-      applyRuntimeSnapshot,
-      closeSideConversation,
-      dismissSideConversation,
-      followRuntimeConversation,
-      sideLane,
-    ],
+    const legacy = await chatApi.getConversation(conversationId);
+    const runtime = await runtimeController.loadSnapshot({
+      conversationId,
+      laneId: result.laneId,
+    });
+    if (!isCurrent()) return result;
+    applyRuntimeSnapshot(legacy, runtime, target);
+    // 首条消息会给会话自动命名（"摘要式标题"，与后端同一规则）：把侧栏行同步刷新，
+    // 否则列表要等下次整体加载才更新，用户看到的一直是「新对话」。
+    setConversations((current) =>
+      current.some((item) => item.id === conversationId)
+        ? current.map((item) =>
+            item.id === conversationId ? { ...item, ...legacy.conversation } : item,
+          )
+        : current,
+    );
+    bumpConversationsRevision();
+    followRuntimeConversation(
+      conversationId,
+      before.lastEventSeq,
+      result.laneId,
+      target,
+    );
+    return result;
+  };
+  // 侧栏派生值（快照 / 最新轮 / 是否生成中）：侧栏会话簇要用，故先算。
+  const sideSnapshot = sideConversationId
+    ? (sideLane ? sideSnapshots[sideLane.laneId] : snapshots[sideConversationId]) ??
+      null
+    : null;
+  const sideLatestTurn = sideSnapshot?.turns.at(-1);
+  const sideLatestLiveTurn = sideLatestTurn
+    ? liveTurns[sideLatestTurn.turn.id]
+    : undefined;
+  const sideTurnStatus = sideLatestLiveTurn?.status ?? sideLatestTurn?.turn.status;
+  const sideIsGenerating = Boolean(
+    sideTurnStatus && activeRuntimeStatuses.has(sideTurnStatus),
   );
+
+  // 侧栏工作面（对照/分支）的会话簇：依赖上面的运行时事件桥，故在其后调用。
+  const {
+    openSideConversation,
+    dismissSideConversation,
+    focusTemporaryConversation,
+    waitForRuntimeRunToStop,
+    closeSideConversation,
+    openLaneInSide,
+    sendSide,
+  } = useSideConversation({
+    runtimeController,
+    sideRequestVersion,
+    sideLane,
+    sideConversationId,
+    sideDraft,
+    sideCommandTarget,
+    mainLaneIds,
+    setSnapshots,
+    setSideSnapshots,
+    setSideConversationId,
+    setSideLane,
+    setSideDraft,
+    setSideLoading,
+    setConversations,
+    setMainLaneIds,
+    setViewLaneIds,
+    setLaneTrees,
+    setCommandFeedback,
+    openConversation,
+    hydrateActiveTurn,
+    applyRuntimeSnapshot,
+    followRuntimeConversation,
+    unbindRuntimeTarget,
+    statusFilter,
+    workspaceId,
+    sideIsGenerating,
+    sendRuntimeV2Message,
+  });
+
+
+
+
+
+
 
   const loadConversationList = useCallback(
     async (status: ConversationStatus, preferredId?: string) => {
@@ -667,18 +573,6 @@ export function useChatApplication() {
     activeTurnStatus && activeRuntimeStatuses.has(activeTurnStatus);
   const isGenerating = Boolean(activeTurnStatusSet);
 
-  const sideSnapshot = sideConversationId
-    ? (sideLane ? sideSnapshots[sideLane.laneId] : snapshots[sideConversationId]) ??
-      null
-    : null;
-  const sideLatestTurn = sideSnapshot?.turns.at(-1);
-  const sideLatestLiveTurn = sideLatestTurn
-    ? liveTurns[sideLatestTurn.turn.id]
-    : undefined;
-  const sideTurnStatus = sideLatestLiveTurn?.status ?? sideLatestTurn?.turn.status;
-  const sideIsGenerating = Boolean(
-    sideTurnStatus && activeRuntimeStatuses.has(sideTurnStatus),
-  );
   const activeRuntimeSnapshot = activeConversationId
     ? (runtimeController.snapshots[
         runtimeTargetKey({
@@ -709,53 +603,6 @@ export function useChatApplication() {
   );
   const activeRunningRunId = activeRunRunning ? activeRuntimeRunId : null;
 
-  const sendRuntimeV2Message = async (
-    conversationId: string,
-    content: string,
-    laneId?: string | null,
-    target: SnapshotTarget = "main",
-  ) => {
-    const requestVersion =
-      target === "side"
-        ? sideRequestVersion.current
-        : primarySurfaceRequestVersion.current;
-    const isCurrent = () =>
-      target === "side"
-        ? sideRequestVersion.current === requestVersion
-        : primarySurfaceRequestVersion.current === requestVersion;
-    const runtimeTarget = { conversationId, laneId: laneId ?? null };
-    const before = await runtimeController.loadSnapshot(runtimeTarget);
-    const result = await chatApi.createRuntimeV2Message(
-      conversationId,
-      content,
-      laneId ?? before.activeLaneId,
-      requestId(),
-    );
-    const legacy = await chatApi.getConversation(conversationId);
-    const runtime = await runtimeController.loadSnapshot({
-      conversationId,
-      laneId: result.laneId,
-    });
-    if (!isCurrent()) return result;
-    applyRuntimeSnapshot(legacy, runtime, target);
-    // 首条消息会给会话自动命名（"摘要式标题"，与后端同一规则）：把侧栏行同步刷新，
-    // 否则列表要等下次整体加载才更新，用户看到的一直是「新对话」。
-    setConversations((current) =>
-      current.some((item) => item.id === conversationId)
-        ? current.map((item) =>
-            item.id === conversationId ? { ...item, ...legacy.conversation } : item,
-          )
-        : current,
-    );
-    bumpConversationsRevision();
-    followRuntimeConversation(
-      conversationId,
-      before.lastEventSeq,
-      result.laneId,
-      target,
-    );
-    return result;
-  };
 
   const send = async () => {
     const content = draft.trim();
@@ -794,27 +641,6 @@ export function useChatApplication() {
     }
   };
 
-  const sendSide = async () => {
-    const content = sideDraft.trim();
-    if (!content || !sideConversationId || sideIsGenerating) return;
-    const retainedDraft = sideDraft;
-    setSideDraft("");
-    setCommandFeedback(sideCommandTarget, "send", null);
-    try {
-      await sendRuntimeV2Message(
-        sideConversationId,
-        content,
-        sideLane?.conversationId === sideConversationId
-          ? sideLane.laneId
-          : mainLaneIds[sideConversationId],
-        sideLane?.conversationId === sideConversationId ? "side" : "main",
-      );
-      setCommandFeedback(sideCommandTarget, null, null);
-    } catch (sendError) {
-      setSideDraft(retainedDraft);
-      setCommandFeedback(sideCommandTarget, null, readableError(sendError));
-    }
-  };
 
   const uploadFile = async (file: File) => {
     if (!activeConversationId || isGenerating) return;
