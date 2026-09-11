@@ -33,15 +33,19 @@ jobs:
       - name: Run backend tests
         # 直接调用 .venv/bin/python（不用 `uv run`），避免 uv 在运行阶段重新同步环境、
         # 丢掉上面手动安装的 extra。
+        # 固定 TZ：提案预算（quiet hours / 每日额度 / 冷却期）按本地时间计算，
+        # 测试以 Asia/Shanghai 为基准；GitHub runner 默认 UTC，不固定时区会假失败。
         # 也不加 `-W error`：starlette / anyio 在导入期就会发出第三方弃用警告，
         # 升级为错误会导致测试模块导入失败（与本仓库代码无关）。
+        env:
+          TZ: Asia/Shanghai
         run: |
           set +e
           .venv/bin/python -m unittest discover -s tests > "$RUNNER_TEMP/backend-tests.log" 2>&1
           status=$?
           tail -n 40 "$RUNNER_TEMP/backend-tests.log"
           if [ "$status" -ne 0 ]; then
-            grep -E "^(FAIL|ERROR|Ran |OK|FAILED)" "$RUNNER_TEMP/backend-tests.log" | head -n 30 | while IFS= read -r line; do
+            grep -E -A 3 "^(FAIL|ERROR):" "$RUNNER_TEMP/backend-tests.log" | head -n 60 | while IFS= read -r line; do
               echo "::error title=backend test failed::$line"
             done
           fi
