@@ -22,7 +22,7 @@ Endless Task 用**持久分支与临时对话**承载不同探索，让个人助
 
 - **会话分支**：持久分支继承来源上下文并独立演化，支持重命名、设为主线和归档；临时对话隔离探索，不默认写入长期记忆，可升级为正式会话。
 - **可靠执行**：持久化运行状态、SSE 事件重放、幂等提交、检查点、审批、取消与恢复。预算硬停后，仅满足安全条件的运行支持原地续跑。
-- **Rust 文件内核**：通过 PyO3 接入交互式 Agent 的读取、写入、编辑、删除、列目录、路径管理和 Skill 文件读取；逐段 `openat` / `O_NOFOLLOW` 解析路径，拒绝符号链接替换造成的越界访问。扩展缺失或 ABI 不匹配时明确失败。
+- **Rust 文件内核**：通过 PyO3 接入交互式 Agent 的读取、写入、编辑、删除、列目录、路径管理和 Skill 文件读取；逐段 `openat` / `O_NOFOLLOW` 解析路径，拒绝符号链接替换造成的越界访问。扩展不可用时明确失败；安装和验证命令检查 ABI，拒绝不匹配的构建。
 - **任务与委派**：任务和提醒的提案确认、手工创建与编辑、调度及通知；子运行支持后台执行、结果回传、只读 / 隔离写模式与预算限制。
 - **离线评测**：对已录制运行计算确定性指标，导出报告并比较质量回退。`eval diff` 可供流水线调用，当前仓库 CI 尚未自动接入该门禁。
 
@@ -41,6 +41,16 @@ Endless Task 用**持久分支与临时对话**承载不同探索，让个人助
 | 主界面 | 会话分支 / 临时探索 |
 |---|---|
 | ![主界面](.images/screenshot-main.png) | ![会话分支](.images/screenshot-branch.png) |
+
+## 当前运行架构
+
+![当前交互式 Agent 运行架构：宿主驱动模型与工具循环，通过 SQLite 保存状态，文件工具经 PyO3 调用 Rust](.images/runtime-overview.drawio.png)
+
+图展示当前交互式主路径，框表示同一 FastAPI 应用内的职责，Rust 为进程内扩展。入口差异、实现边界与源码映射见 [架构说明](ARCHITECTURE.md)；可查看 [矢量图](.images/runtime-overview.svg) 和 [可编辑图源](.images/runtime-overview.drawio)。
+
+- **模型提出动作，宿主决定执行。** 工具请求须经过参数校验、审批与调用限制。见 [执行协调器](apps/api/src/endless_task/runtime_v2/execution_impl/coordinator.py) 与 [控制测试](apps/api/tests/test_tool_pipeline.py)。
+- **显示重放与副作用执行分开。** 断线后读取历史事件；结果不确定的工具不会因恢复自动重放，预算续跑另有准入条件。见 [重放实现](apps/api/src/endless_task/runtime_v2/replay.py) 与 [续跑测试](apps/api/tests/test_runtime_v2_run_revive.py)。
+- **Python 编排，Rust 收紧文件访问边界。** 七类交互式文件工具经 PyO3 使用句柄与逐段路径检查。见 [Rust 内核](apps/api/crates/endless-kernel-fs/src/lib.rs) 与 [TOCTOU 回归测试](apps/api/tests/test_rk_fs_toctou.py)。
 
 ## 快速开始
 
