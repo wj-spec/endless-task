@@ -7,6 +7,9 @@ import { useTerminalSessions } from "../terminal/useTerminalSessions";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { LAYOUT_LIMITS, useLayoutWidth } from "../ui/useLayoutWidth";
 import { BrowserPlaceholder } from "../workspace/views/BrowserPlaceholder";
+import { ChangesView } from "../workspace/views/ChangesView";
+import { ConversationsView } from "../workspace/views/ConversationsView";
+import type { ConversationsViewProps } from "../workspace/views/ConversationsView";
 import { WorkspaceViewTabs } from "../workspace/views/WorkspaceViewTabs";
 import { useWorkspaceViews } from "../workspace/views/useWorkspaceViews";
 import { ArtifactDetail } from "./ArtifactDetail";
@@ -20,6 +23,14 @@ type WorkspacePanelProps = {
   conversationId: string;
   latestTurnId: string | null;
   drawerOpen: boolean;
+  /**
+   * C4：右侧边栏「会话」视图的 App 级数据/动作通道。
+   *
+   * 分支树与临时对话都**已在 App 级状态里**（`laneTrees` / 会话列表），面板自己不
+   * 拉任何数据；「新建」也复用既有创建流程的回调（`App.tsx` 里与主区入口同一个
+   * `chat.createTemporaryConversation`）。
+   */
+  conversationsView: ConversationsViewProps;
   onCollapse: () => void;
   onWorkspaceRefresh: () => void;
   workspaceRootPath?: string | null;
@@ -33,6 +44,7 @@ export function WorkspacePanel({
   conversationId,
   latestTurnId,
   drawerOpen,
+  conversationsView,
   onCollapse,
   onWorkspaceRefresh,
   workspaceRootPath,
@@ -117,7 +129,11 @@ export function WorkspacePanel({
         onCreate={views.open}
         views={views.views}
       />
-      {tab === "browser" ? (
+      {tab === "conversations" ? (
+        <ConversationsView {...conversationsView} />
+      ) : tab === "changes" ? (
+        <ChangesView conversationId={conversationId} />
+      ) : tab === "browser" ? (
         <BrowserPlaceholder
           onOpenExternal={
             workspaceRootPath

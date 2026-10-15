@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { WorkspacePanel } from "./features/artifacts/WorkspacePanel";
 import { chatApi } from "./features/chat/api";
 import type {
@@ -201,22 +208,49 @@ export function App() {
     SkillInvocationCandidate[]
   >([]);
 
-  useEffect(() => {
+  // 在途请求序号：工作区切换/卸载时让旧响应失效，避免后到的旧结果覆盖新列表。
+  const skillCandidatesRequest = useRef(0);
+
+  const refreshSkillCandidates = useCallback(() => {
     // 没有绑定工作区也要拉：全局共享技能（~/.claude/skills 等）同样可显式调用。
-    const workspaceId = chat.workspaceId ?? null;
-    let cancelled = false;
+    const requestId = (skillCandidatesRequest.current += 1);
     void chatApi
-      .listInvocableSkills(workspaceId)
+      .listInvocableSkills(chat.workspaceId ?? null)
       .then((items) => {
-        if (!cancelled) setSkillCandidates(items);
+        if (skillCandidatesRequest.current === requestId) {
+          setSkillCandidates(items);
+        }
       })
       .catch(() => {
-        if (!cancelled) setSkillCandidates([]);
+        if (skillCandidatesRequest.current === requestId) {
+          setSkillCandidates([]);
+        }
       });
-    return () => {
-      cancelled = true;
-    };
   }, [chat.workspaceId]);
+
+  useEffect(() => {
+    refreshSkillCandidates();
+    return () => {
+      // 工作区切换或组件卸载：让在途响应作废。
+      skillCandidatesRequest.current += 1;
+    };
+  }, [refreshSkillCandidates]);
+
+  // 技能可能在应用外被安装（CLI、其它 agent 的共享目录），也可能刚在「技能」页签装完
+  // 而页面没重载。回到窗口时重拉一次，否则技能菜单会一直停在旧列表上。
+  useEffect(() => {
+    const onFocus = () => refreshSkillCandidates();
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      refreshSkillCandidates();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [refreshSkillCandidates]);
 
   /** S7：把技能注入当前会话输入框（用户指定 → 发送时直接注入正文）。 */
   const injectSkillIntoComposer = (name: string) => {
@@ -245,7 +279,10 @@ export function App() {
   };
 
   const openWorkspacePanel = async () => {
-    if (chat.sideConversationId) {
+    // 打开工作区面板只是"想看文件/产物"。右侧对照的"关闭"是可逆的收起，
+    // 但临时对话的"关闭"语义是**删除**——不能为了给面板腾地方就把用户的
+    // 临时探索销毁。桌面端两者可以共存（分栏按 fr 比例自适应）。
+    if (chat.sideConversationId && chat.sideMode === "branch_lane") {
       const closed = await chat.closeSideConversation();
       if (!closed) return;
     }
@@ -396,7 +433,10 @@ export function App() {
         onSelectVariant={(turnId, variantId) =>
           void chat.selectVariant(turnId, variantId)
         }
-        onSend={() => void chat.send()}
+        // C3b：`@` 引用随消息交给发送路径（主区 composer 自己持有选中项）。
+        // 修复波 §6：把 `send` 的 **boolean 成败**原样透传回 composer（true ⇒ 它清空
+        // chip）。**不要**在这里 `void` 掉——那会让 composer 永远认为没发出去。
+        onSend={(references) => chat.send(references)}
         onModelChange={(providerProfileId, modelOverride) =>
           void chat.changeConversationModel(providerProfileId, modelOverride)
         }
@@ -485,7 +525,7 @@ export function App() {
       {chat.sideConversationId ? (
         <section
           aria-label={
-            chat.sideMode === "branch_lane" ? "分支对照" : "临时对话"
+            chat.sideMode === "branch_lane" ? "右侧对照" : "临时对话"
           }
           className="side-chat-panel"
         >
@@ -583,7 +623,9 @@ export function App() {
                 "side",
               )
             }
-            onSend={() => void chat.sendSide()}
+            // C3b：侧区（右侧对照 / 临时对话）同样把自己的引用交出去。
+            // 修复波 §6：同样把成败 boolean 透传回侧区 composer（不要 `void` 掉）。
+            onSend={(references) => chat.sendSide(references)}
             onModelChange={(providerProfileId, modelOverride) =>
               void chat.changeConversationModel(
                 providerProfileId,
@@ -629,6 +671,29 @@ export function App() {
       {workspaceVisible && (!workspaceCollapsed || workspaceDrawerOpen) ? (
         <WorkspacePanel
           conversationId={workspace.workspace!.conversationId}
+          // C4：右侧边栏「会话」视图的数据/动作通道。分支树与临时对话都来自**已在
+          // 内存里的** App 级状态（`laneTrees` / 会话列表）⇒ 打开这个视图**零额外
+          // 请求**；「新建」复用主区入口同一个 `chat.createTemporaryConversation`
+          // （仍开在主区并排分栏，不在面板里内嵌第二份工作面）。
+          conversationsView={{
+            lanes: chat.activeConversationId
+              ? (chat.laneTrees[chat.activeConversationId] ?? [])
+              : [],
+            currentLaneId: chat.activeConversationId
+              ? (chat.viewLaneIds[chat.activeConversationId] ??
+                chat.mainLaneIds[chat.activeConversationId] ??
+                null)
+              : null,
+            conversations: chat.conversations,
+            onCreateTemporaryConversation: () =>
+              void chat.createTemporaryConversation(),
+            onOpenConversation: (conversationId) =>
+              void chat.openConversation(conversationId),
+            onSelectLane: (laneId) => {
+              if (!chat.activeConversationId) return;
+              void chat.switchLane(chat.activeConversationId, laneId);
+            },
+          }}
           drawerOpen={workspaceDrawerOpen}
           latestTurnId={latestTurn?.turn.id ?? null}
           onCollapse={() => {
@@ -689,7 +754,11 @@ export function App() {
         <AssistantPanel
           capabilities={chat.capabilities}
           conversationId={chat.activeConversationId}
-          onCapabilitiesChanged={() => void chat.refreshCapabilities()}
+          onCapabilitiesChanged={() => {
+            void chat.refreshCapabilities();
+            // 技能页签里安装/导入/删除后，composer 的技能候选也要跟着更新。
+            refreshSkillCandidates();
+          }}
           onClose={() => dispatchSurface({ type: "close" })}
           onOpenConversation={(conversationId, focusTurnId) => {
             void chat.openConversation(conversationId, { focusTurnId });

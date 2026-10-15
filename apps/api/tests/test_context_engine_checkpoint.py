@@ -20,7 +20,7 @@ VALID_JSON = {
     "progress": ["M1 完成", "M2 进行中"],
     "decisions": ["协议层先行"],
     "open_questions": ["G0 门何时过"],
-    "files_read": [{"path": "docs/agent-platform/04.md"}],
+    "files_read": [{"path": "docs/reference.md"}],
     "files_modified": [{"path": "apps/api/src/endless_task/context_engine/checkpoint.py", "sha256": "a" * 64}],
     "active_effects": [{"path": "run_1/effects"}],
     "next_steps": ["实现 AP-204"],

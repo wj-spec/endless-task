@@ -24,7 +24,7 @@ export type LaneActionsParams = {
   /** `mainLaneIds` / `viewLaneIds`：会话 → 主线 / 当前查看车道的映射。 */
   mainLaneIds: Record<string, string>;
   viewLaneIds: Record<string, string>;
-  /** 临时会话快照（分叉/提升时作为基线）。 */
+  /** 临时对话快照（分叉/提升时作为基线）。 */
   snapshots: Record<string, ConversationSnapshot>;
   sideLane: SideLaneTarget | null;
   setLaneTrees: React.Dispatch<

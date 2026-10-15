@@ -12,6 +12,7 @@ import type {
   HealthSnapshot,
   LiveTurn,
   ProviderProfile,
+  RuntimeV2ConversationReference,
   RuntimeV2Entry,
   RuntimeV2Lane,
   RuntimeV2ProductEvent,
@@ -24,6 +25,9 @@ import { readableError } from "./apiErrorText";
 import { useRuntimeEventBridge } from "./useRuntimeEventBridge";
 import { useSideConversation } from "./useSideConversation";
 import { useLaneActions } from "./useLaneActions";
+import { useWorkspaceConversations } from "./useWorkspaceConversations";
+import { useConversationLifecycle } from "./useConversationLifecycle";
+import { useMessageActions } from "./useMessageActions";
 import {
   runtimeTargetKey,
   useConversationRuntimeController,
@@ -55,11 +59,9 @@ export function useChatApplication() {
   // 所以"新建会话/会话改名"这类变化必须显式通知它刷新，否则侧栏要等下次整体加载。
   const [conversationsRevision, setConversationsRevision] = useState(0);
   // 供 loadConversationList 决策（见下方同步 effect）：避免列表刷新抢走用户当前所在会话。
-  const bumpConversationsRevision = useCallback(
-    () => setConversationsRevision((value) => value + 1),
-    [],
-  );
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [initialHashId] = useState(conversationIdFromHash);
+  const [initialHashPending, setInitialHashPending] = useState(Boolean(initialHashId));
   const [snapshots, setSnapshots] = useState<Record<string, ConversationSnapshot>>({});
   const [sideSnapshots, setSideSnapshots] = useState<
     Record<string, ConversationSnapshot>
@@ -80,11 +82,6 @@ export function useChatApplication() {
     readStoredWorkspace,
   );
   // 当前工作区上下文：仅当它是「已绑定本地目录」的工作区时才允许新建会话。
-  const currentWorkspace = useMemo(
-    () => workspaces.find((item) => item.id === workspaceId) ?? null,
-    [workspaces, workspaceId],
-  );
-  const workspaceCanCreate = Boolean(currentWorkspace?.rootPath);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   // 通知/引用跳转：打开会话后需要滚动定位到的轮次（turnId = v2 run id）。
@@ -107,7 +104,17 @@ export function useChatApplication() {
   const conversationListVersion = useRef(0);
   const runtimeController = useConversationRuntimeController();
   const primarySurfaceRequestVersion = useRef(0);
+  // 列表簇要用：hashchange 路由与卸载清理也要用它们，故留在父层。
+  const activeConversationIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
   const sideRequestVersion = useRef(0);
+  const initialHashTarget = useRef<string | undefined>(undefined);
+  const initialSelectionVersion = useRef(0);
+  const cancelInitialHash = useCallback(() => {
+    initialSelectionVersion.current += 1;
+    initialHashTarget.current = undefined;
+    setInitialHashPending(false);
+  }, []);
   // 运行时事件桥：把 v2 运行时推来的快照/事件投影成界面状态。
   // 自己在外面建一次 runtimeController 并传进去——两边各建一份会出现两套 SSE 连接。
   const {
@@ -220,6 +227,7 @@ export function useChatApplication() {
       conversationId: string,
       options?: { focusTurnId?: string | null },
     ) => {
+      cancelInitialHash();
       hasOpenedConversationRef.current = true;
       setActiveConversationId(conversationId);
       // 先清空再设置：同一轮次重复点击也要能重新滚动（用 nonce 触发 effect）。
@@ -232,14 +240,54 @@ export function useChatApplication() {
       );
       await loadConversation(conversationId);
     },
-    [loadConversation],
+    [cancelInitialHash, loadConversation],
   );
+
+  // 会话列表与工作区：只依赖 openConversation，故紧随其后调用。
+  const {
+    loadConversationList,
+    refreshCapabilities,
+    refreshProviders,
+    visibleConversations,
+    currentWorkspace,
+    workspaceCanCreate,
+    bumpConversationsRevision,
+    selectWorkspace,
+    createWorkspace,
+    refreshWorkspaces,
+    deleteWorkspace,
+  } = useWorkspaceConversations({
+    onSelectWorkspace: cancelInitialHash,
+    conversationListVersion,
+    activeConversationIdRef,
+    conversationsRef,
+    conversations,
+    workspaces,
+    homePath,
+    workspaceId,
+    search,
+    statusFilter,
+    setConversations,
+    setConversationsRevision,
+    setWorkspaces,
+    setHomePath,
+    setWorkspaceId,
+    setActiveConversationId,
+    setLoading,
+    setError,
+    setHealth,
+    setCapabilities,
+    setProviders,
+    openConversation,
+  });
 
   const sendRuntimeV2Message = async (
     conversationId: string,
     content: string,
     laneId?: string | null,
     target: SnapshotTarget = "main",
+    // C3b：`@` 引用（判别联合数组）。缺省空 ⇒ 请求体与今天逐字相同。
+    references: RuntimeV2ConversationReference[] = [],
   ) => {
     const requestVersion =
       target === "side"
@@ -256,6 +304,7 @@ export function useChatApplication() {
       content,
       laneId ?? before.activeLaneId,
       requestId(),
+      references,
     );
     const legacy = await chatApi.getConversation(conversationId);
     const runtime = await runtimeController.loadSnapshot({
@@ -283,6 +332,7 @@ export function useChatApplication() {
     return result;
   };
   // 侧栏派生值（快照 / 最新轮 / 是否生成中）：侧栏会话簇要用，故先算。
+
   const sideSnapshot = sideConversationId
     ? (sideLane ? sideSnapshots[sideLane.laneId] : snapshots[sideConversationId]) ??
       null
@@ -364,71 +414,62 @@ export function useChatApplication() {
     loadConversation,
   });
 
+  // 会话生命周期：依赖车道树的 refreshLaneTree 与列表的 loadConversationList，故在其后。
+  const {
+    newConversation: createNewConversation,
+    createTemporaryConversation,
+    promoteConversation,
+    renameConversation,
+    changeConversationModel,
+    changeConversationStatus,
+    deleteConversation,
+  } = useConversationLifecycle({
+    runtimeController,
+    activeConversationId,
+    workspaceId,
+    currentWorkspace,
+    statusFilter,
+    snapshots,
+    sideLane,
+    sideConversationId,
+    setSideConversationId,
+    setSideLane,
+    setSideDraft,
+    setWorkspaceId,
+    workspaces,
+    loadConversationList,
+    setConversations,
+    setActiveConversationId,
+    setSnapshots,
+    setPendingAction,
+    setStatusFilter,
+    setError,
+    setMainLaneIds,
+    setViewLaneIds,
+    setLaneTrees,
+    primaryCommandTarget,
+    sideCommandTarget,
+    refreshLaneTree,
+    setCommandFeedback,
+    bumpConversationsRevision,
+    openConversation,
+    loadConversation,
+    applyRuntimeSnapshot,
+    dismissSideConversation,
+    closeSideConversation,
+  });
+
+  const newConversation = (targetWorkspaceId?: string) => {
+    cancelInitialHash();
+    return createNewConversation(targetWorkspaceId);
+  };
 
 
 
 
 
 
-  const loadConversationList = useCallback(
-    async (status: ConversationStatus, preferredId?: string) => {
-      // 请求版本守卫：列表加载可能因 workspaceId/状态切换被并发触发，
-      // 旧响应不得覆盖新状态（尤其刷新恢复时）。
-      const requestVersion = conversationListVersion.current + 1;
-      conversationListVersion.current = requestVersion;
-      const isCurrent = () => conversationListVersion.current === requestVersion;
-      // 请求发出时的活动会话：响应回来时若用户/代码已经切到别的会话，
-      // 这次响应就只能更新列表，**不能**再按旧意图打开会话——否则一个迟到的
-      // 响应会把"刚新建/刚点开"的会话顶掉（表现为 + 新建后跳回上一段对话）。
-      const activeAtRequest = activeConversationIdRef.current;
-      setLoading(true);
-      setError(null);
-      try {
-        let items = await chatApi.listConversations(status, undefined, workspaceId);
-        if (!isCurrent()) return;
-        if (status === "active" && items.length === 0 && workspaceCanCreate) {
-          const created = await chatApi.createConversation(workspaceId!);
-          if (!isCurrent()) return;
-          items = [created];
-        }
-        setConversations(items);
-        // 选择打开哪一个：显式 preferred 优先 → 否则保留**当前仍在列表里的会话**
-        // → 再退回第一项。此前是无条件打开 items[0]，于是列表刷新（页面初始加载、
-        // 工作区刷新等）会把用户"刚点开/刚新建"的会话顶掉——表现为点了「+ 新建会话」
-        // 之后主对话又跳回上一段对话。
-        const current = activeConversationIdRef.current;
-        const superseded = current !== activeAtRequest;
-        const preferred = superseded
-          ? null
-          : (items.find((item) => item.id === preferredId)?.id ?? null);
-        // 同工作区的刷新即使没包含刚新建的会话（请求早于创建发出），也要保留它。
-        const known = conversationsRef.current.find((item) => item.id === current);
-        const currentStillValid =
-          Boolean(current) &&
-          (items.some((item) => item.id === current) ||
-            (known?.workspaceId ?? null) === (workspaceId ?? null));
-        const target =
-          preferred ??
-          (currentStillValid ? current : null) ??
-          (superseded ? null : (items[0]?.id ?? null));
-        if (isCurrent()) {
-          if (target && target !== current) await openConversation(target);
-          else if (!target) {
-            setActiveConversationId(null);
-            setLoading(false);
-          } else {
-            setLoading(false);
-          }
-        }
-      } catch (loadError) {
-        if (isCurrent()) {
-          setError(readableError(loadError));
-          setLoading(false);
-        }
-      }
-    },
-    [openConversation, workspaceId, workspaceCanCreate],
-  );
+
 
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
@@ -449,6 +490,7 @@ export function useChatApplication() {
         // 否则无已存上下文时默认落到第一个已绑定目录的工作区。
         const restoredConversation = readStoredActiveConversation();
         setWorkspaceId((current) => {
+          if (initialHashTarget.current) return current;
           if (current) return current;
           if (restoredConversation?.workspaceId) {
             const exists = items.some(
@@ -464,27 +506,7 @@ export function useChatApplication() {
     void chatApi.listProviders().then(setProviders).catch(() => setProviders([]));
   }, []);
 
-  const refreshCapabilities = useCallback(async () => {
-    try {
-      setCapabilities(await chatApi.capabilities());
-    } catch {
-      setCapabilities(null);
-    }
-  }, []);
 
-  const refreshProviders = useCallback(async () => {
-    try {
-      setProviders(await chatApi.listProviders());
-    } catch {
-      setProviders([]);
-    }
-    try {
-      setHealth(await chatApi.health());
-    } catch {
-      setHealth(null);
-    }
-    await refreshCapabilities();
-  }, [refreshCapabilities]);
 
   useEffect(() => {
     // 刷新恢复上次会话：激活会话变化即持久化 id 与其工作区，供重载后恢复。
@@ -513,45 +535,53 @@ export function useChatApplication() {
 
   useEffect(() => {
     // URL 深链（P0-4）：#/conversation/<id> 优先于本地恢复目标。
-    const hashId = conversationIdFromHash();
-    if (!hashId) return;
-    const storedId = readStoredActiveConversation()?.conversationId ?? undefined;
-    if (hashId === storedId) return; // 常规恢复路径已覆盖
+    if (!initialHashId) return;
     let cancelled = false;
+    const selectionVersion = initialSelectionVersion.current;
+    const isCurrent = () =>
+      !cancelled && initialSelectionVersion.current === selectionVersion;
     void chatApi
-      .getConversation(hashId)
+      .getConversation(initialHashId)
       .then((snapshot) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         const workspaceId = snapshot.conversation.workspaceId ?? null;
-        setWorkspaceId((current) => current ?? workspaceId);
+        initialHashTarget.current = initialHashId;
+        setWorkspaceId(workspaceId);
+        setStatusFilter(snapshot.conversation.status);
         try {
           globalThis.localStorage?.setItem(
             ACTIVE_CONVERSATION_STORAGE_KEY,
-            JSON.stringify({ conversationId: hashId, workspaceId }),
+            JSON.stringify({ conversationId: initialHashId, workspaceId }),
           );
+          globalThis.localStorage?.setItem(WORKSPACE_STORAGE_KEY, workspaceId ?? "general");
         } catch {
           // 忽略存储异常。
         }
       })
       .catch(() => {
         // 无效/已删除会话：静默回退到常规恢复路径。
+      })
+      .finally(() => {
+        if (isCurrent()) setInitialHashPending(false);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialHashId]);
 
   useEffect(() => {
+    // 先解析显式 URL 的会话/工作区，再允许列表选择默认会话。
+    if (initialHashPending) return;
     // 刷新恢复上次会话：activeConversationId 尚未恢复时，用已持久化的会话 id 作为首选目标。
     const restored = activeConversationId
       ? activeConversationId
-      : (readStoredActiveConversation()?.conversationId ?? undefined);
+      : (initialHashTarget.current ?? readStoredActiveConversation()?.conversationId ?? undefined);
     void loadConversationList(statusFilter, restored);
     // active id 不作为重载触发；切换工作区时列表整体换防。
-  }, [statusFilter, workspaceId, workspaceCanCreate]);
+  }, [initialHashPending, statusFilter, workspaceId, workspaceCanCreate]);
 
   useEffect(() => {
-    // 主会话变化即同步 URL（replaceState，不产生历史项）；临时/遗留 ephemeral 不写。
+    // 主线变化即同步 URL（replaceState，不产生历史项）；临时/遗留 ephemeral 不写。
     if (!activeConversationId) return;
     const snapshot = snapshots[activeConversationId];
     if (snapshot?.conversation.kind === "ephemeral") return;
@@ -565,8 +595,6 @@ export function useChatApplication() {
     }
   }, [activeConversationId, snapshots]);
 
-  const activeConversationIdRef = useRef<string | null>(null);
-  const conversationsRef = useRef<Conversation[]>([]);
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
@@ -634,738 +662,63 @@ export function useChatApplication() {
   const activeRunningRunId = activeRunRunning ? activeRuntimeRunId : null;
 
 
-  const send = async () => {
-    const content = draft.trim();
-    if (!content || !activeConversationId) return;
-    // 运行中且在当前 lane：把这条消息作为 steer 注入，允许打断/纠偏当前 Agent。
-    if (activeRunRunning && activeRunningRunId) {
-      const retainedDraft = draft;
-      setDraft("");
-      setCommandFeedback(primaryCommandTarget, "send", null);
-      try {
-        const result = await chatApi.steerRuntimeV2Run(
-          activeRunningRunId,
-          content,
-        );
-        setCommandFeedback(primaryCommandTarget, null, result.accepted ? null : "已提示，但运行未接受该指令");
-      } catch (steerError) {
-        setDraft(retainedDraft);
-        setCommandFeedback(primaryCommandTarget, null, readableError(steerError));
-      }
-      return;
-    }
-    const retainedDraft = draft;
-    if (isGenerating) return;
-    setDraft("");
-    setCommandFeedback(primaryCommandTarget, "send", null);
-    try {
-      await sendRuntimeV2Message(
-        activeConversationId,
-        content,
-        viewLaneIds[activeConversationId] ?? mainLaneIds[activeConversationId],
-      );
-      setCommandFeedback(primaryCommandTarget, null, null);
-    } catch (sendError) {
-      setDraft(retainedDraft);
-      setCommandFeedback(primaryCommandTarget, null, readableError(sendError));
-    }
-  };
-
-
-  const uploadFile = async (file: File) => {
-    if (!activeConversationId || isGenerating) return;
-    setPendingAction("upload-file");
-    setError(null);
-    try {
-      const uploaded = await chatApi.uploadFile(activeConversationId, file);
-      setSnapshots((current) => {
-        const snapshot = current[activeConversationId];
-        if (!snapshot) return current;
-        return {
-          ...current,
-          [activeConversationId]: {
-            ...snapshot,
-            files: [...snapshot.files, uploaded],
-          },
-        };
-      });
-    } catch (uploadError) {
-      setError(readableError(uploadError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const removeFile = async (fileId: string) => {
-    if (!activeConversationId || isGenerating) return;
-    setPendingAction(`remove-file:${fileId}`);
-    setError(null);
-    try {
-      await chatApi.deleteFile(activeConversationId, fileId);
-      setSnapshots((current) => {
-        const snapshot = current[activeConversationId];
-        if (!snapshot) return current;
-        return {
-          ...current,
-          [activeConversationId]: {
-            ...snapshot,
-            files: snapshot.files.filter((item) => item.id !== fileId),
-          },
-        };
-      });
-    } catch (removeError) {
-      setError(readableError(removeError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const newConversation = async (targetWorkspaceId?: string) => {
-    const targetId = targetWorkspaceId ?? workspaceId;
-    setPendingAction("new");
-    setError(null);
-    const targetWorkspace = workspaces.find(
-      (item) => item.id === targetId,
-    ) ?? currentWorkspace;
-    const canCreate = Boolean(targetWorkspace?.rootPath);
-    if (!canCreate) {
-      setError(
-        targetWorkspace
-          ? "该工作区尚未绑定本地目录，请先绑定目录后再新建对话。"
-          : "请先选择并绑定一个工作区目录，再新建对话。",
-      );
-      setPendingAction(null);
-      return;
-    }
-    if (targetWorkspaceId && targetWorkspaceId !== workspaceId) {
-      setWorkspaceId(targetWorkspaceId);
-    }
-    try {
-      const conversation = await chatApi.createConversation(targetId!);
-      setStatusFilter("active");
-      setConversations((current) => [
-        conversation,
-        ...current.filter((item) => item.id !== conversation.id),
-      ]);
-      bumpConversationsRevision();
-      await openConversation(conversation.id);
-    } catch (createError) {
-      setError(readableError(createError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const createTemporaryConversation = async () => {
-    if (!activeConversationId) return;
-    if (sideLane?.mode === "temporary_conversation") {
-      const closed = await closeSideConversation();
-      if (!closed) return;
-    } else if (sideLane) {
-      dismissSideConversation();
-    }
-    setPendingAction("temporary-conversation");
-    setError(null);
-    try {
-      const created = await chatApi.createRuntimeV2TemporaryConversation(
-        activeConversationId,
-        {},
-      );
-      const temporaryConversationId = created.conversation.id;
-      const [legacy, runtime] = await Promise.all([
-        chatApi.getConversation(temporaryConversationId),
-        runtimeController.loadSnapshot({
-          conversationId: temporaryConversationId,
-          laneId: created.lane.id,
-        }),
-      ]);
-      setMainLaneIds((current) => ({
-        ...current,
-        [temporaryConversationId]: created.lane.id,
-      }));
-      setViewLaneIds((current) => ({
-        ...current,
-        [temporaryConversationId]: created.lane.id,
-      }));
-      setLaneTrees((current) => ({
-        ...current,
-        [temporaryConversationId]: [created.lane],
-      }));
-      setSideLane({
-        conversationId: temporaryConversationId,
-        laneId: created.lane.id,
-        mode: "temporary_conversation",
-      });
-      setSideConversationId(temporaryConversationId);
-      setSideDraft("");
-      applyRuntimeSnapshot(legacy, runtime, "side");
-    } catch (branchError) {
-      setError(readableError(branchError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-
-
-
-
-
-
-
-  const promoteConversation = async (
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    const feedbackTarget =
-      surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    setCommandFeedback(feedbackTarget, "promote", null);
-    try {
-      if (
-        sideLane?.conversationId === targetId &&
-        sideLane.mode === "temporary_conversation"
-      ) {
-        const promoted =
-          await chatApi.promoteRuntimeV2TemporaryConversation(targetId);
-        dismissSideConversation();
-        try {
-          const items = await chatApi.listConversations(
-            statusFilter,
-            undefined,
-            workspaceId,
-          );
-          setConversations(items);
-        } catch {
-          setConversations((current) =>
-            statusFilter === "active"
-              ? [
-                  promoted.conversation,
-                  ...current.filter(
-                    (item) => item.id !== promoted.conversation.id,
-                  ),
-                ]
-              : current.filter(
-                  (item) => item.id !== promoted.conversation.id,
-                ),
-          );
-        }
-        return;
-      }
-
-      if (sideLane?.conversationId === targetId) {
-        const promoted = await chatApi.promoteRuntimeV2Lane(sideLane.laneId);
-        setMainLaneIds((current) => ({
-          ...current,
-          [targetId]: promoted.activeLaneId,
-        }));
-        dismissSideConversation();
-        await refreshLaneTree(targetId);
-        await loadConversation(targetId);
-        return;
-      }
-
-      const promoted =
-        await chatApi.promoteRuntimeV2TemporaryConversation(targetId);
-      setConversations((current) =>
-        current.map((item) =>
-          item.id === promoted.conversation.id ? promoted.conversation : item,
-        ),
-      );
-      setSnapshots((current) => {
-        const snapshot = current[promoted.conversation.id];
-        return snapshot
-          ? {
-              ...current,
-              [promoted.conversation.id]: {
-                ...snapshot,
-                conversation: promoted.conversation,
-              },
-            }
-          : current;
-      });
-      if (targetId === sideConversationId) {
-        dismissSideConversation();
-        try {
-          const items = await chatApi.listConversations(
-            statusFilter,
-            undefined,
-            workspaceId,
-          );
-          setConversations(items);
-        } catch {
-          setConversations((current) =>
-            statusFilter === "active"
-              ? [
-                  promoted.conversation,
-                  ...current.filter(
-                    (item) => item.id !== promoted.conversation.id,
-                  ),
-                ]
-              : current.filter(
-                  (item) => item.id !== promoted.conversation.id,
-                ),
-          );
-        }
-      }
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (promoteError) {
-      setCommandFeedback(feedbackTarget, null, readableError(promoteError));
-    }
-  };
-
-  const renameConversation = async (title: string, conversationId?: string) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    setPendingAction("rename");
-    try {
-      const updated = await chatApi.patchConversation(targetId, { title });
-      setConversations((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      );
-      setSnapshots((current) => {
-        const snapshot = current[updated.id];
-        return snapshot
-          ? { ...current, [updated.id]: { ...snapshot, conversation: updated } }
-          : current;
-      });
-    } catch (renameError) {
-      setError(readableError(renameError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const changeConversationModel = async (
-    providerProfileId: string | null,
-    modelOverride: string | null,
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    const feedbackTarget =
-      surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    setCommandFeedback(feedbackTarget, "provider", null);
-    try {
-      const updated = await chatApi.patchConversation(targetId, {
-        providerProfileId,
-        modelOverride,
-      });
-      setSnapshots((current) => {
-        const snapshot = current[updated.id];
-        return snapshot
-          ? { ...current, [updated.id]: { ...snapshot, conversation: updated } }
-          : current;
-      });
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (modelError) {
-      setCommandFeedback(feedbackTarget, null, readableError(modelError));
-    }
-  };
-
-  const changeConversationStatus = async (
-    status: ConversationStatus,
-    conversationId?: string,
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    setPendingAction("status");
-    try {
-      const updated = await chatApi.patchConversation(targetId, { status });
-      const nextFilter = status === "active" ? "active" : statusFilter;
-      setStatusFilter(nextFilter);
-      await loadConversationList(
-        nextFilter,
-        status === "active" ? updated.id : undefined,
-      );
-      bumpConversationsRevision();
-    } catch (statusError) {
-      setError(readableError(statusError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const deleteConversation = async (conversationId?: string) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    setPendingAction("delete");
-    try {
-      await chatApi.deleteConversation(targetId);
-      setSnapshots((current) => {
-        const next = { ...current };
-        delete next[targetId];
-        return next;
-      });
-      if (targetId === activeConversationId) setActiveConversationId(null);
-      if (targetId === sideConversationId) {
-        setSideConversationId(null);
-      } else if (
-        sideConversationId &&
-        snapshots[sideConversationId]?.conversation.parentConversationId ===
-          targetId
-      ) {
-        setSideConversationId(null);
-      }
-      await loadConversationList(statusFilter);
-    } catch (deleteError) {
-      setError(readableError(deleteError));
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const cancel = async (
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    const feedbackTarget =
-      surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    const targetSnapshot =
-      surface === "side"
-        ? sideSnapshot
-        : targetId
-          ? snapshots[targetId]
-          : null;
-    const targetTurn = targetSnapshot?.turns.at(-1) ?? latestTurn;
-    if (
-      !targetTurn ||
-      !targetId ||
-      targetTurn.turn.conversationId !== targetId
-    ) {
-      return;
-    }
-    setCommandFeedback(feedbackTarget, "cancel", null);
-    try {
-      await chatApi.cancelRuntimeV2Run(targetTurn.turn.id);
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (cancelError) {
-      setCommandFeedback(feedbackTarget, null, readableError(cancelError));
-    }
-  };
-
-  const cancelRuntimeRun = async (
-    runId: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const target = surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    if (!target) return;
-    setCommandFeedback(target, "cancel-running", null);
-    try {
-      await chatApi.cancelRuntimeV2Run(runId);
-      const [legacy, runtime] = await Promise.all([
-        chatApi.getConversation(target.conversationId),
-        runtimeController.loadSnapshot(target),
-      ]);
-      applyRuntimeSnapshot(legacy, runtime, surface);
-      if (runtime.runningRunId) {
-        followRuntimeConversation(
-          target.conversationId,
-          runtime.lastEventSeq,
-          target.laneId,
-          surface,
-        );
-      }
-      setCommandFeedback(target, null, null);
-    } catch (cancelError) {
-      setCommandFeedback(target, null, readableError(cancelError));
-    }
-  };
-
-  // C2：卡住横幅的「换一条路径」——把纠偏指令注入运行中的 steer 通道。
-  const steerRuntimeRun = async (
-    runId: string,
-    content: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const target = surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    if (!target) return;
-    setCommandFeedback(target, "steer-running", null);
-    try {
-      const result = await chatApi.steerRuntimeV2Run(runId, content);
-      setCommandFeedback(
-        target,
-        null,
-        result.accepted ? null : "已提示，但运行未接受该指令",
-      );
-    } catch (steerError) {
-      setCommandFeedback(target, null, readableError(steerError));
-    }
-  };
-
-  const resolveApproval = async (
-    turnId: string,
-    approvalId: string,
-    decision: "approve" | "deny" | "modify",
-    args?: Record<string, unknown>,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const feedbackTarget =
-      surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    setCommandFeedback(feedbackTarget, `approval:${approvalId}`, null);
-    try {
-      await chatApi.resolveRuntimeV2Approval(approvalId, decision, args);
-      setLiveTurns((current) => {
-        const live = current[turnId];
-        if (!live || live.pendingApproval?.id !== approvalId) return current;
-        return {
-          ...current,
-          [turnId]: { ...live, pendingApproval: undefined },
-        };
-      });
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (approvalError) {
-      setCommandFeedback(feedbackTarget, null, readableError(approvalError));
-    }
-  };
-
-  const resolveRuntimeRecovery = async (
-    runId: string,
-    action: "retry" | "mark_failed",
-    surface: SnapshotTarget = "main",
-  ) => {
-    const target = surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    if (!target) return;
-    const requestVersion =
-      surface === "side"
-        ? sideRequestVersion.current
-        : primarySurfaceRequestVersion.current;
-    const isCurrent = () =>
-      surface === "side"
-        ? sideRequestVersion.current === requestVersion
-        : primarySurfaceRequestVersion.current === requestVersion;
-    setCommandFeedback(target, `recovery:${action}`, null);
-    try {
-      const result = await chatApi.resolveRuntimeV2Recovery(runId, action);
-      const runtimeTarget = {
-        conversationId: target.conversationId,
-        laneId: result.laneId ?? target.laneId,
-      };
-      const [legacy, runtime] = await Promise.all([
-        chatApi.getConversation(target.conversationId),
-        runtimeController.loadSnapshot(runtimeTarget),
-      ]);
-      if (!isCurrent()) {
-        setCommandFeedback(target, null, null);
-        return;
-      }
-      applyRuntimeSnapshot(legacy, runtime, surface);
-      if (result.newRunId || runtime.runState) {
-        followRuntimeConversation(
-          target.conversationId,
-          runtime.lastEventSeq,
-          runtimeTarget.laneId,
-          surface,
-        );
-      }
-      setCommandFeedback(target, null, null);
-    } catch (recoveryError) {
-      if (isCurrent()) {
-        setCommandFeedback(target, null, readableError(recoveryError));
-      }
-    }
-  };
-
-  const runRuntimeV2Command = async (
-    action: "retry" | "regenerate",
-    conversationId: string,
-    runId: string,
-    laneId?: string | null,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const feedbackTarget =
-      surface === "side" ? sideCommandTarget : primaryCommandTarget;
-    const requestVersion =
-      surface === "side"
-        ? sideRequestVersion.current
-        : primarySurfaceRequestVersion.current;
-    const isCurrent = () =>
-      surface === "side"
-        ? sideRequestVersion.current === requestVersion
-        : primarySurfaceRequestVersion.current === requestVersion;
-    setCommandFeedback(feedbackTarget, action, null);
-    try {
-      const target = { conversationId, laneId: laneId ?? null };
-      const before = await runtimeController.loadSnapshot(target);
-      await chatApi.regenerateRuntimeV2Run(runId);
-      const runtime = await runtimeController.loadSnapshot(target);
-      const legacy = await chatApi.getConversation(runtime.conversationId);
-      if (!isCurrent()) {
-        setCommandFeedback(feedbackTarget, null, null);
-        return;
-      }
-      applyRuntimeSnapshot(legacy, runtime, surface);
-      followRuntimeConversation(
-        runtime.conversationId,
-        before.lastEventSeq,
-        target.laneId,
-        surface,
-      );
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (commandError) {
-      if (isCurrent()) {
-        setCommandFeedback(feedbackTarget, null, readableError(commandError));
-      }
-    }
-  };
-
-  const retry = async (
-    turnId: string,
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    const isSide = surface === "side";
-    const laneId = isSide
-      ? sideLane?.laneId
-      : targetId
-        ? (viewLaneIds[targetId] ?? mainLaneIds[targetId])
-        : undefined;
-    await runRuntimeV2Command("retry", targetId!, turnId, laneId, surface);
-  };
-
-  const regenerate = async (
-    turnId: string,
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    const isSide = surface === "side";
-    const laneId = isSide
-      ? sideLane?.laneId
-      : targetId
-        ? (viewLaneIds[targetId] ?? mainLaneIds[targetId])
-        : undefined;
-    await runRuntimeV2Command("regenerate", targetId!, turnId, laneId, surface);
-  };
-
-  const resend = async (
-    turnId: string,
-    content: string,
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    const isSide = surface === "side";
-    const laneId = isSide
-      ? sideLane?.laneId
-      : (viewLaneIds[targetId] ?? mainLaneIds[targetId]);
-    const feedbackTarget = isSide ? sideCommandTarget : primaryCommandTarget;
-    const requestVersion = isSide
-      ? sideRequestVersion.current
-      : primarySurfaceRequestVersion.current;
-    const isCurrent = () =>
-      isSide
-        ? sideRequestVersion.current === requestVersion
-        : primarySurfaceRequestVersion.current === requestVersion;
-    setCommandFeedback(feedbackTarget, "resend", null);
-    try {
-      const runtimeTarget = { conversationId: targetId, laneId: laneId ?? null };
-      const before = await runtimeController.loadSnapshot(runtimeTarget);
-      await chatApi.resendRuntimeV2Run(turnId, content);
-      if (!isCurrent()) {
-        setCommandFeedback(feedbackTarget, null, null);
-        return;
-      }
-      // 202 后立即记录改写展示（即使后续 snapshot 刷新异常也保留编辑态）
-      setEditedUserMessages((current) => ({ ...current, [turnId]: content }));
-      const runtime = await runtimeController.loadSnapshot(runtimeTarget);
-      const legacy = await chatApi.getConversation(runtime.conversationId);
-      if (!isCurrent()) {
-        setCommandFeedback(feedbackTarget, null, null);
-        return;
-      }
-      applyRuntimeSnapshot(legacy, runtime, surface);
-      followRuntimeConversation(
-        runtime.conversationId,
-        before.lastEventSeq,
-        runtimeTarget.laneId,
-        surface,
-      );
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (resendError) {
-      if (isCurrent()) {
-        setCommandFeedback(feedbackTarget, null, readableError(resendError));
-      }
-    }
-  };
-
-  const selectVariant = async (
-    turnId: string,
-    variantId: string,
-    conversationId?: string,
-    surface: SnapshotTarget = "main",
-  ) => {
-    const targetId = conversationId ?? activeConversationId;
-    if (!targetId) return;
-    const isSide = surface === "side";
-    const feedbackTarget = isSide ? sideCommandTarget : primaryCommandTarget;
-    setCommandFeedback(feedbackTarget, "select", null);
-    try {
-      await chatApi.selectRuntimeV2RunVariant(variantId);
-      const laneId = isSide
-        ? sideLane?.laneId
-        : (viewLaneIds[targetId] ?? mainLaneIds[targetId]);
-      const runtime = await runtimeController.loadSnapshot({
-        conversationId: targetId,
-        laneId: laneId ?? null,
-      });
-      const legacy = await chatApi.getConversation(targetId);
-      applyRuntimeSnapshot(legacy, runtime, isSide ? "side" : "main");
-      setCommandFeedback(feedbackTarget, null, null);
-    } catch (selectionError) {
-      setCommandFeedback(feedbackTarget, null, readableError(selectionError));
-    }
-  };
-
-  const visibleConversations = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase();
-    if (!query) return conversations;
-    return conversations.filter((item) => item.title.toLocaleLowerCase().includes(query));
-  }, [conversations, search]);
-
-  const selectWorkspace = (nextWorkspaceId: string | null) => {
-    setWorkspaceId(nextWorkspaceId);
-    try {
-      globalThis.localStorage?.setItem(
-        WORKSPACE_STORAGE_KEY,
-        nextWorkspaceId ?? "general",
-      );
-    } catch {
-      // 存储不可用时仅内存态，忽略。
-    }
-  };
-
-  const createWorkspace = async (name: string, rootPath?: string | null) => {
-    const workspace = await chatApi.createWorkspace(name, rootPath);
-    setWorkspaces((current) => [...current, workspace]);
-    selectWorkspace(workspace.id);
-    return workspace;
-  };
-
-  const refreshWorkspaces = async () => {
-    try {
-      const { items, homePath } = await chatApi.listWorkspaces();
-      setWorkspaces(items);
-      setHomePath(homePath);
-    } catch {
-      // 列表刷新失败保持现有状态，忽略。
-    }
-  };
-
-  const deleteWorkspace = async (workspaceIdToDelete: string) => {
-    await chatApi.deleteWorkspace(workspaceIdToDelete);
-    setWorkspaces((current) =>
-      current.filter((item) => item.id !== workspaceIdToDelete),
-    );
-    if (workspaceId === workspaceIdToDelete) {
-      selectWorkspace(null);
-    }
-  };
+  // 消息与提案动作：最后一个大簇，依赖上面的运行时事件桥、侧栏、车道与列表 hook。
+  const {
+    send,
+    uploadFile,
+    removeFile,
+    cancel,
+    cancelRuntimeRun,
+    steerRuntimeRun,
+    resolveApproval,
+    resolveRuntimeRecovery,
+    runRuntimeV2Command,
+    retry,
+    regenerate,
+    resend,
+    selectVariant,
+  } = useMessageActions({
+    runtimeController,
+    activeConversationId,
+    primaryCommandTarget,
+    sideCommandTarget,
+    activeRuntimeLaneId,
+    sideLane,
+    sideConversationId,
+    sideDraft,
+    sideIsGenerating,
+    sideSnapshot,
+    snapshots,
+    liveTurns,
+    mainLaneIds,
+    conversations,
+    setConversations,
+    setSnapshots,
+    setLiveTurns,
+    setDraft,
+    setSideDraft,
+    setSideLoading,
+    setError,
+    setFocusTarget,
+    setCommandFeedback,
+    openConversation,
+    loadConversation,
+    bumpConversationsRevision,
+    applyRuntimeSnapshot,
+    followRuntimeConversation,
+    hydrateActiveTurn,
+    sideRequestVersion,
+    primarySurfaceRequestVersion,
+    viewLaneIds,
+    setPendingAction,
+    setEditedUserMessages,
+    draft,
+    isGenerating,
+    latestTurn,
+    activeRunRunning,
+    activeRunningRunId,
+    sendRuntimeV2Message,
+  });
 
   return {
     capabilities,

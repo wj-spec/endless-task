@@ -17,6 +17,7 @@ from endless_task.tooling import (
     ToolResult,
 )
 from .common import _PATH_LOCKS, _decode_utf8, _ensure_checkpoint, _line_diff, _log_effect, _match_line_numbers, _now_iso, _record_mutation, _record_undo_write, _sha256_bytes
+from .common import kernel_read, kernel_remove, kernel_write
 
 
 class EditWorkspaceFileTool:
@@ -110,7 +111,9 @@ class EditWorkspaceFileTool:
             )
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
-            before_content = _decode_utf8(resolved.canonical.read_bytes())
+            # 读也走句柄：edit 是「读→改→写」一条链，只换一半等于没换。
+            # 1 << 62 = 不设上限（与今天 read_bytes() 的语义一致）。
+            before_content = _decode_utf8(kernel_read(binding, resolved, 1 << 62))
             occurrences = before_content.count(old_string)
             if occurrences == 0:
                 raise ToolError(
@@ -146,7 +149,7 @@ class EditWorkspaceFileTool:
                     retryable=False,
                 )
             self._ensure_checkpoint(call, binding)
-            resolved.canonical.write_text(after_content, encoding="utf-8")
+            kernel_write(binding, resolved, encoded)
         diff_lines = _line_diff(
             before_content, after_content, max_lines=self._DIFF_MAX_LINES
         )

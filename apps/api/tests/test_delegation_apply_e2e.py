@@ -127,7 +127,9 @@ class IsolatedChildApplyE2ETest(unittest.IsolatedAsyncioTestCase):
             await write_tool.execute(write_call, CancellationToken())
             return "applied"
 
-        def provider(child_run_id: str) -> ChildPatchSource:
+        def provider(
+            child_run_id: str, *, conversation_id=None
+        ) -> ChildPatchSource:
             workspace = self.workspace_repository.get_workspace(child_run_id)
             root = Path(workspace.root_path).expanduser().resolve()
             files = []

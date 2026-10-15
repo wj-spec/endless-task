@@ -27,6 +27,7 @@ from endless_task.tooling import (
 )
 
 from .path_safety import resolve_workspace_path
+from .search_backend import SearchPatternError
 
 MAX_RESULTS_DEFAULT = 50
 MAX_RESULTS_CAP = 200
@@ -127,99 +128,44 @@ class WorkspaceSearchTool:
                 retryable=False,
             )
 
+        # The adapter imports this package's search contract; defer loading it
+        # until execution so either public module can be imported first.
+        from .._native.search import NativeSearchBackend
+
+        backend = NativeSearchBackend()
         try:
-            flags = 0 if case_sensitive else re.IGNORECASE
-            pattern = re.compile(pattern_text, flags)
-        except re.error as error:
+            files, scanned_files, truncated = backend.search_tree(
+                resolved.canonical,
+                binding.root.resolve(),
+                pattern_text,
+                case_sensitive=case_sensitive,
+                max_files_with_hits=max_results,
+                max_hits_per_file=MAX_HITS_PER_FILE,
+                max_file_bytes=self._max_file_bytes,
+                file_glob=file_pattern,
+            )
+        except SearchPatternError as error:
             raise ToolError(
-                "invalid_pattern",
+                error.code,
                 f"正则无效：{error}。",
                 retryable=False,
             ) from error
 
-        hits: list[dict[str, object]] = []
-        scanned_files = 0
-        total_files_with_hits = 0
-        truncated = False
-
-        def _search_file(path: Path, relative: str) -> None:
-            nonlocal scanned_files, total_files_with_hits, truncated
-            token.raise_if_cancelled()
-            try:
-                stat_result = path.stat()
-            except OSError:
-                return
-            if stat_result.st_size > self._max_file_bytes:
-                return  # 超限文件跳过（不报错，可改用 read 分段精读）
-            try:
-                raw = path.read_bytes()
-            except OSError:
-                return
-            if _looks_binary(raw):
-                return
-            text = _decode_line(raw)
-            if text is None:
-                return
-            scanned_files += 1
-            file_hits: list[dict[str, object]] = []
-            for line_index, line in enumerate(text.splitlines(), start=1):
-                if pattern.search(line) is None:
-                    continue
-                file_hits.append(
+        hits: list[dict[str, object]] = [
+            {
+                "path": path,
+                "fileHitCount": len(matches),
+                "matches": [
                     {
-                        "line": line_index,
-                        "text": _clip_line(line),
+                        "line": line,
+                        "text": _clip_line(line_text),
                     }
-                )
-                if len(file_hits) >= MAX_HITS_PER_FILE:
-                    truncated = True
-                    break
-            if file_hits:
-                hits.append(
-                    {
-                        "path": relative,
-                        "fileHitCount": len(file_hits),
-                        "matches": file_hits,
-                    }
-                )
-                total_files_with_hits += 1
-
-        def _search_dir(path: Path, relative: str) -> None:
-            try:
-                entries = sorted(path.iterdir(), key=lambda p: p.name.lower())
-            except OSError:
-                return
-            for entry in entries:
-                token.raise_if_cancelled()
-                name = entry.name
-                if entry.is_dir():
-                    if name in self._ignore_dirs:
-                        continue
-                    _search_dir(entry, f"{relative}/{name}" if relative else name)
-                elif entry.is_file():
-                    if file_pattern is not None and not _glob_match(
-                        name, file_pattern
-                    ):
-                        continue
-                    rel = f"{relative}/{name}" if relative else name
-                    _search_file(entry, rel)
-
-        if resolved.canonical.is_file():
-            workspace_root = binding.root.resolve()
-            rel_file = _relative_label(workspace_root, resolved.canonical)
-            if file_pattern is None or _glob_match(
-                resolved.canonical.name, file_pattern
-            ):
-                _search_file(resolved.canonical, rel_file)
-        else:
-            # 相对路径基于工作区根（scope 内部用同根相对标签，保证可溯源一致）。
-            workspace_root = binding.root.resolve()
-            if resolved.canonical == workspace_root:
-                scope_rel = ""
-            else:
-                scope_rel = _relative_label(workspace_root, resolved.canonical)
-            _search_dir(resolved.canonical, scope_rel)
-
+                    for line, line_text in matches
+                ],
+            }
+            for path, matches in files
+        ]
+        total_files_with_hits = len(hits)
         token.raise_if_cancelled()
         capped = hits[:max_results]
         if len(hits) > max_results:

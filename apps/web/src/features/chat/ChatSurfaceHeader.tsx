@@ -1,10 +1,16 @@
 import type { ConversationSnapshot, RuntimeV2Lane, Workspace } from "./apiTypes";
 import { BranchNavigator } from "./BranchNavigator";
-import { CloseIcon, FolderIcon, MoreIcon, SearchIcon } from "../ui/Icons";
+import {
+  CloseIcon,
+  FolderIcon,
+  MoreIcon,
+  SearchIcon,
+  WORKSPACE_ICON_SIZE,
+} from "../ui/Icons";
 import { RowMenu } from "../ui/RowMenu";
 import { SidebarToggleIcon } from "../ui/SidebarToggleIcon";
 
-type ChatSurfaceHeaderProps = {
+export type ChatSurfaceHeaderProps = {
   activeWorkspace?: Workspace | null;
   archived: boolean;
   branchLanes: RuntimeV2Lane[];
@@ -90,7 +96,7 @@ export function ChatSurfaceHeader({
               : (conversation?.conversation.title ?? "临时对话")}
           </h2>
           {sideMode === "temporary_conversation" ? (
-            <span className="temporary-close-hint">关闭即删除</span>
+            <span className="temporary-close-hint">丢弃后不可恢复</span>
           ) : sideMode === "branch_lane" ? (
             <span className="temporary-close-hint">关闭仅收起，不删除分支</span>
           ) : null}
@@ -98,7 +104,7 @@ export function ChatSurfaceHeader({
         <div className="surface-header-side">
           <button
             aria-label={
-              sideMode === "branch_lane" ? "收起分支对照" : "关闭并删除临时对话"
+              sideMode === "branch_lane" ? "收起右侧对照" : "关闭并丢弃临时对话"
             }
             className="icon-button side-close"
             onClick={onRequestSideClose}
@@ -154,7 +160,7 @@ export function ChatSurfaceHeader({
             <div className="heading-context">
               <span className="heading-focus">
                 <span aria-hidden="true" className="heading-focus-icon">
-                  <FolderIcon size={15} />
+                  <FolderIcon size={WORKSPACE_ICON_SIZE} />
                 </span>
                 <span className="heading-focus-name">{activeWorkspace.name}</span>
               </span>
@@ -200,7 +206,7 @@ export function ChatSurfaceHeader({
                 title="工作区：产物 / 文件 / 终端 / 浏览器"
                 type="button"
               >
-                <FolderIcon size={19} />
+                <FolderIcon size={WORKSPACE_ICON_SIZE} />
               </button>
             ) : null}
             {onGlobalSearch ? (

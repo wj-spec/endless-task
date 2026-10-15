@@ -1,0 +1,58 @@
+/* 切片 10 T4（item 1）：run 头部条。
+   刻意放在**独立样式表**里，而不是追加到 `styles/panel.css`——后者正被用户并行修改
+   （斜杠候选列表改进），本任务不许碰。只新增类名（`run-header*`），不覆盖任何既有
+   选择器，因此既有布局语义与选择器语义都不变。 */
+
+.run-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: baseline;
+  width: min(760px, 100%);
+  min-width: 0;
+  margin: 8px auto 0;
+  padding: 6px var(--space-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-1);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-header-item {
+  display: inline-flex;
+  min-width: 0;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.run-header-label {
+  color: var(--muted);
+}
+
+.run-header-value {
+  color: var(--ink);
+}
+
+.run-header-status .run-header-value {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 还在跑：边框提到前景色，静止的终态条保持灰。 */
+.run-header.is-running {
+  border-color: var(--accent-muted);
+}
+
+/* 重连中：与 `RuntimeRecoveryNotices` 的重连卡片同一警示色，两处说法一致。 */
+.run-header[data-phase="reconnecting"] {
+  border-color: var(--warn-mid);
+}
+
+/* 已用时是每秒都在变的数字：等宽对齐，避免整条横跳。 */
+.run-header-elapsed .run-header-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2);
+}

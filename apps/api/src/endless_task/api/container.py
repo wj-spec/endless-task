@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from endless_task.artifacts import ArtifactProposalService, SourceReferenceResolver
-from endless_task.delegation import CoordinatorDelegationHandler
+from endless_task.delegation import ChildWakeupService, CoordinatorDelegationHandler
 from endless_task.knowledge import (
     EmbeddingIndexer,
     KnowledgeLifecycleService,
@@ -39,6 +39,7 @@ from endless_task.storage import (
     SqliteArtifactProposalRepository,
     SqliteArtifactRepository,
     SqliteChatRepository,
+    SqliteDelegationChildRunRepository,
     SqliteHubEventRepository,
     SqliteKnowledgeProposalRepository,
     SqliteKnowledgeRepository,
@@ -108,6 +109,7 @@ class AppContainer:
     notification_repository: SqliteNotificationRepository
     hub_event_repository: SqliteHubEventRepository
     reminder_repository: SqliteReminderRepository
+    delegation_child_run_repository: SqliteDelegationChildRunRepository
     knowledge_proposal_repository: SqliteKnowledgeProposalRepository
     knowledge_proposal_service: Optional[KnowledgeProposalService]
     knowledge_repository: SqliteKnowledgeRepository
@@ -149,6 +151,8 @@ class AppContainer:
     runtime_v2_memory_quality_service: RuntimeV2MemoryQualityService
     runtime_v2_gateway: RuntimeV2SessionGateway
     delegation_handler: Optional[CoordinatorDelegationHandler] = None
+    #: 切片 9 M2：子运行终态回流父会话的唤醒服务（关停时**先于**子运行主管关）。
+    child_wakeup_service: Optional[ChildWakeupService] = None
     runtime_v2_trace_observer: Optional[object] = None
     runtime_v2_trajectory_exporter: Optional[RunTrajectoryExporter] = None
     runtime_v2_span_recorder: Optional[SqliteRuntimeLedger] = None

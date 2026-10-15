@@ -1,7 +1,7 @@
 """Task schedule protocol (R4.0).
 
 Tasks are recurring commitments only. One-off timed matters are reminders,
-not tasks (see docs/technical/p4-task-intent-protocol.md §3).
+not tasks.
 """
 
 from __future__ import annotations
@@ -43,6 +43,26 @@ def serialize_task_schedule(schedule: TaskSchedule) -> dict:
     if schedule.day is not None:
         payload["day"] = schedule.day
     return payload
+
+
+def schedule_identity(schedule: Union[TaskSchedule, ReminderDue]) -> tuple:
+    """周期描述的可比较身份，跨 ``TaskSchedule`` 与 ``ReminderDue`` 两个类型。
+
+    提案去重与 supersede 都需要回答"这两个是不是同一个安排"。两个类型没有共同
+    基类，``serialize_task_schedule`` 只接受 ``TaskSchedule``，直接互比会在
+    ``ReminderDue`` 上抛 ``AttributeError``——因此判据收在这里，调用方不必各自
+    区分类型。
+
+    一次性与周期性**永不相等**（首段标签不同），即使时间字段巧合相同。
+    """
+    if isinstance(schedule, ReminderDue):
+        return ("once", schedule.at)
+    return (
+        schedule.kind.value,
+        schedule.time,
+        schedule.weekday,
+        schedule.day,
+    )
 
 
 def parse_task_schedule(raw: Union[str, dict, TaskSchedule]) -> TaskSchedule:

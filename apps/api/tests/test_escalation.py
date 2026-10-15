@@ -164,5 +164,85 @@ class EscalationReportTest(unittest.TestCase):
             self._report("something_else")
 
 
+class TimeBudgetTest(unittest.TestCase):
+    def test_time_reason_is_accepted_and_summarised(self) -> None:
+        from endless_task.runtime_v2.escalation import (
+            TIME_REASON,
+            EscalationBudget,
+            EscalationProgress,
+            build_escalation_report,
+        )
+
+        progress = EscalationProgress(
+            model_turns=12,
+            tool_calls=30,
+            tool_failures=1,
+            produced_characters=2048,
+            elapsed_seconds=630.0,
+        )
+        report = build_escalation_report(
+            reason=TIME_REASON,
+            progress=progress,
+            budget=EscalationBudget(
+                used_tokens=1000,
+                limit_tokens=131072,
+                used_seconds=630.0,
+                limit_seconds=3600.0,
+            ),
+            will_stop=False,
+        )
+        self.assertEqual(TIME_REASON, report.reason)
+        self.assertIn("10.5", report.summary)   # 630 秒 = 10.5 分钟
+        self.assertIn("60", report.summary)     # 3600 秒上限 = 60 分钟
+        self.assertIn("30", report.summary)     # 工具调用次数
+        payload = report.as_json()
+        self.assertEqual(630.0, payload["progress"]["elapsedSeconds"])
+        self.assertEqual(3600.0, payload["budget"]["limitSeconds"])
+
+    def test_time_summary_without_hard_limit(self) -> None:
+        from endless_task.runtime_v2.escalation import (
+            TIME_REASON,
+            EscalationBudget,
+            EscalationProgress,
+            build_escalation_report,
+        )
+
+        report = build_escalation_report(
+            reason=TIME_REASON,
+            progress=EscalationProgress(elapsed_seconds=200.0),
+            budget=EscalationBudget(used_tokens=0, limit_tokens=None),
+            will_stop=False,
+        )
+        self.assertIn("3.3", report.summary)
+
+    def test_unknown_reason_is_still_rejected(self) -> None:
+        from endless_task.runtime_v2.escalation import (
+            EscalationBudget,
+            EscalationProgress,
+            build_escalation_report,
+        )
+        from endless_task.agent_platform import AgentPlatformError
+
+        with self.assertRaises(AgentPlatformError):
+            build_escalation_report(
+                reason="not_a_reason",
+                progress=EscalationProgress(),
+                budget=EscalationBudget(used_tokens=0, limit_tokens=None),
+            )
+
+    def test_rejects_negative_elapsed_seconds(self) -> None:
+        from endless_task.runtime_v2.escalation import EscalationProgress
+        from endless_task.agent_platform import AgentPlatformError
+
+        with self.assertRaises(AgentPlatformError):
+            EscalationProgress(elapsed_seconds=-1.0)
+
+    def test_time_budget_guidance_tells_user_how_to_continue(self) -> None:
+        from endless_task.runtime_v2.escalation import TIME_BUDGET_GUIDANCE
+
+        self.assertIn("时长上限", TIME_BUDGET_GUIDANCE)
+        self.assertIn("发送消息", TIME_BUDGET_GUIDANCE)
+
+
 if __name__ == "__main__":
     unittest.main()

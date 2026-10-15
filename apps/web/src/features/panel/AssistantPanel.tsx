@@ -9,10 +9,12 @@ import type {
   Workspace,
 } from "../chat/apiTypes";
 import type { RuntimeConnectionPhase } from "../chat/runtimeController";
+import { DelegatedChildrenPanel } from "../delegation/DelegatedChildrenPanel";
 import { KnowledgeContent } from "../knowledge/KnowledgeManagement";
 import { MemoryContent } from "../memory/MemoryManagement";
 import { NotificationsContent } from "../notifications/NotificationsDrawer";
 import { ScheduledTasksContent } from "../tasks/ScheduledTasks";
+import { resolveTaskSource } from "../tasks/taskSource";
 import { SkillsContent } from "../skills/SkillsManagement";
 import { McpContent } from "../mcp/McpManagement";
 import { ProviderManagement } from "../providers/ProviderManagement";
@@ -24,6 +26,7 @@ import { useModalDialog } from "../ui/useModalDialog";
 export type AssistantPanelTab =
   | "notifications"
   | "scheduled"
+  | "delegated"
   | "memory"
   | "knowledge"
   | "skills"
@@ -42,6 +45,7 @@ type AssistantPanelTabItem = {
 const PANEL_TABS: AssistantPanelTabItem[] = [
   { id: "notifications", label: "通知", scope: "tasks" },
   { id: "scheduled", label: "已安排", scope: "tasks" },
+  { id: "delegated", label: "子任务", scope: "tasks" },
   { id: "memory", label: "记忆", scope: "knowledge" },
   { id: "knowledge", label: "知识", scope: "knowledge" },
   { id: "skills", label: "技能", scope: "system" },
@@ -220,7 +224,15 @@ export function AssistantPanel({
             pendingProposals={pendingProposals}
           />
         ) : tab === "scheduled" ? (
-          <ScheduledTasksContent onOpenConversation={onOpenConversation} />
+          <ScheduledTasksContent
+            onOpenConversation={onOpenConversation}
+            // 切片 10 T6：创建定时任务的来源锚点 = 当前会话 + 当前轮次。推导与证据见
+            // `features/tasks/taskSource.ts`（turnId 就是 v2 那一轮的 run id，取快照的
+            // `activeRunId` = 当前车道当前轮）；拿不到就是 `null` → 表单禁止提交。
+            taskSource={resolveTaskSource(conversationId, runtimeSnapshot)}
+          />
+        ) : tab === "delegated" ? (
+          <DelegatedChildrenPanel conversationId={conversationId} />
         ) : tab === "memory" ? (
           <MemoryContent onOpenConversation={onOpenConversation} />
         ) : tab === "knowledge" ? (

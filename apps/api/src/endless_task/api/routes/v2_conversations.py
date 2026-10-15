@@ -18,6 +18,13 @@ from endless_task.runtime_v2 import LaneKind, RunStatus
 
 from ..container import AppContainer
 from ..errors import ApiRequestError
+from ..mentions_support import (
+    build_plan,
+    compensate_injection,
+    plan_injection,
+    verify_injection_after_send,
+    write_injection,
+)
 from ..runtime_v2_support import (
     runtime_v2_lane_json,
     runtime_v2_memory_json,
@@ -29,6 +36,7 @@ from ..schemas.v2_conversations import (
     RuntimeV2CreateTemporaryConversationBody,
     RuntimeV2MemoryBody,
     RuntimeV2MessageBody,
+    RuntimeV2ReferencePreviewBody,
 )
 from ..serialization import conversation_json
 from ..skill_requests import resolve_skill_requests
@@ -247,6 +255,18 @@ def register_v2_conversations_routes(app: FastAPI, container: AppContainer) -> N
                 "消息内容超过本地配置允许的长度。",
                 status_code=413,
             )
+        # C3a：@ 引用的校验全部前置（零写入）——非法引用连自动命名都不会发生。
+        # 不带 `references` 时这段整体跳过 ⇒ 老客户端行为逐字不变。
+        prepared = (
+            plan_injection(
+                container,
+                conversation_id=target_conversation_id,
+                bodies=body.references,
+                lane_id=body.laneId,
+            )
+            if body.references
+            else None
+        )
         _skill_messages, skill_notices = resolve_skill_requests(
             container.skill_service,
             container.workspace_resolver,
@@ -257,13 +277,33 @@ def register_v2_conversations_routes(app: FastAPI, container: AppContainer) -> N
         title_conversation_from_first_message(
             container, target_conversation_id, body.content
         )
-        handle = await container.runtime_v2_gateway.send(
-            target_conversation_id,
-            body.content,
-            lane_id=body.laneId,
-            client_request_id=idempotency_key,
-        )
-        return {
+        reference_warnings: tuple[str, ...] = ()
+        if prepared is not None:
+            # 在飞闸预检 + 幂等预检 → 再写引用 entry。
+            # 注入必须在提交**之前**：引用 entry 成为 lane leaf，提交时用户消息
+            # 自动挂在它下面 ⇒ 它是 trigger_entry_id 的祖先（runner 只读祖先链）。
+            write_injection(container, prepared, client_request_id=idempotency_key)
+            reference_warnings = prepared.warnings
+        try:
+            handle = await container.runtime_v2_gateway.send(
+                target_conversation_id,
+                body.content,
+                lane_id=body.laneId,
+                client_request_id=idempotency_key,
+            )
+        except BaseException:
+            # B4：提交失败 ⇒ 不留"还能进上下文"的孤儿引用 entry（否则之后每一轮都会
+            # 把被引用会话的正文投影进模型上下文，而用户从未发出那条消息）。
+            # `compensate_injection` **自身永不抛**（复审 C-1）：这里的 409 必须还是
+            # 409，不许被补偿时的异常顶替成 500。
+            if prepared is not None:
+                compensate_injection(container, prepared, reason="submit_failed")
+            raise
+        if prepared is not None:
+            reference_warnings = reference_warnings + verify_injection_after_send(
+                container, prepared, trigger_entry_id=handle.user_message_id
+            )
+        payload: dict[str, object] = {
             "conversationId": handle.conversation_id,
             "laneId": handle.lane_id,
             "runId": handle.run_id,
@@ -271,6 +311,45 @@ def register_v2_conversations_routes(app: FastAPI, container: AppContainer) -> N
             "eventsUrl": f"/api/v2/conversations/{conversation_id}/events",
             # S1：显式技能调用结果（ok / disabled / not_user_invocable / …）
             "requestedSkills": skill_notices,
+        }
+        if prepared is not None:
+            payload["references"] = [
+                dict(item.provenance) for item in prepared.plan.items
+            ]
+            payload["referenceTokenEstimate"] = prepared.plan.total_token_estimate
+            payload["referenceWarnings"] = list(reference_warnings)
+        return payload
+
+
+    @app.post("/api/v2/conversations/{conversation_id}/references/preview")
+    async def preview_runtime_v2_references(
+        conversation_id: str,
+        body: RuntimeV2ReferencePreviewBody,
+    ) -> dict[str, object]:
+        """引用预览：picker 的 token 预估**必须来自后端**（progress.md R-C4 修订）。
+
+        零写入：跑与发送路径**同一份**校验与投影（口径不会漂），因此预览里能看到
+        "会被截断/超预算"的真实结果，而不是前端自己估的数字。
+        """
+
+        target_conversation_id = resolve_runtime_v2_conversation(
+            container,
+            conversation_id,
+            write=False,
+        )
+        plan = build_plan(
+            container,
+            conversation_id=target_conversation_id,
+            bodies=body.references,
+        )
+        return {
+            "conversationId": target_conversation_id,
+            "totalTokenEstimate": plan.total_token_estimate,
+            "warnings": list(plan.warnings),
+            "items": [
+                {**item.provenance, "text": item.projection.text}
+                for item in plan.items
+            ],
         }
 
 

@@ -159,12 +159,21 @@ class KnowledgeLifecycleService:
     def _proposal_anchor(
         self, source: KnowledgeSource
     ) -> Optional[tuple[str, str]]:
-        """提案落点：来源会话优先，否则锚到最近活跃会话。"""
+        """提案落点：来源会话优先，否则锚到最近活跃的**用户**会话。
+
+        `exclude_internal=True`：批次 B Task 1 起，定时/提醒的到点执行会更新它们
+        **自己的执行会话**（`internal_owner_kind` / `internal_owner_id`），而这里按
+        `updated_at DESC` 取第一条——不排除的话，刚跑完的执行会话几乎必然排在最前，
+        知识提案的兜底锚点就会落到系统对象上（ADR-1 §5 只说了执行会话"参与知识生命
+        周期枚举"，没说它能当锚点）。用户会话优先是这里的正确语义。
+        """
         if source.source_conversation_id and source.proposed_by_turn_id:
             return source.source_conversation_id, source.proposed_by_turn_id
         if self._chat_repository is None:
             return None
-        conversations = self._chat_repository.list_conversations()
+        conversations = self._chat_repository.list_conversations(
+            exclude_internal=True
+        )
         if not conversations:
             return None
         return (

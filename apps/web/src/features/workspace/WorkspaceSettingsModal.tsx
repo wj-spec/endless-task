@@ -220,7 +220,7 @@ export function WorkspaceSettingsModal({
                   setWorkspaceName(event.target.value);
                   if (createError) setCreateError(null);
                 }}
-                placeholder="例如：个人项目"
+                placeholder="例如：个人工作区"
                 value={workspaceName}
               />
               <p className="settings-section-hint">
@@ -243,7 +243,7 @@ export function WorkspaceSettingsModal({
           ) : (
             <p className="settings-section-hint">
               {workspace
-                ? `为「${workspace.name}」绑定本地目录后，助手才能在项目里读写文件、执行命令。`
+                ? `为「${workspace.name}」绑定本地目录后，助手才能在工作区里读写文件、执行命令。`
                 : "请先选择一个工作区。"}
             </p>
           )}
@@ -251,7 +251,7 @@ export function WorkspaceSettingsModal({
           {workspace?.rootPath ? (
             <div className="workspace-binding">
               <p className="workspace-binding-path">{workspace.rootPath}</p>
-              <p className="settings-section-hint">runtime 已启用 · 文件系统与 shell 工具可用</p>
+              <p className="settings-section-hint">助手能力已启用 · 文件系统与命令工具可用</p>
               <button
                 className="danger-action"
                 disabled={binding}

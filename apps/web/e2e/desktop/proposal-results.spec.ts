@@ -129,7 +129,7 @@ test("右侧 Temporary Conversation 接受 Artifact 后聚焦但保持临时属�
   await artifactCard.getByRole("button", { name: "打开 Artifact" }).click();
 
   await expect(side).toBeHidden();
-  await expect(page.getByText(/临时会话.*不写入记忆/)).toBeVisible();
+  await expect(page.getByText(/临时对话.*不写入记忆/)).toBeVisible();
   const workspace = page.locator("aside.workspace-panel");
   await expect(workspace).toBeVisible();
   await expect(workspace.getByText("E2E 发布记录")).toBeVisible();

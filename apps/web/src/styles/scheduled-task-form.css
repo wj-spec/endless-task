@@ -1,0 +1,76 @@
+/* 切片 10 T6：「已安排」面板里的**新建定时任务**表单。
+   和 T4 的 `run-header.css` 同一个理由：独立样式表，不追加到 `styles/panel.css`
+   （后者正被用户并行修改，本任务不许碰）。只新增 `task-create*` 类名，不覆盖任何既有
+   选择器，因此既有布局与选择器语义都不变。 */
+
+.task-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.task-create-toggle {
+  align-self: flex-start;
+}
+
+.task-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+}
+
+.task-create-form label {
+  margin-top: var(--space-2);
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+}
+
+.task-create-form label:first-child {
+  margin-top: 0;
+}
+
+.task-create-form input,
+.task-create-form select,
+.task-create-form textarea {
+  width: 100%;
+  padding: 6px var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-2);
+}
+
+.task-create-form textarea {
+  resize: vertical;
+}
+
+.task-create-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-1);
+}
+
+.task-create-notice {
+  margin: 0;
+  color: var(--success);
+  font-size: var(--fs-1);
+}
+
+.task-create-hint {
+  margin: var(--space-2) 0 0;
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
+
+.task-create-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}

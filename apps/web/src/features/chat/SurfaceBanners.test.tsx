@@ -65,22 +65,30 @@ describe("SurfaceBanners", () => {
     expect(text()).toBe("");
   });
 
-  it("临时会话：显示来源与「升级为正式」，点击回调生效", () => {
+  it("临时对话：显示来源与「保存为正式对话」，点击回调生效", () => {
     const onPromote = vi.fn();
     render({ ephemeral: true, parentTitle: "上一段对话", onPromote });
     const banner = container.querySelector(".branch-banner")!;
     expect(banner.getAttribute("role")).toBe("note");
-    expect(text()).toContain("临时会话 · 源自《上一段对话》 · 不写入记忆，用完可丢弃");
+    expect(text()).toContain("临时对话 · 源自《上一段对话》 · 不写入记忆，用完可丢弃");
     act(() => {
-      buttons().find((item) => item.textContent === "升级为正式")!.click();
+      buttons().find((item) => item.textContent === "保存为正式对话")!.click();
     });
     expect(onPromote).toHaveBeenCalledTimes(1);
   });
 
-  it("没有来源标题时只显示「临时会话」提示", () => {
+  it("没有来源标题时只显示「临时对话」提示", () => {
     render({ ephemeral: true });
-    expect(text()).toContain("临时会话 · 不写入记忆，用完可丢弃");
+    expect(text()).toContain("临时对话 · 不写入记忆，用完可丢弃");
     expect(text()).not.toContain("源自");
+  });
+
+  it("临时对话横幅的可见动作词就是「保存为正式对话」（P0-B 词级收口）", () => {
+    render({ ephemeral: true });
+    // 术语表规定的原词是"保存为正式对话"；旧文案「升级为正式」不许再出现。
+    expect(buttons().map((item) => item.textContent)).toEqual(["保存为正式对话"]);
+    expect(text()).not.toContain("升级为正式");
+    expect(text()).not.toContain("临时会话");
   });
 
   it("正在查看分支：显示分支名与「返回主线 / 设为主线」", () => {

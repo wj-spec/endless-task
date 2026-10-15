@@ -23,12 +23,25 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install pinned Rust toolchain
         run: |
-          uv venv .venv
+          toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal
+          rustc --version
+          cargo --version
+
+      - name: Install locked dependencies and build native extension
+        run: |
           # vec extra：sqlite-vec 原生向量 KNN 测试所需。
-          # httpx2：starlette 1.6 起 TestClient 的首选依赖（缺失时会回退并发出弃用警告）。
-          uv pip install --python .venv/bin/python -e '.[dev,vec]' httpx2
+          # dev extra 已包含 httpx2；依赖版本来自 uv.lock。
+          uv sync --locked --python 3.12 --extra dev --extra vec
+
+      - name: Verify native extension and ABI
+        run: .venv/bin/python ../../scripts/verify_native.py
+
+      - name: Run locked Rust workspace tests
+        run: PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --workspace --locked
 
       - name: Run backend tests
         # 直接调用 .venv/bin/python（不用 `uv run`），避免 uv 在运行阶段重新同步环境、
@@ -66,7 +79,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 

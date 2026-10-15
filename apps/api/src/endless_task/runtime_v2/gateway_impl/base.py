@@ -53,6 +53,8 @@ from ..lane import RuntimeV2LaneCreationResult, RuntimeV2LaneService
 from ..memory import RuntimeV2MemoryService
 from ..metrics import ApprovalMetric, RuntimeV2MetricsCollector
 from ..replay import ConversationRuntimeSnapshot, CrashRecoveryReport, RuntimeV2ReplayService
+from ..revive import collect_revive_decision
+from ..run_budget import RunBudget
 from ..trace_observer import RunTraceObserver
 from ..user_profile import UserProfileBlock
 from endless_task.runtime_ledger.pricing import make_default_catalog
@@ -79,7 +81,7 @@ from .views import (
     _last_turn_tokens,
     _prefix_fingerprint,
     _recovery_report_json,
-    _run_state_json,
+    _run_state_with_budget_json,
     _stuck_json,
     _tool_states_json,
     _usage_json,
@@ -122,7 +124,8 @@ class _GatewayBase:
         context_window_tokens: Optional[int] = None,
         compaction_hook: Optional[ContextCompactionHook] = None,
         metrics_collector: Optional[RuntimeV2MetricsCollector] = None,
-        agent_timeout_seconds: Optional[float] = None,
+        # 运行预算（时长/成本按类别）：每运行构造执行器时下发给它（runs.py）。
+        run_budget: Optional[RunBudget] = None,
         approval_timeout_seconds: Optional[float] = None,
         tool_execution_limits: Optional[ToolExecutionLimits] = None,
         trace_observer: Optional[RunTraceObserver] = None,
@@ -159,7 +162,7 @@ class _GatewayBase:
         self._metrics = metrics_collector or RuntimeV2MetricsCollector()
         self._model = model
         self._max_output_tokens = max_output_tokens
-        self._agent_timeout_seconds = agent_timeout_seconds
+        self._run_budget = run_budget
         self._approval_timeout_seconds = approval_timeout_seconds
         self._tool_execution_limits = tool_execution_limits
         self._trace_observer = trace_observer
@@ -179,6 +182,10 @@ class _GatewayBase:
         # retry decisions attribute to the correct run.
         self._provider_retry_evaluator = provider_retry_evaluator
         self._temperature = temperature
+        # 故意在容器构造期构造：3.10+ 的 asyncio 原语直到首次抢不到名额、需要等待时才
+        # 绑定 loop，所以构造期没有 loop 并不会绑错（3.14 实测：无争用时 _loop 始终为
+        # None）。前提是本进程只有一个 loop；将来若一个容器被两个 loop 争用，第二个
+        # loop 会抛 "bound to a different event loop"，届时再按 loop 惰性创建名额。
         self._provider_slot = (
             asyncio.Semaphore(provider_slot_limit)
             if provider_slot_limit is not None
@@ -215,7 +222,14 @@ class _GatewayBase:
             if memory_repository is not None
             else None
         )
+        # 每个会话**只留最后一个**在飞句柄（`has_active_run` / `_require_no_active_runs`
+        # 的语义靠它，逐字不变）。
         self._active_runs: dict[str, _ActiveRun] = {}
+        # 同一份在飞句柄再按 **run id** 存一份（切片 10 T3 Step 3）。只留会话槽位时，
+        # 只要该会话又起了更新的 run，旧 run 的句柄就被覆盖 → `/api/v2/runs/{old}/cancel`
+        # 与 `/steer` 会对一个**真的还在跑**的 run 回 `accepted:false`。按 run id 记录
+        # 保证每个在飞 run 一直可寻址；`_find_active_run` 优先走这份精确索引。
+        self._active_runs_by_id: dict[str, _ActiveRun] = {}
         self._pending_approvals: dict[str, PendingApproval] = {}
         self._lock = asyncio.Lock()
         self._approval_gate = GatewayToolApprovalGate(
@@ -272,6 +286,7 @@ class _GatewayBase:
                 "runningRunId": None,
                 "activeRunId": None,
                 "activeRunVariantId": None,
+                "revivableRunId": None,
                 "lastEventSeq": last_event_seq,
                 "entries": (),
                 "runState": None,
@@ -293,6 +308,28 @@ class _GatewayBase:
             conversation_id,
             lane_id=lane_id,
         )
+        # E3/B：硬停横幅在场的**终态** run 才去算"能不能原地复活"（其余时刻零代价）。
+        # 判据是后端算的（`runtime_v2/revive.py`），前端**不许**自己猜状态：
+        # `snapshot.escalation` 只说明"有一条 willStop 的升级"，而"点「继续」会复活
+        # 还是新开一轮"取决于 run 行是否 COMPLETED、有没有"结果无法确认"的工具体、
+        # 该 lane 有没有别的活动 run —— 这些只有后端知道。
+        escalation = _escalation_json(
+            product_events,
+            running_run_id=runtime_snapshot.running_run_id,
+        )
+        revivable_run_id: Optional[str] = None
+        if (
+            escalation is not None
+            and escalation.get("willStop")
+            and runtime_snapshot.running_run_id is None
+        ):
+            scope_run_id = escalation.get("runId")
+            if isinstance(scope_run_id, str) and scope_run_id:
+                if collect_revive_decision(
+                    repository=self._repository,
+                    run_id=scope_run_id,
+                ).revivable:
+                    revivable_run_id = scope_run_id
         return {
             "snapshotVersion": 1,
             "conversationId": conversation_id,
@@ -302,11 +339,14 @@ class _GatewayBase:
             "runningRunId": runtime_snapshot.running_run_id,
             "activeRunId": runtime_snapshot.active_run_id,
             "activeRunVariantId": runtime_snapshot.active_run_variant_id,
+            "revivableRunId": revivable_run_id,
             "lastEventSeq": last_event_seq,
             "entries": tuple(
                 _entry_json(entry) for entry in runtime_snapshot.entries
             ),
-            "runState": _run_state_json(runtime_snapshot),
+            "runState": _run_state_with_budget_json(
+                runtime_snapshot, product_events
+            ),
             "pendingApprovals": tuple(_approval_json(item) for item in pending),
             "toolStates": _tool_states_json(runtime_snapshot),
             "contextUsage": {
@@ -324,10 +364,7 @@ class _GatewayBase:
                 product_events,
                 running_run_id=runtime_snapshot.running_run_id,
             ),
-            "escalation": _escalation_json(
-                product_events,
-                running_run_id=runtime_snapshot.running_run_id,
-            ),
+            "escalation": escalation,
             "verification": _verification_json(
                 product_events,
                 run_id=runtime_snapshot.active_run_id
@@ -352,9 +389,11 @@ class _GatewayBase:
         conversation_id: str,
     ) -> tuple[CrashRecoveryReport, ...]:
         self.validate_session(conversation_id)
+        # 用 run id 索引：会话槽位被更新的 run 顶掉后，旧 run 仍是**本进程在跑**的，
+        # 不该被当作"需要恢复的中断 run"报给用户。
         active_run_ids = {
             active.run_id
-            for active in self._active_runs.values()
+            for active in self._active_runs_by_id.values()
             if not active.task.done()
         }
         return tuple(
@@ -391,16 +430,27 @@ class _GatewayBase:
 
     async def shutdown(self) -> None:
         async with self._lock:
-            active_runs = tuple(self._active_runs.values())
+            # 按 run id 取**全部**在飞句柄：会话槽位只留最后一个，用它做关停会漏掉
+            # （被更新的 run 顶掉槽位的）长跑，进程就退不出去。
+            active_runs = tuple(
+                active
+                for active in self._active_runs_by_id.values()
+                if not active.task.done()
+            )
         for active in active_runs:
             await active.executor.request_cancel()
         await self._active_run_supervisor.shutdown(cancel=False)
         await self._post_run_supervisor.shutdown(cancel=False)
 
     def _find_active_run(self, run_id: str) -> Optional[_ActiveRun]:
-        for active in self._active_runs.values():
-            if active.run_id == run_id and not active.task.done():
-                return active
+        # 先查按 run id 的精确索引（会话槽位被更新的 run 顶掉后，旧 run 仍找得到）。
+        active = self._active_runs_by_id.get(run_id)
+        if active is not None and not active.task.done():
+            return active
+        # 兼容兜底：任何绕过登记、直接写会话槽位的路径仍可被扫到。
+        for candidate in self._active_runs.values():
+            if candidate.run_id == run_id and not candidate.task.done():
+                return candidate
         return None
 
     def _require_no_active_runs(self, conversation_id: str) -> None:

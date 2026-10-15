@@ -10,10 +10,21 @@ from __future__ import annotations
 from .base import V2RepositoryBase
 
 
-from .base import ACTIVE_RUN_STATUSES, _ACTIVE_MODEL_TURN_STATUSES, _ACTIVE_TOOL_EXECUTION_STATUSES, _dump
+from .base import ACTIVE_RUN_STATUSES, _ACTIVE_MODEL_TURN_STATUSES, _ACTIVE_TOOL_EXECUTION_STATUSES, _dump, _load
 from collections.abc import Mapping
-from endless_task.domain.repositories import ConflictError, InvalidStateError
+from datetime import datetime
+from endless_task.domain.repositories import (
+    ConflictError,
+    InvalidStateError,
+    RunNotRevivableError,
+)
 from endless_task.runtime_v2.domain import Actor, LaneKind, LaneStatus, ModelTurnRecord, ModelTurnStatus, RunRecord, RunStatus, ToolExecutionStatus, TranscriptEntryRecord, TranscriptEntryStatus, TranscriptEntryType
+from endless_task.runtime_v2.revive import (
+    REFUSAL_LANE_HAS_OTHER_ACTIVE_RUN,
+    REFUSAL_NO_HARD_STOP,
+    REFUSAL_RUN_NOT_COMPLETED,
+    REVIVE_EVENT_TYPE,
+)
 import sqlite3
 from typing import Any, Optional, Sequence
 
@@ -230,6 +241,154 @@ class RunRepositoryMixin(V2RepositoryBase):
                 run_id=run_id,
                 event_type="run_started",
                 payload={},
+                correlation_id=correlation_id or current["correlation_id"],
+                occurred_at=now,
+            )
+            return self._run_from_row(self._get_run_row(connection, run_id))
+
+        return self._write(operation)
+
+    def revive_terminal_run(
+        self,
+        run_id: str,
+        *,
+        correlation_id: Optional[str] = None,
+    ) -> RunRecord:
+        """E3/B：把**硬停**后落在 ``COMPLETED + awaiting_user(willStop=true)`` 的 run
+        **原地复活**为 ``running``（同一条 run 接着跑）。
+
+        ⚠️ 冻结面：`SqliteRuntimeV2Repository` 在 `tests/fixtures/storage_method_inventory.json`
+        的 16 个类里；本方法纳入该清单的签名约束。
+        为什么必须**新增**而不是复用 `start_run` / `transition_run_status`：那两个方法对
+        **终态** run 一律抛 `InvalidStateError`（`start_run` 见上、`transition_run_status`
+        见下），这是 run 生命周期的硬闸，不该被放开——硬停复活是有**额外前提**的一条路，
+        前提写在这里，闸门也留在这里。
+
+        ## 允许的形态（唯一的形态）
+
+        行状态 `COMPLETED` **且** 该 run 最后一条 `run_awaiting_user` 的 `willStop=true`
+        （= 预算硬停 / E2 不确定副作用那种"已安全停止，等你决定"的收尾形态）。
+        **其余终态一律指名拒绝**——`FAILED` / `CANCELLED` 没有"接着跑"这回事。
+
+        第四条前提（**一 lane 一活动行**）也在这里确认：`036` 的
+        `idx_v2_runs_one_active_per_lane` 是 **lane 层**的部分唯一索引；原地复活本身不违反
+        它（复活的是同一行），真正的拦网是"**该 lane 上还另有活动 run**"。
+        ⇒ 本方法在**同一次写事务内**先查、再改名，查不满足就**指名拒绝**
+        （`RunNotRevivableError`，HTTP 409），**绝不靠数据库唯一索引报错兜底**。
+
+        ## 口径（ADR §3.2 / §3.4：诚实优先）
+
+        * **复活视为新的一段**：`started_at` 改写成复活时刻、`finished_at` 清空 ⇒
+          `elapsedSeconds` / `budget.usedSeconds` 只数新的一段，**停机时间不计入"已用"**；
+        * 旧的一段（起止 + 秒数）**不丢**：写进下面那条复原事件的 payload（审计可回溯），
+          但**不假装总预算连续**；
+        * **不重置**任何已完成轮的用量（`v2_model_turns` 求和由 E1 的进度读取器继续算）；
+          新的一段由执行器再发一条 `run_budget_declared` 重新声明。
+
+        ## 为什么发的是 `run_progress_resumed`（ADR §3.1）
+
+        后端只认"**别的** run 的 `run.started`"才让旧的升级/卡住横幅过期
+        （`gateway_impl/views.py` 的 `_awaiting_user_scope`）⇒ **同 run 复活不会清旧横幅**。
+        所以这里必须发一条**同 run 的恢复事件**：复用 C2 的 `run_progress_resumed`
+        （前端 `escalation.ts` / `stuckState.ts` 与后端 `_escalation_json` / `_stuck_json`
+        都按"同一个 run"清空）——代价是它与"卡住后恢复"的语义**合流**了：
+        对消费者它只有一个含义「**这条 run** 又活过来了」；差异放在 payload 的
+        `source: "hard_stop_revive"` 里供审计区分。
+        """
+        now = self._clock()
+
+        def operation(connection: sqlite3.Connection) -> RunRecord:
+            current = self._get_run_row(connection, run_id)
+            if current["status"] != RunStatus.COMPLETED.value:
+                raise RunNotRevivableError(
+                    f"{REFUSAL_RUN_NOT_COMPLETED}："
+                    f"只有硬停后 COMPLETED 的 run 可以原地复活"
+                    f"（当前状态：{current['status']}）"
+                )
+            hard_stop_row = connection.execute(
+                """
+                SELECT payload_json FROM v2_runtime_events
+                WHERE run_id = ? AND event_type = 'run_awaiting_user'
+                ORDER BY event_seq DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            will_stop = bool(
+                hard_stop_row is not None
+                and _load(hard_stop_row["payload_json"]).get("willStop")
+            )
+            if not will_stop:
+                raise RunNotRevivableError(
+                    f"{REFUSAL_NO_HARD_STOP}："
+                    f"这条 run 的最后一条 run_awaiting_user 不是 willStop=true"
+                    f"（不是硬停形态，没有可接续的断点）"
+                )
+            active_statuses = tuple(
+                status.value for status in ACTIVE_RUN_STATUSES
+            )
+            placeholders = ", ".join("?" for _ in active_statuses)
+            other_rows = connection.execute(
+                f"""
+                SELECT id FROM v2_runs
+                WHERE lane_id = ? AND id != ? AND status IN ({placeholders})
+                """,
+                (current["lane_id"], run_id, *active_statuses),
+            ).fetchall()
+            if other_rows:
+                other_ids = ", ".join(str(row["id"]) for row in other_rows)
+                raise RunNotRevivableError(
+                    f"{REFUSAL_LANE_HAS_OTHER_ACTIVE_RUN}："
+                    f"这条 lane 上另有活动运行（{other_ids}）"
+                )
+
+            previous_started = current["started_at"]
+            previous_finished = current["finished_at"]
+            previous_segment_seconds: Optional[float] = None
+            if previous_started:
+                try:
+                    started_moment = datetime.fromisoformat(str(previous_started))
+                    finished_moment = datetime.fromisoformat(
+                        str(previous_finished or now)
+                    )
+                    previous_segment_seconds = round(
+                        max(0.0, (finished_moment - started_moment).total_seconds()),
+                        3,
+                    )
+                except ValueError:
+                    # 解析不了就**不给**秒数（不猜一个看起来合理的值）。
+                    previous_segment_seconds = None
+
+            connection.execute(
+                """
+                UPDATE v2_runs
+                SET is_active_variant = 0
+                WHERE sibling_group_id = ? AND id != ?
+                """,
+                (current["sibling_group_id"], run_id),
+            )
+            connection.execute(
+                """
+                UPDATE v2_runs
+                SET status = ?, started_at = ?, finished_at = NULL,
+                    error_code = NULL, safe_message = NULL, cancelled_by = NULL,
+                    is_active_variant = 1
+                WHERE id = ?
+                """,
+                (RunStatus.RUNNING.value, now, run_id),
+            )
+            self._insert_runtime_event(
+                connection,
+                run_id=run_id,
+                event_type=REVIVE_EVENT_TYPE,
+                payload={
+                    "runId": run_id,
+                    "source": "hard_stop_revive",
+                    "revivedAt": now,
+                    "previousStartedAt": previous_started,
+                    "previousFinishedAt": previous_finished,
+                    "previousSegmentSeconds": previous_segment_seconds,
+                },
                 correlation_id=correlation_id or current["correlation_id"],
                 occurred_at=now,
             )

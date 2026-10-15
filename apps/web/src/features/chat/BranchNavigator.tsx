@@ -18,7 +18,7 @@ type BranchNavigatorProps = {
   onSwitch: (laneId: string) => void;
 };
 
-type LaneRow = {
+export type LaneRow = {
   lane: RuntimeV2Lane;
   depth: number;
 };
@@ -29,7 +29,13 @@ const laneTitle = (lane: RuntimeV2Lane) =>
 const isLaneArchived = (lane: RuntimeV2Lane) =>
   lane.status === "archived" || lane.archived;
 
-const orderLanes = (lanes: RuntimeV2Lane[]): LaneRow[] => {
+/**
+ * 把扁平的分支列表摊成"父在前、子缩进"的行序列。
+ *
+ * C4：右侧边栏的「会话」视图（`workspace/views/ConversationsView`）也要展示同一棵树
+ * ⇒ 导出复用，**不另造第三套排序**（口径漂移会让"这里看到的树"和导航器里的不一致）。
+ */
+export const orderLanes = (lanes: RuntimeV2Lane[]): LaneRow[] => {
   const sorted = [...lanes].sort((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );

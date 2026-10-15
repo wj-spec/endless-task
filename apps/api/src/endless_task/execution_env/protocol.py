@@ -192,9 +192,16 @@ class ProcessRequest:
         )
         copied_environment: dict[str, str] = {}
         for key, value in self.environment.items():
+            # Environment values are opaque text: empty strings and surrounding
+            # whitespace are meaningful and must reach the child unchanged.
+            if not isinstance(value, str) or "\0" in value or len(value) > 32_768:
+                raise AgentPlatformError(
+                    "invalid_execution_value",
+                    "Environment values must be text without NUL and at most 32768 characters",
+                )
             copied_environment[
                 require_identifier(key, field_name="environment_key")
-            ] = require_identifier(value, field_name="environment_value", max_length=32_768)
+            ] = value
         object.__setattr__(self, "environment", copied_environment)
 
 

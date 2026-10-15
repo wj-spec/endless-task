@@ -5,6 +5,7 @@ import type {
   Conversation,
   ConversationSnapshot,
   ConversationStatus,
+  RuntimeV2ConversationReference,
   RuntimeV2Snapshot,
   RuntimeV2Lane,
 } from "./apiTypes";
@@ -18,7 +19,7 @@ import {
  * 侧栏工作面（右侧对照/分支）的会话簇。
  *
  * 从 `useChatApplication.ts`（1 806 行）抽出，共 222 行：打开/关闭/丢弃侧栏会话、
- * 聚焦临时会话、等待运行停止、在侧栏打开某条车道、以及侧栏发送。
+ * 聚焦临时对话、等待运行停止、在侧栏打开某条车道、以及侧栏发送。
  *
  * **拆法要点**：这一簇**依赖运行时事件簇**（`applyRuntimeSnapshot` /
  * `followRuntimeConversation` / `hydrateActiveTurn` + `runtimeController`），所以顺序上
@@ -94,6 +95,7 @@ export type SideConversationParams = {
     content: string,
     laneId?: string | null,
     target?: "main" | "side",
+    references?: RuntimeV2ConversationReference[],
   ) => Promise<unknown>;
 };
 
@@ -328,9 +330,17 @@ export function useSideConversation({
     ],
   );
 
-  const sendSide = async () => {
+  /**
+   * C3b：侧区 composer 选中的 `@` 引用，原样交给发送路径。
+   *
+   * 返回值（C3b 修复波 §6）：`true` = 消息真的提交成功（composer 据此清空 chip）；
+   * `false` = 没发出去（草稿空 / 无会话 / 生成中 / 请求失败）⇒ 保留用户的选择。
+   */
+  const sendSide = async (
+    references: RuntimeV2ConversationReference[] = [],
+  ): Promise<boolean> => {
     const content = sideDraft.trim();
-    if (!content || !sideConversationId || sideIsGenerating) return;
+    if (!content || !sideConversationId || sideIsGenerating) return false;
     const retainedDraft = sideDraft;
     setSideDraft("");
     setCommandFeedback(sideCommandTarget, "send", null);
@@ -342,11 +352,14 @@ export function useSideConversation({
           ? sideLane.laneId
           : mainLaneIds[sideConversationId],
         sideLane?.conversationId === sideConversationId ? "side" : "main",
+        references,
       );
       setCommandFeedback(sideCommandTarget, null, null);
+      return true;
     } catch (sendError) {
       setSideDraft(retainedDraft);
       setCommandFeedback(sideCommandTarget, null, readableError(sendError));
+      return false;
     }
   };
 

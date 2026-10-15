@@ -17,11 +17,14 @@ import type { KnowledgeProposal,
   MemoryRecord,
   PermissionSettings,
   RuntimeV2MessageResponse,
+  RuntimeV2ConversationReference,
+  RuntimeV2ReferencePreviewResponse,
   RuntimeV2Metrics,
   AuditTrailResponse,
   UserProfileBlock,
   MemoryReflectionRecord,
   MemoryConsolidationRecord,
+  ConversationChangeItem,
   UndoJournalEntry,
   MemoryConsolidationRunReport,
   MemoryForgettingReport,
@@ -82,8 +85,13 @@ import type { KnowledgeProposal,
   TaskRun,
   TaskNotification,
   Reminder,
+  CreateTaskInput,
+  CreateReminderInput,
+  UpdateTaskInput,
   ConversationCitationsResponse,
   ResponseFeedback,
+  DelegatedChildRun,
+  DelegatedChildRunListResponse,
 } from "./apiTypes";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -548,6 +556,10 @@ export const chatApi = {
       `/api/v2/conversations/${conversationId}/snapshot${query ? `?${query}` : ""}`,
     );
   },
+  /**
+   * 发言。**位置参数**，`idempotencyKey` 是第 4 位、`references` 是第 5 位
+   * （C3b）——两者都不能错位：幂等键丢了会造成重复提交，引用丢了则是静默不生效。
+   */
   createRuntimeV2Message: (
     conversationId: string,
     content: string,
@@ -555,13 +567,37 @@ export const chatApi = {
     idempotencyKey =
       globalThis.crypto?.randomUUID?.() ??
       `runtime-v2-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    references: RuntimeV2ConversationReference[] = [],
   ) =>
     request<RuntimeV2MessageResponse>(
       `/api/v2/conversations/${conversationId}/messages`,
       {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },
-        body: JSON.stringify({ content, laneId: laneId ?? null }),
+        body: JSON.stringify({
+          content,
+          laneId: laneId ?? null,
+          // C3b：没有引用时**不带这个键**——后端 `references` 缺省 `()`，
+          // 不带时老客户端请求体逐字不变（R-C13 的惰性前提）。
+          ...(references.length ? { references } : {}),
+        }),
+      },
+    ),
+  /**
+   * C3b：`@` 引用预览（**零写入**，与发送路径同一份校验与投影）。
+   *
+   * picker/chip 上的 token 数字**必须**来自这里（R-C4 修订：前端不许自己造
+   * token 数），"会被截断/超预算"的告警也来自它的 `warnings`。
+   */
+  previewRuntimeV2References: (
+    conversationId: string,
+    references: RuntimeV2ConversationReference[],
+  ) =>
+    request<RuntimeV2ReferencePreviewResponse>(
+      `/api/v2/conversations/${conversationId}/references/preview`,
+      {
+        method: "POST",
+        body: JSON.stringify({ references }),
       },
     ),
   listRuntimeV2Lanes: (conversationId: string, includeArchived = false) => {
@@ -715,7 +751,7 @@ export const chatApi = {
     ),
   resolveRuntimeV2Recovery: (
     runId: string,
-    action: "mark_failed" | "retry",
+    action: "mark_failed" | "retry" | "resume",
   ) =>
     request<RuntimeV2RecoveryResponse>(`/api/v2/runs/${runId}/recovery`, {
       method: "POST",
@@ -758,6 +794,33 @@ export const chatApi = {
     const response = await request<{ items: TaskSummary[] }>("/tasks");
     return response.items;
   },
+  /**
+   * 切片 10 T6：显式创建一个定时任务（后端 T5 的 `POST /tasks`，201 `{"task": …}`）。
+   *
+   * 失败原因**不在这层吞**：`request()` 把非 2xx 翻成带 `status`/`code`/`message` 的
+   * `ApiClientError`，由调用方（「已安排」面板的表单）映射成可见文案。
+   */
+  createTask: (input: CreateTaskInput) =>
+    request<{ task: TaskSummary }>("/tasks", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }).then((response) => response.task),
+  /**
+   * 批次 D Task 1：编辑一条定时任务（后端 `PATCH /tasks/{id}`，200 `{"task": …}`）。
+   *
+   * 只送**要改的字段**（后端 `UpdateTaskBody` 是 `extra="forbid"`，多一个键就 400）。
+   * 「已安排」面板的编辑表单会把当前排期一并回填——后端按**解析后的语义**判断
+   * "排期到底变没变"，原样回填不会重置触发锚点（`resumed_at`）。
+   *
+   * 失败原因**不在这层吞**：`request()` 把非 2xx 翻成带 `status`/`code`/`message`
+   * 的 `ApiClientError`，由调用方映射成可见文案（404 这条安排已不存在 / 409 已取消 /
+   * 400 词表错）。
+   */
+  updateTask: (taskId: string, input: UpdateTaskInput) =>
+    request<{ task: TaskSummary }>(`/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }).then((response) => response.task),
   listTaskRuns: async (taskId: string) => {
     const response = await request<{ items: TaskRun[] }>(`/tasks/${taskId}/runs`);
     return response.items;
@@ -805,6 +868,36 @@ export const chatApi = {
     request<{ reminder: Reminder }>(`/reminders/${reminderId}/cancel`, {
       method: "POST",
     }),
+  /**
+   * 批次 D Task 1：显式创建一条**一次性提醒**（后端 `POST /reminders`，
+   * 201 `{"reminder": …}`）。
+   *
+   * `dueAt.at` 是**本地墙钟** `YYYY-MM-DDTHH:MM`；归一成 UTC 的活在后端
+   * （`domain/task_schedule.py` 的 `parse_reminder_due` + `reminder_due_to_utc_iso`），
+   * 这一层不做时区换算、也不改字符串。
+   *
+   * 失败原因**不在这层吞**：`request()` 把非 2xx 翻成 `ApiClientError`，由表单映射成
+   * 可见文案（缺字段的 `missing_*`、`reminder_due_in_past`、格式错的
+   * `validation_error`）。
+   */
+  createReminder: (input: CreateReminderInput) =>
+    request<{ reminder: Reminder }>("/reminders", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }).then((response) => response.reminder),
+  // 委派子运行（右栏「子任务」页签）：按会话限定，取消非本会话的子运行是 404。
+  listDelegatedChildren: async (conversationId: string) => {
+    const response = await request<DelegatedChildRunListResponse>(
+      `/api/v2/conversations/${encodeURIComponent(conversationId)}/delegated-children`,
+    );
+    return response.items;
+  },
+  cancelDelegatedChild: (conversationId: string, childRunId: string) =>
+    request<{ childRunId: string; status: string }>(
+      `/api/v2/conversations/${encodeURIComponent(conversationId)}`
+        + `/delegated-children/${encodeURIComponent(childRunId)}/cancel`,
+      { method: "POST" },
+    ),
   getPermissionSettings: () =>
     request<PermissionSettings>("/settings/permissions"),
   setPermissionSettings: (mode: string, acknowledge: boolean) =>
@@ -1046,6 +1139,10 @@ export const chatApi = {
       performed: boolean;
       alreadyUndone: boolean;
     }>(`/undo-journal/${entryId}/undo`, { method: "POST" }),
+  listConversationChanges: (conversationId: string, limit = 20) =>
+    request<{ items: ConversationChangeItem[] }>(
+      `/conversations/${conversationId}/changes?limit=${limit}`,
+    ),
   consolidateMemories: () =>
     request<MemoryConsolidationRunReport>("/memories/consolidate", {
       method: "POST",

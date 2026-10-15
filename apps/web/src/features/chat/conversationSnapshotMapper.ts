@@ -144,7 +144,22 @@ export const runtimeSnapshotToConversationSnapshot = (
       continue;
     }
     if (entry.type === "assistant_message" && draft) {
-      draft.variants.push(entry);
+      // E3/B：**同一条 run 可以有两条 assistant 条目** —— 硬停收尾落一条，用户点
+      // 「继续（接上这条运行）」原地复活后收尾又落一条（`revive_terminal_run` 不新建
+      // run ⇒ 两条的 `sourceRunId` 相同、还在同一条 lane 链上）。旧写法会把它们当
+      // **两个变体**，而 `variant.id = sourceRunId` ⇒ 两个变体同 id（React key 撞车 +
+      // 变体切换器无法区分），且 `find(activeResponseVariantId)` 命中的是**第一条**
+      // （用户看不到续跑出来的那段）。
+      // ⇒ 同一 run 的后续 assistant 条目**顶掉**前一条：语义就是"这条 run 现在的结果"。
+      // 内容不会丢：复活后的收尾正文由执行器把前任各轮的助手文本重新拼进去
+      // （`runner.py` 的 `content_parts.extend(...)`），所以最新一条就是累加后的全量。
+      const sourceRunId = entry.sourceRunId;
+      const previousIndex =
+        sourceRunId === undefined
+          ? -1
+          : draft.variants.findIndex((item) => item.sourceRunId === sourceRunId);
+      if (previousIndex >= 0) draft.variants[previousIndex] = entry;
+      else draft.variants.push(entry);
     }
   }
 

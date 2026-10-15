@@ -67,4 +67,25 @@ describe("StuckNotice（C2 失败记忆）", () => {
     expect(html).toContain("stuck-notice-restrict");
     expect(html).toContain("连续失败，建议换一条路径");
   });
+
+  // 批次 C0 复审 Important-1：这里**没有**"终态改新开一轮"的分支——卡住态只在在飞
+  // run 上存在（后端 `_stuck_json` 在无在飞 run 时返回 None；前端终态事件即清空），
+  // 所以两条出路照旧由 steer / 接管提供。会在终态存活的硬停横幅由
+  // `RuntimeStatusStrip` 用真实在飞信号 `runningRunId` 处理。
+  it("只传接管时只有「人工接管」，不会凭空多出一条「换一条路径」", () => {
+    const html = renderToStaticMarkup(
+      <StuckNotice onTakeOver={() => undefined} state={state} />,
+    );
+    expect(html).toContain("人工接管");
+    expect(html).not.toContain("换一条路径");
+    expect(html).toContain('aria-label="运行卡住"');
+  });
+
+  it("两条出路都不传时不渲染任何动作（读屏名照旧是「运行卡住」）", () => {
+    const html = renderToStaticMarkup(<StuckNotice state={state} />);
+    expect(html).toContain('aria-label="运行卡住"');
+    expect(html).not.toContain("该运行已结束");
+    expect(html).not.toContain("换一条路径");
+    expect(html).not.toContain("人工接管");
+  });
 });

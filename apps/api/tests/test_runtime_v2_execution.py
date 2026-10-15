@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, AsyncIterator, Sequence
+from unittest import mock
 
+from endless_task.domain.repositories import NotFoundError
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.runtime.fake_provider import FakeProvider
 from endless_task.runtime.provider import (
@@ -31,7 +34,10 @@ from endless_task.runtime_v2 import (
     TranscriptEntryType,
     UnattendedToolApprovalGate,
 )
+from endless_task.runtime_v2.escalation import TIME_REASON as RTIME
+from endless_task.runtime_v2.run_budget import RunBudget
 from endless_task.storage import Database, SqliteChatRepository, SqliteRuntimeV2Repository
+from endless_task.storage.v2.base import ACTIVE_RUN_STATUSES
 from endless_task.tooling import (
     ToolApprovalMode,
     ToolCall,
@@ -83,6 +89,28 @@ class PausedProvider:
         self.paused.set()
         await cancellation_token.wait()
         cancellation_token.raise_if_cancelled()
+
+
+class HangingProvider:
+    """永不返回、也不理会取消令牌的 Provider：模拟宿主取消（任务取消）。"""
+
+    name = "hanging"
+
+    def __init__(self) -> None:
+        self.requests: list[ProviderRequest] = []
+        self.entered = asyncio.Event()
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        cancellation_token: CancellationToken,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del cancellation_token
+        self.requests.append(request)
+        yield ProviderTextDelta("开始")
+        self.entered.set()
+        # 挂住，直到被宿主取消（CancelledError），永远不主动返回。
+        await asyncio.Event().wait()
 
 
 class RepeatingReadProvider:
@@ -347,6 +375,8 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
         self.assertEqual(24, result.input_tokens)
         self.assertEqual(10, result.output_tokens)
         self.assertEqual(2, len(result.model_turn_ids))
+        # 工具调用数由执行循环自己数，供上层（子运行用量）O(1) 取用。
+        self.assertEqual(1, result.tool_call_count)
         self.assertEqual(2, len(provider.requests))
 
         self.assertEqual("user", provider.requests[0].messages[0].role)
@@ -391,6 +421,296 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
         self.assertEqual(
             (ModelTurnStatus.COMPLETED, ModelTurnStatus.COMPLETED),
             tuple(turn.derived_status for turn in replay.model_turns),
+        )
+
+    def test_prelude_failure_before_start_run_finalises_run_and_releases_conversation(
+        self,
+    ) -> None:
+        """R10：`start_run` **之前**的故障也要落终态，否则 `created` 行占死会话。
+
+        起点：`AgentRunExecutor.execute` 的 `try` 只覆盖 `start_run` **之后**的
+        步骤，而 run 行是网关先建的（状态 `created`，**也在** `ACTIVE_RUN_STATUSES`
+        里）。前奏（`list_entry_context_entries` → `build_plan_shadow` →
+        `context_projection.project`）抛错时行停在 `created`：交互路径无人收尾
+        （网关 `_on_run_done` 吞异常、任务路径只收 `task_run`），落点会话被
+        `storage/v2/transcript.py` 的活跃闸永久占住（`POST /messages` 恒 409），
+        只能等下次启动清扫才自愈。
+        """
+        conversation = self.chat_repository.create_conversation()
+        submission = self.repository.create_message_submission(
+            conversation_id=conversation.id,
+            lane_id=None,
+            content="前奏故障的一轮",
+            client_request_id="r10-prelude-failure",
+        )
+        self.assertTrue(submission.created)
+        # 网关先建的行本身就是活跃态——这正是占死会话的原因。
+        self.assertIs(RunStatus.CREATED, submission.run.status)
+        self.assertIn(submission.run.status, ACTIVE_RUN_STATUSES)
+        self.assertIsNone(submission.run.started_at)
+
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=ScriptedProvider(
+                [
+                    (
+                        ProviderTextDelta("之后的一轮也能跑。"),
+                        ProviderCompleted(
+                            finish_reason="stop", input_tokens=4, output_tokens=2
+                        ),
+                    )
+                ]
+            ),
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+        )
+
+        # 注入式故障：把**前奏**里的 `build_plan_shadow` 换成必抛的实现。补丁打在
+        # `execution_impl.context_segments`——runner 函数体内的
+        # `from .context_segments import build_plan_shadow` 解析的就是这个别名模块
+        # （`execution_impl/context_segments.py` 只是把父包同名函数重新绑定过来），
+        # 所以命中 `start_run` **之前**那一步。
+        from endless_task.runtime_v2.execution_impl import (
+            context_segments as runner_segments,
+        )
+
+        with mock.patch.object(
+            runner_segments,
+            "build_plan_shadow",
+            side_effect=RuntimeError("prelude exploded"),
+        ):
+            result = asyncio.run(
+                executor.execute(
+                    submission.run.id,
+                    cancellation_token=CancellationToken(),
+                )
+            )
+
+        # ① 该 v2 行落终态（起点：永久停在 `created`，活跃闸占死会话）。
+        final = self.repository.get_run(submission.run.id)
+        self.assertIs(RunStatus.FAILED, final.status)
+        self.assertNotIn(final.status, ACTIVE_RUN_STATUSES)
+        self.assertIs(RunStatus.FAILED, result.status)
+        self.assertEqual("runtime_internal_error", final.error_code)
+        # ② 从未开始的行不许伪造 `started_at`（沿用 T2 口径：保持 NULL）。
+        self.assertIsNone(final.started_at)
+        self.assertIsNotNone(final.finished_at)
+
+        # ③ 运行时事件里**恰好一条**终态事件；`start_run` 没跑过就不该有 run_started。
+        event_types = [
+            event.event_type
+            for event in self.repository.list_runtime_events(submission.run.id)
+        ]
+        self.assertEqual(["run_failed"], event_types)
+
+        # ④ 落点会话不再 409：还能再发一轮（起点：恒 ConflictError）。
+        follow_up = self.repository.create_message_submission(
+            conversation_id=conversation.id,
+            lane_id=None,
+            content="之后的一轮",
+            client_request_id="r10-after-prelude-failure",
+        )
+        self.assertTrue(follow_up.created)
+        self.assertIs(RunStatus.CREATED, follow_up.run.status)
+        # 且真的能重跑（起点：每次新 turn 都撞 409 而失败）。
+        rerun = asyncio.run(
+            executor.execute(
+                follow_up.run.id, cancellation_token=CancellationToken()
+            )
+        )
+        self.assertIs(RunStatus.COMPLETED, rerun.status)
+        self.assertIs(RunStatus.COMPLETED, self.repository.get_run(follow_up.run.id).status)
+
+    def test_get_run_failure_finalises_run_and_releases_conversation(self) -> None:
+        """切片 10 残留 A1：`execute` 开头那次 `get_run` 失败也不许留活动态行。
+
+        起点：`run = self._repository.get_run(run_id)` 在 `try` **之外**。它抛错时
+        网关先建的 `created` 行（**也在** `ACTIVE_RUN_STATUSES` 里）无人收尾 →
+        `storage/v2/transcript.py` 的活跃闸把落点会话永久占住（`POST /messages`
+        恒 409），只能等下次启动清扫自愈。R10 把 `try` 上移到前奏之前，但没有覆盖
+        到这一行；且此时 `run: RunRecord` 还不存在，只能靠**入参 `run_id`** 收尾。
+
+        红检查：删掉 `execute` 里包住这次读取的 `try/except`（回到"读取失败直接
+        外抛"）→ ① 的终态断言、③ 的事件断言、④ 的"能再发一轮"断言一起红。
+        """
+        conversation = self.chat_repository.create_conversation()
+        submission = self.repository.create_message_submission(
+            conversation_id=conversation.id,
+            lane_id=None,
+            content="读取失败的一轮",
+            client_request_id="a1-get-run-failure",
+        )
+        self.assertTrue(submission.created)
+        self.assertIs(RunStatus.CREATED, submission.run.status)
+        self.assertIn(submission.run.status, ACTIVE_RUN_STATUSES)
+        self.assertIsNone(submission.run.started_at)
+
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=ScriptedProvider(
+                [
+                    (
+                        ProviderTextDelta("之后的一轮也能跑。"),
+                        ProviderCompleted(
+                            finish_reason="stop", input_tokens=4, output_tokens=2
+                        ),
+                    )
+                ]
+            ),
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+        )
+
+        # 注入式故障：只让**开头那一次**读取抛错（其余调用照常），模拟"行已存在、
+        # 数据库读不出来"。异常必须原样向上传播——调用方（网关 `_on_run_done`、
+        # worker `_execute_with_guard`）本来就接住它，这里不新造正常返回。
+        real_get_run = self.repository.get_run
+
+        def exploding_get_run(run_id: str):
+            if run_id == submission.run.id:
+                raise NotFoundError(f"Run not found: {run_id}")
+            return real_get_run(run_id)
+
+        with mock.patch.object(
+            self.repository, "get_run", side_effect=exploding_get_run
+        ):
+            with self.assertRaises(NotFoundError):
+                asyncio.run(
+                    executor.execute(
+                        submission.run.id,
+                        cancellation_token=CancellationToken(),
+                    )
+                )
+
+        # ① 该 v2 行落终态（起点：永久停在 `created`，活跃闸占死会话）。
+        final = self.repository.get_run(submission.run.id)
+        self.assertIs(RunStatus.FAILED, final.status)
+        self.assertNotIn(final.status, ACTIVE_RUN_STATUSES)
+        self.assertEqual("runtime_internal_error", final.error_code)
+        # ② 从未开始的行不许伪造 `started_at`（沿用 T2/R10 口径：保持 NULL）。
+        self.assertIsNone(final.started_at)
+        self.assertIsNotNone(final.finished_at)
+        # ③ 运行时事件里**恰好一条**终态事件；`start_run` 没跑过就不该有 run_started。
+        event_types = [
+            event.event_type
+            for event in self.repository.list_runtime_events(submission.run.id)
+        ]
+        self.assertEqual(["run_failed"], event_types)
+
+        # ④ 落点会话不再 409：还能再发一轮（起点：恒 ConflictError）。
+        follow_up = self.repository.create_message_submission(
+            conversation_id=conversation.id,
+            lane_id=None,
+            content="之后的一轮",
+            client_request_id="a1-after-get-run-failure",
+        )
+        self.assertTrue(follow_up.created)
+        self.assertIs(RunStatus.CREATED, follow_up.run.status)
+        # 且真的能重跑（起点：每次新 turn 都撞 409 而失败）。
+        rerun = asyncio.run(
+            executor.execute(
+                follow_up.run.id, cancellation_token=CancellationToken()
+            )
+        )
+        self.assertIs(RunStatus.COMPLETED, rerun.status)
+        self.assertIs(
+            RunStatus.COMPLETED, self.repository.get_run(follow_up.run.id).status
+        )
+
+    def test_get_run_failure_on_terminal_run_keeps_original_exception(self) -> None:
+        """收尾兜底不许**替换**调用方原本要抛的异常（行已终态 → 吞掉 InvalidStateError）。
+
+        红检查：把 `AgentRunExecutor.execute` 里读 run 那段的兜底收尾（`runner.py`
+        内联的 `try: transition_run_status(...) except Exception:`）的
+        `except Exception` 去掉 → 行已终态时它会抛 `InvalidStateError` 而不是调用方
+        原本的 `NotFoundError`，用例红。
+        """
+        _, _, _, run = self._create_run()
+        # 行先落终态：兜底迁移必然撞 `InvalidStateError`（终态不可再改）。
+        self.repository.transition_run_status(
+            run.id,
+            RunStatus.CANCELLED,
+            event_type="run_cancelled",
+            cancelled_by="user",
+        )
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=ScriptedProvider([]),
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+        )
+        real_get_run = self.repository.get_run
+
+        def exploding_get_run(run_id: str):
+            if run_id == run.id:
+                raise NotFoundError(f"Run not found: {run_id}")
+            return real_get_run(run_id)
+
+        with mock.patch.object(
+            self.repository, "get_run", side_effect=exploding_get_run
+        ):
+            with self.assertRaises(NotFoundError):
+                asyncio.run(
+                    executor.execute(run.id, cancellation_token=CancellationToken())
+                )
+        # 终态不被改写；也没有多出第二条终态事件。
+        self.assertIs(RunStatus.CANCELLED, self.repository.get_run(run.id).status)
+        self.assertEqual(
+            ["run_cancelled"],
+            [
+                event.event_type
+                for event in self.repository.list_runtime_events(run.id)
+            ],
+        )
+
+    def test_normal_run_event_sequence_is_unchanged_after_prelude_finalisation(
+        self,
+    ) -> None:
+        """正常路径逐字不变：单轮 run 仍走到 `COMPLETED`，事件序列与今天一致。"""
+        _, _, _, run = self._create_run()
+        provider = ScriptedProvider(
+            [
+                (
+                    ProviderTextDelta("你好呀。"),
+                    ProviderCompleted(
+                        finish_reason="stop", input_tokens=5, output_tokens=3
+                    ),
+                )
+            ]
+        )
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=provider,
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertIs(RunStatus.COMPLETED, result.status)
+        self.assertEqual("你好呀。", result.content)
+        self.assertEqual(5, result.input_tokens)
+        self.assertEqual(3, result.output_tokens)
+        persisted = self.repository.get_run(run.id)
+        self.assertIs(RunStatus.COMPLETED, persisted.status)
+        self.assertIsNotNone(persisted.started_at)
+        self.assertEqual(
+            (
+                "run_started",
+                "run_budget_declared",
+                "model_turn_status_changed",
+                "model_turn_status_changed",
+                "model_turn_started",
+                "model_text_delta",
+                "model_turn_completed",
+                "run_completed",
+            ),
+            tuple(
+                event.event_type
+                for event in self.repository.list_runtime_events(run.id)
+            ),
         )
 
     def test_read_only_tool_without_confirmation_judge_completes(self) -> None:
@@ -1316,42 +1636,176 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
             all(execution.result_entry_id is not None for execution in tool_executions)
         )
 
-    def test_wallclock_watchdog_stops_in_flight_provider(self) -> None:
+    def test_host_task_cancellation_finalises_run(self) -> None:
+        """宿主取消（外层任务取消 / asyncio.timeout）也必须把运行落成终态。
+
+        这类取消不是运行自己的 CancellationToken：抛的是 ``asyncio.CancelledError``
+        （BaseException 子类），既不会被 ``except Exception`` 兜住，也不会走
+        ``except RuntimeCancelled``。不落终态的话运行行会停在运行中，冻结该会话。
+        """
         _, _, _, run = self._create_run()
-        provider = PausedProvider()
+        provider = HangingProvider()
         executor = AgentRunExecutor(
             repository=self.repository,
             provider=provider,
             tool_registry=ToolRegistry(),
+            model="hanging-model",
+        )
+
+        async def scenario() -> None:
+            task = asyncio.create_task(
+                executor.execute(run.id, cancellation_token=CancellationToken())
+            )
+            await provider.entered.wait()
+            # 宿主取消：取消正在 await execute() 的任务。
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+
+        persisted = self.repository.get_run(run.id)
+        # 取消不能被吞掉变成正常返回，但运行必须已经是终态。
+        self.assertNotIn(persisted.status, ACTIVE_RUN_STATUSES)
+        self.assertEqual(RunStatus.CANCELLED, persisted.status)
+        event_types = tuple(
+            event.event_type
+            for event in self.repository.list_runtime_events(run.id)
+        )
+        self.assertIn("run_cancelled", event_types)
+
+    def test_host_cancellation_finalize_is_idempotent_on_terminal_run(self) -> None:
+        """已终态的运行再做一次宿主取消收尾：不迁移、不抛异常（幂等兜底）。"""
+        _, _, _, run = self._create_run()
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=ScriptedProvider([]),
+            tool_registry=ToolRegistry(),
+            model="scripted-model",
+        )
+        self.repository.start_run(run.id)
+        self.repository.transition_run_status(
+            run.id,
+            RunStatus.COMPLETED,
+            event_type="run_completed",
+        )
+
+        executor._finalize_host_cancellation(run.id)
+
+        self.assertEqual(RunStatus.COMPLETED, self.repository.get_run(run.id).status)
+        event_types = tuple(
+            event.event_type
+            for event in self.repository.list_runtime_events(run.id)
+        )
+        self.assertNotIn("run_cancelled", event_types)
+
+    def test_wallclock_watchdog_finalises_gracefully(self) -> None:
+        """硬时长上限 → 优雅收尾（COMPLETED + 引导语），不再 FAILED。"""
+        _, _, _, run = self._create_run()
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=PausedProvider(),
+            tool_registry=ToolRegistry(),
             model="paused-model",
-            agent_timeout_seconds=0.02,
+            run_budget=RunBudget(soft_seconds=0.01, hard_seconds=0.02),
         )
 
         result = asyncio.run(
             executor.execute(run.id, cancellation_token=CancellationToken())
         )
 
-        self.assertEqual(RunStatus.FAILED, result.status)
-        self.assertEqual("agent_timeout", result.run.error_code)
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertIsNone(result.run.error_code)
+        self.assertIn("时长上限", result.content)
+        # 优雅收尾也必须把在飞轮次收口，不能留在 RUNNING，也不能从结果里丢失。
+        persisted = self.repository.list_model_turns(run.id)
         self.assertEqual(
             ModelTurnStatus.CANCELLED,
-            self.repository.get_model_turn(result.model_turn_ids[0]).status,
+            persisted[0].status,
+        )
+        self.assertEqual(
+            [turn.id for turn in persisted],
+            list(result.model_turn_ids),
         )
 
-    def test_wallclock_watchdog_stops_hung_loop(self) -> None:
-        # 与 pi 对齐后仅保留墙钟 watchdog（防「承诺永不返回」的极端卡死），
-        # 不再有任何计数式分数停止。模型一旦陷入无限只读循环，watchdog 兜底停止。
+    def test_wallclock_watchdog_stops_hung_loop_gracefully(self) -> None:
         _, _, _, run = self._create_run()
         provider = RepeatingReadProvider()
-        tool = FakeTool(name="read_file")
         registry = ToolRegistry()
-        registry.register(tool)
+        registry.register(FakeTool(name="read_file"))
         executor = AgentRunExecutor(
             repository=self.repository,
             provider=provider,
             tool_registry=registry,
             model="scripted-model",
-            agent_timeout_seconds=0.05,
+            run_budget=RunBudget(soft_seconds=0.01, hard_seconds=0.05),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.COMPLETED, result.status)
+        self.assertGreater(len(provider.requests), 0)
+        stops = [
+            event
+            for event in self.repository.list_runtime_events(run.id)
+            if event.event_type == "run_awaiting_user"
+            and event.payload["reason"] == RTIME
+            and event.payload["willStop"] is True
+        ]
+        self.assertEqual(1, len(stops))
+        entry = self.repository.get_entry(result.assistant_entry_id)
+        self.assertEqual("time_budget_stop", entry.payload["finishReason"])
+
+    def test_hung_single_turn_does_not_consume_the_whole_budget(self) -> None:
+        """墙体变大后，一次挂死的模型调用不能吃掉整段预算。"""
+        _, _, _, run = self._create_run()
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=PausedProvider(),
+            tool_registry=ToolRegistry(),
+            model="paused-model",
+            run_budget=RunBudget(
+                soft_seconds=0.1,
+                hard_seconds=30.0,
+                per_turn_seconds=0.02,
+            ),
+        )
+
+        started = time.monotonic()
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+        elapsed = time.monotonic() - started
+
+        # 单轮上限把它截断在 0.02s 量级，而不是等满 30s 硬墙。
+        self.assertLess(elapsed, 5.0)
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual("agent_timeout", result.run.error_code)
+
+    def test_early_inner_timeout_is_not_reported_as_the_wall(self) -> None:
+        """非墙钟来源的 TimeoutError 绝不能被说成"已到时长上限"。"""
+        _, _, _, run = self._create_run()
+
+        class EarlyTimeoutProvider:
+            name = "early-timeout"
+
+            def __init__(self) -> None:
+                self.requests: list[object] = []
+
+            async def stream(self, request, cancellation_token):
+                self.requests.append(request)
+                raise TimeoutError("inner component timed out")
+                yield  # pragma: no cover - 让它是 async generator
+
+        # 墙很远（30s），单轮上限 60s ⇒ 这个 TimeoutError 不可能来自墙。
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=EarlyTimeoutProvider(),
+            tool_registry=ToolRegistry(),
+            model="early-timeout-model",
+            run_budget=RunBudget(soft_seconds=1.0, hard_seconds=30.0),
         )
 
         result = asyncio.run(
@@ -1360,8 +1814,52 @@ class RuntimeV2ExecutionTest(unittest.TestCase):
 
         self.assertEqual(RunStatus.FAILED, result.status)
         self.assertEqual("agent_timeout", result.run.error_code)
-        # watchdog 兜底停止：确实跑了几轮，但被墙钟上限截断而非模型收敛。
-        self.assertGreater(len(provider.requests), 0)
+        self.assertNotIn("时长上限", result.content)
+        entries = [
+            event
+            for event in self.repository.list_runtime_events(run.id)
+            if event.event_type == "run_awaiting_user"
+        ]
+        self.assertEqual([], entries)
+
+    def test_early_inner_timeout_without_hard_wall_is_not_reported_as_the_wall(
+        self,
+    ) -> None:
+        """根本没有硬墙时，内层 TimeoutError 更不该被说成"已到时长上限"。"""
+        _, _, _, run = self._create_run()
+
+        class EarlyTimeoutProvider:
+            name = "early-timeout"
+
+            def __init__(self) -> None:
+                self.requests: list[object] = []
+
+            async def stream(self, request, cancellation_token):
+                self.requests.append(request)
+                raise TimeoutError("inner component timed out")
+                yield  # pragma: no cover - 让它是 async generator
+
+        executor = AgentRunExecutor(
+            repository=self.repository,
+            provider=EarlyTimeoutProvider(),
+            tool_registry=ToolRegistry(),
+            model="early-timeout-model",
+            run_budget=RunBudget(soft_seconds=1.0, hard_seconds=None),
+        )
+
+        result = asyncio.run(
+            executor.execute(run.id, cancellation_token=CancellationToken())
+        )
+
+        self.assertEqual(RunStatus.FAILED, result.status)
+        self.assertEqual("agent_timeout", result.run.error_code)
+        self.assertNotIn("时长上限", result.content)
+        entries = [
+            event
+            for event in self.repository.list_runtime_events(run.id)
+            if event.event_type == "run_awaiting_user"
+        ]
+        self.assertEqual([], entries)
 
     def test_provider_error_terminates_run_with_safe_error(self) -> None:
         _, _, _, run = self._create_run()

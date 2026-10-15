@@ -1,0 +1,19 @@
+# L2 适配层：唯一允许依赖 pyo3 的 crate。
+# L1 内核一律不许依赖本 crate，也不许依赖 pyo3。
+[package]
+name = "endless-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "_native_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+endless-kernel-core = { workspace = true }
+endless-kernel-search = { path = "../endless-kernel-search" }
+endless-kernel-fs = { path = "../endless-kernel-fs" }
+pyo3 = { version = "0.29.2", features = ["extension-module"] }

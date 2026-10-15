@@ -1,253 +1,133 @@
 # Endless Task API
 
-`endless-task-api` 是 Endless Task 的本地后端包，当前包版本为 `0.5.0`，处于 Runtime v2 v1.1 Feature Integration Candidate 阶段，尚不是 Release Candidate。
+`endless-task-api` 是单用户、本地优先的 Assistant Runtime 后端，当前包版本为 `0.5.0`，处于 Product Acceptance Candidate 阶段，尚未完成发布验收。
 
-它不是通用 Agent 平台，而是一个单用户、本地优先的 Assistant Runtime：普通聊天走 Assistant Runtime；需要工具时进入受限 Agent Loop；记忆、成果和长期任务作为能力层被 Assistant 按需调用。
+Python 负责模型适配、状态、审批与能力编排，Rust / PyO3 负责原生文件与检索内核。默认使用 `FakeProvider`，无需模型密钥即可启动；真实模型需单独配置。
 
-## Runtime 范围
+## 安装与启动
 
-- `Runtime v2`：Conversation 单活动 Run、持久化 Lane/Branch、Temporary Conversation、全局事件序号、snapshot/SSE 恢复和消息幂等。
-- `Assistant Runtime`：Conversation、Turn、Message、ResponseVariant、上下文构建、SSE 流式事件、停止/重试/重新生成。
-- `Agent Runtime`：Provider-neutral Tool Calling、工具参数校验、循环/调用/超时限制、取消传播、只读工具自动执行、副作用审批。
-- `Memory Runtime`：记忆提案、用户确认写入、跨会话注入、查看/编辑/删除、来源/冲突/过期处理。
-- `Artifact Runtime`：Artifact 提案、版本管理、来源引用、聊天继续修改、Markdown/HTML/PDF 导出、按需工作区。
-- `Task Runtime`：任务提案、用户确认、Worker、Scheduler、暂停/恢复/取消、运行复核、通知、幂等、失败恢复、错过调度补偿和一次性提醒。
+macOS 优先。准备 Python 3.12、uv、rustup 和 Xcode Command Line Tools（`xcode-select --install`）。仓库通过 `rust-toolchain.toml` 固定 Rust `1.98.1`；首次安装需要下载相应工具链及依赖。Web 使用 Node.js 24。
 
-默认 Provider 是 `FakeProvider`，未配置密钥时不会访问外部服务。当前默认工具仍以只读能力为主，不把真实写操作或外部副作用工具作为已开放能力展示。
-
-## 主要接口面
-
-```text
-GET  /health
-
-POST /conversations
-GET  /conversations
-GET  /conversations/{id}
-PATCH /conversations/{id}
-DELETE /conversations/{id}
-POST /conversations/{id}/turns
-GET  /turns/{id}
-GET  /turns/{id}/events
-POST /turns/{id}/cancel
-POST /turns/{id}/retry
-POST /turns/{id}/regenerate
-POST /turns/{id}/response-variants/{variantId}/select
-
-POST   /conversations/{conversationId}/files?filename=notes.md
-DELETE /conversations/{conversationId}/files/{fileId}
-POST   /approvals/{approvalId}
-
-GET  /conversations/{conversationId}/memory-proposals
-POST /memory-proposals/{proposalId}/resolve
-GET  /memories
-PATCH /memories/{memoryId}
-DELETE /memories/{memoryId}
-
-GET  /conversations/{conversationId}/artifact-proposals
-POST /artifact-proposals/{proposalId}/resolve
-GET  /conversations/{conversationId}/workspace
-GET  /artifacts/{artifactId}
-GET  /artifacts/{artifactId}/versions
-POST /artifacts/{artifactId}/rollback
-GET  /artifacts/{artifactId}/export
-
-GET  /conversations/{conversationId}/task-proposals
-POST /task-proposals/{proposalId}/resolve
-GET  /tasks
-GET  /tasks/{taskId}/runs
-POST /tasks/{taskId}/run
-POST /tasks/{taskId}/pause
-POST /tasks/{taskId}/resume
-POST /tasks/{taskId}/cancel
-GET  /reminders
-POST /reminders/{reminderId}/cancel
-GET  /notifications
-POST /notifications/{notificationId}/read
-POST /notifications/read-all
-GET  /proposals/pending
-
-GET  /settings/permissions
-POST /settings/permissions
-```
-
-需要确认的**外部动作/危险工具**（如删除、外壳命令）会产生 `approval.requested` SSE 事件，并暂停当前 Turn。写入已绑定工作区（`write_workspace_file`）自动执行，不触发确认；批准只对本次工具调用生效；参数变化、服务重启、超时或取消都会使原审批失效。
-
-## 本地启动
+在仓库根目录运行 `make install`，或仅安装后端：
 
 ```bash
 cd apps/api
-uv venv .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
-uv run endless-task-api
+uv sync --locked --python 3.12 --extra dev --extra vec
+.venv/bin/python ../../scripts/verify_native.py
+.venv/bin/endless-task-api
 ```
 
-服务只监听 `http://127.0.0.1:8000`。macOS 默认数据文件位于：
+源码安装通过 maturin 构建 PyO3 扩展。`dev` 包含后端测试依赖，`vec` 提供 SQLite 原生向量检索。安装后直接调用 `.venv/bin/` 中的命令，避免再次同步环境时丢失测试所需的 extra。
 
-```text
-~/Library/Application Support/Endless Task/endless-task.db
-```
+原生文件内核依赖 Unix 接口，当前验证以 macOS 为主；Linux 需单独核验，Windows 不在当前支持范围。
 
-Linux 默认使用 `$XDG_DATA_HOME/endless-task/endless-task.db`，未配置时回退到：
+服务仅监听 `http://127.0.0.1:8000`；健康检查为 `GET /health`。前端启动见 [Web README](../web/README.md)。
 
-```text
-~/.local/share/endless-task/endless-task.db
-```
+## 数据与备份
 
-可通过 `ENDLESS_TASK_DATA_DIR` 修改数据目录，或用 `ENDLESS_TASK_DB_PATH` 精确指定数据库文件。
+macOS 默认数据库为 `~/Library/Application Support/Endless Task/endless-task.db`。Linux 使用 `$XDG_DATA_HOME/endless-task/endless-task.db`，未设置时回退到 `~/.local/share/endless-task/endless-task.db`。
 
-查看实际数据位置：
+可通过 `ENDLESS_TASK_DATA_DIR` 修改数据目录，或通过 `ENDLESS_TASK_DB_PATH` 指定数据库文件。从 `apps/api` 运行：
 
 ```bash
-uv run endless-task data-path
+.venv/bin/endless-task data-path
+.venv/bin/endless-task backup
+# 也可指定尚不存在的备份文件
+.venv/bin/endless-task backup /absolute/path/to/backup.db
 ```
 
-创建在线一致性备份：
+默认备份写入数据库旁的 `backups/`，不会覆盖已有文件，并检查 SQLite 完整性。启动会应用随包附带的 schema 迁移；升级现有数据前先备份，评估新版本时宜使用独立数据目录。
+
+恢复必须在 API、Worker 与 Scheduler 全部停止后执行：
 
 ```bash
-uv run endless-task backup
-# 或指定一个尚不存在的目标文件
-uv run endless-task backup /path/to/endless-task-backup.db
+ENDLESS_TASK_DB_PATH=/absolute/path/to/endless-task.db \
+  .venv/bin/endless-task restore /absolute/path/to/backup.db --confirm
 ```
 
-默认备份写入数据库同级的 `backups/` 目录。命令不会覆盖已有文件，并会在发布备份前运行 SQLite 完整性检查。
+恢复会替换当前数据库，不合并备份之后的新数据；命令会为已有目标库创建安全备份。成功结果应包含 `integrity_check=ok` 和 `restored=true`。项目不提供 schema 降级，应用降级需恢复与旧版本兼容的备份。
 
-## Runtime v2 升级与恢复
+## 模型配置
 
-以下命令只适用于应用已经停止、没有 API/Worker/Scheduler 继续写数据库的维护窗口。建议显式设置数据库路径，避免操作到错误环境：
-
-```bash
-cd apps/api
-export ENDLESS_TASK_DB_PATH="/absolute/path/to/endless-task.db"
-uv run endless-task data-path
-```
-
-升级顺序：
+复制 [`.env.example`](.env.example) 为 `.env` 并填写自己的配置。服务读取当前目录的 `.env`，真实环境变量优先；也可通过 `ENDLESS_TASK_ENV_FILE` 指定文件。
 
 ```bash
-# 1. 在一致性临时副本上预演，不修改源库
-uv run endless-task migrate-runtime-v2 --dry-run
-
-# 2. 先创建升级前备份，再应用 schema 和 Runtime v2 数据迁移
-uv run endless-task migrate-runtime-v2 --apply
-
-# 3. 在临时副本上只读审计当前库
-uv run endless-task migrate-runtime-v2 --audit
-
-# 4. 可重复执行；已完成时应返回 already_migrated=true
-uv run endless-task migrate-runtime-v2 --apply
-```
-
-判定规则：
-
-- 当前 Runtime v2 schema 最大迁移为 `045_runtime_v2_promoted_main_lane_repair.sql`；它会修复已记录旧版 `044`、但尚未完成主线 Lane 角色归一化的候选数据库。
-- dry-run 必须返回 `source_unchanged=true`。
-- apply 必须返回 `backup=<path>` 和 `migrated=true`；失败时返回 `migrated=false`、退出码 1，并保留已打印的升级前备份路径。
-- audit 通过时返回 `passed=true`、`pending_migration_conversations=0` 和 `rollback_reconciliation_trees=0`。audit 使用一致性临时副本；即使源库 schema 较旧，也不会先升级源库。
-- 任一步失败都不要启动应用或让旧应用直接连接已升级数据库；先保留命令输出和备份。
-
-恢复顺序：
-
-```bash
-# 应用必须保持停止；命令会先为当前目标库创建 safety_backup
-uv run endless-task restore /absolute/path/to/pre-upgrade-backup.db --confirm
-```
-
-恢复成功必须出现 `integrity_check=ok` 和 `restored=true`。恢复会替换当前数据库，不合并升级后新增数据；`safety_backup=<path>` 保存替换前状态。项目不提供 down migration，Runtime 切换也不会回滚 schema；如需应用版本降级，必须恢复与目标旧版本兼容的升级前备份后再启动该版本。
-
-## Provider 配置
-
-复制示例配置并填写自己的 Key；`.env` 已被 Git 忽略。服务启动时会自动读取当前目录的 `.env`（真实环境变量优先），也可用 `ENDLESS_TASK_ENV_FILE` 指定配置文件路径：
-
-```bash
-cd apps/api
 cp .env.example .env
-# 编辑 .env 中的 DEEPSEEK_API_KEY 或 ENDLESS_TASK_API_KEY
-uv run endless-task-api
+# 编辑 .env 后启动
+.venv/bin/endless-task-api
 ```
 
-DeepSeek 默认配置：
+DeepSeek 示例：
 
 ```text
 ENDLESS_TASK_PROVIDER=deepseek
 ENDLESS_TASK_BASE_URL=https://api.deepseek.com
 ENDLESS_TASK_MODEL=deepseek-chat
+DEEPSEEK_API_KEY=自己的密钥
 ```
 
-OpenAI-compatible 服务配置：
+OpenAI-compatible 示例：
 
 ```text
 ENDLESS_TASK_PROVIDER=openai-compatible
 ENDLESS_TASK_BASE_URL=https://example.com/v1
 ENDLESS_TASK_MODEL=example-model
-ENDLESS_TASK_API_KEY=...
+ENDLESS_TASK_API_KEY=自己的密钥
 ```
 
-密钥只从进程环境读取，不进入浏览器、SQLite、API 响应或应用日志。
+密钥只供后端使用，不能放入前端环境变量或提交仓库。配置真实模型后，模型请求会发送本轮上下文和工具读取的内容到所选服务。
 
-## 关键运行参数
+## 能力与边界
 
-```text
-ENDLESS_TASK_CONTEXT_WINDOW_TOKENS=32768
-ENDLESS_TASK_MAX_OUTPUT_TOKENS=2048
-ENDLESS_TASK_SUMMARY_TOKEN_LIMIT=1024
-ENDLESS_TASK_SYSTEM_PROMPT_VERSION=p1-v1
-ENDLESS_TASK_MAX_CONCURRENT_MODEL_CALLS=2
-ENDLESS_TASK_MAX_TASK_RUNS=1
-ENDLESS_TASK_MAX_MESSAGE_CHARACTERS=100000
-ENDLESS_TASK_MAX_TOOL_CALLS_PER_TURN=8
-ENDLESS_TASK_MAX_CONCURRENT_TOOL_CALLS=4
-ENDLESS_TASK_MAX_TOOL_ARGUMENT_BYTES=65536
-ENDLESS_TASK_MAX_TOTAL_TOOL_ARGUMENT_BYTES=262144
-ENDLESS_TASK_MAX_TOOL_ARGUMENT_DEPTH=32
-ENDLESS_TASK_MAX_TOOL_ARGUMENT_NODES=10000
-ENDLESS_TASK_AGENT_TIMEOUT_SECONDS=120
-ENDLESS_TASK_APPROVAL_TIMEOUT_SECONDS=1800
-ENDLESS_TASK_MAX_FILE_BYTES=1000000
-ENDLESS_TASK_MAX_FILES_PER_CONVERSATION=10
-ENDLESS_TASK_MEMORY_PROPOSALS=1
-ENDLESS_TASK_ARTIFACT_PROPOSALS=1
-ENDLESS_TASK_TASK_PROPOSALS=1
-ENDLESS_TASK_SCHEDULER=1
-ENDLESS_TASK_SCHEDULER_TICK=30
-ENDLESS_TASK_RUN_REVIEW=1
-ENDLESS_TASK_NOTIFICATIONS=1
-ENDLESS_TASK_TASK_MAX_ATTEMPTS=3
-ENDLESS_TASK_TASK_RETRY_BACKOFF=60
-```
+- **Runtime v2**：Conversation / Lane、临时对话、持久分支、流式事件、幂等提交、检查点、取消与恢复。数据库约束限制每个 Lane 只有一个活动运行。
+- **预算与续跑**：支持交互、任务与长跑预算档。只有预算硬停后 `completed`、最后的等待用户事件标记 `willStop=true`、工具结果均可确认、同一 Lane 没有其他活动运行时，才允许原地续跑同一条 run。普通完成、失败和取消不适用；崩溃恢复走独立路径。
+- **文件与检索**：交互式 Agent 的 7 类文件工具接入 Rust 句柄路径；PyO3 扩展缺失或 ABI 不匹配时明确失败。工作区检索使用 Rust，当前仍为同步调用。网页保存、未值守执行等入口有各自实现，不能视为全部文件操作都已原生化。
+- **记忆、成果与知识**：记忆提案及管理、成果版本与导出、知识源与混合检索。语义检索默认关闭，启用本地嵌入时首次需要下载模型。
+- **任务与提醒**：提案确认、手工创建与编辑、调度、运行复核、通知、暂停 / 恢复 / 取消。
+- **子运行委派**：后台运行、结果回传、并发与预算限制，支持只读与受配置控制的隔离写模式；隔离工作目录不等于完整 OS 隔离。
+- **Skill / MCP**：Skill 管理、MCP 服务器配置与重载、工具白名单及审批。
 
-Runtime 会先为输出预留预算，再保留系统提示和当前消息，最后纳入本地摘要、记忆和最近的完整 Turn。当前消息不会被静默截断；无法安全放入上下文时返回 `context_too_large`。
+只读工具可自动执行，绑定工作区内的文件写入按工具策略执行；删除、shell 等危险或外部动作需审批。审批只对相应调用与参数生效。shell 默认本机执行；Seatbelt / container 沙箱需显式配置并通过实际能力检查，不可用时拒绝启用。文件内核不能替代 OS 沙箱。
 
-## 评估层（离线自动化评估）
+运行预算、工具超时、嵌入和沙箱选项见 [`.env.example`](.env.example)。本项目仅支持本机单用户使用，不能将 API 通过 `0.0.0.0`、端口转发或反向代理暴露到局域网 / 公网。
 
-`endless-task eval` 对已录制的 v2 Run 做只读、可回归的批量打分（不进入聊天热路径，不触发工具，不改 runtime 数据）。默认筛选用过工具的 `completed` Run；`eval diff` 可检测质量回退并作为 CI 门禁（blocker 指标回退超容差时返回非零退出码）。
+## 接口与源码入口
+
+运行后通过 `http://127.0.0.1:8000/docs` 查看当前 OpenAPI；路由位于 `src/endless_task/api/routes/`。主要接口包括聊天与文件、Runtime v2 / SSE、分支、任务提醒、记忆成果、工作区、Provider、Skill 和 MCP。
+
+| 关注点 | 入口 |
+|---|---|
+| 执行、恢复与预算 | `src/endless_task/runtime_v2/` |
+| 子运行 | `src/endless_task/delegation/` |
+| 文件 / shell 工具 | `src/endless_task/workspace_runtime/` |
+| Rust 与 Python 绑定 | `crates/`、`src/endless_task/_native/` |
+| 持久化与迁移 | `src/endless_task/storage/` |
+| 离线评测 | `src/endless_task/eval/` |
+
+设计要点见[根 README 的关键设计决策](../../README.md#关键设计决策)。
+
+## 测试
+
+仓库根目录的 `make test` 执行 Rust、原生扩展检查、后端测试和前端单测。仅运行后端相关检查时，从 `apps/api` 执行：
 
 ```bash
-cd apps/api
-uv run endless-task eval run --require-tools          # 跑一轮确定性评估并持久化为批次
-uv run endless-task eval report --batch BATCH          # 人类可读报告
-uv run endless-task eval export --batch BATCH --format jsonl
-uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
-uv run endless-task eval batches                       # 列出已有批次
+.venv/bin/python ../../scripts/verify_native.py
+PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --workspace --locked
+TZ=Asia/Shanghai .venv/bin/python -m unittest discover -s tests
 ```
 
-确定性指标：`completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency`（tokens/轮数/工具数/耗时）、`loop_detected`。设计要点见仓库根 README 的「关键设计决策」一节，实现位于 `src/endless_task/eval/`。
+必须先确认原生扩展加载与 ABI 检查成功；不能把原生安全用例因缺少扩展而跳过当作验证通过。测试数量和跳过原因以实际输出为准，人工产品验收与发布验收另行进行。
 
-## 运行测试
+## 离线评测
 
-当前开发基线：`uv run python -m unittest discover -s tests`，1 979 用例通过（32 跳过）。测试日志仍可能出现临时数据库关闭后的已知异步清理错误；最终 unittest 结果不受影响，但该生命周期问题仍是发布前治理项。
+对已录制的 v2 Run 计算确定性指标，不调用模型或工具；`eval run` 会持久化评测批次。从 `apps/api` 运行：
 
 ```bash
-cd apps/api
-uv run python -m unittest discover -s tests
+.venv/bin/endless-task eval run --require-tools
+.venv/bin/endless-task eval report --batch BATCH
+.venv/bin/endless-task eval export --batch BATCH --format jsonl
+.venv/bin/endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
+.venv/bin/endless-task eval batches
 ```
 
-在受限 macOS 环境中，可以额外设置 `PYTHONPYCACHEPREFIX` 指向临时目录。
-
-重点测试文件：
-
-- `tests/test_p0_release_gate.py`
-- `tests/test_p1_release_gate.py`
-- `tests/test_memory_*.py`
-- `tests/test_artifact_*.py`
-- `tests/test_task_*.py`
-- `tests/test_eval.py`
+指标包括 `completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency` 和 `loop_detected`。`eval diff` 可用非零退出码阻止回退，当前仓库 CI 尚未自动接入该门禁。

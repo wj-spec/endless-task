@@ -216,6 +216,17 @@ class E2EProvider:
             )
             return
 
+        if "[e2e:resume]" in user_content:
+            # E3/B：硬停 run 被「继续（接上这条运行）」原地复活后的那一次执行。
+            # 回复与硬停前那条**不同**，前端才能证明"同一条 run 真的接着跑了"。
+            yield ProviderTextDelta("（复活后接着跑）E2E 续跑回复")
+            yield ProviderCompleted(
+                finish_reason="stop",
+                input_tokens=9,
+                output_tokens=5,
+            )
+            return
+
         yield ProviderTextDelta("E2E 确定性回复")
 
         if "[e2e:fail]" in user_content:
@@ -455,6 +466,150 @@ async def fixture_failed_auto_restored_run(
         },
     )
     return {"runId": run.id}
+
+
+@app.post("/__e2e/fixtures/hard-stopped-run", status_code=200)
+async def fixture_hard_stopped_run(body: dict) -> dict:
+    """③ fixture：为一条会话制造**预算硬停**后的真形态（仅 E2E）。
+
+    E3/B 的"同一条 run 接着跑"要能被用户看见，前提是库里先有一条
+    ``COMPLETED + run_awaiting_user(willStop=true)`` 的 run——生产里它由
+    `_finalize_time_budget`（时间到墙）落下，而 AppSettings 的时间墙是**全局**的
+    （调小会波及别的 spec）。⇒ 这里按生产顺序把那一格如实造出来：
+
+    ``start_run`` → 一轮**已完成**的模型轮（含工具调用/结果 + 逐轮助手文本）→
+    ``run_budget_declared`` → ``run_awaiting_user(willStop=true)`` →
+    ``finalize_run(COMPLETED, finish_reason="time_budget_stop")``。
+
+    触发文案里带 `[e2e:resume]`，于是**复活后的那次执行**命中的是专用分支
+    （回复与硬停前不同）。
+    """
+    from endless_task.runtime_v2 import (
+        Actor,
+        ModelTurnStatus,
+        RunStatus,
+        ToolExecutionStatus,
+        TranscriptEntryType,
+    )
+    from endless_task.runtime_v2.escalation import (
+        TIME_REASON,
+        EscalationBudget,
+        EscalationProgress,
+        build_escalation_report,
+    )
+
+    conversation_id = str(body.get("conversationId", "")).strip()
+    container = app.state.container
+    repo = container.runtime_v2_repository
+    conversation = container.chat_repository.get_conversation(conversation_id)
+    lanes = repo.list_lanes(conversation.id)
+    lane = next(
+        (
+            item
+            for item in lanes
+            if getattr(item, "kind", None) is not None and item.kind.value == "main"
+        ),
+        lanes[0] if lanes else repo.create_lane(conversation_id=conversation.id),
+    )
+    trigger = repo.append_entry(
+        conversation_id=conversation.id,
+        lane_id=lane.id,
+        type=TranscriptEntryType.USER_MESSAGE,
+        actor=Actor.USER,
+        payload={"content": "[e2e:resume] 读取 e2e-note.md 并给出阶段结论"},
+        context_policy={"include_in_llm": True, "transform": "full"},
+    )
+    run = repo.create_run(
+        conversation_id=conversation.id,
+        lane_id=lane.id,
+        trigger_entry_id=trigger.id,
+        is_active_variant=True,
+    )
+    repo.start_run(run.id)
+    turn = repo.start_model_turn(
+        run_id=run.id,
+        provider="e2e",
+        model="e2e-model",
+    )
+    record, _call_entry = repo.record_tool_call(
+        model_turn_id=turn.id,
+        call_id="e2e_hard_stop_call_1",
+        tool_name="read_workspace_file",
+        arguments={"path": "e2e-note.md"},
+    )
+    repo.record_tool_result(
+        record.id,
+        status=ToolExecutionStatus.COMPLETED,
+        content="工作区文件的阶段性内容。",
+        event_type="tool_execution_completed",
+    )
+    repo.append_runtime_event(
+        run_id=run.id,
+        model_turn_id=turn.id,
+        event_type="model_text_delta",
+        payload={"delta": "我先读取工作区文件。"},
+    )
+    repo.transition_model_turn_status(
+        turn.id,
+        ModelTurnStatus.COMPLETED,
+        event_type="model_turn_completed",
+        input_tokens=12,
+        output_tokens=5,
+    )
+    repo.append_runtime_event(
+        run_id=run.id,
+        event_type="run_budget_declared",
+        payload={
+            "softSeconds": 180.0,
+            "hardSeconds": 900.0,
+            "perTurnSeconds": 120.0,
+            "costCapUsd": 0.0,
+            "stopOnCost": False,
+        },
+    )
+    repo.append_runtime_event(
+        run_id=run.id,
+        event_type="run_awaiting_user",
+        payload=build_escalation_report(
+            reason=TIME_REASON,
+            progress=EscalationProgress(
+                model_turns=1,
+                tool_calls=1,
+                produced_characters=11,
+                input_tokens=12,
+                output_tokens=5,
+                elapsed_seconds=900.0,
+            ),
+            budget=EscalationBudget(
+                used_tokens=17,
+                limit_tokens=None,
+                used_seconds=900.0,
+                limit_seconds=900.0,
+            ),
+            will_stop=True,
+        ).as_json(),
+    )
+    final_run, _assistant_entry = repo.finalize_run(
+        run.id,
+        content="我先读取工作区文件。\n\n[时间到墙，已安全停止]",
+        finish_reason="time_budget_stop",
+        input_tokens=12,
+        output_tokens=5,
+    )
+    assert final_run.status is RunStatus.COMPLETED
+    # 会话指针指向这条 lane/run：快照（前端横幅）走的就是指针那条路径。
+    repo.set_conversation_pointer(
+        conversation_id=conversation.id,
+        active_lane_id=lane.id,
+        active_run_id=run.id,
+        active_run_variant_id=run.id,
+    )
+    return {
+        "conversationId": conversation.id,
+        "laneId": lane.id,
+        "runId": run.id,
+        "triggerEntryId": trigger.id,
+    }
 
 
 @app.post("/__e2e/proposals", status_code=201)

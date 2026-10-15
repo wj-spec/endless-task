@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..path_safety import resolve_external_read_path
+from .common import kernel_read_external
 from dataclasses import replace
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.tooling import ToolActivityCopy, ToolApprovalMode, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolResult
@@ -99,12 +100,13 @@ class ReadSkillFileTool:
         token.raise_if_cancelled()
         name = call.optional_argument("name", str, None)
         locator = call.optional_argument("locator", str, None)
+        # 三个分支都拿 roots：内核读要「根 + 相对路径」，本工具读的是只读根列表。
+        roots = self._skill_root_provider(call.conversation_id)
         if name is not None:
             canonical = self._resolve_name(name, call)
         elif locator is not None:
             canonical = self._resolve_locator(locator, call)
         else:
-            roots = self._skill_root_provider(call.conversation_id)
             resolved = resolve_external_read_path(
                 roots, call.require_argument("path", str)
             )
@@ -113,7 +115,12 @@ class ReadSkillFileTool:
             raise ToolError("path_not_found", f"技能文件不存在。", retryable=False)
         if not canonical.is_file():
             raise ToolError("path_is_directory", "路径指向目录。", retryable=False)
-        raw = canonical.read_bytes()
+        # 读走句柄（逐段 O_NOFOLLOW）：先定位属于哪个只读根，再按根内相对路径读。
+        # 原来那行 canonical.read_bytes() 是「先校验路径、再按路径读」，
+        # 校验之后把中间目录换成 symlink 就能读到只读根之外。
+        raw = kernel_read_external(
+            roots, canonical, self._max_file_bytes, "技能文件"
+        )
         if len(raw) > self._max_file_bytes:
             raise ToolError(
                 "file_too_large",

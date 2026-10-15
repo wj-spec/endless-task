@@ -10,7 +10,6 @@ from endless_task.domain.models import (
     TaskProposal,
     TaskProposalStatus,
     TaskRecord,
-    TaskStatus,
 )
 from endless_task.domain.repositories import (
     InvalidStateError,
@@ -27,8 +26,8 @@ from endless_task.domain.task_schedule import (
 
 from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
-from .sqlite_task_repository import task_record_from_row
-from .sqlite_reminder_repository import reminder_from_row
+from .sqlite_task_repository import insert_task_row, task_record_from_row
+from .sqlite_reminder_repository import insert_reminder_row, reminder_from_row
 
 Clock = Callable[[], str]
 
@@ -228,26 +227,20 @@ class SqliteTaskProposalRepository:
                 raise InvalidStateError(
                     "Reminder proposals must be accepted as reminders."
                 )
-            connection.execute(
-                """
-                INSERT INTO tasks (
-                    id, title, commitment, schedule, status,
-                    source_conversation_id, source_turn_id, source_proposal_id,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id,
-                    proposal.title,
-                    proposal.commitment,
-                    row["schedule"],
-                    TaskStatus.ACTIVE.value,
-                    proposal.conversation_id,
-                    proposal.turn_id,
-                    proposal.id,
-                    now,
-                    now,
-                ),
+            insert_task_row(
+                connection,
+                task_id=task_id,
+                title=proposal.title,
+                commitment=proposal.commitment,
+                # 复用提案行里**已存的 schedule 字节**：提案创建时就是用
+                # `serialize_schedule_intent` 写的，跟 `create_task` 的
+                # `serialize_task_schedule` 同形，所以手工任务与提案任务在
+                # 这一列上逐字节相同。
+                schedule_json=row["schedule"],
+                source_conversation_id=proposal.conversation_id,
+                source_turn_id=proposal.turn_id,
+                source_proposal_id=proposal.id,
+                now=now,
             )
             connection.execute(
                 """
@@ -287,26 +280,20 @@ class SqliteTaskProposalRepository:
                 raise InvalidStateError(
                     "Only reminder proposals can be accepted as reminders."
                 )
-            connection.execute(
-                """
-                INSERT INTO reminders (
-                    id, title, commitment, due_at, status,
-                    source_conversation_id, source_turn_id,
-                    source_proposal_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    reminder_id,
-                    proposal.title,
-                    proposal.commitment,
-                    reminder_due_to_utc_iso(proposal.schedule),
-                    "pending",
-                    proposal.conversation_id,
-                    proposal.turn_id,
-                    proposal.id,
-                    now,
-                    now,
-                ),
+            # 批次 D R-D4：建提醒与"标记提案 accepted"共用**同一个** connection，
+            # 因此仍在同一个事务里——崩溃窗口不会留下"提醒已建、提案仍 pending"
+            # （那会让用户再点一次接受时建出第二条提醒）。行形状由
+            # `insert_reminder_row` 单点裁决，与 `POST /reminders` 逐列同形。
+            insert_reminder_row(
+                connection,
+                reminder_id=reminder_id,
+                title=proposal.title,
+                commitment=proposal.commitment,
+                due_at=reminder_due_to_utc_iso(proposal.schedule),
+                source_conversation_id=proposal.conversation_id,
+                source_turn_id=proposal.turn_id,
+                source_proposal_id=proposal.id,
+                now=now,
             )
             connection.execute(
                 """

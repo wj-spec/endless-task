@@ -14,8 +14,11 @@ from .skill_requests import resolve_skill_requests
 from datetime import timedelta
 from endless_task.artifacts import ArtifactProposalService, SourceReferenceResolver
 from endless_task.artifacts.read_tool import ReadArtifactTool
-from endless_task.delegation import CancelAgentLegacyTool, CoordinatorDelegationHandler, QueryAgentLegacyTool, SpawnAgentLegacyTool
-from endless_task.domain.models import ConversationKind, KnowledgeScope, MemoryKind
+from endless_task.delegation import CancelAgentTool, CoordinatorDelegationHandler, ListAgentsTool, QueryAgentTool, SpawnAgentTool, SteerAgentTool, V2DelegationToolAsRegistered
+from endless_task.delegation.child_context import render_delegated_children_block
+from endless_task.delegation.scheduler import ChildBatchLimits
+from endless_task.delegation.wakeup import ChildWakeupService
+from endless_task.domain.models import ConversationKind, ConversationStatus, KnowledgeScope, MemoryKind, NotificationKind
 from endless_task.domain.repositories import NotFoundError
 from endless_task.execution_env.ledger import FileMutationLedger
 from endless_task.files.read_tool import ReadTextFileTool
@@ -35,12 +38,15 @@ from endless_task.runtime_v2.compaction import RuntimeV2ContextCompactionService
 from endless_task.runtime_v2.memory_quality import RuntimeV2MemoryQualityService
 from endless_task.runtime_v2.metrics import RuntimeV2MetricsCollector
 from endless_task.runtime_v2.plan_tool import UpdatePlanTool
+from endless_task.runtime_v2.run_budget import child_run_budget
 from endless_task.runtime_v2.run_checkpoint import RunCheckpointCoordinator
 from endless_task.runtime_v2.run_trajectory import FanoutTraceObserver, RunTrajectoryExporter, default_journal_reader
 from endless_task.runtime_v2.trace_observer import LedgerTraceObserver, default_run_reader, default_usage_exists
 from endless_task.skills import Skill, SkillService, build_available_skills_prompt
 from endless_task.storage import Database, GENERAL_SCOPE_KEY, SqliteArtifactProposalRepository, SqliteArtifactRepository, SqliteChatRepository, SqliteHubEventRepository, SqliteKnowledgeProposalRepository, SqliteKnowledgeRepository, SqliteMemoryConsolidationRepository, SqliteMemoryProposalRepository, SqliteMemoryReflectionRepository, SqliteMemoryRepository, SqliteNotificationRepository, SqlitePreferencesRepository, SqliteReminderRepository, SqliteResponseFeedbackRepository, SqliteRetrievalEventRepository, SqliteRuntimeV2MemoryRepository, SqliteRuntimeV2Repository, SqliteTaskProposalRepository, SqliteTaskRepository, SqliteTaskRunRepository, SqliteTextFileRepository, SqliteUndoJournalRepository, SqliteUserProfileRepository, SqliteVecSearch, SqliteWorkspaceRepository
 from endless_task.storage.provider_secret_store import ProviderSecretStore
+from endless_task.storage.sqlite_chat_repository import utc_now
+from endless_task.storage.sqlite_delegation_child_run_repository import SqliteDelegationChildRunRepository
 from endless_task.storage.sqlite_mcp_server_repository import SqliteMcpServerRepository
 from endless_task.storage.sqlite_provider_profile_repository import SqliteProviderProfileRepository
 from endless_task.storage.sqlite_skill_override_repository import SqliteSkillOverrideRepository
@@ -56,6 +62,7 @@ from endless_task.workspace_runtime.terminal import TerminalService
 from endless_task.workspace_runtime.terminal_tools import build_terminal_tools
 from endless_task.workspace_runtime.visibility import workspace_tool_filter
 import asyncio
+import hashlib
 import os
 from typing import Callable
 
@@ -138,6 +145,7 @@ def _build_container(
         settings.database_path.parent / "provider-secrets.json"
     )
     mcp_server_repository = SqliteMcpServerRepository(database)
+    delegation_child_run_repository = SqliteDelegationChildRunRepository(database)
     artifact_proposal_repository = SqliteArtifactProposalRepository(database)
     task_repository = SqliteTaskRepository(database)
     task_proposal_repository = SqliteTaskProposalRepository(database)
@@ -233,7 +241,7 @@ def _build_container(
                     1 if settings.provider_retry_mode == "1" else 0
                 ),
                 max_total_retry_delay=30.0,
-                deadline_seconds=min(30.0, settings.agent_timeout_seconds or 30.0),
+                deadline_seconds=min(30.0, settings.interactive_budget.hard_seconds or 30.0),
             )
         )
     # M3B run-level (方案 A): shared per-run workspace checkpoint
@@ -423,6 +431,11 @@ def _build_container(
         def allows(tool_name: str) -> bool:
             if workspace_filter is not None and not workspace_filter(tool_name):
                 return False
+            # F2（ADR 的 I1）①：任务/提醒**未值守运行**的模型面尊重 per-server
+            # `allow_unattended`。默认配置下未值守执行器拿的是裸 registry，所以这层
+            # 过滤器（连同注册层过滤）才是两种配置下都成立的边界。
+            if not mcp_manager.allows_unattended(tool_name):
+                return False
             return (
                 selected_tool_registry.resolve(tool_name).definition.approval_mode
                 is ToolApprovalMode.AUTO
@@ -445,8 +458,13 @@ def _build_container(
         filter. ``exclude_tools`` hides named tools from the projected
         surface (delegation children never see the delegation tools
         themselves — depth = 1 gate). Execution still resolves tools by
-        name through the legacy registry, so only the model surface
-        switches.
+        name through the legacy registry, but the five delegation entries
+        registered there are thin shims over the native v2 tool objects
+        (``V2DelegationToolAsRegistered`` wrapping ``delegation/agent_tools``),
+        so the executed object and the model surface share one source of
+        definition, validation and behaviour — execution and surface are
+        one (slice 9 batch 4; the earlier "only the model surface
+        switches" wording described the pre-switch state).
         """
 
         def provider(conversation_id: str):
@@ -630,7 +648,14 @@ def _build_container(
         context_window_tokens=settings.context_window_tokens,
         compaction_hook=runtime_v2_compaction_hook,
         metrics_collector=runtime_v2_metrics_collector,
-        agent_timeout_seconds=settings.agent_timeout_seconds,
+        # 交互式档预算：网关在每运行构造执行器时下发给它（`gateway_impl/runs.py`
+        # 把 `self._run_budget` 交给每个交互 run 的执行器）。
+        # 切片 10 T1 Step 4：档位由设置 `ENDLESS_TASK_RUN_BUDGET_PROFILE` 选
+        # （默认 `interactive` = 今天的行为；选 `long` 时 `ENDLESS_TASK_LONG_*`
+        # 才真正生效——在此之前 `resolve_run_budget("long")` 全仓**没有调用方**）。
+        # 作用域只有交互 run：任务 run 在下面照旧取 "task"（CE-5），子运行走
+        # `child_run_budget`。
+        run_budget=settings.resolve_run_budget(settings.run_budget_profile),
         approval_timeout_seconds=settings.approval_timeout_seconds,
         tool_execution_limits=tool_execution_limits,
         trace_observer=runtime_v2_trace_observer,
@@ -647,7 +672,6 @@ def _build_container(
         verifier_mode=settings.verifier_mode,
         verifier_model=settings.verifier_model,
         user_profile_provider=_user_profile_provider,
-        cost_cap_usd=settings.cost_cap_usd,
     )
     # Task/reminder runs have no interactive approval channel. Required tools
     # are hidden from the model and denied if a provider still emits one.
@@ -662,6 +686,10 @@ def _build_container(
         max_output_tokens=settings.max_output_tokens,
         temperature=None,
         approval_gate=UnattendedToolApprovalGate(),
+        # 故意在容器构造期构造：3.10+ 的 asyncio 原语直到首次抢不到名额、需要等待时才
+        # 绑定 loop，所以构造期没有 loop 并不会绑错（3.14 实测：无争用时 _loop 始终为
+        # None）。前提是本进程只有一个 loop；将来若一个容器被两个 loop 争用，第二个
+        # loop 会抛 "bound to a different event loop"，届时再按 loop 惰性创建名额。
         provider_slot=(
             asyncio.Semaphore(settings.max_concurrent_model_calls)
             if settings.max_concurrent_model_calls
@@ -678,7 +706,8 @@ def _build_container(
         context_engine_v2_enabled=settings.context_engine_v2_enabled,
         context_window_tokens=settings.context_window_tokens,
         metrics=runtime_v2_metrics_collector,
-        agent_timeout_seconds=settings.agent_timeout_seconds,
+        # 任务/提醒：无人值守档，给更长的墙与按类成本上限。
+        run_budget=settings.resolve_run_budget("task"),
         tool_execution_limits=tool_execution_limits,
         trace_observer=runtime_v2_trace_observer,
         span_recorder=runtime_v2_span_recorder,
@@ -688,7 +717,6 @@ def _build_container(
         verifier_mode=settings.verifier_mode,
         verifier_model=settings.verifier_model,
         user_profile_provider=_user_profile_provider,
-        cost_cap_usd=settings.cost_cap_usd,
         provider_retry_observer=(
             # Task/reminder runs are one-shot; the process-level metrics
             # summary aggregates retry decisions (not per-run), so the
@@ -699,8 +727,8 @@ def _build_container(
         ),
     )
     if settings.delegation_mode != "0":
-        # M4A read-only delegation (DR-2): register the three delegation
-        # tools and wire their handler to the production kernel adapter.
+        # M4A read-only delegation (DR-2): register the delegation tools and
+        # wire their handler to the production kernel adapter.
         # Children execute through RuntimeV2AgentKernel against the same
         # repository; child conversations are delegation-tagged so product
         # enumeration hides them (06 2.4). Spawn idempotency keys on the
@@ -709,14 +737,26 @@ def _build_container(
             capability_grant_for_workspace_binding as _delegation_grant,
         )
 
+        # 子运行永远看不到这一整族（深度 = 1 的门）：它同时喂给
+        # `exclude_tools` 与 `_delegation_child_tool_filter`。
         delegation_tool_names = frozenset(
-            {"spawn_agent", "query_agent", "cancel_agent"}
+            {
+                "spawn_agent",
+                "query_agent",
+                "cancel_agent",
+                "list_agents",
+                "steer_agent",
+            }
         )
 
         # One shared provider slot for ALL children of the process (same
         # global concurrency cap the gateway applies to parent runs); every
         # child executor receives it, so N parallel children cannot each
         # spin an unbounded provider fan-out.
+        # 故意在容器构造期构造：3.10+ 的 asyncio 原语直到首次抢不到名额、需要等待时才
+        # 绑定 loop，所以构造期没有 loop 并不会绑错（3.14 实测：无争用时 _loop 始终为
+        # None）。前提是本进程只有一个 loop；将来若一个容器被两个 loop 争用，第二个
+        # loop 会抛 "bound to a different event loop"，届时再按 loop 惰性创建名额。
         delegation_provider_slot = (
             asyncio.Semaphore(settings.max_concurrent_model_calls)
             if settings.max_concurrent_model_calls
@@ -740,7 +780,7 @@ def _build_container(
                 child_run_id, workspace_id=workspace_id
             )
 
-        def _delegation_executor_builder():
+        def _delegation_executor_builder(command):
             return AgentRunExecutor(
                 repository=runtime_v2_repository,
                 provider=selected_provider,
@@ -766,7 +806,18 @@ def _build_container(
                 context_engine_v2_enabled=settings.context_engine_v2_enabled,
                 context_window_tokens=settings.context_window_tokens,
                 metrics=runtime_v2_metrics_collector,
-                agent_timeout_seconds=settings.agent_timeout_seconds,
+                # 子运行的墙来自模型声明的 SpawnSpec.timeout_seconds（协调器已把它
+                # 写成 RunCommand.deadline_monotonic）。这里用"还剩多少"而不是原始
+                # 秒数：排队/建会话花掉的时间也要算在墙里。M3-1 再加一道设置的上限
+                # ——timeoutSeconds 收得到 86400，不钳制就能占名额一整天。
+                # M3-3：成本上限同路进预算（设置默认 3.0）。派生预算自带
+                # stop_on_cost=True，所以子运行的成本到顶是**优雅停止**；父档
+                # （interactive/task/long）照旧"只提请、继续跑"。
+                run_budget=child_run_budget(
+                    command.deadline_monotonic,
+                    max_hard_seconds=settings.max_child_hard_seconds,
+                    cost_cap_usd=settings.max_child_cost_usd,
+                ),
                 tool_execution_limits=tool_execution_limits,
                 trace_observer=runtime_v2_trace_observer,
                 span_recorder=runtime_v2_span_recorder,
@@ -776,7 +827,6 @@ def _build_container(
                 verifier_mode=settings.verifier_mode,
                 verifier_model=settings.verifier_model,
                 user_profile_provider=_user_profile_provider,
-                cost_cap_usd=settings.cost_cap_usd,
                 provider_retry_observer=(
                     # Child run ids are assigned by the coordinator after the
                     # executor is built; the metrics summary is aggregate,
@@ -798,6 +848,11 @@ def _build_container(
                 if tool_name in delegation_tool_names:
                     return False
                 if workspace_filter is not None and not workspace_filter(tool_name):
+                    return False
+                # F2（ADR 的 I1）②：委派子运行同属"未值守"，必须同样尊重
+                # per-server `allow_unattended`——否则用户会遇到"我在定时任务里开了，
+                # 为什么子代理说没有这个工具"。
+                if not mcp_manager.allows_unattended(tool_name):
                     return False
                 return (
                     selected_tool_registry.resolve(tool_name)
@@ -838,18 +893,104 @@ def _build_container(
                 child_run_id=child_run_id,
             )
 
+        async def _send_child_wakeup(
+            conversation_id: str, text: str, key: str
+        ) -> None:
+            """唤醒投递走网关唯一的公共入口（校验会话 → 建提交 → 起一轮）。
+
+            不自己拼 submission + executor：网关的 `send` 是唯一"投消息并起一轮"
+            的公共面，且会把运行注册进 `_active_runs`（活跃运行闸门才拦得住重复）。
+            """
+            await runtime_v2_gateway.send(
+                conversation_id, text, client_request_id=key
+            )
+
+        def _notify_child_wakeup(conversation_id: str, text: str) -> None:
+            """投递被拒时的收件箱降级（只通知，不重试）。
+
+            通知表按 `run_id` 幂等（UNIQUE + INSERT OR IGNORE），而唤醒回调只拿
+            到 `(会话, 正文)`，所以幂等键取"会话 + 正文"的内容摘要：同一批内容重复
+            到达只留一条（例如关停竞态），不同批次内容不同则各留一条。`task_id`
+            是通用主题 id（提醒路径传的就是 reminder.id），这里记父会话。
+            """
+            digest = hashlib.sha256(
+                f"{conversation_id}\n{text}".encode("utf-8")
+            ).hexdigest()[:32]
+            notification_repository.record(
+                kind=NotificationKind.RUN_AWAITING,
+                task_id=conversation_id,
+                run_id=f"childwakeup:{digest}",
+                conversation_id=conversation_id,
+                title="子代理结果待查看",
+                body=text,
+                turn_id=None,
+            )
+
+        def _conversation_is_active(conversation_id: str) -> bool:
+            """父会话是否还活跃（归档就不再给它起轮）。
+
+            v2 发送路径只挡归档 *lane*、不挡归档 *会话*，所以这道闸只能自己做。
+            会话不存在时让 `NotFoundError` 冒泡：唤醒服务据此"只记日志、不通知"，
+            与 `send` 抛 `NotFoundError` 是同一条语义（通知指向不存在的会话无意义）。
+            """
+            conversation = chat_repository.get_conversation(conversation_id)
+            return conversation.status is not ConversationStatus.ARCHIVED
+
+        child_wakeup_service = ChildWakeupService(
+            store=delegation_child_run_repository,
+            send=_send_child_wakeup,
+            notify=_notify_child_wakeup,
+            conversation_is_active=_conversation_is_active,
+            enabled=settings.child_wakeup_enabled,
+            merge_window_seconds=settings.child_wakeup_merge_window_seconds,
+            max_inflight_conversations=(
+                settings.child_wakeup_max_inflight_conversations
+            ),
+            # M3-9：每会话投递节流。服务层默认 0（不节流），生产默认 60 秒由这里
+            # 真正传进去——漏传不会报错，只会让节流静默失效。
+            throttle_seconds=settings.child_wakeup_throttle_seconds,
+        )
         delegation_handler = CoordinatorDelegationHandler(
             kernel_provider=_delegation_kernel_provider,
             capability_provider=_delegation_capability_provider,
             isolated_write_enabled=(settings.delegation_mode == "isolated_write"),
             isolated_workspace_provider=_delegation_isolated_workspace_provider,
+            child_run_store=delegation_child_run_repository,
+            child_wakeup=child_wakeup_service,
+            # 切片 10 T1 Step 3：模型在 spawn_agent 里不写 `timeoutSeconds` 时的
+            # 子运行默认墙。过去这里不传 = handler 的构造默认 120 秒（第二处
+            # 120 秒墙，装配根无从调整）；现在跟随设置，仍受 `max_child_hard_seconds`
+            # 在派生预算那一步封顶。
+            default_timeout_seconds=settings.child_default_timeout_seconds,
+            # M3 Task 7：在册绝对上限来自设置；其余两个容量位保持 06 §5.6 默认。
+            batch_limits=ChildBatchLimits(
+                max_queued_children=settings.max_queued_children
+            ),
         )
-        selected_tool_registry.register(SpawnAgentLegacyTool(delegation_handler))
-        selected_tool_registry.register(QueryAgentLegacyTool(delegation_handler))
-        selected_tool_registry.register(CancelAgentLegacyTool(delegation_handler))
+        # 切片 9 第四批：委派五件注册的是**薄 shim**，内层是 delegation/agent_tools.py
+        # 的**原生 v2 类**——被执行的对象从此是 v2 家族（定义/校验/行为的唯一源）。
+        # 注册形状仍是 v1 `RegisteredTool`（definition 投影成 **v1 枚举**），
+        # 所以 catalog 装配、两个过滤器、能力提供者、审批闸门、副作用证据全部照旧。
+        selected_tool_registry.register(
+            V2DelegationToolAsRegistered(SpawnAgentTool(handler=delegation_handler))
+        )
+        selected_tool_registry.register(
+            V2DelegationToolAsRegistered(QueryAgentTool(handler=delegation_handler))
+        )
+        selected_tool_registry.register(
+            V2DelegationToolAsRegistered(CancelAgentTool(handler=delegation_handler))
+        )
+        selected_tool_registry.register(
+            V2DelegationToolAsRegistered(ListAgentsTool(handler=delegation_handler))
+        )
+        selected_tool_registry.register(
+            V2DelegationToolAsRegistered(SteerAgentTool(handler=delegation_handler))
+        )
         delegation_handler_ref = delegation_handler
+        child_wakeup_service_ref = child_wakeup_service
     else:
         delegation_handler_ref = None
+        child_wakeup_service_ref = None
     skill_usage_repository = SqliteSkillUsageRepository(database)
     skill_provenance_repository = SqliteSkillProvenanceRepository(database)
     skill_service = SkillService(
@@ -1168,8 +1309,11 @@ def _build_container(
             )
     if settings.delegation_mode == "isolated_write" and tool_registry is None:
         # M4B P3: explicit apply of an isolated child's scratch output.
-        import hashlib
-
+        # 注意：这里**不能**再写 `import hashlib`。模块顶层已有该 import；函数内的
+        # 局部 import 会把 `hashlib` 变成 `_build_container` 的局部名，于是所有嵌套
+        # 闭包（如 `_notify_child_wakeup`）只能通过"可能从未赋值"的闭包单元取它——
+        # `readonly`（生产默认）下这一支不执行、闭包单元为空，降级通知路径每次都以
+        # NameError 静默失败（唤醒被拒时"连一条通知都没有"）。
         from endless_task.delegation.apply_tool import (
             ApplyChildPatchesTool,
             ChildPatchFile,
@@ -1177,8 +1321,15 @@ def _build_container(
         )
         _MAX_PATCH_TOTAL_BYTES = 4 * 1024 * 1024
 
-        def _delegation_child_patches(child_run_id: str) -> ChildPatchSource:
-            workspace_id = delegation_handler.child_workspace_id_for(child_run_id)
+        def _delegation_child_patches(
+            child_run_id: str, *, conversation_id=None
+        ) -> ChildPatchSource:
+            # 会话上下文由 ApplyChildPatchesTool 从 ToolCall 透传进来：查子运行
+            # 的 scratch 工作区必须限定在同一会话内，否则别的会话可以借它的
+            # child_run_id 读到本不属于它的产出。
+            workspace_id = delegation_handler.child_workspace_id_for(
+                child_run_id, conversation_id=conversation_id
+            )
             workspace = workspace_repository.get_workspace(workspace_id)
             root = Path(workspace.root_path).expanduser().resolve()
             files: list[ChildPatchFile] = []
@@ -1283,6 +1434,29 @@ def _build_container(
         skill_prompt_builder=skill_prompt_for_workspace,
     )
 
+    def _render_conversation_children_block(conversation_id: str) -> Optional[str]:
+        """渲染 <delegated-children> 块并按需盖章；任何失败都只降级为"不注入"。
+
+        少一块上下文是降级，起不来的运行是事故——所以渲染与盖章都吞异常并记日志。
+        盖章发生在模型看到之前是刻意的：终态子运行的**可靠**回流通道是唤醒链路
+        （`reported_at`），注入只负责"让它在下一轮顺手可见"；即便这次运行随后失败，
+        该子运行也不会被重复注入（但仍会被唤醒投递）。
+        """
+        try:
+            rows = delegation_child_run_repository.list_child_runs_for_conversation(
+                conversation_id
+            )
+            block, injected_ids = render_delegated_children_block(rows, now=utc_now())
+        except Exception:  # noqa: BLE001 - 注入是尽力而为，绝不能挡住运行启动
+            logger.exception("组装 <delegated-children> 注入块失败（本次不注入）")
+            return None
+        for child_run_id in injected_ids:
+            try:
+                delegation_child_run_repository.mark_child_injected(child_run_id)
+            except Exception:  # noqa: BLE001 - 单条盖章失败不影响其余与运行本身
+                logger.exception("标记子运行已注入失败：child_run_id=%s", child_run_id)
+        return block
+
     async def build_runtime_v2_context_prefix(
         conversation_id: str,
         lane_id: str,
@@ -1316,7 +1490,17 @@ def _build_container(
                 event_type="skill_requested",
                 payload={"notices": notices},
             )
-        return (*base, *skill_messages)
+        # 每次运行开始时列出该会话的子运行（在跑的 + 还没露面过的终态），同样以
+        # user 角色追加在前缀尾部。口径是"每次运行一次"而不是"每轮"：前缀只在这里
+        # 组装一次，而每轮追加那条路会在压缩重建时被丢掉。
+        children_block = _render_conversation_children_block(conversation_id)
+        if children_block is None:
+            return (*base, *skill_messages)
+        return (
+            *base,
+            *skill_messages,
+            ProviderMessage(role="user", content=children_block),
+        )
 
     runtime_v2_gateway.set_context_prefix_builder(
         build_runtime_v2_context_prefix
@@ -1638,6 +1822,7 @@ def _build_container(
         notification_repository=notification_repository,
         hub_event_repository=hub_event_repository,
         reminder_repository=reminder_repository,
+        delegation_child_run_repository=delegation_child_run_repository,
         knowledge_proposal_repository=knowledge_proposal_repository,
         knowledge_proposal_service=knowledge_proposal_service,
         knowledge_repository=knowledge_repository,
@@ -1681,6 +1866,7 @@ def _build_container(
             if settings.delegation_mode != "0"
             else None
         ),
+        child_wakeup_service=child_wakeup_service_ref,
         runtime_v2_trace_observer=runtime_v2_trace_observer,
         runtime_v2_trajectory_exporter=runtime_v2_trajectory_exporter,
         runtime_v2_span_recorder=runtime_v2_span_recorder,

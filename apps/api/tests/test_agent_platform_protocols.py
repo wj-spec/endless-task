@@ -9,6 +9,7 @@ from endless_task.agent_kernel import (
     RunCommand,
     RunOutcome,
     RunOutcomeStatus,
+    RunUsage,
 )
 from endless_task.agent_platform import (
     AgentPlatformError,
@@ -27,7 +28,7 @@ from endless_task.delegation import (
     WorkspaceMode,
     intersect_capabilities,
 )
-from endless_task.execution_env import ExecutionPolicy, NetworkMode
+from endless_task.execution_env import ExecutionPolicy, NetworkMode, ProcessRequest
 from endless_task.extensions import (
     ExtensionDecision,
     ExtensionDecisionKind,
@@ -62,6 +63,65 @@ def trace_context() -> TraceContext:
         correlation_id="correlation_1",
         span_id="span_1",
     )
+
+
+class ProcessRequestEnvironmentTest(unittest.TestCase):
+    def request(self, environment) -> ProcessRequest:
+        return ProcessRequest(
+            effect_id="effect_env",
+            tool_call_id="call_env",
+            argv=("true",),
+            cwd=".",
+            policy=ExecutionPolicy(
+                workspace_root="/tmp",
+                read_allow_paths=(),
+                write_allow_paths=(),
+            ),
+            trace=trace_context(),
+            requested_at="2026-10-15T00:00:00Z",
+            environment=environment,
+        )
+
+    def test_environment_values_preserve_empty_whitespace_and_padding(self) -> None:
+        # Shell environment snapshots can contain an explicitly empty COLORTERM.
+        for value in ("", " ", "\t\r\n", "  padded value \t", "plain"):
+            with self.subTest(value=value):
+                request = self.request({"COLORTERM": value})
+                self.assertEqual({"COLORTERM": value}, request.environment)
+
+    def test_environment_values_allow_exact_length_boundary(self) -> None:
+        for value in ("x" * 32_768, " " * 32_768):
+            with self.subTest(whitespace=value.isspace()):
+                self.assertEqual(value, self.request({"BOUNDARY": value}).environment["BOUNDARY"])
+
+    def test_environment_values_reject_non_text(self) -> None:
+        for value in (None, 1, False, b"bytes"):
+            with self.subTest(value=value):
+                with self.assertRaises(AgentPlatformError) as raised:
+                    self.request({"INVALID": value})
+                self.assertEqual("invalid_execution_value", raised.exception.code)
+
+    def test_environment_values_reject_nul(self) -> None:
+        for value in ("\0", "before\0after"):
+            with self.subTest(value=value):
+                with self.assertRaises(AgentPlatformError) as raised:
+                    self.request({"INVALID": value})
+                self.assertEqual("invalid_execution_value", raised.exception.code)
+
+    def test_environment_values_reject_raw_length_over_limit(self) -> None:
+        for value in ("x" * 32_769, " " * 32_769, " " * 32_768 + "x"):
+            with self.subTest(whitespace=value.isspace()):
+                with self.assertRaises(AgentPlatformError) as raised:
+                    self.request({"INVALID": value})
+                self.assertEqual("invalid_execution_value", raised.exception.code)
+
+    def test_environment_keys_keep_identifier_contract(self) -> None:
+        self.assertEqual({"NAME": "value"}, self.request({" NAME ": "value"}).environment)
+        for key in ("", " \t", 1, "x" * 257):
+            with self.subTest(key=key):
+                with self.assertRaises(AgentPlatformError) as raised:
+                    self.request({key: "value"})
+                self.assertEqual("invalid_identifier", raised.exception.code)
 
 
 class AgentPlatformProtocolTest(unittest.IsolatedAsyncioTestCase):
@@ -273,6 +333,32 @@ class AgentPlatformProtocolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(outcome, await kernel.run(command))
         self.assertEqual([command], kernel.commands)
+
+    def test_run_usage_requires_non_negative_integers(self) -> None:
+        """中性的运行用量类型：默认全 0，负数一律拒绝。"""
+        self.assertEqual(RunUsage(), RunUsage(input_tokens=0, output_tokens=0))
+        usage = RunUsage(input_tokens=10, output_tokens=4, model_turns=2, tool_calls=1)
+        self.assertEqual((10, 4, 2, 1), (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.model_turns,
+            usage.tool_calls,
+        ))
+        with self.assertRaises(AgentPlatformError):
+            RunUsage(input_tokens=-1)
+        with self.assertRaises(AgentPlatformError):
+            RunUsage(tool_calls=-3)
+
+    def test_run_outcome_rejects_foreign_usage_type(self) -> None:
+        """终态用量必须是协议类型：适配器的映射不能被别的对象顶替。"""
+        trace = trace_context()
+        with self.assertRaises(AgentPlatformError):
+            RunOutcome(
+                run_id="run_1",
+                status=RunOutcomeStatus.FAILED,
+                trace=trace,
+                usage="not-usage",
+            )
 
     def test_trace_schema_requires_allowlisted_attributes(self) -> None:
         span = SpanSpec(

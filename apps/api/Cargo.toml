@@ -1,0 +1,17 @@
+# Rust 内核 workspace。
+# 分层铁律（23 §5.4）：**pyo3 只准出现在 `endless-native` 一个 crate**；
+# 其余 crate 都是 L1 内核 —— 零 pyo3 依赖，必须 `cargo test` 独立全绿（不需要 Python）。
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# L1 内核之间共享的底座。
+endless-kernel-core = { path = "crates/endless-kernel-core" }

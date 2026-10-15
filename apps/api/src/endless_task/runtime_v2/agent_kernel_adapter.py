@@ -18,17 +18,17 @@ assemble itself:
 
 - ``conversation_factory`` — how a child conversation is created
   (workspace binding, ephemeral kind, product-visibility filtering),
-- ``executor_builder`` — a fresh :class:`AgentRunExecutor` per run with
-  child-specific context/tools/profile wiring (gateway owns the real
-  provider/tool/model dependencies).
+- ``executor_builder`` — a fresh :class:`AgentRunExecutor` per run,
+  built from the :class:`RunCommand` so the composition root can derive
+  the child's own wall clock from ``command.deadline_monotonic`` (the
+  real provider/tool/model dependencies stay at composition root).
 
 Cancellation is real, not stubbed: an active run keeps its cancellation
 token in a registry, and :meth:`cancel` releases it so the executor
 finishes with ``CANCELLED``.
 
-This module is *Not Integrated*: nothing in ``app.py`` / gateway
-constructs it yet, and no feature flag exists. It proves the protocol
-binding against the real execution surface with conformance-style tests.
+This module *is* integrated: the composition root builds it in
+``_delegation_kernel_provider`` for every parent run that can delegate.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from endless_task.agent_kernel import (
     RunCommand,
     RunOutcome,
     RunOutcomeStatus,
+    RunUsage,
 )
 from endless_task.agent_platform import AgentPlatformError, SafeDiagnostic
 from endless_task.domain.models import Conversation
@@ -51,7 +52,12 @@ from .domain import Actor, RunStatus, TranscriptEntryType
 from .execution import AgentRunExecutor, RunExecutionResult
 
 ConversationFactory = Callable[..., Awaitable[Conversation]]
-ExecutorBuilder = Callable[[], AgentRunExecutor]
+ExecutorBuilder = Callable[[RunCommand], AgentRunExecutor]
+
+#: 适配器最多留存多少条已结束运行的用量快照（超出丢最老的）。
+#: 内核实例活在整个父运行期间、会派很多子运行，所以留存必须有界；
+#: 先例是协调器的 ``MAX_RETAINED_TERMINAL_RECORDS = 32``。
+MAX_RETAINED_USAGE_SNAPSHOTS = 32
 
 
 class RuntimeV2AgentKernel(AgentKernel):
@@ -83,6 +89,11 @@ class RuntimeV2AgentKernel(AgentKernel):
         self._conversation_factory = conversation_factory
         self._executor_builder = executor_builder
         self._active: dict[str, tuple[AgentRunExecutor, CancellationToken]] = {}
+        #: 已结束运行的用量快照，按 run_id 留存（有界，插入序丢最老）。
+        #: 收尾路径（取消/内核异常/契约违规）在协调器动手时 `_active` 里已经没有
+        #: 这个运行了——`run` 的 finally 先于每一个协调器收尾函数——所以"实时查
+        #: 活动表"这条缝在需要它的时候必然返回 None。快照只能在摘牌那一刻留存。
+        self._last_usage: dict[str, RunUsage] = {}
 
     async def run(self, command: RunCommand) -> RunOutcome:
         """Execute one child :class:`RunCommand` to a terminal outcome."""
@@ -117,18 +128,60 @@ class RuntimeV2AgentKernel(AgentKernel):
             run_id=command.run_id,
             correlation_id=command.trace.correlation_id,
         )
-        executor = self._executor_builder()
+        executor = self._executor_builder(command)
         token = CancellationToken()
         self._active[command.run_id] = (executor, token)
+        result: Optional[RunExecutionResult] = None
         try:
             result = await executor.execute(command.run_id, cancellation_token=token)
         finally:
+            # 与摘牌**同一刻**留存快照：协调器的收尾函数在这一行之后才跑，那时
+            # `_active` 已经空了。正常返回用 result 构造最终用量；异常路径（宿主
+            # 取消、内核在半路抛出）用执行器的镜像构造部分用量——**那段构造必须
+            # 有自己的 try/except**，否则一段坏快照会顶掉原始异常（取消被吞掉、
+            # 或真实故障变成假故障）。
             self._active.pop(command.run_id, None)
+            self._retain_usage(command.run_id, result, executor)
+        assert result is not None  # 上面的 except 路径已经重抛，这里必然有结果
         return _project_run_result(
             result=result,
             command=command,
             repository=self._repository,
         )
+
+    def usage_snapshot(self, run_id: str) -> Optional[RunUsage]:
+        """本次运行的用量快照：在飞时取执行器镜像，已结束取运行时留存的那一份。
+
+        协调器按鸭子类型取用它（``getattr(kernel, "usage_snapshot", None)``），
+        所以 ``AgentKernel`` Protocol 不必新增成员。
+        """
+        live = self._active.get(run_id)
+        if live is not None:
+            return _snapshot_from_executor(live[0])
+        return self._last_usage.get(run_id)
+
+    def _retain_usage(
+        self,
+        run_id: str,
+        result: Optional[RunExecutionResult],
+        executor: AgentRunExecutor,
+    ) -> None:
+        """把这次运行的用量快照留存进有界表；只为收尾路径服务，失败绝不外抛。"""
+        try:
+            if result is not None:
+                snapshot = RunUsage(
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    model_turns=len(result.model_turn_ids),
+                    tool_calls=result.tool_call_count,
+                )
+            else:
+                snapshot = _snapshot_from_executor(executor)
+        except Exception:  # noqa: BLE001 - 留存是旁路，绝不能掩盖原始异常
+            return
+        self._last_usage[run_id] = snapshot
+        while len(self._last_usage) > MAX_RETAINED_USAGE_SNAPSHOTS:
+            self._last_usage.pop(next(iter(self._last_usage)), None)
 
     async def steer(self, run_id: str, message: AgentMessage) -> None:
         entry = self._active.get(run_id)
@@ -208,6 +261,15 @@ def _project_run_result(
         trace=command.trace,
         assistant_message=assistant_message,
         diagnostics=tuple(diagnostics),
+        # 用量从执行结果直接带出：token 与轮次本来就是执行器算好的，
+        # 工具调用数由执行循环自己数（``tool_call_count``），这里 O(1) 映射，
+        # 不需要回查工具执行表。
+        usage=RunUsage(
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            model_turns=len(result.model_turn_ids),
+            tool_calls=result.tool_call_count,
+        ),
     )
 
 
@@ -217,6 +279,21 @@ def _map_run_status(status: RunStatus) -> RunOutcomeStatus:
     if status is RunStatus.CANCELLED:
         return RunOutcomeStatus.CANCELLED
     return RunOutcomeStatus.FAILED
+
+
+def _snapshot_from_executor(executor: AgentRunExecutor) -> RunUsage:
+    """从执行器的实例镜像构造**部分**用量快照（最后一个已完成模型轮为止）。
+
+    执行循环是唯一知道累计量的地方，它把三个计数与工具计数一起镜像在实例上；
+    这里只做 O(1) 读取，不回查库、不下钻私有帧。用 ``getattr`` 兜底是因为
+    运行时可能拿到替身执行器（测试注入），缺镜像时诚实落 0，绝不编造。
+    """
+    return RunUsage(
+        input_tokens=int(getattr(executor, "_input_tokens", 0) or 0),
+        output_tokens=int(getattr(executor, "_output_tokens", 0) or 0),
+        model_turns=int(getattr(executor, "_model_turns", 0) or 0),
+        tool_calls=int(getattr(executor, "_tool_call_count", 0) or 0),
+    )
 
 
 __all__ = [

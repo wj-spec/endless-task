@@ -63,6 +63,23 @@ from endless_task.runtime_ledger.protocol import (
 )
 
 
+def predicate_allows_tool(predicate, name: str) -> bool:
+    """F2（ADR 的 I1）③：执行面通用闸——未值守运行读工具前先过**同一条**谓词。
+
+    它不是装饰性的：默认配置（``ENDLESS_TASK_EXECUTION_BACKEND`` 空）下未值守执行器
+    拿的是**裸 registry**（``wiring.py`` 的 ``unattended_tool_registry or
+    selected_tool_registry``），模型面过滤（``definitions``）**不拦执行**，
+    ``execute`` 只按名 resolve。把这条谓词用在读工具那一步，
+    "``allow_unattended=0`` 的工具在任务运行 / 委派子运行里不可用"才在**两种**配置下
+    都成立。交互运行不受影响：它的谓词是 workspace 过滤器，不读这个开关。
+
+    模块级（而不是某个冻结类的方法）是刻意的：冻结面的方法清单不该因为这条闸而变。
+    """
+    if predicate is None:
+        return True
+    return bool(predicate(name))
+
+
 @dataclass
 class _ToolWorkItem:
     provider_call: ProviderToolCall
@@ -549,6 +566,20 @@ class ToolExecutionCoordinator:
         cancellation_token: CancellationToken,
     ) -> list[_PreparedToolExecution]:
         prepared_items: list[_PreparedToolExecution] = []
+        # F2（ADR 的 I1）③：未值守运行（任务/提醒 + 委派子运行）用了同一个
+        # ``_tool_filter_provider`` 决定**模型面**。这里让**执行面**用同一个谓词——
+        # 否则"绕过模型直接发起的工具调用"在两处都不生效：
+        #   * 默认配置（``ENDLESS_TASK_EXECUTION_BACKEND`` 空）下未值守执行器拿的是
+        #     **裸 registry**，`tools/list_changed` 之后的注册表视图没有 allow_unattended
+        #     这一层；模型面过滤（``definitions``）不拦执行；
+        #   * 开了 execution backend 时被 ``EnforcingToolRegistry`` 代理的工具本来就
+        #     不在注册表里（注册层已排除），这只是第二道。
+        # 交互运行不受影响：它的 ``tool_filter_provider`` 是 workspace 过滤器，不看这个开关。
+        unattended_predicate = (
+            self._tool_filter_provider(run.conversation_id)
+            if self._tool_filter_provider is not None
+            else None
+        )
         for item in items:
             self._repository.transition_tool_execution_status(
                 item.record_id,
@@ -574,6 +605,35 @@ class ToolExecutionCoordinator:
                             path="$",
                             keyword="json",
                             expected="JSON object",
+                        ),
+                    )
+                    continue
+                if not predicate_allows_tool(
+                    unattended_predicate, item.provider_call.name
+                ):
+                    # F2 修复波（复审 M2 / ADR 独立发现 #1 的处置 (b)）：这条闸的失败
+                    # **不是**"模型编了个不存在的工具名"、也**不是**"参数不合规"，而是
+                    # "该工具未获准在本次未值守运行中执行"。所以走**自己的** code 与
+                    # 自己的文案，不再落进下面 except 的通用改写（那句
+                    # "模型提供的工具调用或参数不符合要求。"与本原因毫不相干，会把用户
+                    # 引向错误的方向）。选 (b) 而不是 ADR 的 (a)：闸继续在**读工具那一刻**
+                    # 生效（在飞 run 也拦），语义不变，只是把原因说清。
+                    # F2 跟进波（复审 F-1）：谓词有**三种** False 成因——① 服务器没开
+                    # ``allowUnattended``（含不在白名单、连接已断）；② 工作区/能力过滤；
+                    # ③ 工具是 REQUIRED 审批（危险写类**永远**不允许无人值守）。修复波
+                    # 的文案只归因 ①，在 ②③ 下会把用户引向"改了也没用的设置"。所以这里
+                    # 只陈述"未获准"，**不暗示**具体是哪一种设置。
+                    # 注意：ADR 独立发现 #1 点名的另一条路（白名单收窄后
+                    # ``_resolve_tool`` 抛 ``unknown_tool``）仍走下面的通用文案——那是
+                    # 冻结的"注册表里没有这个名字"语义，本波不动。
+                    self._fail_item(
+                        item,
+                        ToolCallError(
+                            code="tool_not_allowed_in_unattended_run",
+                            safe_message=(
+                                "该工具未获准在本次未值守运行中执行。"
+                            ),
+                            retryable=False,
                         ),
                     )
                     continue
@@ -880,7 +940,22 @@ class ToolExecutionCoordinator:
             return
 
         if result.error is not None:
-            self._fail_item(item, result.error)
+            # N1 失败感知：工具自带输出（如 run_shell 的 stdout/stderr）时以它为
+            # 主、失败模板降为**尾注**——模板成了主文就会把迭代要看的输出整段丢掉。
+            # 工具只给 error（ToolResult.failed 一族，content==safe_message）时
+            # 维持旧模板主文，文案字节不变。structured_content 一并保留：exitCode
+            # 等失败证据此前在 error 路径上会被整体丢掉。
+            bounded_result = self._bounded_result(
+                result,
+                max_characters=tool.definition.max_output_characters,
+            )
+            content = bounded_result.content
+            if content and content != bounded_result.error.safe_message:
+                content = (
+                    f"{content}\n{self._model_failure_content(bounded_result.error)}"
+                )
+            self._fail_item(item, bounded_result.error, content=content or None)
+            item.structured_content = bounded_result.structured_content
             return
 
         bounded_result = self._bounded_result(

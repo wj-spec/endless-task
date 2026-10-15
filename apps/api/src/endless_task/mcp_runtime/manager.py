@@ -26,6 +26,15 @@ _CREDENTIAL_KEY = re.compile(r"(KEY|PASSWORD|SECRET|TOKEN)", re.IGNORECASE)
 _AWS_PREFIX = re.compile(r"^AWS_", re.IGNORECASE)
 
 
+def tool_allowed(server: McpServerConfig, raw_name: str) -> bool:
+    """F2：单个工具是否在服务器的白名单内（三态语义见仓储的 ``parse_allowed_tools``）。"""
+    allowed = server.allowed_tools
+    if allowed is None:
+        return True
+    return raw_name in allowed
+
+
+
 @dataclass
 class _LiveConnection:
     config: McpServerConfig
@@ -78,6 +87,15 @@ class McpManager:
         self._health_check_seconds = health_check_seconds
         self._connections: dict[str, _LiveConnection] = {}
         self._errors: dict[str, str] = {}
+        #: F2：``allow_unattended=0`` 的服务器当前暴露的 MCP 注册名全集。未值守过滤器
+        #: （wiring 三处）读它，所以两种 execution backend 配置下都生效——默认配置下
+        #: 未值守执行器拿的是**裸 registry**，没有这一层过滤就"任务运行仍调得到"。
+        self._unattended_excluded: frozenset[str] = frozenset()
+        #: F2：管理器是否**见过 MCP 连接**（用来把"没装 MCP 的进程"与"服务器不允许
+        #: 未值守"两种情况区分开——后者必须 fail-closed）。
+        self._saw_unattended_scope: bool = False
+        #: F2：管理器**曾经枚举到**的 MCP 注册名（诊断/测试用）。
+        self._enumerated_tool_names: frozenset[str] = frozenset()
         self._task_supervisor = BackgroundTaskSupervisor(
             name="mcp-manager",
             logger=logger,
@@ -487,19 +505,30 @@ class McpManager:
     def _registry_replace_with(
         self, overrides: dict[str, tuple[McpToolBridge, ...]]
     ) -> None:
-        """用候选工具集做整体替换校验（失败时不修改任何连接状态）。"""
+        """用候选工具集做整体替换校验（失败时不修改任何连接状态）。
+
+        F2（ADR 的 Critical-2）：白名单在这里**注册层**过滤——``EnforcingToolRegistry``
+        只覆写 ``resolve``，只过滤 ``definitions()`` 是假安全。这里是
+        ``tools/list_changed`` 两阶段代际切换（``sync_tools``）的提交点。
+        """
         tools = tuple(
             tool
             for connection in self._connections.values()
-            for tool in overrides.get(connection.config.id, connection.tools)
+            for tool in self._authorized(connection.config, overrides.get(connection.config.id, connection.tools))
         )
         self._registry.replace_tools(tools)
+        self._recompute_unattended_excluded(self._registry_tool_names())
 
     def _replace_registry_tools(self) -> None:
+        """用当前 ``connection.tools`` 整体重注册（连接/断开/重连路径）。
+
+        F2：与 ``_registry_replace_with`` 是**两个都必须过滤**的注册点——只改一处会被
+        另一处静默撤回。
+        """
         tools = tuple(
             tool
             for connection in self._connections.values()
-            for tool in connection.tools
+            for tool in self._authorized(connection.config, connection.tools)
         )
         try:
             self._registry.replace_tools(tools)
@@ -511,6 +540,63 @@ class McpManager:
                 }
             )
             raise
+        self._recompute_unattended_excluded(self._registry_tool_names())
+
+    @staticmethod
+    def _authorized(
+        server: McpServerConfig, tools: tuple[McpToolBridge, ...]
+    ) -> tuple[McpToolBridge, ...]:
+        """按服务器白名单筛出**允许注册**的工具（按 ``rawName`` 匹配，ADR §2.1）。"""
+        return tuple(tool for tool in tools if tool_allowed(server, tool.raw_name))
+
+    def _registry_tool_names(self) -> tuple[str, ...]:
+        """当前**已注册进注册表**的 MCP 工具名。
+
+        用注册表而不是连接列表：注册可能失败（``replace_tools`` 抛错时连接状态不变），
+        执行面拿到的就是注册表里那批。白名单已在写入时排除，所以这里枚举到的名字
+        **就是**允许注册的那批。
+        """
+        return tuple(
+            definition.name for definition in self._registry.definitions()
+        )
+
+    def _recompute_unattended_excluded(self, tool_names: tuple[str, ...]) -> None:
+        """重算"未值守不可用"的 MCP 注册名集合（F2 / ADR 的 I1）。
+
+        排除集覆盖**这个管理器枚举到的全部 MCP 工具**（不只是注册成功的那些）：
+        注册被断开/冲突清掉时，``allow_unattended=0`` 的工具绝不能因为"不在集合里"
+        而被放行（安全默认优先于计数准确）。
+        """
+        self._enumerated_tool_names = frozenset(tool_names)
+        if self._connections:
+            # "这个管理器见过 MCP 世界"——一旦有过连接就置位，之后即使连接断开、
+            # 工具全部反注册，`allow_unattended=0` 的判定也仍然生效（不因为空连接
+            # 而回落到"兼容模式"）。
+            self._saw_unattended_scope = True
+        # 连接里已枚举的工具（含被白名单挡掉、或这一代没注册成功的）：只要服务器不
+        # 允许未值守，就按未值守不可用记账——fail-safe 优先于计数准确。
+        excluded: set[str] = set()
+        for connection in self._connections.values():
+            if connection.config.allow_unattended:
+                continue
+            for tool in connection.tools:
+                excluded.add(tool.public_name)
+        self._unattended_excluded = frozenset(excluded)
+
+    def allows_unattended(self, tool_name: str) -> bool:
+        """F2：该工具在**未值守**运行里是否可用（定时任务 + 委派子运行，ADR 的 I1）。
+
+        两道：
+          * 管理器**从未有过 MCP 连接**（没装 MCP 的进程 / 只测注册表面的用例）⇒ ``True``，
+            与 F2 之前逐字节一致，避免空管理器误伤；
+          * 有过连接 ⇒ 只有"服务器允许未值守且该工具在白名单内"才可用；被禁的、以及
+            连接已断开/这一代没注册成功的 MCP 名一律 ``False``。
+        """
+        if not self._saw_unattended_scope:
+            return True
+        if tool_name in self._unattended_excluded:
+            return False
+        return True
 
     def status(self, server_id: str) -> McpServerRuntimeStatus:
         server = self._repository.get_server(server_id)
@@ -537,6 +623,10 @@ class McpManager:
                     tool.definition.approval_mode is ToolApprovalMode.REQUIRED
                     or tool._destructive
                 ),
+                # F2（契约新增）：被白名单挡掉的工具**仍然出现在这里**——否则用户收窄
+                # 白名单后就再也看不到被排除的工具、无法重新放行。注册表里没有它，
+                # 但它作为一份"发现到的工具清单"必须完整。
+                allowed=tool_allowed(server, tool.raw_name),
             )
             for tool in (connection.tools if connection else ())
         )

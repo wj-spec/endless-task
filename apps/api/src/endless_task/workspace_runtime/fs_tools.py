@@ -20,7 +20,6 @@ from .fs.common import (  # noqa: F401  (re-export：既有调用方/测试可�
     _log_effect,
     _match_line_numbers,
     _now_iso,
-    _read_text_or_none,
     _record_mutation,
     _record_undo_delete,
     _record_undo_write,

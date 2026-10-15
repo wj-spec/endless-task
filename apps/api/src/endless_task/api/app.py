@@ -91,6 +91,7 @@ from endless_task.runtime_v2.trace_observer import (
 )
 from endless_task.execution_env.ledger import FileMutationLedger
 from endless_task.runtime_v2.run_checkpoint import RunCheckpointCoordinator
+from endless_task.runtime_v2.run_sweep import sweep_interrupted_v2_runs
 from endless_task.runtime_v2.run_trajectory import (
     FanoutTraceObserver,
     RunTrajectoryExporter,
@@ -104,9 +105,6 @@ from endless_task.runtime_v2.plan_tool import UpdatePlanTool
 from endless_task.runtime_v2.agent_kernel_adapter import RuntimeV2AgentKernel
 from endless_task.delegation import (
     CoordinatorDelegationHandler,
-    SpawnAgentLegacyTool,
-    QueryAgentLegacyTool,
-    CancelAgentLegacyTool,
 )
 from endless_task.artifacts import (
     ArtifactProposalService,
@@ -174,6 +172,7 @@ from endless_task.memory import (
     ReflectionTerminalObserver,
 )
 from endless_task.tasks import (
+    REMINDER_NO_RETRY_NOTE,
     TaskNotificationService,
     TaskProposalService,
     TaskRunReviewService,
@@ -270,6 +269,7 @@ from .schemas.proposals_resolve import (
     SearchBody,
 )
 from .routes.v2_conversations import register_v2_conversations_routes
+from .routes.v2_delegation import register_v2_delegation_routes
 from .schemas.v2_conversations import (
     RuntimeV2CreateLaneBody,
     RuntimeV2CreateTemporaryConversationBody,
@@ -512,14 +512,39 @@ def _repository_error_status(error: RepositoryError) -> int:
     return 500
 
 
+def _notify_swept_runs(container: AppContainer, swept_runs) -> None:
+    """启动清扫后的如实通知：**按 subject 类型分派**（切片 10 T3 Step 2 洞 1）。
 
-
-
-
-
-
-
-
+    `task_runs.task_id` 对任务 run 存 task id、对提醒 run 存 **reminder id**
+    （`tasks/worker.py:start_reminder` 用的就是 `reminder.id`）。以前这里无条件
+    `get_task(run.task_id)`：提醒 run 必然 `NotFoundError` → `continue` → 用户
+    **零通知**，而提醒已经是 `fired`、永远不会再被调度器选中——被重启中断的提醒
+    就此彻底静默。现在提醒走 `notify_reminder`，并补一句"不会自动重跑"。
+    """
+    notification_service = container.task_notification_service
+    if notification_service is None:
+        return
+    for swept_run in swept_runs:
+        reminder = None
+        reminder_repository = getattr(container, "reminder_repository", None)
+        if reminder_repository is not None:
+            try:
+                reminder = reminder_repository.get_reminder(swept_run.task_id)
+            except NotFoundError:
+                reminder = None
+        if reminder is not None:
+            notification_service.notify_reminder(
+                reminder,
+                swept_run,
+                note=REMINDER_NO_RETRY_NOTE,
+            )
+            continue
+        try:
+            swept_task = container.task_repository.get_task(swept_run.task_id)
+        except NotFoundError:
+            # 任务/提醒都已被删掉：没有可通知的对象（与既有语义一致，不编造）。
+            continue
+        notification_service.notify_run(swept_task, swept_run)
 
 
 #: 只有终态工具事件才进轨迹（同一次调用会产生多条状态事件）。
@@ -582,17 +607,24 @@ def create_app(
             logger=logger,
         )
         swept_runs = container.task_run_repository.sweep_interrupted_runs()
+        # 切片 9：进程重启对账——残留的"在跑"子运行标成 interrupted，
+        # 避免重启后查询永远答"仍在进行中"。
+        container.delegation_child_run_repository.sweep_interrupted_child_runs()
+        # 切片 10 T2 Step 3：v2 run 的启动清扫。**此前只有** task run 与委派子运行
+        # 有清道夫，v2 run 行可以永久停在 running：快照的 `runningRunId` 由数据库
+        # 状态推导 → 前端每 800ms 无限重连、界面写着"还在跑"，而进程里早已没有执行者。
+        # 作用域只覆盖"清扫时刻之前就已经存在"的行（本进程之后开始的 run 永不在内），
+        # 详见 `runtime_v2/run_sweep.py`；调用点**只有这一处**，且只在启动段
+        # （`yield` 之前，进程还没服务过任何请求），没有周期性调用者。
+        sweep_interrupted_v2_runs(container.runtime_v2_repository)
+        # 切片 9 M3：重启后自动回流要立刻恢复——`schedule` 只在终态那一刻被调用，
+        # 上面那次 interrupted 对账又刚造出一批新的未汇报终态行，所以放在它之后。
+        # 它是**同步、非阻塞**的（只登记 + 起窗口任务，投递在窗口任务里），因此不
+        # 放进 `lifespan_tasks`。
+        if container.child_wakeup_service is not None:
+            container.child_wakeup_service.rearm_unreported()
         if swept_runs and container.task_notification_service is not None:
-            for swept_run in swept_runs:
-                try:
-                    swept_task = container.task_repository.get_task(
-                        swept_run.task_id
-                    )
-                except NotFoundError:
-                    continue
-                container.task_notification_service.notify_run(
-                    swept_task, swept_run
-                )
+            _notify_swept_runs(container, swept_runs)
         # M3B slice E: crash-window startup reconciliation. A run that FAILED
         # but whose terminal auto-restore never ran (process died in the
         # window) is restored here, once per run (guarded, per-run scoped,
@@ -652,6 +684,13 @@ def create_app(
                 await container.terminal_service.close_all()
             await container.mcp_manager.stop_all()
             await container.task_worker.drain()
+            if container.child_wakeup_service is not None:
+                # 先关唤醒（取消在飞窗口），再关子运行主管：唤醒侧不等待长跑的
+                # 子运行，反过来先关主管会让被取消的子运行又排出一批窗口。
+                await container.child_wakeup_service.shutdown()
+            if container.delegation_handler is not None:
+                # 后台子代理可能想跑一小时：关停必须取消，不能干等。
+                await container.delegation_handler.shutdown()
             await container.runtime_v2_gateway.shutdown()
             await container.provider_manager.close()
             close_provider = getattr(container.provider, "close", None)
@@ -698,11 +737,28 @@ def create_app(
         _: Request,
         error: RequestValidationError,
     ) -> JSONResponse:
-        del error
+        # C3a：原先这里 `del error` 把字段位置整个丢掉，任何请求体校验失败都只回
+        # 一句"请求参数格式不正确。"——@ 引用的 "未知 kind / 未知 mode" 就落在这一步，
+        # 而派单明确要求**指名** 4xx（不让客户端去猜是哪个字段）。这里只**补**
+        # `details.fields`（字段路径 + 原因），`code` / `message` / 状态码零改动，
+        # 既有断言（只断言 code）不受影响。
+        fields: list[str] = []
+        for item in error.errors():
+            location = ".".join(
+                str(part)
+                for part in item.get("loc", ())
+                if part not in ("body", "query", "path")
+            )
+            message = str(item.get("msg", "")).strip()
+            if location and message:
+                fields.append(f"{location}: {message}")
+            elif location:
+                fields.append(location)
         return error_response(
             status_code=400,
             code="invalid_request",
             message="请求参数格式不正确。",
+            details={"fields": fields} if fields else None,
         )
 
     @app.exception_handler(Exception)
@@ -895,6 +951,10 @@ def create_app(
 
     # v2_conversations 域路由搬到 api/routes/v2_conversations.py（搬家不改行为）
     register_v2_conversations_routes(app, container)
+
+
+    # 委派子运行的读控面搬到 api/routes/v2_delegation.py（前端页签的数据源）
+    register_v2_delegation_routes(app, container)
 
 
 

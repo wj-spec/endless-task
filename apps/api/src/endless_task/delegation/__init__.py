@@ -2,16 +2,27 @@
 
 from .agent_tools import (
     CANCEL_AGENT_NAME,
+    LIST_AGENTS_NAME,
     QUERY_AGENT_NAME,
     SPAWN_AGENT_NAME,
+    STEER_AGENT_NAME,
     CancelAgentTool,
     DelegationToolHandler,
+    ListAgentsTool,
     QueryAgentTool,
     SpawnAgentTool,
+    SteerAgentTool,
     child_run_handle_json,
+)
+from .child_run_store import (
+    TERMINAL_CHILD_RUN_STATES,
+    ChildRunRow,
+    ChildRunState,
+    ChildRunStore,
 )
 from .coordinator import (
     MAX_DEPTH,
+    MAX_LISTED_CHILDREN,
     READ_ONLY_WORKSPACE_MODES,
     ChildRunRecord,
     ChildRunStatus,
@@ -26,9 +37,7 @@ from .limits import (
     compute_child_capabilities,
 )
 from .legacy_tools import (
-    CancelAgentLegacyTool,
-    QueryAgentLegacyTool,
-    SpawnAgentLegacyTool,
+    V2DelegationToolAsRegistered,
 )
 from .protocol import (
     DELEGATION_PROTOCOL_VERSION,
@@ -55,13 +64,25 @@ from .runtime_handler import (
     CapabilityProvider,
     CoordinatorDelegationHandler,
     KernelProvider,
+    child_run_elapsed_seconds,
+    child_run_status,
+    truncate_child_task,
 )
 from .scheduler import (
     DEFAULT_MAX_CHILDREN_PER_PARENT,
     DEFAULT_MAX_CONCURRENT_CHILDREN,
+    DEFAULT_MAX_QUEUED_CHILDREN,
     ChildBatchLimits,
     ChildBatchSummary,
     InProcessChildScheduler,
+)
+from .wakeup import (
+    DEFAULT_MAX_INFLIGHT_CONVERSATIONS,
+    DEFAULT_MERGE_WINDOW_SECONDS,
+    DEFAULT_THROTTLE_SECONDS,
+    WAKEUP_KEY_PREFIX,
+    ChildWakeupService,
+    render_wakeup_message,
 )
 
 __all__ = [
@@ -87,6 +108,7 @@ __all__ = [
     "ChildResultPolicy",
     "project_child_outcome",
     "MAX_DEPTH",
+    "MAX_LISTED_CHILDREN",
     "READ_ONLY_WORKSPACE_MODES",
     "ChildRunRecord",
     "ChildRunStatus",
@@ -95,21 +117,37 @@ __all__ = [
     "_assemble_child_prompt",
     "DEFAULT_MAX_CHILDREN_PER_PARENT",
     "DEFAULT_MAX_CONCURRENT_CHILDREN",
+    "DEFAULT_MAX_QUEUED_CHILDREN",
     "ChildBatchLimits",
     "ChildBatchSummary",
     "InProcessChildScheduler",
     "CANCEL_AGENT_NAME",
+    "LIST_AGENTS_NAME",
     "QUERY_AGENT_NAME",
     "SPAWN_AGENT_NAME",
+    "STEER_AGENT_NAME",
     "CancelAgentTool",
     "DelegationToolHandler",
+    "ListAgentsTool",
     "QueryAgentTool",
     "SpawnAgentTool",
+    "SteerAgentTool",
     "child_run_handle_json",
     "CapabilityProvider",
     "CoordinatorDelegationHandler",
     "KernelProvider",
-    "CancelAgentLegacyTool",
-    "QueryAgentLegacyTool",
-    "SpawnAgentLegacyTool",
+    "child_run_elapsed_seconds",
+    "child_run_status",
+    "truncate_child_task",
+    "V2DelegationToolAsRegistered",
+    "TERMINAL_CHILD_RUN_STATES",
+    "ChildRunRow",
+    "ChildRunState",
+    "ChildRunStore",
+    "DEFAULT_MAX_INFLIGHT_CONVERSATIONS",
+    "DEFAULT_MERGE_WINDOW_SECONDS",
+    "DEFAULT_THROTTLE_SECONDS",
+    "WAKEUP_KEY_PREFIX",
+    "ChildWakeupService",
+    "render_wakeup_message",
 ]

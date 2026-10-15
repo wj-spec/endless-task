@@ -57,12 +57,13 @@ class ApplyChildPatchesTool:
         patches_provider,
         writer,
     ) -> None:
-        """``patches_provider(child_run_id) -> ChildPatchSource`` (raises an
-        AgentPlatformError-shaped error with a ``code`` for refused applies);
-        ``writer(call, relative, content) -> 'applied'|'equal'`` writes one
+        """``patches_provider(child_run_id, *, conversation_id=None) -> ChildPatchSource``
+        (raises an AgentPlatformError-shaped error with a ``code`` for refused
+        applies); ``writer(call, relative, content) -> 'applied'|'equal'`` writes one
         file with full workspace Write semantics (path lock + audit + ledger
         + containment); raises ToolError(code='path_exists_conflict') when a
-        main file already exists with different content."""
+        main file already exists with different content. ``conversation_id`` 是
+        本次工具调用所属的会话，提供方据此把查到的子运行限定在同一会话内。"""
         self._patches_provider = patches_provider
         self._writer = writer
         self.definition = ToolDefinition(
@@ -107,7 +108,9 @@ class ApplyChildPatchesTool:
                 retryable=False,
             )
         try:
-            source = self._patches_provider(child_run_id)
+            source = self._patches_provider(
+                child_run_id, conversation_id=call.conversation_id
+            )
         except Exception as error:
             code = getattr(error, "code", "patch_provider_failed")
             raise ToolError(

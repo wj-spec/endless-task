@@ -7,6 +7,7 @@ import {
   listLanes,
   openConversation,
   runtimeSnapshot,
+  seedProposal,
   sendMessage,
   waitForRunStatus,
 } from "../support/api";
@@ -49,7 +50,7 @@ test("从完整回答创建 Branch 后默认在右侧打开", async ({ page, req
   expect(created.ok()).toBeTruthy();
   expect((await created.json()).baseEntryId).toBe(assistantBoundary);
 
-  const side = page.getByRole("region", { name: "分支对照" });
+  const side = page.getByRole("region", { name: "右侧对照" });
   await expect(side).toBeVisible();
   await expect(side).toHaveCSS("transform", "none");
 
@@ -58,7 +59,7 @@ test("从完整回答创建 Branch 后默认在右侧打开", async ({ page, req
   const mainComposer = mainSurface.locator(".composer");
   const sideComposer = side.locator(".composer");
   const resizer = page.getByRole("separator", {
-    name: "调整主会话与分支宽度",
+    name: "调整主线与分支宽度",
   });
   await expect(resizer).toHaveAttribute("aria-valuenow", "60");
 
@@ -139,7 +140,7 @@ test("Branch 可右侧继续和聚焦，只有显式操作才改变主线", asyn
   await page.getByRole("button", { name: "管理分支：验证分支" }).click();
   await page.getByRole("menuitem", { name: "右侧对照" }).click();
 
-  const side = page.getByRole("region", { name: "分支对照" });
+  const side = page.getByRole("region", { name: "右侧对照" });
   await expect(side).toBeVisible();
   await expect(side.getByText("关闭仅收起，不删除分支")).toBeVisible();
   await side.getByRole("textbox", { name: "给 Endless 发送消息" }).fill("分支独立消息");
@@ -149,7 +150,7 @@ test("Branch 可右侧继续和聚焦，只有显式操作才改变主线", asyn
   await expect(side.getByRole("button", { name: "发送消息" })).toBeVisible();
 
   expect((await listLanes(request, conversation.id)).mainLaneId).toBe(originalMainId);
-  await side.getByRole("button", { name: "收起分支对照" }).click();
+  await side.getByRole("button", { name: "收起右侧对照" }).click();
   await expect(side).toBeHidden();
   expect((await listLanes(request, conversation.id)).items.some((lane) => lane.id === branch.id)).toBe(
     true,
@@ -206,7 +207,7 @@ test("同一 Conversation 跨 Lane 冲突隔离，关闭运行中分支会取消
   await page.getByRole("menuitem", { name: "右侧对照" }).click();
 
   const main = page.getByRole("main");
-  const side = page.getByRole("region", { name: "分支对照" });
+  const side = page.getByRole("region", { name: "右侧对照" });
   await side
     .getByRole("textbox", { name: "给 Endless 发送消息" })
     .fill("[e2e:pause] 保持分支运行");
@@ -407,7 +408,7 @@ test("Temporary Conversation 可与来源 Conversation 并行且状态互不污�
   await expect(main.getByText("E2E 确定性回复，恢复后完成")).toBeVisible();
 });
 
-test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, request }) => {
+test("Temporary Conversation 隔离写入，可丢弃或保存为正式对话", async ({ page, request }) => {
   const title = `E2E Temporary ${Date.now()}`;
   const { conversation } = await createCompletedConversation(request, title);
   await openConversation(page, title);
@@ -428,7 +429,7 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
   const temporaryLaneId = temporaryPayload.lane.id;
 
   const side = page.getByRole("region", { name: "临时对话" });
-  await expect(side.getByText("关闭即删除")).toBeVisible();
+  await expect(side.getByText("丢弃后不可恢复")).toBeVisible();
   await side.getByRole("textbox", { name: "给 Endless 发送消息" }).fill("临时隔离消息");
   await side.getByRole("button", { name: "发送消息" }).click();
   await expect(side.getByText("临时隔离消息")).toBeVisible();
@@ -441,7 +442,7 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
   ).toBe(false);
 
   await page.keyboard.press("Escape");
-  const dialog = page.getByRole("dialog", { name: "关闭临时对话" });
+  const dialog = page.getByRole("dialog", { name: "丢弃临时对话" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "取消" })).toBeFocused();
   const deleteResponsePromise = page.waitForResponse(
@@ -449,7 +450,7 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
       response.request().method() === "DELETE" &&
       response.url().endsWith(`/api/v2/temporary-conversations/${temporaryId}`),
   );
-  await dialog.getByRole("button", { name: "删除临时对话" }).click();
+  await dialog.getByRole("button", { name: "丢弃临时对话" }).click();
   expect((await deleteResponsePromise).ok()).toBeTruthy();
   await expect(side).toBeHidden();
   expect((await request.get(`${apiUrl}/conversations/${temporaryId}`)).status()).toBe(404);
@@ -470,7 +471,7 @@ test("Temporary Conversation 隔离写入，可丢弃或升级", async ({ page, 
   );
   await page
     .getByRole("region", { name: "临时对话" })
-    .getByRole("button", { name: "升级为正式" })
+    .getByRole("button", { name: "保存为正式对话" })
     .click();
   expect((await promoteResponsePromise).ok()).toBeTruthy();
   await expect(page.getByRole("region", { name: "临时对话" })).toBeHidden();
@@ -512,4 +513,40 @@ test("创建分支接口失败时展示可理解错误而非无反应", async ({
   // 创建失败后按钮不应卡在“正在创建…”状态。
   await expect(createBranchButton).toHaveText("创建分支");
   await expect(createBranchButton).toHaveText(/创建分支/);
+});
+test("打开工作区侧边栏不会销毁临时对话", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const title = `E2E Temp Survives Workspace ${Date.now()}`;
+  const { conversation, handle } = await createCompletedConversation(request, title);
+  // 工作区面板只在会话有产物/待确认产物提案时才"可见"，也就才有关闭它的入口。
+  await seedProposal(request, conversation.id, handle.runId, "artifact");
+  await openConversation(page, title);
+
+  const createResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/api/v2/conversations/${conversation.id}/temporary-conversations`),
+  );
+  await createTemporaryConversationFromMenu(page);
+  const temporaryId = (await (await createResponsePromise).json()).conversation.id as string;
+
+  const side = page.getByRole("region", { name: "临时对话" });
+  await expect(side).toBeVisible();
+  await expect(side.getByText("丢弃后不可恢复")).toBeVisible();
+
+  // 临时对话的“关闭”语义是删除；打开工作区侧边栏只是要看文件/产物，
+  // 不该因此销毁用户的临时探索。
+  const deleteRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "DELETE" && request.url().includes("/temporary-conversations/")) {
+      deleteRequests.push(request.url());
+    }
+  });
+
+  await page.getByRole("button", { name: "打开工作区侧边栏" }).click();
+  await expect(page.locator("aside.workspace-panel")).toBeVisible();
+
+  expect(deleteRequests).toEqual([]);
+  await expect(side).toBeVisible();
+  expect((await request.get(`${apiUrl}/conversations/${temporaryId}`)).status()).toBe(200);
 });

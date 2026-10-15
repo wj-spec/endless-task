@@ -17,6 +17,7 @@ from endless_task.domain.task_schedule import (
     TaskSchedule,
     parse_reminder_due,
     parse_schedule_intent,
+    parse_task_schedule,
     reminder_due_to_utc_iso,
 )
 from endless_task.runtime import ProviderCompleted, ProviderTextDelta
@@ -47,6 +48,28 @@ class TextProvider:
         for chunk in self.texts[min(index, len(self.texts) - 1)]:
             yield ProviderTextDelta(text=chunk)
         yield ProviderCompleted()
+
+
+class WaitingProvider:
+    """产出半句后**挂住**，直到取消令牌被取消。
+
+    用来把一条提醒 run 停在"在飞"状态，好让用例走**真实**的取消端点
+    （`POST /tasks/{task_id}/runs/{run_id}/cancel`）——这是切片 10 残留 A1 的
+    "取消提醒 run"路径在今天的唯一入口。
+    """
+
+    name = "reminders-waiting"
+
+    def __init__(self) -> None:
+        self.requests = []
+        self.entered = asyncio.Event()
+
+    async def stream(self, request, cancellation_token):
+        self.requests.append(request)
+        yield ProviderTextDelta(text="正在整理")
+        self.entered.set()
+        await cancellation_token.wait()
+        cancellation_token.raise_if_cancelled()
 
 
 @asynccontextmanager
@@ -92,6 +115,36 @@ class ReminderProtocolTest(unittest.TestCase):
         self.assertIsInstance(once, ReminderDue)
         daily = parse_schedule_intent({"kind": "daily", "time": "09:00"})
         self.assertIsInstance(daily, TaskSchedule)
+
+    def test_schedule_identity_spans_both_schedule_types(self) -> None:
+        """`schedule_identity` 必须能同时吃 TaskSchedule 与 ReminderDue。
+
+        它是"同一个安排"的判据，被提案去重与 supersede 依赖；两个类型若只有
+        其中一个被支持，调用方就会在另一个类型上崩掉。
+        """
+        from endless_task.domain.task_schedule import schedule_identity
+
+        self.assertEqual(
+            schedule_identity(ReminderDue(at="2026-08-26T15:00")),
+            schedule_identity(ReminderDue(at="2026-08-26T15:00")),
+        )
+        self.assertNotEqual(
+            schedule_identity(ReminderDue(at="2026-08-26T15:00")),
+            schedule_identity(ReminderDue(at="2026-08-26T16:00")),
+        )
+        self.assertEqual(
+            schedule_identity(parse_task_schedule({"kind": "daily", "time": "09:00"})),
+            schedule_identity(parse_task_schedule({"kind": "daily", "time": "09:00"})),
+        )
+        self.assertNotEqual(
+            schedule_identity(parse_task_schedule({"kind": "daily", "time": "09:00"})),
+            schedule_identity(parse_task_schedule({"kind": "daily", "time": "10:00"})),
+        )
+        # 一次性与周期即便字段巧合相同也不得视为同一安排。
+        self.assertNotEqual(
+            schedule_identity(ReminderDue(at="2026-08-26T09:00")),
+            schedule_identity(parse_task_schedule({"kind": "daily", "time": "09:00"})),
+        )
 
 
 class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
@@ -203,7 +256,11 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             items = (await client.get(f"/tasks/{reminder.id}/runs")).json()["items"]
             self.assertEqual(1, len(items))
 
-            snapshot = await run_snapshot(client, conversation_id)
+            # 批次 B Task 1（ADR-1）：提醒的到点执行落进**该提醒自己的执行会话**，
+            # `task_runs.conversation_id` 就是它（旧形态硬编码回源会话）。
+            landing_id = items[0]["conversationId"]
+            self.assertNotEqual(conversation_id, landing_id)
+            snapshot = await run_snapshot(client, landing_id)
             user_messages = [
                 entry["data"]["content"]
                 for entry in snapshot["entries"]
@@ -213,6 +270,18 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 any(msg.startswith("【提醒】") for msg in user_messages)
             )
+            # 源会话里**没有**这条提醒
+            source_snapshot = await run_snapshot(client, conversation_id)
+            source_messages = [
+                entry["data"]["content"]
+                for entry in source_snapshot["entries"]
+                if entry.get("actor") == "user"
+                and isinstance(entry.get("data", {}).get("content"), str)
+            ]
+            self.assertFalse(
+                any(msg.startswith("【提醒】") for msg in source_messages),
+                source_messages,
+            )
 
             listing = (await client.get("/reminders")).json()["items"]
             self.assertEqual("fired", listing[0]["status"])
@@ -220,6 +289,78 @@ class ReminderFlowTest(unittest.IsolatedAsyncioTestCase):
             notes = (await client.get("/notifications")).json()["items"]
             self.assertEqual(1, len(notes))
             self.assertIn("提醒", notes[0]["title"])
+
+    async def test_cancelled_in_flight_reminder_run_leaves_honest_notification(
+        self,
+    ) -> None:
+        """切片 10 残留 A1：在飞提醒 run 落 `CANCELLED` → **不许**零通知。
+
+        可达性（本用例同时就是证据）：今天取消一条在飞提醒 run 的唯一入口是
+        `POST /tasks/{task_id}/runs/{run_id}/cancel`（`task_runs.task_id` 对提醒 run
+        存 reminder id；`TaskWorker.cancel` 是全仓唯一的 `token.cancel()` 调用点，
+        见 `tasks/worker.py`）。T3 的取消端点**未接进 UI**，所以这条路径今天主要由
+        直接 API 调用触发。取消后 `_execute_reminder` 落 `CANCELLED` → 旧的
+        `notify_reminder` 对非 COMPLETED/FAILED 的终态**提前 return** → 提醒已
+        `fired`、消息没送到、用户什么都不知道。
+
+        红检查：把 `notify_reminder` 改回"非 COMPLETED/FAILED 提前 return"
+        → 通知数断言红（0 而非 1）。
+        """
+        database = Database(self.database_path)
+        database.initialize()
+        past_local = datetime.now().astimezone() - timedelta(hours=1)
+        reminders = SqliteReminderRepository(database)
+        provider = WaitingProvider()
+        async with local_client(self.database_path, provider) as (client, app):
+            conversation_id = (await create_bound_conversation(client))["id"]
+            reminder = reminders.create_reminder(
+                title="整理文档",
+                commitment="整理这份文档",
+                due_at=reminder_due_to_utc_iso(
+                    ReminderDue(at=past_local.strftime("%Y-%m-%dT%H:%M"))
+                ),
+                source_conversation_id=conversation_id,
+                source_turn_id="turn_seed",
+            )
+
+            # 等调度器点着提醒、run 停在"在飞"（provider 挂住不返回）。
+            items = await self._wait_for_runs(client, reminder.id, 1)
+            for _ in range(600):
+                items = (await client.get(f"/tasks/{reminder.id}/runs")).json()["items"]
+                if items and items[0]["status"] == "running":
+                    break
+                await asyncio.sleep(0.005)
+            self.assertEqual("running", items[0]["status"])
+            await asyncio.wait_for(provider.entered.wait(), timeout=4.0)
+            run_id = items[0]["id"]
+
+            # 真实取消端点：本进程持有该 run 的在飞句柄 → accepted: true。
+            accepted = await client.post(
+                f"/tasks/{reminder.id}/runs/{run_id}/cancel"
+            )
+            self.assertEqual(200, accepted.status_code, accepted.text)
+            self.assertTrue(accepted.json()["accepted"], accepted.text)
+
+            for _ in range(600):
+                items = (await client.get(f"/tasks/{reminder.id}/runs")).json()["items"]
+                if items and items[0]["status"] != "running":
+                    break
+                await asyncio.sleep(0.005)
+            self.assertEqual("cancelled", items[0]["status"])
+
+            # ① 如实可见：不是"零通知"。第一句必须是"未执行"，不许被
+            #    "不会自动重跑"掩盖。
+            notes = (await client.get("/notifications")).json()["items"]
+            self.assertEqual(1, len(notes), notes)
+            self.assertEqual(run_id, notes[0]["runId"])
+            self.assertIn("提醒", notes[0]["title"])
+            self.assertTrue(notes[0]["body"].startswith("本次提醒未执行"))
+            self.assertIn("不会自动重跑", notes[0]["body"])
+
+            # ② 提醒自己仍是一次性的 `fired`：取消不改写提醒状态（"没有重跑入口"
+            #    这句话与库里的状态一致）。
+            listing = (await client.get("/reminders")).json()["items"]
+            self.assertEqual("fired", listing[0]["status"])
 
     async def test_cancel_matrix_and_cascade(self) -> None:
         database = Database(self.database_path)

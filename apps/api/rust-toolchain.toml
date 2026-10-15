@@ -1,0 +1,4 @@
+# Pin the same toolchain for local builds and CI.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

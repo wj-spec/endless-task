@@ -1,0 +1,42 @@
+/* N1③「变更」视图：最小样式，视觉沿右栏既有面板。 */
+
+.changes-view {
+  padding: 8px;
+  overflow: auto;
+}
+
+.changes-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0;
+}
+
+.changes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.changes-item-header {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.changes-path {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changes-kind {
+  color: var(--muted);
+  flex: none;
+  font-size: 11px;
+}

@@ -101,7 +101,7 @@ class ApplyChildPatchesTest(unittest.IsolatedAsyncioTestCase):
 
     def _tool(self, source: ChildPatchSource):
         return ApplyChildPatchesTool(
-            patches_provider=lambda child_run_id: source,
+            patches_provider=lambda child_run_id, *, conversation_id=None: source,
             writer=self._writer,
         )
 
@@ -155,9 +155,30 @@ class ApplyChildPatchesTest(unittest.IsolatedAsyncioTestCase):
             (self.main / "conflict.md").read_text(encoding="utf-8"),
         )
 
+    async def test_provider_receives_the_call_conversation_id(self) -> None:
+        """工具边界必须把 ``ToolCall`` 的会话原样透传给产出提供方。
+
+        `api/wiring.py` 的 `patches_provider` 靠这个参数把子运行限定在本次
+        会话内；这里钉住透传本身，防止回落到"无范围"的旧契约。
+        """
+        seen: list[tuple[str, object]] = []
+
+        def provider(
+            child_run_id: str, *, conversation_id=None
+        ) -> ChildPatchSource:
+            seen.append((child_run_id, conversation_id))
+            return self._source([])
+
+        tool = ApplyChildPatchesTool(patches_provider=provider, writer=self._writer)
+        await tool.execute(
+            _call("conv_forward", childRunId="child_9"), CancellationToken()
+        )
+
+        self.assertEqual([("child_9", "conv_forward")], seen)
+
     async def test_refused_source_fails_closed(self) -> None:
         tool = ApplyChildPatchesTool(
-            patches_provider=lambda child_run_id: (
+            patches_provider=lambda child_run_id, *, conversation_id=None: (
                 _raise(AgentPlatformError(
                     "delegation_child_not_completed",
                     "隔离写子代理未完成，暂不能产出 patch。",
@@ -178,7 +199,9 @@ class ApplyChildPatchesTest(unittest.IsolatedAsyncioTestCase):
         from endless_task.tooling import ToolError as TE
 
         tool = ApplyChildPatchesTool(
-            patches_provider=lambda child_run_id: self._source([]),
+            patches_provider=lambda child_run_id, *, conversation_id=None: (
+                self._source([])
+            ),
             writer=self._writer,
         )
         with self.assertRaises(Exception):

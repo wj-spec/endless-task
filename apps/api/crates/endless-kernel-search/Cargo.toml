@@ -1,0 +1,14 @@
+# L1 内核：工作区内容检索（grep 语义），零 pyo3 依赖。
+# regex 子集边界由 classify_unsupported 与差分测试约束。
+[package]
+name = "endless-kernel-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+endless-kernel-core = { workspace = true }
+glob = "0.3.4"
+regex = "1"

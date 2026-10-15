@@ -35,6 +35,32 @@ const expectSingleModalDialog = async (page: Page) => {
   await expect(page.locator('[role="dialog"][aria-modal="true"]')).toHaveCount(1);
 };
 
+test("首次直达已有会话时聊天与输入框均在视口内", async ({ page, request }) => {
+  await useCompactViewport(page);
+  await createCompletedConversation(
+    request,
+    `E2E Other Workspace ${Date.now()}`,
+    "另一工作区的普通对照消息",
+  );
+  const title = `E2E Mobile First View ${Date.now()}`;
+  const { conversation } = await createCompletedConversation(
+    request,
+    title,
+    "[e2e:markdown] 长内容下输入框仍应留在视口内",
+  );
+  await page.goto(`/#/conversation/${conversation.id}`);
+  await expect(page.getByText("模型服务可用").first()).toBeVisible();
+  await expectConversationHeading(page, title);
+  await expect(page.getByRole("heading", { name: "E2E 渲染标题" })).toBeVisible();
+
+  // DOM 可见不代表用户能看到：移出屏幕但仍占流的侧栏曾把整个聊天推到视口下方。
+  await expect(page.locator(".chat-surface").first()).toBeInViewport({ ratio: 1 });
+  await expect(page.getByLabel("给 Endless 发送消息")).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeInViewport({
+    ratio: 1,
+  });
+});
+
 test("390px 下聊天主路径完整位于视口内", async ({ page, request }) => {
   await useCompactViewport(page);
   const title = `E2E Mobile Width ${"长标题".repeat(12)} ${Date.now()}`;
@@ -113,7 +139,7 @@ test("移动端 Branch 使用全屏次级工作面并可退出", async ({ page, 
   await page.getByRole("button", { name: "管理分支：移动端分支" }).click();
   await page.getByRole("menuitem", { name: "右侧对照" }).click();
 
-  const side = page.getByRole("region", { name: "分支对照" });
+  const side = page.getByRole("region", { name: "右侧对照" });
   await expect(side).toBeVisible();
   const viewport = page.viewportSize();
   expect(viewport).not.toBeNull();
@@ -129,7 +155,7 @@ test("移动端 Branch 使用全屏次级工作面并可退出", async ({ page, 
       );
     })
     .toBe(true);
-  await expect(side.getByRole("button", { name: "收起分支对照" })).toBeVisible();
+  await expect(side.getByRole("button", { name: "收起右侧对照" })).toBeVisible();
 
   await page.keyboard.press("Escape");
   await expect(side).toBeHidden();

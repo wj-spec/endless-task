@@ -2,14 +2,43 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { BrowserPlaceholder } from "./BrowserPlaceholder";
 import { WorkspaceViewTabs } from "./WorkspaceViewTabs";
-import { VIEW_LABELS, VIEW_MENU, viewOf } from "./types";
+import { VIEW_LABELS, VIEW_MENU, VIEW_HINTS, VIEW_SUBTITLES, isWorkspaceViewKind, viewOf } from "./types";
 import { parsePersisted } from "./useWorkspaceViews";
 
 describe("视图注册表", () => {
   it("菜单顺序与标签固定", () => {
-    expect(VIEW_MENU).toEqual(["artifacts", "files", "terminals", "browser"]);
+    expect(VIEW_MENU).toEqual([
+      "artifacts",
+      "conversations",
+      "files",
+      "changes",
+      "terminals",
+      "browser",
+    ]);
     expect(VIEW_LABELS.artifacts).toBe("产物");
+    expect(VIEW_LABELS.changes).toBe("变更");
     expect(viewOf("terminals").subtitle).toContain("终端");
+  });
+
+  // C4：新 kind 必须在**四个**地方同时就位（类型/标签/菜单/守卫）。少一处就会
+  // 出现"页签在但记忆不回来"或"「+」菜单里没有它"的半接线。
+  it("C4：会话视图在注册表里（标签 / 菜单位置 / 副标题 / 提示）", () => {
+    expect(VIEW_LABELS.conversations).toBe("会话");
+    expect(viewOf("conversations").title).toBe("会话");
+    expect(VIEW_SUBTITLES.conversations).toContain("临时对话");
+    expect(VIEW_HINTS.conversations).toContain("分支树");
+    expect(VIEW_MENU).toContain("conversations");
+  });
+
+  it("C4：isWorkspaceViewKind 认「会话」且仍然拒绝非 kind", () => {
+    expect(isWorkspaceViewKind("conversations")).toBe(true);
+    expect(isWorkspaceViewKind("会话")).toBe(false);
+  });
+
+  it("C4：会话视图能被持久化记忆（守卫漏了就会被静默丢掉）", () => {
+    expect(
+      parsePersisted(JSON.stringify({ open: ["conversations"], active: "conversations" })),
+    ).toEqual({ open: ["conversations"], active: "conversations" });
   });
 });
 

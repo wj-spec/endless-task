@@ -5,6 +5,7 @@ from __future__ import annotations
 
 MAX_LIST_ITEMS = 200
 from ..path_safety import resolve_workspace_path
+from .common import kernel_list
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.tooling import ToolActivityCopy, ToolApprovalMode, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolResult
 
@@ -59,20 +60,25 @@ class ListWorkspaceDirTool:
             )
         lines = []
         count = 0
-        for entry in sorted(
-            resolved.canonical.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
+        # 枚举走**内核句柄**（逐段 O_NOFOLLOW）：把目录换成指向区外的 symlink 后再列，
+        # 会被拒 —— 而不是列出区外的目录内容。排序键保持原样：先按 is_file、再按小写名。
+        for name, is_dir, is_file, is_symlink, size in sorted(
+            kernel_list(binding, resolved),
+            key=lambda entry: (entry[2], entry[0].lower()),
         ):
             if count >= MAX_LIST_ITEMS:
                 lines.append("…（条目过多，已截断）")
                 break
-            try:
-                is_dir = entry.is_dir()
-                size = 0 if is_dir else entry.stat().st_size
-            except OSError:
-                continue
-            kind = "dir " if is_dir else "file"
-            suffix = "/" if is_dir else ""
-            lines.append(f"{kind} {entry.name}{suffix}  {size} 字节")
+            # symlink 明确标为 link（不跟进去）：比"悄悄跟随并报目标大小"更诚实，
+            # 也不会把区外目标的尺寸喂给模型。
+            if is_dir:
+                kind, suffix = "dir ", "/"
+            elif is_symlink:
+                kind, suffix = "link", ""
+            else:
+                kind, suffix = "file", ""
+            shown_size = 0 if is_dir else size
+            lines.append(f"{kind} {name}{suffix}  {shown_size} 字节")
             count += 1
         content = "\n".join(lines) if lines else "（空目录）"
         token.raise_if_cancelled()

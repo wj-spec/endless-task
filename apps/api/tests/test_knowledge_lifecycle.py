@@ -118,6 +118,84 @@ class DuplicateDetectionTest(LifecycleTestCase):
         )
         self.assertIsNone(self.service.detect_duplicates(other))
 
+
+class ProposalAnchorTest(LifecycleTestCase):
+    """批次 B Task 1 复审 M-6：提案兜底锚点不许落到**执行会话**（系统对象）。
+
+    `_proposal_anchor` 在来源会话/轮次缺失时取 `list_conversations()[0]`，而那是
+    `ORDER BY updated_at DESC` —— 定时/提醒的到点执行刚更新过**它自己的执行会话**，
+    所以不排除的话它会几乎必然排在第一位，知识提案就被锚到系统对象上。ADR-1 §5 只说
+    了执行会话"参与知识生命周期枚举"，没说它能当锚点。
+
+    红检查：把 `knowledge/lifecycle.py` 里的 `exclude_internal=True` 去掉 →
+    第一条用例红（提案落到执行会话）。
+    """
+
+    def test_fallback_anchor_skips_the_execution_conversation(self) -> None:
+        # 先建一份旧的普通会话（真·用户会话）
+        self.chat.create_conversation()
+        # 任务「执行记录」：内部执行会话（批次 B Task 1 起会由 worker 建出来）
+        execution = self.chat.create_internal_conversation(
+            owner_kind="task_execution",
+            owner_id="task_anchor",
+            title="《每周发布检查》· 执行记录",
+        )
+        # 让执行会话成为**最近更新**的那一条（正是到点执行刚跑完的形状）
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                ("2099-01-01T00:00:00.000Z", execution.id),
+            )
+
+        newest = self.chat.list_conversations()[0]
+        self.assertEqual(execution.id, newest.id, "前提：不排除时执行会话排第一")
+
+        original = self.add_note(title="咖啡机规范", content=COFFEE_RULE)
+        duplicate = self.add_note(
+            title="咖啡机使用规范",
+            content=COFFEE_RULE + "每次使用后请记录。",
+        )
+
+        proposal = self.service.detect_duplicates(duplicate)
+
+        self.assertIsNotNone(proposal)
+        assert proposal is not None
+        self.assertEqual(original.id, proposal.payload["target_id"])
+        # 兜底锚点必须是**用户**会话，不是刚被更新的执行会话
+        self.assertNotEqual(execution.id, proposal.conversation_id)
+        user_conversation = [
+            item for item in self.chat.list_conversations()
+            if item.id != execution.id
+        ][0]
+        self.assertEqual(user_conversation.id, proposal.conversation_id)
+
+    def test_fallback_anchor_returns_none_when_only_execution_conversations_exist(
+        self,
+    ) -> None:
+        """库里只有执行会话时，宁可**不锚**（返回 None → 不建提案），也不锚系统对象。"""
+        execution = self.chat.create_internal_conversation(
+            owner_kind="reminder_execution",
+            owner_id="reminder_anchor",
+            title="《整理文档》· 执行记录",
+        )
+        original = self.add_note(title="咖啡机规范", content=COFFEE_RULE)
+        duplicate = self.add_note(
+            title="咖啡机使用规范",
+            content=COFFEE_RULE + "每次使用后请记录。",
+        )
+
+        proposal = self.service.detect_duplicates(duplicate)
+
+        # 没有用户会话可锚 → 不建提案（而不是把提案挂到执行会话上）
+        self.assertIsNone(proposal)
+        self.assertEqual((), self.proposals.list_proposals_for_source(duplicate.id))
+        self.assertEqual((), self.proposals.list_proposals_for_source(original.id))
+        # 也没有任何提案挂到那条执行会话上
+        self.assertEqual(
+            (),
+            self.proposals.list_proposals(conversation_id=execution.id),
+        )
+
     def test_repeat_detection_returns_existing_pending_proposal(self) -> None:
         self.chat.create_conversation()
         self.add_note(title="咖啡机规范", content=COFFEE_RULE)

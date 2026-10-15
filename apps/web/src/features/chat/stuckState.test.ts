@@ -114,6 +114,84 @@ describe("deriveStuckState（C2 失败记忆）", () => {
     expect(state?.runId).toBe("run_1");
   });
 
+  it("其他运行的终态事件不清空当前卡住态（T4 item 2 误清方向）", () => {
+    for (const type of ["run.finished", "run.failed", "run.cancelled"]) {
+      const state = deriveStuckState(snapshotWithStuck(null), [
+        event("run.stuck", stuckPayload, "run_1"),
+        event(type, { runId: "run_2" }, "run_2"),
+      ]);
+      expect(state?.runId).toBe("run_1");
+    }
+  });
+
+  it("别的 run 的 run.stuck 不**替换**当前卡住横幅（A2 item 4 设置方向）", () => {
+    // 起点：设置方向无条件覆盖 → 侧车道 run 一卡住，当前 run 的横幅就被换成别人。
+    const state = deriveStuckState(snapshotWithStuck(null), [
+      event("run.stuck", stuckPayload, "run_1"),
+      event(
+        "run.stuck",
+        {
+          ...stuckPayload,
+          runId: "run_2",
+          level: "stop",
+          reasons: ["侧车道 run 卡住了"],
+        },
+        "run_2",
+      ),
+    ]);
+    expect(state?.runId).toBe("run_1");
+    expect(state?.level).toBe("remind");
+    expect(state?.reasons).toEqual([
+      "`read_file` 已连续失败 2 次（temporary_unavailable）",
+    ]);
+  });
+
+  it("同一个 run 的 run.stuck 仍然更新当前卡住横幅（不许一刀切成永不更新）", () => {
+    const state = deriveStuckState(snapshotWithStuck(null), [
+      event("run.stuck", stuckPayload, "run_1"),
+      event(
+        "run.stuck",
+        { ...stuckPayload, level: "stop", reasons: ["同一个 run 又失败了一轮"] },
+        "run_1",
+      ),
+    ]);
+    expect(state?.runId).toBe("run_1");
+    expect(state?.level).toBe("stop");
+    expect(state?.reasons).toEqual(["同一个 run 又失败了一轮"]);
+  });
+
+  it("快照说有在飞 run 时，别的 run 的 run.stuck 不立起横幅（runningRunId 同口径）", () => {
+    const snapshot = {
+      stuck: null,
+      runningRunId: "run_main",
+    } as unknown as RuntimeV2Snapshot;
+    const state = deriveStuckState(snapshot, [
+      event("run.stuck", { ...stuckPayload, runId: "run_side" }, "run_side"),
+    ]);
+    expect(state).toBeNull();
+  });
+
+  it("锚点为在飞 run 时，**它自己**的 run.stuck 照常立起横幅（实时卡住没被堵死）", () => {
+    const snapshot = {
+      stuck: null,
+      runningRunId: "run_main",
+    } as unknown as RuntimeV2Snapshot;
+    const state = deriveStuckState(snapshot, [
+      event("run.stuck", { ...stuckPayload, runId: "run_main" }, "run_main"),
+    ]);
+    expect(state?.runId).toBe("run_main");
+  });
+
+  it("本 run 的终态事件仍然清空当前卡住态（T4 item 2 该清方向）", () => {
+    for (const type of ["run.finished", "run.failed", "run.cancelled"]) {
+      const state = deriveStuckState(snapshotWithStuck(null), [
+        event("run.stuck", stuckPayload, "run_1"),
+        event(type, { runId: "run_1" }, "run_1"),
+      ]);
+      expect(state).toBeNull();
+    }
+  });
+
   it("缺字段的事件按默认值容错", () => {
     const state = deriveStuckState(snapshotWithStuck(null), [
       event("run.stuck", {}, "run_9"),

@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import type { Conversation } from "./apiTypes";
 import { EmptyState } from "../ui/EmptyState";
 import type { SessionActions } from "./workspaceNavigationModel";
@@ -13,6 +13,11 @@ type WorkspaceSessionListProps = {
   renameDraft: string;
   emptyTitle: string;
   emptyDescription: string;
+  /**
+   * 空列表时的动作按钮（`EmptyState` 原生支持，本仓别的空态也都在用）。
+   * 工作区空态必须给：否则「已绑定但还没有对话」的工作区没有入口建第一条对话。
+   */
+  emptyAction?: ReactNode;
   listClassName?: string;
   onToggleShowAll: () => void;
   actions: SessionActions;
@@ -27,6 +32,7 @@ export function WorkspaceSessionList({
   renameDraft,
   emptyTitle,
   emptyDescription,
+  emptyAction,
   listClassName = "",
   onToggleShowAll,
   actions,
@@ -37,6 +43,7 @@ export function WorkspaceSessionList({
   if (conversations.length === 0) {
     return (
       <EmptyState
+        action={emptyAction}
         className="rail-empty"
         desc={emptyDescription}
         title={emptyTitle}

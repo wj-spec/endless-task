@@ -110,11 +110,96 @@ class SqliteChatRepository:
             )
             return self._get_conversation(connection, conversation_id)
 
+    def create_internal_conversation(
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        title: str,
+        workspace_id: Optional[str] = None,
+        provider_profile_id: Optional[str] = None,
+        model_override: Optional[str] = None,
+    ) -> Conversation:
+        """Create a product-visible conversation hosting one internal owner's runs.
+
+        批次 B Task 1（ADR-1）：定时任务 / 提醒的到点执行落在**自己的正式会话**里
+        （``kind='normal'``，进左栏），而不是源会话下的 ``kind='ephemeral'`` 子会话。
+        两枚标记列 ``internal_owner_kind`` / ``internal_owner_id`` 记录"谁拥有这份
+        执行记录"，供 :meth:`find_internal_conversation` 按 ``(owner_kind, owner_id)``
+        复用——一个任务一份执行记录，不是每次到点新建。
+
+        ``kind`` 走默认 ``'normal'``、``status='active'``、``next_turn_ordinal=1``、
+        ``title_is_manual=0``、``parent_conversation_id=NULL``、``fork_turn_id=NULL``。
+        **不建 v2 lane、不建 pointer**：``create_message_submission`` 在无 pointer 时
+        会惰性建 main lane + pointer（``storage/v2/transcript.py:187-212``）。
+
+        标记**不进产品 payload**：``Conversation`` dataclass 与 ``conversation_json``
+        （``api/serialization.py``）不动——它只是查询用的内部账。
+        """
+        normalized = " ".join(title.split())
+        if not normalized:
+            raise ValidationError("Conversation title cannot be empty")
+        conversation_id = self._id_factory("conv")
+        now = self._clock()
+        with self._database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    id, title, status, next_turn_ordinal, title_is_manual,
+                    created_at, updated_at, archived_at, workspace_id,
+                    provider_profile_id, model_override,
+                    internal_owner_kind, internal_owner_id
+                ) VALUES (?, ?, 'active', 1, 0, ?, ?, NULL, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    normalized,
+                    now,
+                    now,
+                    workspace_id,
+                    provider_profile_id,
+                    model_override,
+                    owner_kind,
+                    owner_id,
+                ),
+            )
+            return self._get_conversation(connection, conversation_id)
+
+    def find_internal_conversation(
+        self, owner_kind: str, owner_id: str
+    ) -> Optional[Conversation]:
+        """按 ``(owner_kind, owner_id)`` 找回既有执行会话（走局部索引），无则 None。
+
+        只认 ``status='active'``：执行会话被用户删除/归档后查不到 → 调用方新建一份
+        （ADR §5 登记的已知边界：已被删那份里的 ``task_runs`` 行仍指向了旧会话）。
+        """
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM conversations
+                WHERE internal_owner_kind = ?
+                  AND internal_owner_id = ?
+                  AND status = 'active'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (owner_kind, owner_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._conversation_from_row(row)
+
     def create_or_reuse_empty_conversation(
         self, workspace_id: Optional[str] = None
     ) -> Conversation:
         with self._database.transaction() as connection:
             # 空会话复用必须同工作区匹配（IS 为 NULL 安全等值）。
+            # 两类**非用户**会话要排除在复用之外（否则用户点「新对话」会拿到一个
+            # 系统对象，而左栏又把它过滤掉 → 用户拿到看不见的"当前会话"）：
+            #   * 内部执行会话（任务/提醒的执行记录，批次 B Task 1，ADR-1 §3.6）；
+            #   * 委派子会话（`delegation_parent_run_id` 非空、产品不可见，
+            #     `create_delegation_conversation` 造的行同样是 kind='normal' +
+            #     零 entry，所以在首条消息提交前会被这里误判成"空会话"）。
             existing = connection.execute(
                 """
                 SELECT c.*
@@ -122,6 +207,8 @@ class SqliteChatRepository:
                 WHERE c.status = 'active'
                   AND c.kind = 'normal'
                   AND c.workspace_id IS ?
+                  AND c.internal_owner_id IS NULL
+                  AND c.delegation_parent_run_id IS NULL
                   AND NOT EXISTS (
                       SELECT 1
                       FROM v2_transcript_entries e
@@ -162,13 +249,25 @@ class SqliteChatRepository:
         workspace_id: Optional[str] = None,
         general_only: bool = False,
         include_delegation: bool = False,
+        exclude_internal: bool = False,
     ) -> Sequence[Conversation]:
+        """产品面枚举会话。
+
+        ``exclude_internal``（批次 B Task 1，默认 False）：把**内部执行会话**
+        （定时/提醒的「…· 执行记录」）排除掉。默认**不**排除——ADR-1 §3.6 裁定执行
+        会话是**产品可见**对象（它就是给用户读的执行记录）；这个开关只给"需要一个
+        用户会话当落点"的调用方用（`knowledge/lifecycle.py` 的提案兜底锚点：那里按
+        `updated_at DESC` 取第一条，刚跑完的执行会话会排在最前，把知识提案锚到系统
+        对象上）。
+        """
         sql = "SELECT * FROM conversations WHERE status = ?"
         params: list[object] = [status.value]
         if not include_delegation:
             # 06 §2.4: delegation child-run conversations are internal
             # execution objects and must not surface in product rails.
             sql += " AND delegation_parent_run_id IS NULL"
+        if exclude_internal:
+            sql += " AND internal_owner_id IS NULL"
         if title_query and title_query.strip():
             sql += " AND instr(lower(title), lower(?)) > 0"
             params.append(title_query.strip())

@@ -548,3 +548,26 @@ def undo_entry_json(entry) -> dict[str, object]:
         "createdAt": entry.created_at,
         "undoneAt": entry.undone_at,
     }
+
+
+def change_diff_text(before, after, target: str):
+    """N1③：unified diff 文本（Agent 改了什么）。两侧都是「可撤销文本或 None」。
+
+    - None 按「不存在」处理（新建 → 全加；删除 → 全减）；
+    - 内容相同 → None（无变更可看）；
+    - 标准库 `difflib`，不手写 LCS。
+    """
+    import difflib
+
+    before_text = before if before is not None else ""
+    after_text = after if after is not None else ""
+    lines = list(
+        difflib.unified_diff(
+            before_text.splitlines(),
+            after_text.splitlines(),
+            fromfile=f"a/{target}",
+            tofile=f"b/{target}",
+            lineterm="",
+        )
+    )
+    return "\n".join(lines) if lines else None

@@ -276,6 +276,18 @@ class ProductRuntimeEventProjection:
             }
         if event_type == "run_progress_resumed":
             return "run.progress_resumed", {"runId": event.run_id}
+        if event_type == "run_budget_declared":
+            # 切片 10 T2 Step 1：这一 run 的**预算墙由执行器自己声明**（交互档 /
+            # 任务档 / 子运行档三种执行器各自知道自己的墙，网关按 run 行猜不出，
+            # 猜就是伪造）。快照按 runId 取最近一条，投影出 `runState.budget`。
+            return "run.budget_declared", {
+                "runId": event.run_id,
+                "softSeconds": payload.get("softSeconds"),
+                "hardSeconds": payload.get("hardSeconds"),
+                "perTurnSeconds": payload.get("perTurnSeconds"),
+                "costCapUsd": payload.get("costCapUsd"),
+                "stopOnCost": payload.get("stopOnCost"),
+            }
         if event_type == "run_verifying":
             return "run.verifying", {
                 "runId": event.run_id,

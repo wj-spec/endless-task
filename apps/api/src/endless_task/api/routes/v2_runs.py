@@ -202,9 +202,12 @@ def register_v2_runs_routes(app: FastAPI, container: AppContainer) -> None:
         run_id: str,
         body: RuntimeV2RecoveryBody,
     ) -> dict[str, object]:
+        # E3/B：`resume` 是"**同一条 run** 接着跑"的显式表达（硬停后的终态 run 原地
+        # 复活）；它的落点就是既有的恢复入口——网关按 run 行状态分派（活动 = 崩溃恢复，
+        # COMPLETED = 原地复活）。不新增路由（`api_routes.json` 零改动）。
         result = await container.runtime_v2_gateway.resolve_recovery(
             run_id,
-            retry=body.action == "retry",
+            retry=body.action in ("retry", "resume"),
         )
         return {
             "runId": result.run_id,

@@ -2,8 +2,8 @@
 /**
  * `LineageSummary`：继承内容的摘要条与两种分隔线（从 `ChatWorkSurface.tsx` 搬出）。
  *
- * 临时会话的"继承"语义此前只有 e2e 顺带覆盖，这里把三条文案与展开开关钉住——
- * 尤其"缺少来源标题时回退到「主会话」"这条兜底。
+ * 临时对话的"继承"语义此前只有 e2e 顺带覆盖，这里把三条文案与展开开关钉住——
+ * 尤其"缺少来源标题时回退到「主线」"这条兜底。
  */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -49,7 +49,7 @@ describe("LineageSummary", () => {
       />,
     );
     expect(text()).toContain("继承自《来源会话》");
-    expect(text()).toContain("3 轮上下文已随临时会话复制并隔离保存");
+    expect(text()).toContain("3 轮上下文已随临时对话复制并隔离保存");
     const button = container.querySelector("button")!;
     expect(button.textContent).toBe("查看继承内容");
     expect(button.getAttribute("aria-expanded")).toBe("false");
@@ -69,7 +69,7 @@ describe("LineageSummary", () => {
     expect(button.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("没有来源标题时回退到「主会话」", () => {
+  it("没有来源标题时回退到「主线」", () => {
     render(
       <LineageSummary
         inheritedTurnCount={0}
@@ -78,7 +78,7 @@ describe("LineageSummary", () => {
         parentTitle={null}
       />,
     );
-    expect(text()).toContain("继承自《主会话》");
+    expect(text()).toContain("继承自《主线》");
   });
 
   it("点击按钮触发切换回调", () => {
@@ -99,14 +99,14 @@ describe("LineageSummary", () => {
 });
 
 describe("两种分隔线", () => {
-  it("中段分隔线说明「以下是本会话内容」", () => {
+  it("中段分隔线说明「以下是本对话内容」", () => {
     render(<LineageDivider parentTitle="来源会话" />);
-    expect(text()).toBe("以上继承自《来源会话》，以下是本会话内容");
+    expect(text()).toBe("以上继承自《来源会话》，以下是本对话内容");
     expect(container.firstElementChild?.getAttribute("role")).toBe("note");
   });
 
   it("末尾分隔线说明「以上全部继承」并回退标题", () => {
     render(<LineageTailDivider parentTitle={undefined} />);
-    expect(text()).toBe("以上全部继承自《主会话》，从这里开始是新内容");
+    expect(text()).toBe("以上全部继承自《主线》，从这里开始是新内容");
   });
 });

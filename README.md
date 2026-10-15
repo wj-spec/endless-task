@@ -1,73 +1,40 @@
 # Endless Task
 
-> 本地优先、以聊天为唯一入口的个人 AI 助手 Runtime。
->
-> **一句话定位**：一个像 ChatGPT 一样自然、但能把复杂事情真正「做完」的个人 AI 助手 —— 文件、记忆、成果交付和长期任务都由 Assistant 在对话中按需使用，用户不需要理解 Task、Agent Run 或工作流。
+> 本地优先、以聊天为主要入口的个人 AI 助手 Runtime。
 
 ![Status](https://img.shields.io/badge/status-Product%20Acceptance%20Candidate-yellow)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)
+![Rust](https://img.shields.io/badge/Rust-1.98.1-000000)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
 ![Storage](https://img.shields.io/badge/storage-SQLite-003B57)
 
-<!-- 接入 CI 后，把上面的 Status 徽章换成真实的 CI 徽章：
-![CI](https://github.com/wj-spec/endless-task/actions/workflows/ci.yml/badge.svg) -->
-
----
+Endless Task 围绕自研 Runtime v2 实现聊天、分支、工具执行、记忆、成果和任务调度。项目处于 **Product Acceptance Candidate** 阶段，仍在持续开发与验收。
 
 ## 为什么做这个项目
 
-在使用 ChatGPT / Claude / Codex / Cursor 的过程中，有一个反复出现的痛点：
+在使用 ChatGPT / Claude / Codex / Cursor 的过程中，我反复遇到一个问题：
 
-> **我想在保留当前上下文的前提下，开启一个新的探索、或并行比较几个方案 —— 但现有产品做不到。**
-> 新建对话会丢失上下文；在同一对话里尝试第二条路，会污染原来的对话和历史记忆。
+> 我想保留当前上下文，同时开启新的探索、并行比较几个方案。新建对话会丢失上下文；在原对话中尝试第二条路，又会影响主线。
 
-Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以聊天为唯一入口，把「探索」和「主线」从模型层面分开，让用户既能并行尝试，又不破坏任何东西。
+Endless Task 用**持久分支与临时对话**承载不同探索，让个人助手在共享必要上下文的同时保留清楚的执行边界。
 
-这不是一个 demo —— 它是一套从状态机、事件日志到评测门禁完整实现的 Agent Runtime（自研 Runtime v2），当前处于 **Product Acceptance Candidate** 阶段。
+## 核心能力
 
----
-
-## 差异化能力
-
-### 会话分支：共享上下文，但不破坏上下文
-
-- **临时对话（Temporary Conversation）**：从当前会话创建、继承完整上下文快照，用于并排探索、对照、验证；不进入来源会话的分支树、不默认写入长期记忆、关闭即删除，可随时升级为独立正式会话。
-- **持久分支（Persistent Branch）**：在会话内 fork 出正式分支，保留 fork 之前的全部历史，独立演化；支持继续 fork、重命名、设为主线、归档 / 恢复。
-- **记忆作用域可解释**：临时探索不污染长期记忆；持久分支继承来源上下文但独立演化；有价值的探索结果可显式提升为长期记忆。
-
-### Runtime-first：先可靠，再扩展
-
-- 完整状态机（`pending → running → completed / cancelled / failed`），终端状态不可逆。
-- 事件日志（Event Journal）+ `Last-Event-ID` 断线重连恢复，重放幂等、不重新产生副作用。
-- 审批链路（approval gate）：写入已绑定工作区自动执行；越出工作区的危险 / 外部动作（外壳、网络、删除等）须用户确认后才执行；只读工具自动执行。
-- 崩溃恢复：任务租约过期重新入队 + 消费端幂等键，保证不丢不重。
-- 并发控制用版本号 + CAS 原子写，而非时间戳。
-
-### 评估层：质量可回归（这是工程上最不常见的部分）
-
-- 对**已录制**的 Run 做只读、确定性、可回归的批量打分。
-- 指标：`completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency`、`loop_detected`；安全规则永远是 blocker。
-- `eval diff` 对比 baseline / candidate，质量回退超容差即返回非零退出码，**可直接作为 CI 门禁**。
-
----
-
-## 功能总览
+- **会话分支**：持久分支继承来源上下文并独立演化，支持重命名、设为主线和归档；临时对话隔离探索，不默认写入长期记忆，可升级为正式会话。
+- **可靠执行**：持久化运行状态、SSE 事件重放、幂等提交、检查点、审批、取消与恢复。预算硬停后，仅满足安全条件的运行支持原地续跑。
+- **Rust 文件内核**：通过 PyO3 接入交互式 Agent 的读取、写入、编辑、删除、列目录、路径管理和 Skill 文件读取；逐段 `openat` / `O_NOFOLLOW` 解析路径，拒绝符号链接替换造成的越界访问。扩展缺失或 ABI 不匹配时明确失败。
+- **任务与委派**：任务和提醒的提案确认、手工创建与编辑、调度及通知；子运行支持后台执行、结果回传、只读 / 隔离写模式与预算限制。
+- **离线评测**：对已录制运行计算确定性指标，导出报告并比较质量回退。`eval diff` 可供流水线调用，当前仓库 CI 尚未自动接入该门禁。
 
 | 能力 | 说明 |
 |---|---|
-| 💬 聊天 | SSE 流式回复、停止 / 重试 / 重新生成、断线恢复 |
-| 📎 附件与文件 | 文本类文件读取、Agent 引用文件名、受控文件工具 |
-| 🧠 记忆 | 记忆提案 → 用户确认写入 → 跨会话注入，来源 / 冲突 / 过期可处理 |
-| 📦 成果（Artifact） | 生成、版本管理、来源引用、聊天中继续修改、导出 |
-| ⏰ 任务与提醒 | 自然语言提案、确认、调度、暂停 / 恢复 / 取消、失败恢复、错过调度补偿 |
-| 📚 知识 | 信息源管理、混合检索（字面 BM25 + 语义向量 + RRF）、DuckDB 受控只读 |
-| 🧩 工具与 MCP | 工具注册、会话级 Skill / MCP、工具审批 |
-| 🔀 会话分支 | 临时对话 + 持久分支 + 记忆作用域（差异化核心） |
-| 🧪 评估 | 确定性指标 + `eval diff` CI 门禁 |
-
----
+| 聊天 | SSE 流式回复、停止 / 重试 / 重新生成、断线恢复 |
+| 文件与变更 | 文本附件、`@` 文件引用、受控文件工具、会话文件变更 diff |
+| 记忆 | 提案确认、跨会话注入、来源 / 冲突 / 过期管理 |
+| 成果 | 生成、版本管理、来源引用、继续修改与导出 |
+| 任务与提醒 | 创建与编辑、调度、暂停 / 恢复 / 取消、运行复核与通知 |
+| 知识 | 信息源管理、字面与语义混合检索、DuckDB 受控只读 |
+| Skill / MCP | Skill 管理、MCP 服务器配置与重载、工具白名单及审批 |
 
 ## 界面预览
 
@@ -75,190 +42,116 @@ Endless Task 的答案是 **Chat-first + 会话分支（Branch / Lane）**：以
 |---|---|
 | ![主界面](.images/screenshot-main.png) | ![会话分支](.images/screenshot-branch.png) |
 
-<!-- 建议再补一张「评估报告」截图（用 `uv run endless-task eval report --batch <BATCH>` 导出后截图），
-     保存到 .images/screenshot-eval.png，然后在上表补一列：| 评估报告 | ![评估报告](.images/screenshot-eval.png) | -->
-
----
-
 ## 快速开始
 
-需要 Python 3.11+、[uv](https://docs.astral.sh/uv/) 和 Node.js 20.19+ / 22.12+。
+macOS 优先。准备 Python 3.12、[uv](https://docs.astral.sh/uv/)、Node.js 24，以及通过 [rustup](https://rustup.rs/) 安装的 Rust 工具链。后端源码安装会编译 PyO3 扩展，仓库固定 Rust `1.98.1`；macOS 还需 Xcode Command Line Tools（`xcode-select --install`）。
+
+在仓库根目录运行：
 
 ```bash
-# 启动 API（默认 FakeProvider，无需 API Key 即可体验完整产品状态）
-cd apps/api
-uv venv .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
-uv run endless-task-api
+# 安装锁定的依赖并构建原生扩展
+make install
 
-# 启动 Web（另开终端）
-cd apps/web
-npm install
-npm run dev
+# 启动 API（默认 FakeProvider，无需模型密钥）
+make api
 ```
 
-打开 <http://127.0.0.1:5173>。
+另开终端，在仓库根目录运行：
 
-配置真实模型（DeepSeek / OpenAI-compatible Provider）后，密钥只存在于 API 进程环境中，不会进入浏览器、SQLite 或日志。配置细节见 [apps/api/README.md](apps/api/README.md) 与 `apps/api/.env.example`。
-
----
-
-## 架构
-
-```mermaid
-flowchart TD
-    Web[React Chat UI] -->|HTTP + SSE| API[FastAPI API]
-    API --> Assistant[Assistant Runtime]
-    Assistant --> Provider[Provider Adapter]
-    Assistant --> Agent[Agent Runtime]
-    Agent --> Tools[Tool Registry]
-    Assistant --> Memory[Memory Runtime]
-    Assistant --> Artifacts[Artifact Runtime]
-    Task[Task Runtime] --> Worker[Worker / Scheduler]
-    Worker --> Assistant
-    Worker --> Notifications[Notifications]
-    Assistant --> Store[(SQLite Repositories)]
-    Agent --> Store
-    Memory --> Store
-    Artifacts --> Store
-    Task --> Store
-    Store --> Journal[Runtime Event Journal]
+```bash
+make web
 ```
 
-设计原则：
+打开 <http://127.0.0.1:5173>。FakeProvider 用于本地演示与自动化；真实模型需配置 DeepSeek / OpenAI-compatible Provider，密钥只在后端配置。
 
-- **Chat-first**：聊天是唯一入口，工具和任务是内部能力，不暴露 Chat / Work 双模式。
-- **Local-first**：会话、事件、文件、记忆、成果和任务状态默认保存在本地 SQLite。
-- **User-controlled**：只读工具自动执行；写入已绑定工作区自动执行；越出工作区的敏感 / 外部动作须用户确认。
-- **Runtime-first**：先保证状态机、持久化、恢复、幂等、取消和边界清晰，再扩展能力。
+安装、数据目录、备份和模型配置见 [API README](apps/api/README.md) 与 [示例配置](apps/api/.env.example)；前端运行说明见 [Web README](apps/web/README.md)。
 
----
-
-## 代码地图：从哪里开始读
+## 代码地图
 
 | 关注点 | 入口 |
 |---|---|
-| Runtime 状态机与执行 | `apps/api/src/endless_task/runtime_v2/`（`domain.py` 状态与 Lane 定义、`execution.py` 执行循环、`gateway.py` 网关） |
-| HTTP / SSE 接口 | `apps/api/src/endless_task/api/app.py` |
-| 持久化与数据迁移 | `apps/api/src/endless_task/storage/`（含 Runtime v2 repository 与迁移） |
-| 评估层 | `apps/api/src/endless_task/eval/`（`evaluators.py`、`gate.py`、`reporting.py`） |
-| 命令行入口 | `apps/api/src/endless_task/cli.py` |
-| 受控文件 / 终端工具 | `apps/api/src/endless_task/workspace_runtime/` |
+| Runtime 状态、执行与恢复 | `apps/api/src/endless_task/runtime_v2/` |
+| HTTP / SSE 接口 | `apps/api/src/endless_task/api/app.py`、`api/routes/` |
+| 持久化与迁移 | `apps/api/src/endless_task/storage/` |
+| 子运行委派 | `apps/api/src/endless_task/delegation/` |
+| 文件与终端工具 | `apps/api/src/endless_task/workspace_runtime/` |
+| Rust 内核与 PyO3 适配 | `apps/api/crates/`、`apps/api/src/endless_task/_native/` |
+| 离线评测 | `apps/api/src/endless_task/eval/` |
 | 前端聊天与执行过程 | `apps/web/src/features/chat/` |
-| 分支语义测试 | `apps/api/tests/test_conversation_branches.py`、`apps/web/e2e/desktop/branch-temporary.spec.ts` |
-
-> 说明：`api/app.py` 目前是较大的单文件（历史演进结果），按路由域拆分已经列入待办 —— 这是已知的工程债，不影响功能与测试。
-
----
+| 文件安全回归 | `apps/api/tests/test_rk_fs_toctou.py`、`test_rk_fs_undo_preread.py` |
 
 ## 关键设计决策
 
-以下是这个项目里我认为最有价值的几个决定（完整设计笔记属于作者私有资料，不在本仓库发布，这里只呈现结论）：
+完整设计笔记属于作者私有资料，不在本仓库发布；这里呈现可对照源码核验的结论：
 
-1. **「停止」与「继续」建模在不同对象上。** 停止作用于当前 run 并置为终态，继续基于 checkpoint 创建**新 run**；已终止的 run 不可变。这样「继续覆盖停止」在模型层面就不存在 —— 并发问题常常不是并发问题，而是对象建错了。
-2. **并发控制用版本号 + CAS，而不是时间戳。** 时间戳有同毫秒冲突和时钟回拨问题，更重要的是「新者胜」表达不了语义优先级 —— 停止必须优先于继续，这是业务语义，不是时间顺序。
-3. **重放幂等。** 断线重连只重放已发生的历史事件，不重新执行副作用；执行层与展示层分离，恢复就只是读历史的问题。
-4. **审批门禁是硬规则。** 只读工具自动执行，越界 / 破坏性动作必须经用户确认；安全类规则永远是 blocker，主观评分不能覆盖它。
-5. **记忆先提案、后写入。** 模型不直接写长期记忆，而是生成提案由用户确认，避免错误记忆污染长期上下文；每条记忆带来源与冲突处理。
-6. **评估指标优先确定性。** 门禁的前提是可复现 —— 同一批数据跑两次结果必须一致，否则分不清质量回退是代码改动还是随机波动。
-7. **能力分层，状态统一。** Assistant / Agent / Task / Memory / Artifact 共享同一套持久化与事件日志：能力可以分层扩展，状态模型只有一套。
+1. **区分恢复场景。** 崩溃恢复、安全重试与预算硬停续跑分别校验。只有预算硬停后处于 `completed`、没有结果不确定的工具、且同一 Lane 没有其他活动运行时，才允许同一条 run 原地续跑；普通完成、失败或取消不能走此入口。
+2. **并发控制使用版本号与 CAS。** 状态变化遵循业务语义，避免只按时间戳决定覆盖顺序。
+3. **重放读取历史，不重新执行工具。** 展示层断线恢复与副作用执行分离；结果不确定的工具调用不会因续跑自动重放。
+4. **审批是执行前置条件。** 只读工具可自动执行，绑定工作区内的文件写入按工具策略执行；删除、shell 等危险或外部动作需审批，安全类评测规则不能被主观评分覆盖。
+5. **记忆先提案、后确认。** 每条记忆保留来源并支持冲突与过期处理，减少错误信息污染长期上下文。
+6. **评测优先采用确定性指标。** 同一批已录制数据可以重复打分，区分代码回退与模型随机性。
 
----
+## 验证
 
-## 工程质量
-
-| 检查项 | 结果 |
+| 检查项 | 运行方式 |
 |---|---|
-| 后端测试 | ✅ `unittest` 全量通过（1,979 用例，32 跳过） |
-| 前端构建与单测 | ✅ production build 通过 + 单元测试通过（CI） |
-| 浏览器 E2E | ✅ 桌面 + 移动端两组旅程（`npm run test:e2e`；CI 暂未接入） |
-| 依赖审计 | ✅ `npm audit` 0 vulnerabilities |
-| 数据迁移恢复 | ✅ schema 迁移的 dry-run / apply / audit / restore、重复执行、部分失败回滚、损坏备份拒绝 均通过 |
+| Rust 与原生扩展 | 锁定工具链和 Cargo 依赖，显式检查扩展加载及 ABI，运行 Rust 测试 |
+| 后端 | macOS、`TZ=Asia/Shanghai` 下运行 `unittest` |
+| 前端 | Node.js 24、`npm ci`、production build 与 Vitest |
+| 浏览器 E2E | Playwright 桌面 / 移动端旅程，手工运行，尚未接入 CI |
+| 离线质量门禁 | 已录制运行的 `eval diff`，尚未接入 CI |
 
-验证方式：
+CI 配置见 [.github/workflows/ci.yml](.github/workflows/ci.yml)。安装后在仓库根目录运行：
 
 ```bash
-# 后端（vec extra 提供 sqlite-vec 原生向量 KNN 测试所需依赖）
+make test
+make build
+
+# 首次运行 E2E 先安装 Chromium
+(cd apps/web && npx playwright install chromium)
+make e2e
+```
+
+测试范围和跳过原因以实际输出为准。原生扩展不可用时应先修复构建，不能把原生安全用例因缺少扩展而跳过当作验证通过。人工产品验收与发布验收另行进行。
+
+## 离线评测 CLI
+
+评测读取已录制的 v2 Run，不调用模型或工具；`eval run` 会持久化评测批次。进入 `apps/api` 后运行，以读取与 API 相同目录的配置：
+
+```bash
 cd apps/api
-uv venv .venv && uv pip install --python .venv/bin/python -e '.[dev,vec]'
-uv run python -m unittest discover -s tests
-
-# 前端构建与 E2E
-cd apps/web && npm run build && npm run test:e2e
+.venv/bin/endless-task eval run --require-tools
+.venv/bin/endless-task eval report --batch BATCH
+.venv/bin/endless-task eval export --batch BATCH --format jsonl
+.venv/bin/endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
 ```
 
----
+指标包括 `completion`、`tool_correctness`、`approval_gate`、`robustness`、`efficiency` 和 `loop_detected`。回退超出容差时，`eval diff` 返回非零退出码。
 
-## 评估层 CLI
+## 当前状态与边界
 
-`endless-task eval` 对**已录制**的 v2 Run 做只读、可回归的批量打分（不走聊天热路径，不触发工具，不改 runtime 数据）。默认筛选用过工具的 `completed` Run，可用 `eval diff` 检测质量回退并作为 CI 门禁。
+业务包版本保持 `0.5.0`，处于 **Product Acceptance Candidate** 阶段。源码中已有上述能力，但尚未完成 Product Accepted、Release Candidate 或 Release Ready 验收。人工产品体验、真实键盘 / 读屏和移动设备验收、真实旧库升级与降级演练、可复现发布及运行手册仍需完善。
 
-```bash
-# 跑一轮确定性评估并持久化为一个批次
-uv run endless-task eval run --require-tools
+- 仅支持本机单用户使用。API 和开发 Web 绑定 loopback，不应通过 `0.0.0.0`、端口转发或反向代理暴露到局域网 / 公网。
+- `.env`、本地凭据文件、数据库、日志和用户文件不提交仓库；模型密钥只供后端使用，不能配置到前端环境变量。
+- Rust 文件内核覆盖交互式 Agent 的文件工具；网页保存、未值守执行等入口有各自实现，不能视为所有文件操作都经过同一内核。
+- shell 默认本机执行并逐次审批。Seatbelt / container 沙箱需显式配置并通过能力检查，Rust 文件内核不能替代完整 OS 隔离；当前 Rust 检索仍为同步调用。
+- 浏览器面板仍是占位视图；本仓库未提供正式生产 Web 托管或桌面安装包。
+- 默认无遥测。
 
-# 查看报告 / 导出
-uv run endless-task eval report --batch BATCH
-uv run endless-task eval export --batch BATCH --format jsonl
+## 设计参考
 
-# 对比两个批次，blocker 指标回退超容差时返回非零退出码
-uv run endless-task eval diff --baseline A --candidate B --tolerance approval_gate=0.05
-```
+| 参考 | 借鉴 |
+|---|---|
+| Pi | Agent Runtime 的状态、恢复与工具调用边界 |
+| Cherry Studio | 会话管理、知识库与多模型配置体验 |
+| Codex / Cursor | 执行过程展示与可恢复执行 |
 
-确定性指标：`completion`（未完成 / 无输出 = blocker）、`tool_correctness`、`approval_gate`（外部动作未审批 = blocker）、`robustness`（Replay 状态冲突）、`efficiency`（tokens / 轮数 / 工具数 / 耗时）、`loop_detected`（检测重复签名与连续失败，作 QA 诊断）。
-
----
-
-## 当前状态与路线图
-
-**当前基线**（`0.5.0`，Runtime v2 v1.1）：
-
-- Runtime v2 执行 / 恢复 / 审批、Memory、Knowledge、Artifact、Task / Reminder、Skill / MCP、会话级 Provider / Model、Workspace → Conversation → Lane 已实现并通过自动化基线。
-- 阶段：**Product Acceptance Candidate** —— 工程链路已进入验收准备，但尚未完成 Product Accepted、Release Candidate 或 Release Ready 门槛。
-
-**进入 RC 前剩余门槛**（不扩展新能力，优先完成）：
-
-1. 人工产品验收（普通聊天、键盘 / 读屏、真实移动端）。
-2. 真实用户旧库迁移恢复演练 + 应用降级演练（当前仅隔离工程演练）。
-3. 用户可见产品语义审计（收敛技术术语与错误文案）。
-4. 可复现 RC、运行手册与发布级观测。
-
-**近期路线图**：
-
-- 完成 Product Accepted → Release Candidate。
-- 桌面打包（Tauri / Electron 评估）、发布流程。
-- 更多文件与图片理解、网页搜索与来源引用。
-
----
-
-## 安全与边界
-
-- `.env`、本地数据库、日志和用户文件不提交仓库；API Key 只从后端进程环境读取，不进入浏览器、SQLite、API 响应或日志。
-- API 与开发 Web 只绑定 loopback，不得通过 `0.0.0.0`、端口转发或反向代理暴露到局域网 / 公网。
-- 当前是单用户、本地优先项目，**不声明多租户、集群化或海量并发能力**。
-- 默认无遥测；如未来提供，必须由用户主动选择开启。
-
----
-
-## 设计参考与边界
-
-这个项目在起步阶段研究了几个参考对象，并明确了各自「借鉴什么 / 不照搬什么」：
-
-| 参考 | 借鉴 | 不照搬 |
-|---|---|---|
-| Pi | Agent Runtime 的机制设计：状态、恢复、工具调用边界 | 其架构不为本项目产品场景服务 |
-| Cherry Studio | 产品层体验：会话管理、知识库、多模型配置 | 纯客户端工具形态，不是 Runtime 研究 |
-| Codex / Cursor | Agent Run 的中间过程展示与可恢复执行 | 收窄为开发工具的产品定位 |
-
-产品主参考是个人助手形态，而非开发者工具。**先定义问题、再看参考**，是这个项目在方法上的坚持。
-
----
+产品定位仍是个人助手，编程作为深入实践的领域之一。
 
 ## 开发方式
 
-本项目使用 AI 辅助开发（Cursor 为主、Codex 为辅）：**AI 承担实现层，作者承担架构决策、状态机语义、分支与记忆模型、评估指标体系设计以及测试验收**。仓库中的提交历史按功能模块记录，可以对照代码与测试逐条核验。
-
----
+本项目使用 AI 辅助开发（Cursor 为主、Codex 为辅）：**AI 承担实现层，作者承担架构决策、状态机语义、分支与记忆模型、评估指标体系设计以及测试验收**。可以对照源码与测试核验实现。
 
 ## 使用与授权
 

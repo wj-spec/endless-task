@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from ..path_safety import resolve_read_path_with_variants
+from ..._native.fs import NativeFsError, read_beneath
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.tooling import ToolActivityCopy, ToolApprovalMode, ToolCall, ToolDefinition, ToolEffect, ToolError, ToolResult
 from .common import _decode_utf8
+from .common import kernel_open_text
 
 
 class ReadWorkspaceFileTool:
@@ -58,6 +60,10 @@ class ReadWorkspaceFileTool:
         resolved = resolve_read_path_with_variants(
             binding.root, call.require_argument("path", str)
         )
+        # 内核读要的是**工作区相对路径**（逐段 openat 从工作区根出发），
+        # 由它自己逐段 nofollow —— 不再把 canonical 当成可信输入。
+        workspace_root = binding.root.resolve()
+        relative_path = resolved.canonical.relative_to(workspace_root).as_posix()
         if not resolved.canonical.exists():
             raise ToolError(
                 "path_not_found",
@@ -78,6 +84,8 @@ class ReadWorkspaceFileTool:
             return self._read_bounded(
                 call,
                 resolved,
+                workspace_root=workspace_root,
+                relative_path=relative_path,
                 start_line=start_line,
                 explicit_count=explicit_count,
             )
@@ -86,6 +94,8 @@ class ReadWorkspaceFileTool:
         return self._read_large_window(
             call,
             resolved,
+            workspace_root=workspace_root,
+            relative_path=relative_path,
             start_line=start_line,
             explicit_count=explicit_count,
         )
@@ -97,10 +107,35 @@ class ReadWorkspaceFileTool:
         call: ToolCall,
         resolved,
         *,
+        workspace_root,
+        relative_path: str,
         start_line: int,
         explicit_count: int | None,
     ) -> ToolResult:
-        raw = resolved.canonical.read_bytes()
+        # 关键：**不再** resolved.canonical.read_bytes()。
+        # 那是"先校验路径、再按路径读"——校验与使用是两次独立解析，
+        # 中间把任一目录换成 symlink 即可读到工作区外（探针已实证）。
+        # read_beneath 逐段 openat + O_NOFOLLOW，拿到的是**句柄**。
+        try:
+            raw = read_beneath(
+                workspace_root,
+                relative_path,
+                self._max_file_bytes,
+            )
+        except NativeFsError as error:
+            if error.code == "path_not_found":
+                raise ToolError(
+                    "path_not_found",
+                    f"文件不存在：{resolved.original_raw}。",
+                    retryable=False,
+                ) from error
+            # 其余（symlink 段 / 非目录 / 变化中）按"校验后发生变化"拒绝，
+            # 文案里**指名**底层原因，便于诊断。
+            raise ToolError(
+                "path_escape",
+                f"文件在校验后发生变化，已拒绝读取（{error.code}）。",
+                retryable=False,
+            ) from error
         text = _decode_utf8(raw)
         lines = text.splitlines() or [""]
         total_lines = len(lines)
@@ -145,6 +180,8 @@ class ReadWorkspaceFileTool:
         call: ToolCall,
         resolved,
         *,
+        workspace_root,
+        relative_path: str,
         start_line: int,
         explicit_count: int | None,
     ) -> ToolResult:
@@ -159,7 +196,8 @@ class ReadWorkspaceFileTool:
         resume: int | None = None
         consumed = 0  # 已扫过的绝对行数（含跳过的前缀行）
         reached_target = False
-        with resolved.canonical.open("r", encoding="utf-8", newline=None) as handle:
+        # 流式读也必须走句柄：否则大文件这条路仍是「先校验路径、再按路径打开」。
+        with kernel_open_text(workspace_root, relative_path, resolved) as handle:
             for raw_line in handle:
                 consumed += 1
                 if consumed < start_line:

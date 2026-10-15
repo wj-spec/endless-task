@@ -1,12 +1,14 @@
 {
   "AgentRunExecutor": [
-    "__init__(repository, provider, tool_registry, model, max_output_tokens=..., temperature=..., approval_gate=..., provider_slot=..., compaction_hook=..., context_prefix_messages=..., tool_filter_provider=..., tool_definitions_provider=..., v2_pipeline_enabled=..., context_engine_v2_enabled=..., tool_execution_limits=..., metrics=..., provider_retry_evaluator=..., provider_retry_observer=..., no_progress_observer=..., no_progress_enforcement_enabled=..., escalation_budget_ratio=..., verifier_mode=..., verifier_model=..., user_profile_provider=..., cost_cap_usd=..., pricing_catalog=..., context_shadow_observer=..., context_window_tokens=..., agent_timeout_seconds=..., trace_observer=..., span_recorder=..., tool_trust_policy=...)",
+    "__init__(repository, provider, tool_registry, model, max_output_tokens=..., temperature=..., approval_gate=..., provider_slot=..., compaction_hook=..., context_prefix_messages=..., tool_filter_provider=..., tool_definitions_provider=..., v2_pipeline_enabled=..., context_engine_v2_enabled=..., tool_execution_limits=..., metrics=..., provider_retry_evaluator=..., provider_retry_observer=..., no_progress_observer=..., no_progress_enforcement_enabled=..., escalation_budget_ratio=..., verifier_mode=..., verifier_model=..., user_profile_provider=..., cost_cap_usd=..., pricing_catalog=..., context_shadow_observer=..., context_window_tokens=..., run_budget=..., trace_observer=..., span_recorder=..., tool_trust_policy=...)",
     "_append_current_model_turn_ids(run_id, model_turn_ids)",
     "_append_progress_resumed(run)",
     "_cumulative_cost(progress)",
     "_drain_steering_messages(run)",
     "_escalate_verification_failure(run, verdict, progress)",
     "_escalation_limit_tokens()",
+    "_finalize_host_cancellation(run_id)",
+    "_finalize_time_budget(run, content_parts, input_tokens, output_tokens, model_turn_ids, side_effects, progress, cancellation_token)",
     "_load_user_profile(conversation_id)",
     "_maybe_compact_context(run, provider_messages)",
     "_maybe_escalate(run, progress, used_tokens, reason=..., will_stop=...)",
@@ -99,14 +101,14 @@
   "ReadWorkspaceFileTool": [
     "__init__(resolver, max_file_bytes=...)",
     "_label(resolved, start_line, end_line)",
-    "_read_bounded(call, resolved, start_line, explicit_count)",
-    "_read_large_window(call, resolved, start_line, explicit_count)",
+    "_read_bounded(call, resolved, workspace_root, relative_path, start_line, explicit_count)",
+    "_read_large_window(call, resolved, workspace_root, relative_path, start_line, explicit_count)",
     "_slice_with_budget(lines, start_line, explicit_count, prefix)",
     "activity_copy(call)",
     "execute(call, token)"
   ],
   "RuntimeV2SessionGateway": [
-    "__init__(chat_repository, repository, provider, tool_registry, model, max_output_tokens, temperature=..., provider_slot_limit=..., memory_repository=..., context_prefix_messages=..., provider_resolver=..., tool_filter_provider=..., tool_definitions_provider=..., v2_pipeline_enabled=..., context_engine_v2_enabled=..., context_window_tokens=..., compaction_hook=..., metrics_collector=..., agent_timeout_seconds=..., approval_timeout_seconds=..., tool_execution_limits=..., trace_observer=..., span_recorder=..., no_progress_enforcement_enabled=..., escalation_budget_ratio=..., verifier_mode=..., verifier_model=..., user_profile_provider=..., cost_cap_usd=..., pricing_catalog=..., provider_retry_evaluator=..., tool_trust_policy=...)",
+    "__init__(chat_repository, repository, provider, tool_registry, model, max_output_tokens, temperature=..., provider_slot_limit=..., memory_repository=..., context_prefix_messages=..., provider_resolver=..., tool_filter_provider=..., tool_definitions_provider=..., v2_pipeline_enabled=..., context_engine_v2_enabled=..., context_window_tokens=..., compaction_hook=..., metrics_collector=..., run_budget=..., approval_timeout_seconds=..., tool_execution_limits=..., trace_observer=..., span_recorder=..., no_progress_enforcement_enabled=..., escalation_budget_ratio=..., verifier_mode=..., verifier_model=..., user_profile_provider=..., cost_cap_usd=..., pricing_catalog=..., provider_retry_evaluator=..., tool_trust_policy=...)",
     "_find_active_run(run_id)",
     "_launch_run(run)",
     "_on_run_done(conversation_id, task)",
@@ -222,6 +224,7 @@
     "record_tool_result(execution_id, status, content, event_type, error=..., correlation_id=..., structured_content=...)",
     "rename_lane(lane_id, display_name, lane_event_type=..., lane_event_data=...)",
     "restore_lane_subtree(lane_id, lane_event_type=..., lane_event_data=...)",
+    "revive_terminal_run(run_id, correlation_id=...)",
     "set_active_run_variant(run_id)",
     "set_conversation_pointer(conversation_id, active_lane_id, active_run_id=..., active_run_variant_id=...)",
     "set_run_assistant_entry(run_id, assistant_entry_id, is_active_variant=...)",

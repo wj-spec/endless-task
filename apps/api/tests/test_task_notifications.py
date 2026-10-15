@@ -11,6 +11,8 @@ import httpx
 
 from endless_task.api import AppSettings, create_app
 from endless_task.domain.models import (
+    Reminder,
+    ReminderStatus,
     TaskRecord,
     TaskRun,
     TaskRunStatus,
@@ -111,6 +113,24 @@ def _run(status: TaskRunStatus, **kwargs) -> TaskRun:
     return TaskRun(**base)
 
 
+def _reminder(**kwargs) -> Reminder:
+    base = dict(
+        id="rem_note",
+        title="整理文档",
+        commitment="整理这份文档",
+        due_at="2026-08-25T01:00:00.000Z",
+        status=ReminderStatus.FIRED,
+        source_conversation_id="conv",
+        source_turn_id="turn",
+        source_proposal_id=None,
+        created_at="2026-08-25T00:00:00.000Z",
+        updated_at="2026-08-25T01:00:00.000Z",
+        fired_at="2026-08-25T01:00:00.000Z",
+    )
+    base.update(kwargs)
+    return Reminder(**base)
+
+
 class NotificationServiceUnitTest(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
@@ -127,6 +147,33 @@ class NotificationServiceUnitTest(unittest.TestCase):
     def test_cancelled_run_is_silent(self) -> None:
         self.service.notify_run(_task(), _run(TaskRunStatus.CANCELLED))
         self.assertEqual((), self.repository.list_notifications())
+
+    def test_cancelled_reminder_run_is_not_silent(self) -> None:
+        """切片 10 残留 A1：提醒 run 被取消**必须**留下如实通知。
+
+        任务 run 的取消保持静默（上一条用例钉住：任务仍 active、有手动重跑入口），
+        提醒不行：它是一次性的（到点即 `fired`，无重跑入口），静默就等于"提醒被吃掉
+        而用户毫不知情"。
+
+        红检查：把 `notify_reminder` 的 `CANCELLED` 分支删回"提前 return 且无痕"
+        → 本用例红（通知数为 0）。
+        """
+        self.service.notify_reminder(
+            _reminder(),
+            _run(
+                TaskRunStatus.CANCELLED,
+                task_id="rem_note",
+                error="Turn was cancelled.",
+            ),
+        )
+        items = self.repository.list_notifications()
+        self.assertEqual(1, len(items))
+        self.assertEqual("run_failed", items[0].kind.value)
+        # 第一句就必须是"未执行"——不许用"不会自动重跑"掩盖事实。
+        self.assertIn("未执行", items[0].body)
+        self.assertTrue(items[0].body.startswith("本次提醒未执行"))
+        # 提醒没有重跑入口：文案里的"不会自动重跑"必须与之一致。
+        self.assertIn("不会自动重跑", items[0].body)
 
     def test_notify_is_idempotent_per_run(self) -> None:
         run = _run(TaskRunStatus.COMPLETED)
@@ -173,7 +220,7 @@ class TaskNotificationsApiTest(unittest.IsolatedAsyncioTestCase):
             conversation_id = (await create_bound_conversation(client))["id"]
             task_id = self._seed_task(conversation_id)
             await client.post(f"/tasks/{task_id}/run")
-            await self._wait_for_run(client, task_id, "completed")
+            run_item = await self._wait_for_run(client, task_id, "completed")
 
             unread = (
                 await client.get("/notifications?unread_only=true")
@@ -182,7 +229,10 @@ class TaskNotificationsApiTest(unittest.IsolatedAsyncioTestCase):
             item = unread[0]
             self.assertEqual("run_completed", item["kind"])
             self.assertIn("本周项目进展", item["body"])
-            self.assertEqual(conversation_id, item["conversationId"])
+            # 批次 B Task 1（ADR-1 §5）：通知深链落点从"源会话"变为**该任务的
+            # 执行会话**——点击仍可打开（按 id 取快照，不依赖左栏列表）。
+            self.assertNotEqual(conversation_id, item["conversationId"])
+            self.assertEqual(run_item["conversationId"], item["conversationId"])
 
             read = (await client.post(f"/notifications/{item['id']}/read")).json()
             self.assertIsNotNone(read["notification"]["readAt"])

@@ -34,6 +34,7 @@ from ..serialization import (
     memory_proposal_json,
     memory_reflection_json,
     task_proposal_json,
+    change_diff_text,
     undo_entry_json,
     uploaded_text_file_json,
 )
@@ -269,6 +270,15 @@ def register_conversations_routes(app: FastAPI, container: AppContainer) -> None
             container.proposal_repository.cancel_proposals_for_conversation(
                 target_id
             )
+            # 委派子运行收不到上面的级联：子会话身上挂的是 delegation_parent_run_id
+            # （子运行 id），不在 list_descendant_ids 走的 parent_conversation_id
+            # 链上。逐条（含后代分支）收，且都在**真正删除之前**——删完就没有父
+            # 会话上下文可枚举了。子会话本体保留（子运行的审计记录，删掉会级联
+            # 掉它的 v2 run 行）。
+            if container.delegation_handler is not None:
+                await container.delegation_handler.cancel_children_of_conversation(
+                    target_id, "父会话已删除"
+                )
         container.chat_repository.delete_conversation(conversation_id)
         return Response(status_code=204)
 
@@ -348,6 +358,57 @@ def register_conversations_routes(app: FastAPI, container: AppContainer) -> None
                 else None
             ),
         }
+
+
+    @app.get("/conversations/{conversation_id}/changes")
+    async def list_conversation_changes(
+        conversation_id: str, limit: int = 20
+    ) -> dict[str, object]:
+        """N1③：本会话的文件变更（Agent 改了什么）。
+
+        undo 日志的 before × 当前文件的 unified diff —— 数据全部来自既有面
+        （undo journal + 工作区文件），零新增存储。读不到的单条如实缺省，
+        不让一条坏记录毁掉整份清单。
+        """
+        from pathlib import Path as _Path
+
+        from ...workspace_runtime.path_safety import resolve_workspace_path
+        from endless_task.tooling import ToolError as _ChangeToolError
+
+        entries = container.undo_journal_repository.list_for_conversation(
+            conversation_id, limit=limit
+        )
+        items: list[dict[str, object]] = []
+        for entry in entries:
+            after_text = None
+            root = getattr(entry, "workspace_root", None)
+            if entry.kind == "file_delete":
+                after_text = ""
+            elif root:
+                try:
+                    resolved = resolve_workspace_path(_Path(root), entry.target)
+                    after_text = (
+                        resolved.canonical.read_text(encoding="utf-8")
+                        if resolved.canonical.is_file()
+                        else ""
+                    )
+                except (OSError, UnicodeDecodeError, ValueError, _ChangeToolError):
+                    after_text = None
+            items.append(
+                {
+                    "id": entry.id,
+                    "target": entry.target,
+                    "kind": entry.kind,
+                    "status": entry.status,
+                    "undoable": entry.undoable,
+                    "createdAt": entry.created_at,
+                    "beforeAvailable": entry.before_content is not None,
+                    "diff": change_diff_text(
+                        entry.before_content, after_text, entry.target
+                    ),
+                }
+            )
+        return {"items": items}
 
 
     @app.get("/conversations/{conversation_id}/memory-proposals")

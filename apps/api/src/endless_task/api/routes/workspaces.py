@@ -90,6 +90,15 @@ def register_workspaces_routes(app: FastAPI, container: AppContainer) -> None:
                 container.proposal_repository.cancel_proposals_for_conversation(
                     delete_id
                 )
+                # 与 DELETE /conversations/{id} 同一个缺口：上面的级联只沿
+                # parent_conversation_id 走，够不到身上挂 delegation_parent_run_id
+                # 的委派子运行。逐个 delete_id（含后代）收，且必须在会话真的被
+                # 删掉之前——删完就没有父会话上下文可枚举了。子会话本体保留
+                # （子运行的审计记录，删掉会级联掉它的 v2 run 行）。
+                if container.delegation_handler is not None:
+                    await container.delegation_handler.cancel_children_of_conversation(
+                        delete_id, "工作区已删除"
+                    )
         for target_id in conversation_ids:
             try:
                 container.chat_repository.delete_conversation(target_id)
@@ -498,6 +507,25 @@ def register_workspaces_routes(app: FastAPI, container: AppContainer) -> None:
         )
 
 
+    def _legacy_read_text_or_none(path) -> Optional[str]:
+        """保存路由的 undo 前置读（**按路径**，遗留）。
+
+        ⚠️ 已登记为 **C7**（RK-3 C6 的对账遗留）：四个 fs 工具的前置读已切内核
+        句柄（`kernel_read_undo_snapshot`），本路由仍按路径读 + 按路径写 ——
+        校验后被换成 symlink 时会跟随链接（读进 undo 日志 / 写穿到区外）。
+        切它需要先给版本 token 找到 mtime 的句柄级替代（内核无 stat 原语），
+        属独立一刀，不在 C6 范围。语义与旧 `fs.common` 实现逐字一致。
+        """
+        try:
+            if not path.exists() or not path.is_file():
+                return None
+            if path.stat().st_size > 512_000:
+                return None
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+
     @app.get("/workspaces/{workspace_id}/file")
     async def read_workspace_file_api(
         workspace_id: str,
@@ -553,7 +581,6 @@ def register_workspaces_routes(app: FastAPI, container: AppContainer) -> None:
         from endless_task.workspace_runtime.effect_log import EffectReceipt
         from endless_task.workspace_runtime.fs_tools import (
             _PATH_LOCKS as _ws_path_locks,
-            _read_text_or_none as _ws_read_text_or_none,
             sha256_text as _ws_sha256_text,
         )
 
@@ -593,7 +620,7 @@ def register_workspaces_routes(app: FastAPI, container: AppContainer) -> None:
                 before_stat = canonical.stat()
                 before_raw = canonical.read_bytes()
                 current_version = _file_version_of(before_raw, before_stat)
-                before_content = _ws_read_text_or_none(canonical)
+                before_content = _legacy_read_text_or_none(canonical)
             else:
                 before_raw = b""
                 current_version = None

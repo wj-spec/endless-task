@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +22,7 @@ from endless_task.tooling import (
     ToolApprovalMode,
     ToolApprovalPrompt,
     ToolCall,
+    ToolCallError,
     ToolDefinition,
     ToolEffect,
     ToolError,
@@ -44,6 +45,7 @@ from .shell_runner import (
     DEFAULT_NO_CHANGE_TIMEOUT_SECONDS,
     DEFAULT_SHELL_TIMEOUT_SECONDS,
     ShellResult,
+    clamp_shell_timeout_seconds,
     run_shell_command,
 )
 logger = logging.getLogger(__name__)
@@ -65,6 +67,9 @@ class ReconcileOutcome:
 
 
 class RunShellTool:
+    #: **默认形态**的定义（`timeout_seconds=DEFAULT_SHELL_TIMEOUT_SECONDS`）。
+    #: 注意它不是运行时唯一来源：实例会按配置生成本地 `definition`（见 `__init__`），
+    #: 只有"按类注册"的路径（没有实例）才只看这一个。默认值时两者逐字段相等。
     definition = ToolDefinition(
         name="run_shell",
         description=(
@@ -104,9 +109,23 @@ class RunShellTool:
     ) -> None:
         self._resolver = resolver
         self._effect_log = effect_log
-        self._timeout_seconds = timeout_seconds
+        # 墙与墙同源：这个值是**实际生效**的墙（下限 1 秒、上限 600 秒），
+        # 内层 runner 与外层工具定义都用它，见下面的 definition 覆盖。
+        self._timeout_seconds = clamp_shell_timeout_seconds(timeout_seconds)
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._max_output_bytes = max_output_bytes
+        # Step 1：外层墙必须跟随配置。过去 `definition` 只有**类级**常量
+        # （`timeout_seconds=DEFAULT_SHELL_TIMEOUT_SECONDS` 钉成 120 秒），而
+        # `execution_impl/coordinator.py:940` 读的正是 `tool.definition.timeout_seconds`
+        # → `:1053 asyncio.wait(timeout=...)`：于是 `ENDLESS_TASK_SHELL_TIMEOUT_SECONDS=600`
+        # 只改了内层 runner，外层仍在 120 秒判 `tool_timeout`（设置看起来"调不动"）。
+        # 这里按配置生成**实例级**定义。默认（不传 = 120）与类级定义逐字段相等，
+        # 而类级 `definition` 保持原样——`tooling.registry` 里"按类注册"的路径
+        # （面快照/策略对账用例）看到的面一个字节都不变。
+        self.definition = replace(
+            RunShellTool.definition,
+            timeout_seconds=self._timeout_seconds,
+        )
         # M3B run-level (方案 A): optional per-run workspace checkpoint
         # coordinator; snapshot before executing so a failed run can roll
         # back its shell/file side effects. None = current behavior.
@@ -253,20 +272,55 @@ class RunShellTool:
             )
             combined += "\n[副作用已发生，但本地审计日志写入失败；请到工作区设置核对命令历史]"
         token.raise_if_cancelled()
+        # ---- N1 失败感知：非零退出/超时是「失败」，不是「成功但难看」 ----
+        # 旧行为：error 恒为 None、状态恒 COMPLETED，失败只以 content 尾注
+        # （`[退出码 N]`）表达 ⇒ eval 的 tool_failure_count / LoopDetection /
+        # failure_memory 全都看不见它。现在按结构化失败上报（26 号 N1）。
+        timed_out_failure = bool(result.timed_out or result.no_change_timeout)
+        failure_error: Optional[ToolCallError] = None
+        status = "ok"
+        if timed_out_failure:
+            status = "timeout"
+            failure_error = ToolCallError(
+                code="command_timeout",
+                safe_message="命令超时已中止。"
+                + ("（输出长时间无变化）" if result.no_change_timeout else ""),
+                retryable=True,
+            )
+            combined = f"[命令失败：超时中止]\n{combined}"
+        elif result.exit_code is not None and result.exit_code != 0:
+            status = "failed"
+            failure_error = ToolCallError(
+                code="command_failed",
+                safe_message=f"命令以退出码 {result.exit_code} 结束。",
+                retryable=True,
+            )
+            combined = f"[命令失败：退出码 {result.exit_code}]\n{combined}"
+        cap = self.definition.max_output_characters
+        stdout_text = result.stdout or ""
+        stderr_text = result.stderr or ""
         return ToolResult(
             tool_call_id=call.id,
             content=combined,
             structured_content={
+                "status": status,
                 "exitCode": result.exit_code,
                 "timedOut": result.timed_out,
                 "noChangeTimeout": result.no_change_timeout,
                 "truncated": result.truncated,
                 "durationMs": int(result.duration_seconds * 1000),
+                # N1：stdout/stderr 分字段（此前只以 `[stderr]` 混在 content 里）。
+                # 各自截断到 max_output_characters，超限如实标记。
+                "stdout": stdout_text[:cap],
+                "stderr": stderr_text[:cap],
+                "stdoutTruncated": len(stdout_text) > cap,
+                "stderrTruncated": len(stderr_text) > cap,
                 "effect": receipt.as_dict(),
                 "changedPaths": [change.relative for change in outcome.changed],
                 "reconcileSkipped": outcome.skipped,
                 "reconcileTruncated": outcome.truncated,
             },
+            error=failure_error,
         )
 
     # ---------- S9 沙箱执行 ----------

@@ -16,7 +16,9 @@ from .provider import (
 )
 
 
-_DEFAULT_MAX_RETRIES = 2
+#: 单次调用在适配器内部的最大重试次数（公开，供"单轮兜底"计算最坏合法耗时）。
+DEFAULT_PROVIDER_MAX_RETRIES = 2
+_DEFAULT_MAX_RETRIES = DEFAULT_PROVIDER_MAX_RETRIES  # 兼容既有内部引用
 _PRE_EVENT_RETRYABLE_ERROR_CODES = frozenset(
     {"network_error", "provider_unavailable", "rate_limited", "request_timeout"}
 )

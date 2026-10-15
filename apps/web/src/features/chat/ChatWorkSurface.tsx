@@ -7,6 +7,7 @@ import type {
   LiveTurn,
   ProviderProfile,
   ResponseVariantSnapshot,
+  RuntimeV2ConversationReference,
   RuntimeV2Lane,
   RuntimeV2ProductEvent,
   RuntimeV2Snapshot,
@@ -62,6 +63,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatSurfaceHeader } from "./ChatSurfaceHeader";
 import { SurfaceBanners } from "./SurfaceBanners";
 import { RuntimeRecoveryNotices } from "./RuntimeRecoveryNotices";
+import { RunHeaderStrip } from "./RunHeaderStrip";
 import { AssistantMessageRow } from "./AssistantMessageRow";
 import {
   LineageDivider,
@@ -120,14 +122,20 @@ type ChatWorkSurfaceProps = {
   ) => void;
   onResolveRuntimeRecovery?: (
     runId: string,
-    action: "retry" | "mark_failed",
+    action: "retry" | "mark_failed" | "resume",
   ) => void;
   onRemoveFile: (fileId: string) => void;
   onRename: (title: string) => void;
   onRestore: () => void;
   onRetry: (turnId: string) => void;
   onSelectVariant: (turnId: string, variantId: string) => void;
-  onSend: () => void;
+  /**
+   * C3b：发送时带上本工作面选中的 `@` 引用（主/侧两个 composer 各持一份）。
+   * C3b 修复波（§6）：返回值原样透传——`true` = 提交成功，composer 据此清空 chip。
+   */
+  onSend: (
+    references: RuntimeV2ConversationReference[],
+  ) => void | Promise<boolean>;
   onModelChange: (
     providerProfileId: string | null,
     modelOverride: string | null,
@@ -466,6 +474,16 @@ export function ChatWorkSurface({
           runningRunId={runtimeSnapshot?.runningRunId ?? null}
           viewingBranch={viewingBranch}
         />
+
+        {/* 切片 10 T4（item 1）：本泳道当前那次 run 的常驻头部条（活时钟/当前步骤/
+            token 成本/预算/连接相位）。插在 `surface-top` 内、横幅之后：`.chat-surface`
+            的网格行没变，既有布局语义与选择器语义都不动。 */}
+        <RunHeaderStrip
+          connectionPhase={runtimeConnectionPhase}
+          runState={activeSnapshot?.runState ?? null}
+          usage={activeSnapshot?.usage ?? null}
+        />
+
         {search.open ? (
           <SearchBar
             current={search.current}
@@ -510,8 +528,31 @@ export function ChatWorkSurface({
           escalationState={escalationState}
           lastEventSeq={runtimeSnapshot?.lastEventSeq ?? null}
           onCancelRunningRun={onCancelRunningRun}
+          // E3/B：硬停这一格的**分流**（后端判据 `revivableRunId`，见
+          // `RuntimeStatusStrip`）：
+          //   * **可复活** ⇒ 走 `onResumeRun`（= 下面这条 recovery `resume`），
+          //     在**同一条 run** 上从断点接着跑（run id 不变、停机不计入"已用"）；
+          //   * **不可复活**（FAILED/CANCELLED、该 lane 另有活动 run …）⇒ 仍走
+          //     下面这条「新开一轮」（C0 的权宜，对这些形态仍是唯一出路）。
+          onResumeRun={(runId) => onResolveRuntimeRecovery?.(runId, "resume")}
+          // 切片 10 A2（item 7）：硬停（已终态）的 run 上「继续」= 新开一轮。
+          // 这条运行已经结束，steer 必被后端拒绝；所以只把要追加的内容放进输入框，
+          // 由用户发送开**新一轮**（`send()` 在无在飞 run 时走 `sendRuntimeV2Message`）。
+          // 不覆盖用户已经打好的草稿：有内容时追加一行。
+          onStartFreshTurn={(content) => {
+            const next = content.trim();
+            if (!next) return;
+            const existing = draft.trim();
+            onDraftChange(existing ? `${existing}\n${next}` : next);
+          }}
           onSteerRun={onSteerRun}
           pending={pendingAction !== null}
+          // E3/B：后端判据「这条硬停 run 可原地复活」——前端**不猜**状态。
+          revivableRunId={runtimeSnapshot?.revivableRunId ?? null}
+          // 真实在飞信号（批次 C0 复审 Critical-1）：硬停横幅会活到 run 终态之后，
+          // 状态条用它判断"这条升级横幅说的 run 是不是真的还在飞"——`activeRunId`
+          // 是当前 lane 的活动变体指针，终态后仍指向它，不能用来判活跃。
+          runningRunId={runtimeSnapshot?.runningRunId ?? null}
           stuckState={stuckState}
           usage={usageState}
           verificationState={verificationState}
@@ -780,6 +821,14 @@ export function ChatWorkSurface({
         health={health}
         isGenerating={isGenerating}
         loading={loading}
+        // C3b：`@` 引用的锚点 lane = 提交路径会用的那条 lane。快照里 `mainLaneId`
+        // 就是会话指针的 active lane；指针为 null（全新会话，还没发过消息）时后端
+        // 指名 400 `mention_no_lane_to_anchor` ⇒ 传 `null`，候选浮层直接不给选。
+        // 快照还没到（快照为 null）时传 `undefined` = 未知、不拦：宁可让后端报错，
+        // 也不要把刚打开的工作面误判成"不能引用"。
+        mentionAnchorLaneId={
+          runtimeSnapshot ? runtimeSnapshot.mainLaneId : undefined
+        }
         otherLaneRunning={otherLaneRunning}
         pendingAction={pendingAction}
         providers={providers}
@@ -803,16 +852,16 @@ export function ChatWorkSurface({
           body={
             sideMode === "temporary_conversation"
               ? currentLaneHasActiveRun
-                ? "将先停止当前运行，再删除整个临时对话。此操作无法撤销。"
-                : "将删除整个临时对话。此操作无法撤销。"
+                ? "将先停止当前运行，再丢弃整个临时对话。此操作无法撤销。"
+                : "将丢弃整个临时对话。此操作无法撤销。"
               : "将停止当前运行并收起右侧工作面；分支和已有内容会保留。"
           }
           confirmLabel={
-            sideMode === "temporary_conversation" ? "删除临时对话" : "停止并收起"
+            sideMode === "temporary_conversation" ? "丢弃临时对话" : "停止并收起"
           }
           onClose={() => setConfirmingClose(false)}
           onConfirm={() => onCloseSide?.()}
-          title={sideMode === "temporary_conversation" ? "关闭临时对话" : "收起运行中的分支"}
+          title={sideMode === "temporary_conversation" ? "丢弃临时对话" : "收起运行中的分支"}
         />
       ) : null}
 

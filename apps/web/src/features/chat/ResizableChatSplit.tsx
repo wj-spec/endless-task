@@ -96,12 +96,12 @@ export function ResizableChatSplit({
       {sideOpen && sideSurface ? (
         <>
           <div
-            aria-label="调整主会话与分支宽度"
+            aria-label="调整主线与分支宽度"
             aria-orientation="vertical"
             aria-valuemax={MAX_MAIN_PERCENT}
             aria-valuemin={MIN_MAIN_PERCENT}
             aria-valuenow={Math.round(mainPercent)}
-            aria-valuetext={`主会话 ${Math.round(mainPercent)}%，分支 ${Math.round(100 - mainPercent)}%`}
+            aria-valuetext={`主线 ${Math.round(mainPercent)}%，分支 ${Math.round(100 - mainPercent)}%`}
             className="chat-split-resizer"
             onDoubleClick={() => setMainPercent(DEFAULT_MAIN_PERCENT)}
             onKeyDown={handleKeyDown}

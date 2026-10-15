@@ -107,4 +107,30 @@ describe("EscalationNotice（C4 终止与升级）", () => {
     );
     expect(html).toContain("上下文预算将尽");
   });
+
+  it("E3/B：硬停且**可复活**时「继续」=「继续（接上这条运行）」，不给「新开一轮」", () => {
+    const html = renderToStaticMarkup(
+      <EscalationNotice
+        onResumeRun={() => undefined}
+        onStartFreshTurn={() => undefined}
+        revivable
+        state={{ ...state, willStop: true, reason: "time_budget_exhausted" }}
+      />,
+    );
+    expect(html).toContain("运行时长已到阈值");
+    expect(html).toContain("继续（接上这条运行）");
+    expect(html).not.toContain("新开一轮");
+  });
+
+  it("E3/B：可复活但**没有**复活通道 ⇒ 文案不许说「接上这条运行」（点了做别的事=说谎）", () => {
+    const html = renderToStaticMarkup(
+      <EscalationNotice
+        onStartFreshTurn={() => undefined}
+        revivable
+        state={{ ...state, willStop: true }}
+      />,
+    );
+    expect(html).not.toContain("继续（接上这条运行）");
+    expect(html).toContain("新开一轮");
+  });
 });

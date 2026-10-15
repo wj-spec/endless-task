@@ -4,6 +4,16 @@ type IconProps = SVGProps<SVGSVGElement> & {
   size?: number;
 };
 
+/**
+ * 标识「工作区」的 FolderIcon 尺寸**唯一事实源**（批次 H / F-5）。
+ *
+ * 此前同一个概念在三处各写各的：左栏工作区行 18、聊天头工作区名旁的焦点标签 15、
+ * 聊天头右侧工作区面板按钮 19 —— 同一屏上 15/18/19 跳，而且 CSS
+ * （`.workspace-folder-icon svg`）又把 18 硬编码了一遍（两个来源各说各话）。
+ * 现在三处都从这里取；**CSS 不再声明尺寸**（CSS 只负责布局）。
+ */
+export const WORKSPACE_ICON_SIZE = 18;
+
 const iconProps = ({ size = 18, ...props }: IconProps) => ({
   "aria-hidden": true as const,
   fill: "none",

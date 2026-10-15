@@ -81,18 +81,31 @@ export const deriveStuckState = (
   events: RuntimeV2ProductEvent[] | undefined,
 ): RuntimeV2StuckState | null => {
   let current = snapshot?.stuck ?? null;
+  // 切片 10 A2（item 4）：**设置**方向也得按 runId 收紧（T4 只收紧了清空方向）。
+  //
+  // 锚点口径与后端 `_stuck_json` 的 `running_run_id` 同源（快照的
+  // `runningRunId`/`activeRunId` 由 `runtimeController` 从 run 生命周期事件实时维护），
+  // 但**已有卡住横幅时以它自己的 run 为准**：同会话并发的侧车道/临时 run 发
+  // `run.stuck` 时，此前会无条件把当前 run 的横幅换成**别的** run。锚点为空
+  // （还没有任何作用域）时由第一条事件立起横幅。
+  const anchorRunId = (): string | null =>
+    current?.runId ?? snapshot?.runningRunId ?? snapshot?.activeRunId ?? null;
   for (const event of events ?? []) {
     const payload = (event.data ?? {}) as Record<string, unknown>;
     if (event.type === "run.stuck") {
+      const runId = asString(payload.runId, event.runId ?? "");
+      const anchor = anchorRunId();
+      if (anchor !== null && runId !== anchor) continue;
       current = stuckStateFromPayload(payload, event.runId ?? "");
       continue;
     }
     if (event.type === "run.progress_resumed" || ENDING_EVENT_TYPES.has(event.type)) {
       if (!current) continue;
       const runId = asString(payload.runId, event.runId ?? "");
-      if (event.type === "run.progress_resumed" && runId !== current.runId) {
-        continue;
-      }
+      // 切片 10 T4（item 2）：终态事件和"进度恢复"一样必须**认领同一个 run**。
+      // 事件窗口是每会话最近 200 条（`runtimeController`），且跨泳道混装：同会话里
+      // 并发的侧车道/临时 run 一结束，此前会把当前 run 的卡住横幅一起清掉。
+      if (runId !== current.runId) continue;
       current = null;
     }
   }

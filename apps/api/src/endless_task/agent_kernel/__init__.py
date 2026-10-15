@@ -9,6 +9,7 @@ from .protocol import (
     RunCommand,
     RunOutcome,
     RunOutcomeStatus,
+    RunUsage,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "RunCommand",
     "RunOutcome",
     "RunOutcomeStatus",
+    "RunUsage",
 ]

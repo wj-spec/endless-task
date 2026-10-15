@@ -42,7 +42,15 @@ type MessageHandle = {
 type ProposalKind = "artifact" | "knowledge" | "memory" | "task";
 
 type RuntimeSnapshot = {
-  runState: { status: string; partialContent: string } | null;
+  runState: {
+    runId?: string;
+    status: string;
+    partialContent: string;
+    modelTurns?: Array<{ id: string; index: number; status: string }>;
+  } | null;
+  /** E3/B：后端判定这条硬停 run **可原地复活** 时给出的 run id（否则 null）。 */
+  revivableRunId?: string | null;
+  escalation?: { runId?: string; willStop?: boolean } | null;
   entries: Array<{
     id: string;
     type: string;

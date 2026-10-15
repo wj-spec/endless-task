@@ -31,6 +31,8 @@ from .protocol import ChildOutcome, ChildStatus, SpawnSpec
 #: Default limits mirror 06 §5.6.
 DEFAULT_MAX_CONCURRENT_CHILDREN = 4
 DEFAULT_MAX_CHILDREN_PER_PARENT = 8
+#: 在册（已预留、未终态）子运行的绝对上限：排队不能变成无界队列。
+DEFAULT_MAX_QUEUED_CHILDREN = 32
 
 
 @dataclass(frozen=True)
@@ -39,9 +41,15 @@ class ChildBatchLimits:
 
     max_concurrent_children: int = DEFAULT_MAX_CONCURRENT_CHILDREN
     max_children_per_parent: int = DEFAULT_MAX_CHILDREN_PER_PARENT
+    #: 在册（含排队）子运行的绝对上限；超过仍拒绝（而不是无限排队）。
+    max_queued_children: int = DEFAULT_MAX_QUEUED_CHILDREN
 
     def __post_init__(self) -> None:
-        for field_name in ("max_concurrent_children", "max_children_per_parent"):
+        for field_name in (
+            "max_concurrent_children",
+            "max_children_per_parent",
+            "max_queued_children",
+        ):
             value = getattr(self, field_name)
             if (
                 not isinstance(value, int)
@@ -56,6 +64,11 @@ class ChildBatchLimits:
             raise AgentPlatformError(
                 "invalid_child_batch_limits",
                 "max_concurrent_children must not exceed max_children_per_parent",
+            )
+        if self.max_children_per_parent > self.max_queued_children:
+            raise AgentPlatformError(
+                "invalid_child_batch_limits",
+                "max_children_per_parent must not exceed max_queued_children",
             )
 
 
@@ -143,7 +156,13 @@ class InProcessChildScheduler:
         *,
         fail_fast_policy: bool = True,
     ) -> ChildBatchSummary:
-        """Validate the whole batch, then execute children concurrently."""
+        """Validate the whole batch, then execute children concurrently.
+
+        预检守的是**绝对**在册上限 ``max_queued_children``：超过在册容量
+        （``max_children_per_parent``）**不是**拒绝理由——那是排队的事，超出的
+        子运行会在协调器的 admission 闸门外等名额（库里就是 wire 的 `queued`）。
+        仍然"在任何子运行开始前整批失败"，保留 fail-fast 的价值。
+        """
         if not isinstance(specs, (list, tuple)) or any(
             not isinstance(spec, SpawnSpec) for spec in specs
         ):
@@ -156,15 +175,15 @@ class InProcessChildScheduler:
                 "invalid_delegation_value",
                 "fail_fast_policy must be boolean",
             )
-        already_tracked = len(self._coordinator.tracked_child_run_ids)
+        already_tracked = self._coordinator.inflight_child_count()
         incoming = len(specs)
-        if already_tracked + incoming > self._limits.max_children_per_parent:
+        if already_tracked + incoming > self._limits.max_queued_children:
             raise AgentPlatformError(
                 "delegation_children_limit_exceeded",
-                "Batch exceeds the maximum children per parent",
+                "Batch exceeds the maximum queued children per parent",
                 retryable=False,
                 details={
-                    "max_children_per_parent": self._limits.max_children_per_parent,
+                    "max_queued_children": self._limits.max_queued_children,
                     "tracked": already_tracked,
                     "incoming": incoming,
                 },
@@ -196,6 +215,7 @@ class InProcessChildScheduler:
 __all__ = [
     "DEFAULT_MAX_CHILDREN_PER_PARENT",
     "DEFAULT_MAX_CONCURRENT_CHILDREN",
+    "DEFAULT_MAX_QUEUED_CHILDREN",
     "ChildBatchLimits",
     "ChildBatchSummary",
     "InProcessChildScheduler",

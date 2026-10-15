@@ -13,7 +13,10 @@ class ResendRuntimeV2RunBody(BaseModel):
 class RuntimeV2RecoveryBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["mark_failed", "retry"]
+    #: E3/B：`resume` = "在这条 run 上接着跑"（硬停后的终态 run 原地复活）。
+    #: 拒绝时后端回 409 + `code=run_not_revivable`（message 带原因码），
+    #: **不是 500**。
+    action: Literal["mark_failed", "retry", "resume"]
 
 
 class RuntimeV2RunMemoryBody(BaseModel):

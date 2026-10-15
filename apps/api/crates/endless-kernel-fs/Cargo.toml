@@ -1,0 +1,13 @@
+# L1 内核：工作区文件操作，零 pyo3 依赖。
+# 目标：把「校验」与「使用」合并成同一次系统调用，闭合 TOCTOU（22 的 4.3 / 25 的 RK-3）。
+[package]
+name = "endless-kernel-fs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+endless-kernel-core = { workspace = true }
+rustix = { version = "1.1.5", features = ["fs"] }

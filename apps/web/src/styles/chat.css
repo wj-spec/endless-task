@@ -1597,7 +1597,7 @@
   }
 }
 
-/* P4.5 修订：侧边临时会话紧凑样式 */
+/* P4.5 修订：侧边临时对话紧凑样式 */
 .chat-surface.is-side .surface-header {
   height: 52px;
   grid-template-columns: minmax(0, 1fr) auto;

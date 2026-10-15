@@ -285,7 +285,7 @@ export function SessionRail({
 
       <button
         aria-disabled={!workspaceCanCreate}
-        aria-label="新对话"
+        aria-label="新建对话"
         className="new-chat-button"
         disabled={!workspaceCanCreate}
         onClick={() => onNewConversation()}
@@ -295,7 +295,7 @@ export function SessionRail({
               ? "当前工作区尚未绑定本地目录，请先绑定目录后再新建对话"
               : "请先选择并绑定一个工作区目录，再新建对话"
             : collapsed
-              ? "新对话"
+              ? "新建对话"
               : undefined
         }
         type="button"
@@ -303,7 +303,7 @@ export function SessionRail({
         <span aria-hidden="true" className="new-chat-icon">
           <AddIcon size={20} />
         </span>
-        <span className="new-chat-label">新对话</span>
+        <span className="new-chat-label">新建对话</span>
       </button>
 
       <label className="conversation-search">

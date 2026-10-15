@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
 
 [project]
 name = "endless-task-api"
@@ -27,7 +27,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # 测试直接用它当 ASGI 客户端（`httpx.ASGITransport`），**不能删**。
     "httpx>=0.27,<1",
+    # starlette 1.6.0 的 TestClient 在只装 httpx 时会在**导入期**发
+    # StarletteDeprecationWarning；本项目门禁用 `-W error`，该警告被升级为错误
+    # ⇒ `tests/test_terminal_api.py` 因 `import fastapi.testclient` 直接 ImportError
+    # （整份文件 5 个用例全部无法收集）。httpx2 是 pydantic 维护的 httpx 后继者，
+    # starlette 1.6 明确要求它；装上后导入不再发警告。
+    "httpx2>=2,<3",
 ]
 # 可选：SQLite 原生向量 KNN（sqlite-vec）。未安装时 SqliteVecSearch 优雅回退
 # 到现有"读 BLOB 暴力算距离"路径，不影响主链路。
@@ -39,11 +46,15 @@ vec = [
 endless-task = "endless_task.cli:main"
 endless-task-api = "endless_task.api.main:run"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.maturin]
+# 混合布局：Python 包在 src/，Rust 扩展来自 crates/endless-native（分层见 23 的 5.4）。
+python-source = "src"
+module-name = "endless_task._native_core"
+# 本地跑过测试后 src 下会有 __pycache__；不排掉它们会把 359 个 .pyc 打进 wheel
+# （实测）。这些是构建垃圾，不属于发行物。
+exclude = ["**/__pycache__/**", "**/*.pyc"]
+manifest-path = "crates/endless-native/Cargo.toml"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-"endless_task.storage.migrations" = ["*.sql"]
+# ⚠️ 原 setuptools 有 `package-data: endless_task.storage.migrations = ["*.sql"]`。
+# maturin 的混合布局按「整个 python-source 目录随包分发」处理，理论上覆盖它，
+# 发行构建仍需核对 wheel 包含全部 SQL 迁移；缺失时用 maturin 的 `include` 显式列出。

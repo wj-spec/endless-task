@@ -22,6 +22,41 @@ MAX_NAME_CHARS = 32
 MAX_TIMEOUT_SECONDS = 600.0
 
 
+def parse_allowed_tools(raw: object) -> Optional[tuple[str, ...]]:
+    """把 ``allowed_tools_json`` 的**原始列值**解析成白名单（批次 F Task 2）。
+
+    语义（ADR §7 的 I6 裁定）——三态，必须显式区分：
+      * ``None``（SQL NULL）/ ``""``（空串）/ 非 JSON 的**损坏值** ⇒ ``None`` = 未配置 = **全部允许**；
+      * ``[]`` ⇒ ``()`` = **全部禁用**；
+      * 非空数组 ⇒ 只允许列出的 ``rawName``。
+
+    容错口径：**不**沿用本文件既有的 ``json.loads(row[...] or "[]")`` 风格——空串会抛
+    ``JSONDecodeError``。这里把空串/损坏值按"未配置"（= 保持今天的行为）处理，宁可宽也不
+    因一行坏 JSON 让整个服务器不可用；这是有意的宽松，理由写在 F2 报告里。
+    """
+    if raw is None:
+        return None
+    text = raw if isinstance(raw, str) else str(raw)
+    if not text.strip():
+        return None
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if decoded is None:
+        return None
+    if not isinstance(decoded, (list, tuple)):
+        return None
+    return tuple(item for item in decoded if isinstance(item, str))
+
+
+def dump_allowed_tools(allowed: Optional[tuple[str, ...]]) -> Optional[str]:
+    """白名单落库形态：``None`` 存 SQL NULL；``()`` 存 ``"[]"``（= 全部禁用）。"""
+    if allowed is None:
+        return None
+    return json.dumps(list(allowed), ensure_ascii=False)
+
+
 @dataclass(frozen=True)
 class McpServerConfig:
     id: str
@@ -37,6 +72,10 @@ class McpServerConfig:
     tool_call_timeout_seconds: float
     created_at: str
     updated_at: str
+    #: F2：``None`` = 未配置 = 全部允许；``()`` = 全部禁用；非空 = 只允许这些 rawName。
+    allowed_tools: Optional[tuple[str, ...]] = None
+    #: F2：该服务器的工具能否进**未值守**（定时任务 / 委派子运行）。列默认 0（fail-safe）。
+    allow_unattended: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +90,8 @@ class McpServerDraft:
     headers: Optional[dict[str, str]] = None
     enabled: bool = True
     tool_call_timeout_seconds: float = 60.0
+    allowed_tools: Optional[tuple[str, ...]] = None
+    allow_unattended: bool = False
 
 
 class SqliteMcpServerRepository:
@@ -100,8 +141,9 @@ class SqliteMcpServerRepository:
                 INSERT INTO mcp_servers (
                     id, name, transport, command, args_json, env_json, cwd,
                     url, headers_json, enabled, tool_call_timeout_seconds,
+                    allowed_tools_json, allow_unattended,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     server_id,
@@ -115,6 +157,8 @@ class SqliteMcpServerRepository:
                     json.dumps(values["headers"], ensure_ascii=False),
                     1 if values["enabled"] else 0,
                     values["timeout"],
+                    dump_allowed_tools(values["allowed_tools"]),
+                    1 if values["allow_unattended"] else 0,
                     now,
                     now,
                 ),
@@ -145,7 +189,8 @@ class SqliteMcpServerRepository:
                 UPDATE mcp_servers SET
                     name = ?, transport = ?, command = ?, args_json = ?,
                     env_json = ?, cwd = ?, url = ?, headers_json = ?,
-                    enabled = ?, tool_call_timeout_seconds = ?, updated_at = ?
+                    enabled = ?, tool_call_timeout_seconds = ?,
+                    allowed_tools_json = ?, allow_unattended = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -159,6 +204,8 @@ class SqliteMcpServerRepository:
                     json.dumps(values["headers"], ensure_ascii=False),
                     1 if values["enabled"] else 0,
                     values["timeout"],
+                    dump_allowed_tools(values["allowed_tools"]),
+                    1 if values["allow_unattended"] else 0,
                     now,
                     server_id,
                 ),
@@ -210,6 +257,17 @@ class SqliteMcpServerRepository:
         env = dict(draft.env or {})
         if not all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
             raise ValidationError("MCP environment values must be text.")
+        # F2：白名单。None = 未配置（全部允许）；() = 全部禁用；非空 = 只允许列出的 rawName。
+        if draft.allowed_tools is None:
+            allowed_tools: Optional[tuple[str, ...]] = None
+        else:
+            allowed_tools = tuple(draft.allowed_tools)
+            if any(not isinstance(item, str) for item in allowed_tools):
+                raise ValidationError("MCP allowed tool names must be text values.")
+            if any(not item.strip() for item in allowed_tools):
+                raise ValidationError("MCP allowed tool names must not be empty.")
+            if len(set(allowed_tools)) != len(allowed_tools):
+                raise ValidationError("MCP allowed tool names must be unique.")
         return {
             "name": name,
             "transport": draft.transport,
@@ -221,6 +279,8 @@ class SqliteMcpServerRepository:
             "headers": headers,
             "enabled": bool(draft.enabled),
             "timeout": timeout,
+            "allowed_tools": allowed_tools,
+            "allow_unattended": bool(draft.allow_unattended),
         }
 
     def _config(self, row) -> McpServerConfig:
@@ -238,4 +298,6 @@ class SqliteMcpServerRepository:
             tool_call_timeout_seconds=float(row["tool_call_timeout_seconds"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            allowed_tools=parse_allowed_tools(row["allowed_tools_json"]),
+            allow_unattended=bool(row["allow_unattended"]),
         )

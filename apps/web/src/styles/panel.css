@@ -190,6 +190,85 @@
   font-size: var(--fs-1);
 }
 
+/* C4：右侧边栏「会话」视图（分支树 + 临时对话 + 新建入口）。 */
+.workspace-conversations {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-2);
+  overflow-y: auto;
+}
+
+.workspace-temporary-new {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: transparent;
+  padding: 8px var(--space-3);
+  color: var(--ink);
+  font-size: var(--fs-2);
+  cursor: pointer;
+}
+
+.workspace-temporary-new:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.workspace-section-title {
+  margin: 0 0 var(--space-1);
+  color: var(--faint);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.workspace-empty {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-2);
+  line-height: 1.6;
+}
+
+.workspace-lane-tree,
+.workspace-temporary-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-lane-tree li + li,
+.workspace-temporary-list li + li {
+  margin-top: 2px;
+}
+
+.workspace-lane-row,
+.workspace-temporary-list button {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  padding: 8px var(--space-3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-lane-row:hover,
+.workspace-temporary-list button:hover {
+  background: var(--rail);
+}
+
+.workspace-lane-row.is-current {
+  background: var(--accent-soft);
+}
+
 .workspace-detail {
   display: flex;
   flex: 1;
@@ -2925,9 +3004,16 @@
 
 /* ---------- S13 布局宽度拖拽 ---------- */
 
-.session-rail,
-.workspace-panel {
-  position: relative;
+@media (min-width: 761px) {
+  .session-rail {
+    position: relative;
+  }
+}
+
+@media (min-width: 1000px) {
+  .workspace-panel {
+    position: relative;
+  }
 }
 
 .resize-handle.is-edge-right,
@@ -3204,7 +3290,8 @@
   z-index: var(--z-menu-pop);
 }
 
-.composer-slash-menu {
+.composer-slash-menu,
+.composer-mention-menu {
   max-height: 260px;
   margin: 0;
   padding: var(--space-1);
@@ -3216,7 +3303,8 @@
   list-style: none;
 }
 
-.composer-slash-menu button {
+.composer-slash-menu button,
+.composer-mention-menu button {
   display: flex;
   width: 100%;
   align-items: baseline;
@@ -3231,7 +3319,9 @@
 }
 
 .composer-slash-menu button:hover,
-.composer-slash-menu button.is-active {
+.composer-slash-menu button.is-active,
+.composer-mention-menu button:hover,
+.composer-mention-menu button.is-active {
   background: var(--accent-soft);
 }
 
@@ -3260,7 +3350,8 @@
   font-size: 9px;
 }
 
-.composer-slash-menu.is-empty {
+.composer-slash-menu.is-empty,
+.composer-mention-menu.is-empty {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -3269,12 +3360,145 @@
   font-size: var(--fs-1);
 }
 
-.composer-slash-menu.is-empty p {
+.composer-slash-menu.is-empty p,
+.composer-mention-menu.is-empty p {
   margin: 0;
+}
+
+/* 候选多到要滚动时，列表下方挂一行总数：只看到前几行容易误判技能数量。 */
+.composer-slash-more,
+.composer-mention-more {
+  margin: 0;
+  padding: 5px var(--space-2);
+  border: 1px solid var(--line);
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+  background: var(--paper);
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
+
+/* 有提示行时，把列表底部的圆角/描边交给提示行，视觉上保持一张卡片。 */
+.composer-slash-menu.has-more,
+.composer-mention-menu.has-more {
+  border-bottom: 0;
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
 }
 
 .composer-slash-hint {
   color: var(--faint);
+}
+
+/* ---------- C3b：@ 引用会话上下文 ---------- */
+
+/* `@` 菜单的候选行：标题 + 类型/更新时间（结构与 `/` 菜单同形，样式各自成对）。 */
+.composer-mention-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-mention-desc {
+  flex: none;
+  color: var(--faint);
+  font-size: 9px;
+}
+
+/* 已选引用的 chip 条：位置与 `.composer-files` 一致（输入行上方一条）。 */
+.composer-mentions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 16px 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.composer-mention {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: var(--fs-1);
+}
+
+.composer-mention-at {
+  flex: none;
+  color: var(--accent);
+  font-weight: 620;
+}
+
+.composer-mention-title {
+  max-width: 220px;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-mention-mode {
+  flex: none;
+  max-width: 96px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: var(--fs-1);
+}
+
+.composer-mention-tokens {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.composer-mention button {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.composer-mention button:hover {
+  background: var(--line-soft);
+  color: var(--ink);
+}
+
+.composer-mention-total {
+  color: var(--muted);
+  font-size: var(--fs-1);
+}
+
+.composer-mention-warn {
+  color: var(--warn-deep);
+  font-size: var(--fs-1);
+}
+
+.composer-mention-error {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: var(--fs-1);
 }
 
 /* ---------- S2 技能工作台 ---------- */

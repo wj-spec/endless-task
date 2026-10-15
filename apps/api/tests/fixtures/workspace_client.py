@@ -1,6 +1,6 @@
 """工作区绑定 API 测试辅助。
 
-必选绑定产品设定（docs/workspace-mandatory-binding-design.md）要求：新建会话必须
+必选绑定产品设定要求：新建会话必须
 归属到一个已绑定本地目录的工作区。历史测试直接 `POST /conversations`（无
 workspaceId），现在会得到 409。本模块提供两个 helper：
 

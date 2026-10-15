@@ -16,6 +16,11 @@ apps/*/node_modules/
 apps/*/dist/
 apps/web/test-results/
 apps/web/playwright-report/
+apps/web/.vitest/
+# Rust and maturin build products; keep Cargo.lock and Rust sources tracked.
+apps/api/target/
+apps/api/src/**/*.so
+apps/api/src/**/*.pyd
 docs/*
 PRODUCT_BLUEPRINT.md
 ui-ux-evolution-report.md

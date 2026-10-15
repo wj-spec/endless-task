@@ -17,7 +17,9 @@ from endless_task.tooling import (
     ToolResult,
 )
 from pathlib import Path
-from .common import _PATH_LOCKS, _backend_policy_and_trace, _log_effect, _now_iso, _read_text_or_none, _record_mutation, _record_undo_write, _sha256_bytes
+from .common import _PATH_LOCKS, _backend_policy_and_trace, _log_effect, _now_iso, _record_mutation, _record_undo_write, _sha256_bytes
+from .common import kernel_mkdir_parent
+from .common import kernel_read, kernel_read_undo_snapshot, kernel_remove, kernel_write
 
 
 class WriteWorkspaceFileTool:
@@ -111,14 +113,12 @@ class WriteWorkspaceFileTool:
         self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
-            before_content = _read_text_or_none(resolved.canonical)
-            before_hash = (
-                _sha256_bytes(resolved.canonical.read_bytes())
-                if resolved.canonical.exists()
-                else None
-            )
-            resolved.canonical.parent.mkdir(parents=True, exist_ok=True)
-            resolved.canonical.write_text(content, encoding="utf-8")
+            # undo/diff 前置读也走句柄（RK-3 C6）：校验后被换成 symlink 时在这里就拒，
+            # 不再把区外内容读进 before_content/before_hash。
+            before_content, before_raw = kernel_read_undo_snapshot(binding, resolved)
+            before_hash = _sha256_bytes(before_raw) if before_raw is not None else None
+            kernel_mkdir_parent(binding, resolved)
+            kernel_write(binding, resolved, content.encode("utf-8"))
         after_hash = sha256_text(content)
         _record_undo_write(
             self._undo_service,
@@ -184,7 +184,7 @@ class WriteWorkspaceFileTool:
         )
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
-            before_content = _read_text_or_none(resolved.canonical)
+            before_content, _ = kernel_read_undo_snapshot(binding, resolved)
             receipt = await self._execution_backend.mutate_file(
                 Request(
                     effect_id=f"enforced_write:{relative}:{run_id}",

@@ -174,6 +174,12 @@ export type McpToolStatus = {
   description: string;
   effect: "read_only" | "local_write" | "external_action";
   requiresExplicitConfirmation: boolean;
+  /**
+   * F2（契约新增）：该工具是否在服务器白名单内。
+   * 被挡掉的工具**仍然出现在列表里**，只是这个标记为 `false`——否则用户收窄白名单后
+   * 就再也看不到被排除的工具、无法重新放行。
+   */
+  allowed: boolean;
 };
 
 export type McpServer = {
@@ -186,6 +192,13 @@ export type McpServer = {
   url: string;
   enabled: boolean;
   toolCallTimeoutSeconds: number;
+  /**
+   * F2（契约新增）：工具白名单。`null` = 未配置 = 全部允许；`[]` = 全部禁用；
+   * 非空 = 只允许列出的**原始工具名**（`rawName`）。
+   */
+  allowedTools: string[] | null;
+  /** F2（契约新增）：是否允许定时任务 / 委派子运行调用（新服务器默认 `false`）。 */
+  allowUnattended: boolean;
   state:
     | "connected"
     | "reconnecting"
@@ -194,6 +207,8 @@ export type McpServer = {
     | "error";
   toolCount: number;
   lastError: string | null;
+  /** F2（契约新增）：本次响应里"保存成功但重新加载工具失败"的可呈现原因。 */
+  reloadError: string | null;
   tools: McpToolStatus[];
   createdAt: string;
   updatedAt: string;
@@ -210,6 +225,10 @@ export type McpServerInput = {
   headers?: Record<string, string>;
   enabled?: boolean;
   toolCallTimeoutSeconds?: number;
+  /** F2：`null` = 全部允许（**不是**"缺字段"）；`[]` = 全部禁用；非空 = 只允许这些原始工具名。 */
+  allowedTools?: string[] | null;
+  /** F2：缺省 = 保留现值。 */
+  allowUnattended?: boolean;
 };
 
 export type EffectLogEntry = {
@@ -575,9 +594,52 @@ export type RuntimeV2RecoveryReport = {
   }>;
 };
 
+/**
+ * 切片 10 T2：`runState.currentStep` —— "现在到哪一步了"。
+ *
+ * 有在飞工具时 `toolInFlight=true` 且 `toolName` 就是它；否则 `toolName` 是最后跑过的
+ * 那个工具，`toolTurnIndex` 说明它属于哪一轮（别把上一轮的工具当成当前轮）。
+ * 一个模型轮都还没有时后端返回 `null`（"还没开始干活"），这里不做本地推导。
+ */
+export type RuntimeV2RunStep = {
+  modelTurnIndex: number | null;
+  modelTurnCount: number | null;
+  toolName: string | null;
+  toolStatus: string | null;
+  toolTurnIndex: number | null;
+  toolInFlight: boolean;
+};
+
+/**
+ * 切片 10 T2：`runState.budget` —— 执行器自报的运行预算墙。
+ *
+ * 唯一真相源是执行器发出的 `run.budget_declared`；网关猜档位就是伪造，所以没有那条
+ * 事件时 `budget` 整个为 `null`（**不退回默认档**）。`usedSeconds`/`remainingSeconds`
+ * 是快照时刻现算的活值，与 `runState.elapsedSeconds` 同源。
+ */
+export type RuntimeV2RunBudget = {
+  softSeconds?: number | null;
+  hardSeconds?: number | null;
+  perTurnSeconds?: number | null;
+  costCapUsd?: number | null;
+  usedSeconds?: number | null;
+  remainingSeconds?: number | null;
+  source?: string;
+  declaredAt?: string;
+};
+
 export type RuntimeV2RunState = {
   runId: string;
   status: string;
+  /**
+   * 切片 10 T2：run 行上的真实起点（`start_run` 写入）。缺省/为 null = 后端没给起点
+   * （从未开始的 run 不写 `started_at`）——此时前端**不许**用"当前时间"冒充起点。
+   */
+  startedAt?: string | null;
+  /** 快照时刻现算的已用秒（运行中=现在-起点，终态=冻结）；null = 从未开始。 */
+  elapsedSeconds?: number | null;
+  currentStep?: RuntimeV2RunStep | null;
+  budget?: RuntimeV2RunBudget | null;
   partialContent: string;
   errorCode: string | null;
   safeMessage: string | null;
@@ -601,6 +663,15 @@ export type RuntimeV2Snapshot = {
   runningRunId: string | null;
   activeRunId: string | null;
   activeRunVariantId: string | null;
+  /**
+   * E3/B：后端判定「这条 run 可以原地复活」时给出它的 id，否则 null。
+   *
+   * **判据由后端算**（`runtime_v2/revive.py`：COMPLETED + 最后一条 `run_awaiting_user`
+   * 是 `willStop=true` + 没有"结果无法确认"的工具体 + 该 lane 没有别的活动 run）。
+   * 前端**不许**自己从 `runState.status` 猜：那是"猜状态"，会与后端分岔
+   * （例如 FAILED 也是终态、但不可复活）。
+   */
+  revivableRunId?: string | null;
   lastEventSeq: number;
   entries: RuntimeV2Entry[];
   runState: RuntimeV2RunState | null;
@@ -663,7 +734,7 @@ export type RuntimeV2Verification = {
 /** C4 终止与升级：无进展/预算将尽时提请人工决策的报告。 */
 export type RuntimeV2Escalation = {
   runId: string;
-  /** no_progress | budget_exhausted */
+  /** no_progress | budget_exhausted | cost_cap_exceeded | verification_failed | time_budget_exhausted | uncertain_side_effects */
   reason: string;
   summary: string;
   /** continue | change_approach | take_over */
@@ -675,11 +746,14 @@ export type RuntimeV2Escalation = {
     producedCharacters?: number;
     inputTokens?: number;
     outputTokens?: number;
+    elapsedSeconds?: number;
   };
   budget: {
     usedTokens?: number;
     limitTokens?: number | null;
     usedRatio?: number | null;
+    usedSeconds?: number | null;
+    limitSeconds?: number | null;
   };
   repeatedFailures: Array<{
     toolName: string;
@@ -963,6 +1037,60 @@ export type HubV2Event = {
   };
 };
 
+/**
+ * C3b：`@` 引用的一条 = **判别联合**的一个成员（判别键 `kind`，一期只有
+ * `conversation`）。形状与后端 `RuntimeV2ConversationReferenceBody`
+ * （`api/schemas/v2_conversations.py`）逐字对齐，`extra="forbid"` 所以不能多键。
+ */
+export type RuntimeV2ConversationMode = "summary" | "recent" | "full";
+
+export type RuntimeV2ConversationReference = {
+  kind: "conversation";
+  conversationId: string;
+  laneId?: string | null;
+  /** 缺省 `summary`（协议默认的权威在后端 schema 上）。 */
+  mode?: RuntimeV2ConversationMode;
+  /** `recent` 档的轮数（仅 5 / 10）；`summary` 档后端固定 2 轮。 */
+  recentTurns?: number | null;
+  /** 一期预留：必须能接受空数组；非空后端指名 400。 */
+  entryIds?: string[];
+};
+
+/**
+ * C3b：一条引用的 **provenance**（后端 `plan.items[].provenance` 的自由 JSON）。
+ *
+ * M-2：**不含 `text`**——发送响应的 `references` 返回的就是这个形状
+ * （`routes/v2_conversations.py:319` 的 `[dict(item.provenance) …]`），投影正文只有
+ * **预览** route 才附上。此前让发送响应复用带 `text` 的预览类型，是对发送响应不实的声明。
+ */
+export type RuntimeV2ReferenceProvenance = {
+  conversationId?: string;
+  laneId?: string;
+  kind?: string;
+  title?: string;
+  origin?: string;
+  mode?: string;
+  recentTurns?: number | null;
+  projectedCharacters?: number;
+  tokenEstimate?: number;
+  tokenBudget?: number;
+  truncated?: boolean;
+  entryIds?: string[];
+  [key: string]: unknown;
+};
+
+/** C3b：引用**预览**返回的一条 = provenance + 投影文本（`text` 只有预览 route 有）。 */
+export type RuntimeV2ReferencePreviewItem = RuntimeV2ReferenceProvenance & {
+  text: string;
+};
+
+export type RuntimeV2ReferencePreviewResponse = {
+  conversationId: string;
+  totalTokenEstimate: number;
+  warnings: string[];
+  items: RuntimeV2ReferencePreviewItem[];
+};
+
 export type RuntimeV2MessageResponse = {
   conversationId: string;
   laneId: string;
@@ -970,6 +1098,10 @@ export type RuntimeV2MessageResponse = {
   userMessageId: string;
   /** S1：显式技能调用结果（ok / disabled / not_user_invocable / …）。 */
   requestedSkills?: { name: string; status: string; message: string }[];
+  /** C3b：本次真正注入的引用（**只有 provenance，没有 `text`**）与总 token 估算。 */
+  references?: RuntimeV2ReferenceProvenance[];
+  referenceTokenEstimate?: number;
+  referenceWarnings?: string[];
 };
 
 /** M2：MCP 调用记录。 */
@@ -1044,7 +1176,8 @@ export type SkillInvocationCandidate = {
 
 export type RuntimeV2RecoveryResponse = {
   runId: string;
-  action: "mark_failed" | "retry";
+  /** E3/B：`resumed` = 同一条 run 原地复活（不是新开一轮）。 */
+  action: "mark_failed" | "retry" | "resumed";
   laneId: string;
   newRunId: string | null;
 };
@@ -1115,6 +1248,26 @@ export type TaskSchedule = {
   day?: number;
 };
 
+/**
+ * 切片 10 T6：`POST /tasks` 请求体。字段集合**就是**后端 `CreateTaskBody`
+ * （`apps/api/src/endless_task/api/schemas/tasks.py`，`extra="forbid"`），一个不多
+ * 一个不少；`schedule.kind` 只有 `daily|weekly|monthly`（`once` 不是任务，后端 400）。
+ */
+export type CreateTaskInput = {
+  title: string;
+  commitment: string;
+  schedule: {
+    kind: "daily" | "weekly" | "monthly";
+    time: string;
+    /** 仅 weekly。 */
+    weekday?: number;
+    /** 仅 monthly。 */
+    day?: number;
+  };
+  conversationId: string;
+  turnId: string;
+};
+
 export type Reminder = {
   id: string;
   title: string;
@@ -1126,6 +1279,43 @@ export type Reminder = {
   createdAt: string;
   firedAt: string | null;
   cancelledAt: string | null;
+};
+
+/**
+ * 批次 D Task 1：`POST /reminders` 请求体。字段集合**就是**后端
+ * `CreateReminderBody`（`apps/api/src/endless_task/api/schemas/reminders.py`，
+ * `extra="forbid"`），一个不多一个不少。
+ *
+ * `dueAt` 只收一次性时刻，`at` 是**本地墙钟** `YYYY-MM-DDTHH:MM`（与后端
+ * `_ONCE_PATTERN` 同形）；`kind` 只可能是 `"once"`（周期安排是任务，不是提醒）。
+ */
+export type CreateReminderInput = {
+  title: string;
+  commitment: string;
+  dueAt: { kind: "once"; at: string };
+  conversationId: string;
+  turnId: string;
+};
+
+/**
+ * 批次 D Task 1：`PATCH /tasks/{id}` 请求体。字段集合**就是**后端
+ * `UpdateTaskBody`（`extra="forbid"`），允许面只有这三个；`status` / `source*` /
+ * `createdAt` **不是**允许面（后端会 400，因为 `extra="forbid"`）。
+ *
+ * 三个键都是可选的：只送要改的字段。`schedule` 用的是与 `POST /tasks` 同一个形状
+ * （`task_json.schedule` 逐字段相同），所以编辑表单可以原样读回再写回。
+ */
+export type UpdateTaskInput = {
+  title?: string;
+  commitment?: string;
+  schedule?: {
+    kind: "daily" | "weekly" | "monthly";
+    time: string;
+    /** 仅 weekly。 */
+    weekday?: number;
+    /** 仅 monthly。 */
+    day?: number;
+  };
 };
 
 export type TaskProposalStatus =
@@ -1424,6 +1614,22 @@ export type UndoJournalEntry = {
   undoneAt: string | null;
 };
 
+/** N1③：会话文件变更（undo 日志的 before × 当前文件的 unified diff）。 */
+export type ConversationChangeItem = {
+  id: string;
+  target: string;
+  /** file_write | file_delete */
+  kind: string;
+  /** available | undone */
+  status: string;
+  undoable: boolean;
+  createdAt: string;
+  /** 变更前内容是否可得（二进制/超大时为 false，diff 只反映可得的一侧）。 */
+  beforeAvailable: boolean;
+  /** unified diff 文本；无变更或两侧都不可得时为 null。 */
+  diff: string | null;
+};
+
 /** B2：一次记忆巩固记录（聚类 → 提案 → 并入）。 */
 export type MemoryConsolidationRecord = {
   id: string;
@@ -1577,4 +1783,37 @@ export type RuntimeV2SpansResponse = {
   runId: string;
   available: boolean;
   spans: RuntimeV2Span[];
+};
+
+/** 委派子运行的状态词表（Task 3 定死的六个取值，服务端派生）。 */
+export type DelegatedChildRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+/** 右栏「子任务」页签的一行（服务端已截断 task/summary）。 */
+export type DelegatedChildRun = {
+  childRunId: string;
+  status: DelegatedChildRunStatus;
+  /** 任务摘要（服务端截断到 ~200 字）。 */
+  task: string;
+  createdAt: string;
+  startedAt: string | null;
+  terminalAt: string | null;
+  /** 已用时秒数；终态行按 terminalAt 收口，还没开始（排队中）为 null。 */
+  elapsedSeconds: number | null;
+  /** 终态结果摘要（服务端截断到 ~2000 字）；没有则是 null。 */
+  summary: string | null;
+  errorCode: string | null;
+  safeMessage: string | null;
+  workspaceMode: string;
+};
+
+export type DelegatedChildRunListResponse = {
+  items: DelegatedChildRun[];
+  /** **返回条数**（最多 50），不是这个会话的子运行总数。 */
+  total: number;
 };

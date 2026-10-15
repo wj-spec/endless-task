@@ -266,7 +266,9 @@
 }
 
 .session-item-main {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   flex: 1;
   min-width: 0;
   border: 0;
@@ -274,6 +276,12 @@
   padding: var(--space-2) var(--space-8) var(--space-2) var(--space-3);
   text-align: left;
   cursor: pointer;
+}
+
+/* 标题占满剩余宽度（带标识时也不会把标识挤出去）。 */
+.session-item-title {
+  flex: 1;
+  min-width: 0;
 }
 
 .session-row-menu {
@@ -346,6 +354,37 @@
   color: var(--faint);
   font-size: var(--fs-1);
   white-space: nowrap;
+}
+
+/* 临时对话 / 分支的可见标识（P0-B）：数据来自既有 payload 字段
+   （`Conversation.kind` / `parentConversationId`），不新增后端字段。
+   为什么用 `.session-item .session-item-badge`（0-2-0）而不是单个类（0-1-0）：
+   下面 `.session-item span`（**0-1-1**：一个 class + 一个元素）会命中徽标，
+   吃掉 font-size/font-weight/color。按特异性比较规则（先比 b 列），0-2-0 的
+   b=2 **赢过** 0-1-1 的 b=1，所以徽标自己的声明生效。
+   活跃行上 `.session-item.is-active span`（**0-2-1**）比较更强，需要下面那条
+   `.session-item.is-active .session-item-badge`（**0-3-0**）再压一次。 */
+.session-item .session-item-badge {
+  flex: none;
+  display: block;
+  padding: 1px 6px;
+  border: 1px solid var(--line-accent);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-1);
+  /* 与全仓既有口径一致（`chat.css`/`layout.css` 的同款小徽标都用 560）。
+     这里不再声明"字体学"理由：本仓没有 `@font-face`、也没有网络字体，
+     `Inter` 只是字体栈首位、实际走系统字体，任何具体字重的合成细节无法在本仓证实。 */
+  font-weight: 560;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* 活跃行上标题会变成 `--ink`/600（见 `.session-item.is-active span`），徽标要保持弱化 */
+.session-item.is-active .session-item-badge {
+  color: var(--muted);
+  font-weight: 560;
 }
 
 .rail-empty {
@@ -671,10 +710,8 @@
   color: var(--faint);
 }
 
-.workspace-folder-icon svg {
-  width: 18px;
-  height: 18px;
-}
+/* 尺寸**不再在这里声明**：由 `WORKSPACE_ICON_SIZE`（`ui/Icons.tsx`）写进 svg 属性，
+   避免「props 与 CSS 各说各话」（批次 H / F-5）。CSS 只做布局。 */
 
 .workspace-item-main .workspace-item-name {
   min-width: 0;
@@ -743,11 +780,41 @@
   color: var(--ink-raise);
 }
 
+/*
+ * 会话栏「动作」按钮族（F-3）：**一套样式**同时服务
+ *   - 空工作区空态 ⇒「新建对话」（工作区曾经是死角，见 WorkspaceNavigationGroup）；
+ *   - 未绑定工作区 ⇒「绑定目录…」；
+ *   - 工作区行内新建（只加 `.workspace-new-conversation` 缩小到 24×24）。
+ * 空态里居中、未绑定块里靠左，尺寸由父容器决定。
+ */
+.rail-empty-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  align-self: center;
+  justify-self: start;
+  padding: var(--space-1) 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink-raise);
+  font-size: var(--fs-2);
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.rail-empty-action:hover {
+  background: var(--sheen-strong);
+}
+
+/* 工作区行内新建按钮：与空态动作按钮同族（`.rail-empty-action`），仅尺寸小一号。 */
 .workspace-new-conversation {
   display: grid;
+  place-items: center;
   width: 24px;
   height: 24px;
-  place-items: center;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-s);
   background: transparent;
@@ -783,7 +850,7 @@
   margin: var(--space-3) 10px 14px 28px;
 }
 
-/* 未绑定目录的工作区：提示 + 绑定入口，避免「无法新建会话」死路。 */
+/* 未绑定目录的工作区：提示 + 绑定入口，避免「无法新建对话」死路。 */
 .workspace-unbound {
   margin: var(--space-2) 10px var(--space-0) 28px;
   display: grid;
@@ -794,20 +861,4 @@
 
 .workspace-unbound-hint {
   line-height: 1.4;
-}
-
-.workspace-unbound-bind {
-  justify-self: start;
-  padding: var(--space-1) 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-s);
-  background: var(--surface);
-  color: var(--ink-raise);
-  font-size: var(--fs-2);
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.workspace-unbound-bind:hover {
-  background: var(--sheen-strong);
 }

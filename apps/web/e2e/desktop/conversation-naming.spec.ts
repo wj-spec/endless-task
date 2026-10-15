@@ -11,15 +11,18 @@ import {
  *
  * 两处都曾缺失：
  * 1. v2 消息路径不做自动命名（v1 的 `create_turn` 才有），会话永远叫「新对话」；
- * 2. 侧栏 `SessionRail` 用独立数据源（`useWorkspaceNavigation`），新建会话 /
+ * 2. 侧栏 `SessionRail` 用独立数据源（`useWorkspaceNavigation`），新建对话 /
  *    标题变化不会触发它刷新 —— 新建的会话根本不出现，标题也停在「新对话」。
+ *
+ * 注意：这里的「新对话」是**后端生成的默认标题**（`sqlite_chat_repository` 写死），
+ * 是对象名不是动作名，所以 F-2 统一动作文案时**不动**它。
  */
-test("新建会话出现在侧栏，首条消息后变成摘要式标题", async ({
+test("新建对话出现在侧栏，首条消息后变成摘要式标题", async ({
   page,
   request,
 }) => {
   const workspace = await createWorkspace(request, `命名工作区 ${Date.now()}`);
-  // 先在工作区里放一段对话，进入页面时该工作区即为当前工作区（「+」只出现在当前行）。
+  // 先在工作区里放一段对话，进入页面时该工作区即为当前工作区。
   const entryTitle = `命名入口 ${Date.now()}`;
   await createCompletedWorkspaceConversation(request, workspace.id, entryTitle);
   await openConversation(page, entryTitle, { workspaceId: workspace.id });
@@ -28,8 +31,8 @@ test("新建会话出现在侧栏，首条消息后变成摘要式标题", async
   const group = nav.locator(`[data-workspace-id="${workspace.id}"]`);
   const sessions = group.locator(".session-item-main");
 
-  // 工作区行的「+」新建会话 → 侧栏**立即**出现一行（不需要刷新页面）
-  await group.getByRole("button", { name: "在当前工作区新建会话" }).click();
+  // 工作区行的「+」新建对话 → 侧栏**立即**出现一行（不需要刷新页面）
+  await group.getByRole("button", { name: "在此工作区新建对话" }).click();
   await expect(sessions.filter({ hasText: "新对话" })).toBeVisible();
 
   // 首条消息 → 标题变为前 30 字（与后端 v1 同一规则），侧栏行同步更新
@@ -61,7 +64,7 @@ test("手动命名的标题不会被首条消息覆盖", async ({ page, request 
 
   const nav = page.getByRole("navigation", { name: "会话列表" });
   const group = nav.locator(`[data-workspace-id="${workspace.id}"]`);
-  await group.getByRole("button", { name: "在当前工作区新建会话" }).click();
+  await group.getByRole("button", { name: "在此工作区新建对话" }).click();
   // 等新会话真正成为当前会话（否则重命名/发消息会落在上一段对话上）
   await expect(page.locator(".heading-sub")).toHaveText("新对话");
 

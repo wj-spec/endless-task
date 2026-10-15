@@ -1,0 +1,11 @@
+# L1 内核底座：**零 pyo3**（守 23 §5.2 规则 1「单向依赖 + L1 不知道 Python 存在」）。
+# 本 crate 不依赖任何 Python 运行时，`cargo test` 可独立全绿。
+[package]
+name = "endless-kernel-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

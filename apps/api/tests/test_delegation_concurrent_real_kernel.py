@@ -146,7 +146,8 @@ class ConcurrentRealKernelBatchTest(unittest.IsolatedAsyncioTestCase):
                 child_run_id
             )
 
-        def executor_builder() -> AgentRunExecutor:
+        def executor_builder(command) -> AgentRunExecutor:
+            del command  # 这些用例只关心执行器本身，不校验它拿到的预算
             return AgentRunExecutor(
                 repository=self.repository,
                 provider=provider,

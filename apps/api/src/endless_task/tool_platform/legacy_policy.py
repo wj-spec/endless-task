@@ -39,8 +39,8 @@ from .protocol import (
 LEGACY_TOOL_POLICY_SCHEMA_VERSION = 1
 
 # Tool names of the production built-in set registered in api/app.py.
-# Delegation tools (spawn/query/cancel_agent) are part of the audited
-# policy table; they are only *registered* when ENDLESS_TASK_DELEGATION
+# Delegation tools (spawn/query/cancel/list/steer_agent) are part of the
+# audited policy table; they are only *registered* when ENDLESS_TASK_DELEGATION
 # enables them, and their agent.delegate requirement hides them from
 # unbound conversations (M4A production-review gate).
 BUILTIN_LEGACY_TOOL_NAMES = (
@@ -56,6 +56,8 @@ BUILTIN_LEGACY_TOOL_NAMES = (
     "spawn_agent",
     "query_agent",
     "cancel_agent",
+    "list_agents",
+    "steer_agent",
 )
 
 #: Capabilities an unbound (no local directory) conversation must lose.
@@ -198,13 +200,33 @@ BUILTIN_LEGACY_TOOL_POLICIES = (
         idempotency=IdempotencyPolicy.UNKNOWN,
         required_capabilities=frozenset({"agent.delegate"}),
     ),
+    LegacyToolPolicy(
+        tool_name="list_agents",
+        execution_mode=ToolExecutionMode.PARALLEL,
+        idempotency=IdempotencyPolicy.SAFE,
+        required_capabilities=frozenset({"agent.delegate"}),
+    ),
+    LegacyToolPolicy(
+        tool_name="steer_agent",
+        execution_mode=ToolExecutionMode.EXCLUSIVE,
+        idempotency=IdempotencyPolicy.UNKNOWN,
+        required_capabilities=frozenset({"agent.delegate"}),
+    ),
 )
 
 
 def builtin_legacy_tool_policy(
     tool_name: str,
 ) -> Optional[LegacyToolPolicy]:
-    """Policy for a built-in tool name, or ``None`` for unknown names."""
+    """Policy for a built-in tool name, or ``None`` for unknown names.
+
+    切片 9 第四批（D5）：这张**按名索引的表是准入元数据的唯一源**——
+    ``execution_mode`` / ``idempotency`` / ``required_capabilities`` 装不进 v1
+    ``ToolDefinition``，所以生产委派五件注册的薄 shim
+    （``delegation/legacy_tools.py:V2DelegationToolAsRegistered``）不提供它们；
+    v2 定义（``delegation/agent_tools.py``）里的同名字段只被奇偶守卫比对，
+    不参与准入。改这里会改准入行为，改 v2 定义**不会**。
+    """
     normalized = require_identifier(tool_name, field_name="tool_name", max_length=64)
     for policy in BUILTIN_LEGACY_TOOL_POLICIES:
         if policy.tool_name == normalized:

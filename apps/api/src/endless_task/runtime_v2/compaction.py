@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence, TYPE_CHECKING
+from typing import AbstractSet, Optional, Protocol, Sequence, TYPE_CHECKING
 
 from endless_task.runtime.context import (
     ApproximateTokenEstimator,
@@ -57,6 +57,52 @@ class _HistoryTurn:
                 content = entry.payload.get("content")
                 return content if isinstance(content, str) else ""
         return ""
+
+
+#: 公开别名：@ 引用投影（``endless_task.mentions``）也用同一套轮次口径。
+HistoryTurn = _HistoryTurn
+
+
+def history_turns(
+    entries: Sequence[TranscriptEntryRecord],
+    *,
+    boundary_run_id: Optional[str] = None,
+    skip_ids: AbstractSet[str] = frozenset(),
+) -> list[_HistoryTurn]:
+    """把一条 lane 的 entry 链折成**完整轮次**（根在前）——全局唯一口径。
+
+    抽成模块级纯函数是为了让压缩器与 @ 引用投影**共用一份**轮次选取逻辑
+    （两份口径一定会漂）。语义与压缩器内联版逐字一致：
+
+    - ``boundary_run_id``：遇到该 run 自己写下的 entry 就**停**（压缩要的是"本轮
+      之前的共享历史"）。传 ``None`` 表示**不设边界**，取整条链的完整轮次
+      （@ 引用要的是"这个 lane 的全部轮次"）。
+    - ``skip_ids``：已被压缩摘要覆盖的 entry id；命中即丢弃当前攒的半个轮次。
+    - 轮次 = ``user_message`` 之后的第一条 ``final`` ``assistant_message``；
+      尾部没有 final 回答的 user 消息**不成轮**（因此投影里不会出现半句话的轮次）。
+    - 在飞 run 的中间产物（tool_call / tool_result）不参与成轮，读到的快照因此是稳定的。
+    """
+
+    turns: list[_HistoryTurn] = []
+    current: list[TranscriptEntryRecord] = []
+    for entry in entries:
+        if entry.id in skip_ids:
+            current = []
+            continue
+        if boundary_run_id is not None and entry.source_run_id == boundary_run_id:
+            break
+        if entry.type is TranscriptEntryType.USER_MESSAGE:
+            current = [entry]
+            continue
+        if (
+            current
+            and entry.type is TranscriptEntryType.ASSISTANT_MESSAGE
+            and entry.status is TranscriptEntryStatus.FINAL
+        ):
+            current.append(entry)
+            turns.append(_HistoryTurn(entries=tuple(current)))
+            current = []
+    return turns
 
 
 class RuntimeV2ContextCompactionService:
@@ -191,27 +237,17 @@ class RuntimeV2ContextCompactionService:
         run_id: str,
         skip_ids: set[str],
     ) -> list[_HistoryTurn]:
-        """把共享历史按完整轮次分组(根在前)。遇到当前 run 的 entry 停止。"""
-        turns: list[_HistoryTurn] = []
-        current: list[TranscriptEntryRecord] = []
-        for entry in entries:
-            if entry.id in skip_ids:
-                current = []
-                continue
-            if entry.source_run_id == run_id:
-                break
-            if entry.type is TranscriptEntryType.USER_MESSAGE:
-                current = [entry]
-                continue
-            if (
-                current
-                and entry.type is TranscriptEntryType.ASSISTANT_MESSAGE
-                and entry.status is TranscriptEntryStatus.FINAL
-            ):
-                current.append(entry)
-                turns.append(_HistoryTurn(entries=tuple(current)))
-                current = []
-        return turns
+        """把共享历史按完整轮次分组(根在前)。遇到当前 run 的 entry 停止。
+
+        实现已抽到模块级 :func:`history_turns`（与 @ 引用投影共用一份口径）；
+        这里只做参数名适配，行为逐字不变。
+        """
+
+        return history_turns(
+            entries,
+            boundary_run_id=run_id,
+            skip_ids=skip_ids,
+        )
 
     def _select_turns(
         self,

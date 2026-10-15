@@ -199,16 +199,19 @@ def _backend_policy_and_trace(binding: WorkspaceBinding, run_id: str):
     return policy, trace, FileMutationRequest, FileMutationOperation
 
 
-def _read_text_or_none(path) -> Optional[str]:
-    """读取文本内容用于撤销；不存在/二进制/过大 → None（该次操作不可撤销）。"""
-    try:
-        if not path.exists() or not path.is_file():
-            return None
-        if path.stat().st_size > 512_000:
-            return None
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+def _undo_text_or_none(raw: bytes) -> Optional[str]:
+    """把原始字节折成「可撤销文本」；过大/非 UTF-8 → None（该次操作不可撤销）。
+
+    口径与旧的按路径前置读**逐字一致**：>512_000 字节不记、非 UTF-8 不记、
+    换行按 `Path.read_text` 的 universal newlines 归一（`\\r\\n`/`\\r` → `\\n`）。
+    """
+    if len(raw) > 512_000:
         return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _undo_context(call: ToolCall, binding: WorkspaceBinding, resolved):
@@ -305,3 +308,200 @@ class _PathLockManager:
 
 #: 全工具共享的路径写锁表（拆分前是 fs_tools 模块级单例）。
 _PATH_LOCKS = _PathLockManager()
+
+
+# ---- 内核（Rust）读写删：闭合 TOCTOU（RK-3） ----
+# 三个 fs 工具都需要「按句柄而不是按路径」操作：逐段 openat + O_NOFOLLOW，
+# 任一段是 symlink 即拒；拿到的是句柄，校验之后换不掉。
+from endless_task.tooling import ToolError as _KernelToolError
+
+from ..._native.fs import (
+    NativeFsError as _NativeFsError,
+    list_beneath as _native_list,
+    mkdir_beneath as _native_mkdir,
+    open_beneath as _native_open_text,
+    read_beneath as _native_read,
+    remove_beneath as _native_remove,
+    write_beneath as _native_write,
+)
+
+
+def _kernel_workspace_relative(binding, resolved):
+    """内核要的 (工作区根, 工作区相对路径)。"""
+    root = binding.root.resolve()
+    return root, resolved.canonical.relative_to(root).as_posix()
+
+
+def _kernel_error(error, resolved):
+    """把内核错误映射成既有 ToolError 词汇（**指名**，不静默降级）。"""
+    if error.code == "path_not_found":
+        return _KernelToolError(
+            "path_not_found",
+            f"文件不存在：{resolved.original_raw}。",
+            retryable=False,
+        )
+    # 其余（symlink 段 / 非目录 / 变化中）统一按「校验后发生变化」拒绝，
+    # 文案里指名底层原因，便于诊断。
+    return _KernelToolError(
+        "path_escape",
+        f"文件在校验后发生变化，已拒绝（{error.code}）。",
+        retryable=False,
+    )
+
+
+def kernel_read(binding, resolved, max_bytes):
+    root, rel = _kernel_workspace_relative(binding, resolved)
+    try:
+        return _native_read(root, rel, int(max_bytes))
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def kernel_read_undo_snapshot(binding, resolved):
+    """undo/diff 用的「前置读」快照：一次句柄读，返回 `(可撤销文本, 原始字节)`。
+
+    取代四个 fs 工具里按路径的前置读（RK-3 C6）：按路径读会**跟随 symlink** ——
+    校验通过后把中间段换成指向区外的链接，就能把区外内容读进撤销日志/哈希，
+    且全程不需要竞态。现在与写/删走同一条句柄链（逐段 `openat` + `O_NOFOLLOW`）。
+
+    语义与旧前置读在稳定状态下逐字一致：
+    - 文件不存在 → `(None, None)`（新建文件没有 before）；
+    - 存在但过大/非 UTF-8 → `(None, raw)`（不可撤销，但 `before_hash` 仍按原始字节）；
+    - 正常文本 → `(text, raw)`，换行按 universal newlines 归一。
+
+    **有意差异（就是要闭的缝）**：旧实现把一切 OSError 软化成「不可撤销」，
+    那会把 symlink 攻击也一并软化掉（照旧把区外内容读回来）。现在只有
+    「文件不存在」软化；路径在校验后被换成 symlink / 目录 / 不可读一律**指名拒绝**。
+    """
+    try:
+        raw = kernel_read(binding, resolved, 1 << 62)
+    except _KernelToolError as error:
+        if error.code == "path_not_found":
+            return None, None
+        raise
+    return _undo_text_or_none(raw), raw
+
+
+def kernel_write(binding, resolved, data):
+    root, rel = _kernel_workspace_relative(binding, resolved)
+    try:
+        _native_write(root, rel, bytes(data))
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def kernel_remove(binding, resolved):
+    root, rel = _kernel_workspace_relative(binding, resolved)
+    try:
+        _native_remove(root, rel)
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def kernel_open_text(workspace_root, relative_path, resolved):
+    """按句柄打开文本文件（逐段 nofollow，返回文件对象）；失败直接抛 ToolError。
+
+    专门给「流式按行读」用：保持不整读大文件的语义，但把路径换成句柄。
+    """
+    try:
+        return _native_open_text(workspace_root, relative_path)
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def kernel_mkdir_parent(binding, resolved):
+    """确保目标文件的**父目录链**存在（等价 parent.mkdir(parents=True, exist_ok=True)）。
+
+    路径不是交给内核去 mkdir：内核逐段 `openat` + `O_NOFOLLOW` 后再 `mkdirat`，
+    所以中途被换成 symlink 时**不会在区外建目录**。
+    """
+    root = binding.root.resolve()
+    parent = resolved.canonical.parent
+    if parent == root:
+        return
+    rel = parent.relative_to(root).as_posix()
+    try:
+        _native_mkdir(root, rel)
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def kernel_list(binding, resolved):
+    """列目录（通过句柄）。返回 [(name, is_dir, is_file, is_symlink, size), ...]。
+
+    `is_dir`/`is_file`/`size` 是 **lstat 语义**（不跟随符号链接）——
+    跟随正是要闭合的那条缝（会读出区外目标的大小）。
+    """
+    root, rel = _kernel_workspace_relative(binding, resolved)
+    if rel == ".":
+        rel = ""  # 工作区根本身
+    try:
+        return _native_list(root, rel)
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def kernel_mkdir(binding, resolved):
+    """创建工作区内的**目录本身**（含父链）——逐段 nofollow。
+
+    与 kernel_mkdir_parent 的区别：那个建的是"目标文件的父目录"，
+    这个建的就是 resolved 指向的那个目录。
+    """
+    root, rel = _kernel_workspace_relative(binding, resolved)
+    if rel == ".":
+        return  # 工作区根本身，已存在
+    try:
+        _native_mkdir(root, rel)
+    except _NativeFsError as error:
+        raise _kernel_error(error, resolved) from error
+
+
+def external_relative(roots, canonical):
+    """在多个只读根里找出 canonical 属于哪一个，返回 (根, 相对路径)；都不匹配返回 None。
+
+    用 `resolve(strict=False)` 归一化根（与 path_safety.resolve_external_read_path 同口径），
+    否则 macOS 上 `/var` 与 `/private/var` 的差异会让 relative_to 误判。
+    """
+    from pathlib import Path
+
+    for root in roots:
+        try:
+            normalized = Path(root).expanduser().resolve(strict=False)
+        except OSError:
+            continue
+        try:
+            relative = Path(canonical).relative_to(normalized)
+        except ValueError:
+            continue
+        return normalized, relative.as_posix()
+    return None
+
+
+def kernel_read_external(roots, canonical, max_bytes, label):
+    """从**只读根**之一下按句柄读文件（逐段 nofollow）。
+
+    与 kernel_read 的区别：源不是单一工作区根，而是根列表；先定位属于哪个根。
+    定位不到 ⇒ path_escape（**不静默换成按路径读**）。
+    """
+    located = external_relative(roots, canonical)
+    if located is None:
+        raise _KernelToolError(
+            "path_escape",
+            f"{label}越出允许的只读目录，已拒绝。",
+            retryable=False,
+        )
+    root, rel = located
+    try:
+        return _native_read(root, rel, int(max_bytes))
+    except _NativeFsError as error:
+        if error.code == "file_too_large":
+            raise _KernelToolError(
+                "file_too_large",
+                f"{label}超过读取上限（{max_bytes} 字节）。",
+                retryable=False,
+            ) from error
+        raise _KernelToolError(
+            "path_escape",
+            f"{label}在校验后发生变化，已拒绝读取（{error.code}）。",
+            retryable=False,
+        ) from error

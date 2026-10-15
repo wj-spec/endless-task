@@ -1,7 +1,7 @@
 import type { RuntimeV2Lane } from "./apiTypes";
 
 /**
- * 主/侧工作面的"横幅"区：临时会话 / 正在查看分支 / 其他分支正在运行。
+ * 主/侧工作面的"横幅"区：临时对话 / 正在查看分支 / 其他分支正在运行。
  *
  * 从 `ChatWorkSurface.tsx`（1 611 行）的 JSX 里整块搬出——这三块各占十几行，夹在
  * header 与消息流之间很难一眼看出"什么时候会显示、点了会怎样"。搬出后可以直测三
@@ -59,7 +59,7 @@ export function SurfaceBanners({
       {ephemeral ? (
         <div className="branch-banner" role="note">
           <span className="branch-banner-text">
-            临时会话
+            临时对话
             {parentTitle
               ? ` · 源自《${parentTitle}》`
               : ""}
@@ -70,7 +70,7 @@ export function SurfaceBanners({
             onClick={onPromote}
             type="button"
           >
-            升级为正式
+            保存为正式对话
           </button>
         </div>
       ) : null}

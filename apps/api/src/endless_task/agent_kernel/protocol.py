@@ -100,6 +100,30 @@ class RunCommand:
 
 
 @dataclass(frozen=True)
+class RunUsage:
+    """一次运行的用量计量（中性类型，不依赖委派层）。
+
+    这里只放四个中性计数：适配器要把执行器知道的真实用量带出来，而协议包不能
+    反向 import 委派层（``delegation/__init__`` → coordinator → agent_kernel
+    会成环），所以"用量 → 委派层 UsageSummary"的映射由委派层自己做。
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model_turns: int = 0
+    tool_calls: int = 0
+
+    def __post_init__(self) -> None:
+        for field_name in ("input_tokens", "output_tokens", "model_turns", "tool_calls"):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or value < 0:
+                raise AgentPlatformError(
+                    "invalid_agent_kernel_value",
+                    f"{field_name} must be a non-negative integer",
+                )
+
+
+@dataclass(frozen=True)
 class RunOutcome:
     run_id: str
     status: RunOutcomeStatus
@@ -107,6 +131,9 @@ class RunOutcome:
     assistant_message: Optional[AgentMessage] = None
     diagnostics: tuple[SafeDiagnostic, ...] = ()
     final_context_fingerprint: Optional[str] = None
+    # 可选：既有构造点（测试里大量直接构造 RunOutcome）不提供用量时保持 None，
+    # 委派层按空用量处理，这些调用点的行为不变。
+    usage: Optional[RunUsage] = None
     protocol_version: int = AGENT_KERNEL_PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -118,6 +145,11 @@ class RunOutcome:
         object.__setattr__(self, "run_id", require_identifier(self.run_id, field_name="run_id"))
         if not isinstance(self.status, RunOutcomeStatus):
             raise AgentPlatformError("invalid_agent_kernel_value", "Run outcome status must use a protocol enum value")
+        if self.usage is not None and not isinstance(self.usage, RunUsage):
+            raise AgentPlatformError(
+                "invalid_agent_kernel_value",
+                "Run outcome usage must use the protocol usage type",
+            )
         if self.run_id != self.trace.run_id:
             raise AgentPlatformError("invalid_agent_kernel_value", "Run outcome and trace must reference the same run")
         if self.status is RunOutcomeStatus.COMPLETED:

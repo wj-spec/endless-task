@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from endless_task.domain.models import (
+    ConversationKind,
     ConversationStatus,
     FinishReason,
     ResponseVariantOperation,
@@ -124,6 +125,11 @@ class SqliteChatRepositoryTest(unittest.TestCase):
                 "069_skill_pin.sql",
                 "070_skill_usage_search_hit.sql",
                 "071_skill_provenance.sql",
+                "072_delegation_child_runs.sql",
+                "073_delegation_child_reporting.sql",
+                "074_internal_execution_conversations.sql",
+                "075_internal_execution_conversation_unique.sql",
+                "076_mcp_server_tool_allowlist.sql",
             ),
             self.database.applied_migrations(),
         )
@@ -132,7 +138,7 @@ class SqliteChatRepositoryTest(unittest.TestCase):
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM schema_migrations"
             ).fetchone()
-        self.assertEqual(71, row["count"])
+        self.assertEqual(76, row["count"])
 
     def test_create_turn_is_persisted_and_idempotent(self) -> None:
         conversation = self.repository.create_conversation()
@@ -184,6 +190,152 @@ class SqliteChatRepositoryTest(unittest.TestCase):
         )
         next_empty = self.repository.create_or_reuse_empty_conversation()
         self.assertNotEqual(first.id, next_empty.id)
+
+    def test_delegation_child_conversation_is_never_reused_as_empty(self) -> None:
+        """批次 B Task 1 复审 M-7：**委派子会话**同样不许被当"新对话"交给用户。
+
+        `create_delegation_conversation` 造的行是 `kind='normal'` + 创建时零 entry +
+        `internal_owner_id` 为 NULL —— 只加 `internal_owner_id IS NULL` 挡不住它。
+        一旦委派子运行在提交首条消息前失败，`POST /conversations` 就会把这条**产品
+        不可见**的会话交给用户（而 `list_conversations` 又把它过滤掉 → 用户拿到一个
+        左栏看不见的"当前会话"）。删掉 `AND c.delegation_parent_run_id IS NULL` 即红。
+        """
+        normal = self.repository.create_or_reuse_empty_conversation()
+        # 委派子会话还在"零 entry"阶段（正是会被误判成空会话的窗口）。
+        delegation = self.repository.create_delegation_conversation(
+            "taskrun_parent_1"
+        )
+        self.assertIsNotNone(delegation)
+        with self.database.connect() as connection:
+            entries = connection.execute(
+                "SELECT COUNT(*) AS n FROM v2_transcript_entries "
+                "WHERE conversation_id = ?",
+                (delegation.id,),
+            ).fetchone()["n"]
+        self.assertEqual(0, entries, "前提：委派子会话此时还没有任何 entry")
+
+        reused = self.repository.create_or_reuse_empty_conversation()
+        self.assertEqual(normal.id, reused.id)
+        self.assertNotEqual(delegation.id, reused.id)
+
+        # 而且它仍然被产品面枚举过滤（这正是"用户会拿到看不见的会话"的根因）
+        listed = {item.id for item in self.repository.list_conversations()}
+        self.assertNotIn(delegation.id, listed)
+
+    def test_one_active_execution_conversation_per_owner_is_enforced(self) -> None:
+        """批次 B Task 1 复审 M-2：`(owner_kind, owner_id)` 的 active 唯一性在**库**级。
+
+        074 只建了普通索引，`find_internal_conversation` 靠 `updated_at DESC LIMIT 1`
+        隐式兜底。075 的局部唯一索引把它变成不变量（照 053 部分唯一索引的先例）。
+        删掉 075 或去掉索引的 `WHERE`，下面第二条 `create_internal_conversation` 就不再抛错。
+        """
+        first = self.repository.create_internal_conversation(
+            owner_kind="task_execution",
+            owner_id="task_dup",
+            title="《甲》· 执行记录",
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.repository.create_internal_conversation(
+                owner_kind="task_execution",
+                owner_id="task_dup",
+                title="《甲》第二份 · 执行记录",
+            )
+
+        # 不同 owner、或不同 owner_kind → 合法（唯一性是"同一 owner 一份"）
+        self.repository.create_internal_conversation(
+            owner_kind="task_execution",
+            owner_id="task_other",
+            title="《乙》· 执行记录",
+        )
+        self.repository.create_internal_conversation(
+            owner_kind="reminder_execution",
+            owner_id="task_dup",
+            title="《丙》· 执行记录",
+        )
+
+        # 归档后可以再建一份（既有语义：用户删/归档执行记录 → 下次到点新建）
+        self.repository.set_conversation_status(
+            first.id, ConversationStatus.ARCHIVED
+        )
+        rebuilt = self.repository.create_internal_conversation(
+            owner_kind="task_execution",
+            owner_id="task_dup",
+            title="《甲》· 执行记录",
+        )
+        self.assertNotEqual(first.id, rebuilt.id)
+        # 查询只认 active，所以拿到的永远是那唯一一份 active
+        found = self.repository.find_internal_conversation(
+            "task_execution", "task_dup"
+        )
+        self.assertEqual(rebuilt.id, found.id)
+
+    def test_internal_owner_kind_check_constraint_rejects_unknown_values(self) -> None:
+        """074 按 024 先例给 `internal_owner_kind` 补了 CHECK（复审 M-1）。
+
+        取值不再是"只能靠仓储层自觉"：库里也挡。写成裸 UPDATE 才测得到约束本身。
+        """
+        conversation = self.repository.create_conversation()
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.database.transaction() as connection:
+                connection.execute(
+                    "UPDATE conversations SET internal_owner_kind = ?, "
+                    "internal_owner_id = ? WHERE id = ?",
+                    ("not_a_known_kind", "x", conversation.id),
+                )
+        # NULL / 两个合法值都放行
+        for kind in (None, "task_execution", "reminder_execution"):
+            with self.database.transaction() as connection:
+                connection.execute(
+                    "UPDATE conversations SET internal_owner_kind = ?, "
+                    "internal_owner_id = ? WHERE id = ?",
+                    (kind, None if kind is None else "x", conversation.id),
+                )
+
+    def test_internal_execution_conversation_is_never_reused_as_empty(self) -> None:
+        """批次 B Task 1：内部执行会话（任务/提醒的执行记录）不参与"空会话复用"。
+
+        它即使**还没有任何 v2 entry**也不是用户的空会话——用户点「新对话」拿到某个
+        任务的执行会话是一类真实缺陷（ADR-1 §3.6）。删掉
+        `create_or_reuse_empty_conversation` 里的 `internal_owner_id IS NULL` 谓词即红。
+        """
+        # 先占一条普通空会话：下面要证明返回的是它，而不是执行会话。
+        normal = self.repository.create_or_reuse_empty_conversation()
+
+        # 造一条"无 entry 的内部执行会话"——这正是原来会被误复用的形状。
+        execution = self.repository.create_internal_conversation(
+            owner_kind="task_execution",
+            owner_id="task_1",
+            title="《每周发布检查》· 执行记录",
+        )
+        # 前提成立：它确实还没有任何 entry。
+        with self.database.connect() as connection:
+            entries = connection.execute(
+                "SELECT COUNT(*) AS n FROM v2_transcript_entries "
+                "WHERE conversation_id = ?",
+                (execution.id,),
+            ).fetchone()["n"]
+        self.assertEqual(0, entries)
+
+        reused = self.repository.create_or_reuse_empty_conversation()
+        self.assertEqual(normal.id, reused.id)
+        self.assertNotEqual(execution.id, reused.id)
+
+        # 执行会话没有被复用、也没有被改写：标记仍是它自己那份记录。
+        found = self.repository.find_internal_conversation("task_execution", "task_1")
+        self.assertIsNotNone(found)
+        self.assertEqual(execution.id, found.id)
+        self.assertEqual("《每周发布检查》· 执行记录", found.title)
+        self.assertEqual(ConversationKind.NORMAL, found.kind)
+        self.assertIsNone(found.parent_conversation_id)
+        self.assertIsNone(found.fork_turn_id)
+
+        # 归档后查找不到 → 调用方按"新建一份"继续（ADR §5 登记的已知边界）。
+        self.repository.set_conversation_status(
+            execution.id, ConversationStatus.ARCHIVED
+        )
+        self.assertIsNone(
+            self.repository.find_internal_conversation("task_execution", "task_1")
+        )
 
     def test_only_one_active_turn_is_allowed_per_conversation(self) -> None:
         conversation = self.repository.create_conversation()

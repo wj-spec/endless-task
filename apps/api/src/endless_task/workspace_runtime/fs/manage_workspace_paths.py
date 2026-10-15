@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..effect_log import EffectLog, EffectReceipt
 from ..path_safety import resolve_workspace_path
+from .common import kernel_mkdir, kernel_mkdir_parent, kernel_read, kernel_read_undo_snapshot, kernel_remove, kernel_write
 from ..resolver import WorkspaceBinding
 from endless_task.runtime.cancellation import CancellationToken
 from endless_task.tooling import (
@@ -16,7 +17,7 @@ from endless_task.tooling import (
     ToolError,
     ToolResult,
 )
-from .common import _PATH_LOCKS, _ensure_checkpoint, _log_effect, _now_iso, _read_text_or_none, _record_mutation, _record_undo_delete, _record_undo_write, _sha256_bytes
+from .common import _PATH_LOCKS, _ensure_checkpoint, _log_effect, _now_iso, _record_mutation, _record_undo_delete, _record_undo_write, _sha256_bytes
 
 
 class ManageWorkspacePathsTool:
@@ -131,7 +132,7 @@ class ManageWorkspacePathsTool:
                 "同名文件已存在，无法创建目录。",
                 retryable=False,
             )
-        source.canonical.mkdir(parents=True, exist_ok=True)
+        kernel_mkdir(binding, source)
         receipt = EffectReceipt(
             kind="file_write",
             path=str(source.canonical),
@@ -184,18 +185,25 @@ class ManageWorkspacePathsTool:
                         f"目标已存在：{target.original_raw}（如需覆盖请设置 overwrite=true）。",
                         retryable=False,
                     )
-                if _read_text_or_none(target.canonical) is None:
+                # 覆盖前的可撤销性检查 + before 快照一次句柄读（RK-3 C6）：
+                # 校验后被换成 symlink 时在这里就拒，不再按路径跟随。
+                before_content, before_raw = kernel_read_undo_snapshot(binding, target)
+                if before_content is None:
                     raise ToolError(
                         "binary_overwrite_unsupported",
                         "目标文件不是可撤销的 UTF-8 文本，拒绝覆盖。",
                         retryable=False,
                     )
-            before_content = _read_text_or_none(target.canonical)
-            before_exists = target.canonical.exists()
+            else:
+                before_content, before_raw = None, None
+            before_exists = before_raw is not None
             self._ensure_checkpoint(call, binding)
-            target.canonical.parent.mkdir(parents=True, exist_ok=True)
-            raw = source.canonical.read_bytes()
-            target.canonical.write_bytes(raw)
+            kernel_mkdir_parent(binding, target)
+            # 读、写都走句柄（逐段 O_NOFOLLOW）：源与目标任一端被换成
+            # 指向区外的 symlink，都会在这一步被拒。
+            # 注意 `raw` 会被下游的 _sha256_bytes(raw) 用到，必须绑住。
+            raw = kernel_read(binding, source, 1 << 62)
+            kernel_write(binding, target, raw)
         finally:
             for lock in reversed(acquired):
                 lock.release()
@@ -279,20 +287,28 @@ class ManageWorkspacePathsTool:
                         f"目标已存在：{target.original_raw}（如需覆盖请设置 overwrite=true）。",
                         retryable=False,
                     )
-                if _read_text_or_none(target.canonical) is None:
+                # 覆盖前的可撤销性检查 + target before 快照一次句柄读（RK-3 C6）。
+                before_target, before_target_raw = kernel_read_undo_snapshot(binding, target)
+                if before_target is None:
                     raise ToolError(
                         "binary_overwrite_unsupported",
                         "目标文件不是可撤销的 UTF-8 文本，拒绝覆盖。",
                         retryable=False,
                     )
-            before_source = _read_text_or_none(source.canonical)
-            before_target = _read_text_or_none(target.canonical)
-            before_target_exists = target.canonical.exists()
+            else:
+                before_target, before_target_raw = None, None
+            # 源的 before 也走句柄：与 delete 同款的缝 —— 按路径读会在校验后
+            # 被换成 symlink 时把区外内容读进撤销日志。
+            before_source, _ = kernel_read_undo_snapshot(binding, source)
+            before_target_exists = before_target_raw is not None
             self._ensure_checkpoint(call, binding)
-            target.canonical.parent.mkdir(parents=True, exist_ok=True)
-            raw = source.canonical.read_bytes()
-            target.canonical.write_bytes(raw)
-            source.canonical.unlink()
+            kernel_mkdir_parent(binding, target)
+            # 读、写都走句柄（逐段 O_NOFOLLOW）：源与目标任一端被换成
+            # 指向区外的 symlink，都会在这一步被拒。
+            # 注意 `raw` 会被下游的 _sha256_bytes(raw) 用到，必须绑住。
+            raw = kernel_read(binding, source, 1 << 62)
+            kernel_write(binding, target, raw)
+            kernel_remove(binding, source)
         finally:
             for lock in reversed(acquired):
                 lock.release()

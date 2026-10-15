@@ -5,11 +5,6 @@ import unittest
 from endless_task.agent_platform import plain_json
 from endless_task.artifacts.read_tool import ReadArtifactTool
 from endless_task.files.read_tool import ReadTextFileTool
-from endless_task.delegation.legacy_tools import (
-    CancelAgentLegacyTool,
-    QueryAgentLegacyTool,
-    SpawnAgentLegacyTool,
-)
 from endless_task.runtime_v2.plan_tool import UpdatePlanTool
 from endless_task.tool_platform import (
     BUILTIN_LEGACY_TOOL_NAMES,
@@ -37,7 +32,7 @@ from endless_task.workspace_runtime.fs_tools import (
 from endless_task.workspace_runtime.shell_tool import RunShellTool
 
 DELEGATION_TOOL_NAMES = frozenset(
-    {"spawn_agent", "query_agent", "cancel_agent"}
+    {"spawn_agent", "query_agent", "cancel_agent", "list_agents", "steer_agent"}
 )
 
 BUILTIN_TOOL_CLASSES = (
@@ -68,7 +63,7 @@ class LegacyToolPolicyTableTest(unittest.TestCase):
             real_tool_definition(cls).name for cls in BUILTIN_TOOL_CLASSES
         )
         self.assertEqual(builtin_names | DELEGATION_TOOL_NAMES, policy_names)
-        self.assertEqual(12, len(BUILTIN_LEGACY_TOOL_POLICIES))
+        self.assertEqual(14, len(BUILTIN_LEGACY_TOOL_POLICIES))
         self.assertEqual(
             policy_names,
             frozenset(BUILTIN_LEGACY_TOOL_NAMES),
@@ -99,11 +94,19 @@ class LegacyToolPolicyTableTest(unittest.TestCase):
             "spawn_agent": ToolExecutionMode.EXCLUSIVE,
             "query_agent": ToolExecutionMode.PARALLEL,
             "cancel_agent": ToolExecutionMode.EXCLUSIVE,
+            "list_agents": ToolExecutionMode.PARALLEL,
+            "steer_agent": ToolExecutionMode.EXCLUSIVE,
         }
         for policy in BUILTIN_LEGACY_TOOL_POLICIES:
             if policy.tool_name in DELEGATION_TOOL_NAMES:
                 continue
             self.assertEqual(expected[policy.tool_name], policy.execution_mode)
+        # 委派工具不能只写在 `expected` 里：上面的循环对所有委派名字 `continue`，
+        # 所以这五行曾经**从未被断言**（把 `list_agents` 翻成 EXCLUSIVE 也是绿的）。
+        # 这里显式钉住策略表的绝对值——委派工具同样是生产策略的一部分。
+        by_name = {policy.tool_name: policy for policy in BUILTIN_LEGACY_TOOL_POLICIES}
+        for tool_name in sorted(DELEGATION_TOOL_NAMES):
+            self.assertEqual(expected[tool_name], by_name[tool_name].execution_mode)
 
     def test_idempotency_and_capability_audit_invariants(self) -> None:
         by_class = {
@@ -156,6 +159,14 @@ class LegacyToolPolicyTableTest(unittest.TestCase):
         self.assertEqual(
             frozenset({"agent.delegate"}),
             by_name["cancel_agent"].required_capabilities,
+        )
+        self.assertEqual(
+            frozenset({"agent.delegate"}),
+            by_name["list_agents"].required_capabilities,
+        )
+        self.assertEqual(
+            frozenset({"agent.delegate"}),
+            by_name["steer_agent"].required_capabilities,
         )
 
     def test_legacy_approval_modes_are_all_represented(self) -> None:

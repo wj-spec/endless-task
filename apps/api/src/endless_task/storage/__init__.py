@@ -44,6 +44,9 @@ from .sqlite_vec_search import SqliteVecSearch
 from .sqlite_task_run_repository import SqliteTaskRunRepository
 from .sqlite_workspace_repository import SqliteWorkspaceRepository
 from .sqlite_hub_event_repository import SqliteHubEventRepository
+from .sqlite_delegation_child_run_repository import (
+    SqliteDelegationChildRunRepository,
+)
 
 __all__ = [
     "Database",
@@ -71,4 +74,5 @@ __all__ = [
     "SqliteTextFileRepository",
     "SqliteRuntimeV2Repository",
     "SqliteRuntimeV2MemoryRepository",
+    "SqliteDelegationChildRunRepository",
 ]

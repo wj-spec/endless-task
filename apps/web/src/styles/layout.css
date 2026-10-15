@@ -606,7 +606,7 @@
   }
 }
 
-/* 会话分支：临时会话顶栏横幅 */
+/* 会话分支：临时对话顶栏横幅 */
 .branch-banner {
   display: flex;
   gap: 12px;
@@ -689,7 +689,7 @@
   }
 }
 
-/* Branch / Temporary：主会话与对照面由独立分栏容器管理，默认 60 / 40。 */
+/* Branch / Temporary：主线与对照面由独立分栏容器管理，默认 60 / 40。 */
 .chat-split {
   display: grid;
   width: 100%;
@@ -782,6 +782,7 @@
   .chat-split,
   .chat-split.is-side-open {
     display: grid;
+    height: 100%;
     grid-template-columns: minmax(0, 1fr);
   }
 

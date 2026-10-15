@@ -134,7 +134,11 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, len(items))
             self.assertEqual("completed", items[0]["status"])
 
-            snapshot = await run_snapshot(client, conversation_id)
+            # 批次 B Task 1（ADR-1）：到点执行落进**该任务自己的执行会话**，
+            # `task_runs.conversation_id` 就是它（不再等于源会话）。
+            landing_id = items[0]["conversationId"]
+            self.assertNotEqual(conversation_id, landing_id)
+            snapshot = await run_snapshot(client, landing_id)
             user_messages = [
                 entry["data"]["content"]
                 for entry in snapshot["entries"]
@@ -143,6 +147,18 @@ class TaskSchedulerGateTest(unittest.IsolatedAsyncioTestCase):
             ]
             self.assertTrue(
                 any(msg.startswith("【到点执行】") for msg in user_messages)
+            )
+            # 源会话里**没有**这条到点执行
+            source_snapshot = await run_snapshot(client, conversation_id)
+            source_messages = [
+                entry["data"]["content"]
+                for entry in source_snapshot["entries"]
+                if entry.get("actor") == "user"
+                and isinstance(entry.get("data", {}).get("content"), str)
+            ]
+            self.assertFalse(
+                any(msg.startswith("【到点执行】") for msg in source_messages),
+                source_messages,
             )
 
     async def test_not_due_task_does_not_run(self) -> None:

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AddIcon, ChevronIcon, FolderIcon } from "../ui/Icons";
+import { AddIcon, ChevronIcon, FolderIcon, WORKSPACE_ICON_SIZE } from "../ui/Icons";
 import { RowMenu } from "../ui/RowMenu";
 import type { SessionActions } from "./workspaceNavigationModel";
 import {
@@ -122,7 +122,7 @@ export function WorkspaceNavigationGroup({
           type="button"
         >
           <span aria-hidden="true" className="workspace-folder-icon">
-            <FolderIcon size={18} />
+            <FolderIcon size={WORKSPACE_ICON_SIZE} />
           </span>
           <span aria-hidden="true" className="workspace-item-chevron">
             <ChevronIcon direction={open ? "down" : "right"} size={16} />
@@ -154,12 +154,12 @@ export function WorkspaceNavigationGroup({
           triggerAriaLabel={`管理工作区：${group.name}`}
           triggerClassName="workspace-menu-button"
         />
-        {isCurrent && actions.onNewConversation ? (
+        {!unbound && actions.onNewConversation ? (
           <button
-            aria-label="在当前工作区新建会话"
-            className="icon-button workspace-new-conversation"
+            aria-label="在此工作区新建对话"
+            className="rail-empty-action is-compact workspace-new-conversation"
             onClick={() => actions.onNewConversation?.(group.id)}
-            title="在当前工作区新建会话"
+            title="在此工作区新建对话"
             type="button"
           >
             <AddIcon size={16} />
@@ -197,7 +197,7 @@ export function WorkspaceNavigationGroup({
                 尚未绑定本地目录，绑定后才能新建对话。
               </p>
               <button
-                className="workspace-unbound-bind"
+                className="rail-empty-action workspace-unbound-bind"
                 onClick={() => actions.onBindWorkspace?.(group.id)}
                 type="button"
               >
@@ -209,10 +209,24 @@ export function WorkspaceNavigationGroup({
             actions={actions}
             activeConversationId={activeConversationId}
             conversations={group.conversations}
+            emptyAction={
+              // 空工作区曾经是死角：没有入口能建出它的第一条对话。
+              // 已绑定 ⇒ 空态直接给「新建对话」；未绑定 ⇒ 仍走上面的「绑定目录…」。
+              !unbound && actions.onNewConversation ? (
+                <button
+                  className="rail-empty-action"
+                  onClick={() => actions.onNewConversation?.(group.id)}
+                  type="button"
+                >
+                  <AddIcon size={14} />
+                  新建对话
+                </button>
+              ) : undefined
+            }
             emptyDescription={
               unbound
                 ? "绑定本地目录后，你才能在这个工作区里新建对话。"
-                : "在这个工作区中新建一段对话。"
+                : "在这里新建一段对话。"
             }
             emptyTitle="这里还没有对话"
             listClassName="workspace-session-list"

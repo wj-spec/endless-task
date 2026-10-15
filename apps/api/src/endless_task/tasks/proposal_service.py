@@ -2,7 +2,7 @@
 
 Turns a completed turn into a pending task proposal when the user asked for a
 recurring commitment and the assistant restated it. One-off timed matters are
-reminders, never tasks (see docs/technical/p4-task-intent-protocol.md §3).
+reminders, never tasks.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from endless_task.domain.task_schedule import (
     ReminderDue,
     TaskSchedule,
     parse_schedule_intent,
+    schedule_identity,
     serialize_task_schedule,
 )
 from endless_task.domain.task_schedule import describe_task_schedule
@@ -243,13 +244,13 @@ class TaskProposalService:
                 and referenced.conversation_id == conversation_id
             ):
                 stale_ids.append(candidate)
-        created_schedule = serialize_task_schedule(created.schedule)
+        created_schedule = schedule_identity(created.schedule)
         for pending in self._proposal_repository.list_proposals(
             conversation_id=conversation_id
         ):
             if pending.id == created.id:
                 continue
-            if serialize_task_schedule(pending.schedule) == created_schedule:
+            if schedule_identity(pending.schedule) == created_schedule:
                 stale_ids.append(pending.id)
         for stale_id in dict.fromkeys(stale_ids):
             try:

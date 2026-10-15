@@ -17,7 +17,8 @@ from endless_task.tooling import (
     ToolResult,
 )
 from pathlib import Path
-from .common import _PATH_LOCKS, _backend_policy_and_trace, _log_effect, _now_iso, _read_text_or_none, _record_mutation, _record_undo_delete, _sha256_bytes
+from .common import _PATH_LOCKS, _backend_policy_and_trace, _log_effect, _now_iso, _record_mutation, _record_undo_delete, _sha256_bytes
+from .common import kernel_read, kernel_read_undo_snapshot, kernel_remove, kernel_write
 
 
 class DeleteWorkspaceFileTool:
@@ -104,9 +105,13 @@ class DeleteWorkspaceFileTool:
         self._ensure_checkpoint(call, binding)
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
-            before_content = _read_text_or_none(resolved.canonical)
-            before_hash = _sha256_bytes(resolved.canonical.read_bytes())
-            resolved.canonical.unlink()
+            # undo/diff 前置读走句柄（RK-3 C6）：delete 是这条缝的重灾区 ——
+            # 叶子被换成指向区外的 symlink 时，旧的按路径读会把区外内容读进
+            # before_content/before_hash，而 unlinkat 又会成功（删掉的是链接），
+            # 于是区外内容**落进撤销日志**。现在前置读即拒。
+            before_content, before_raw = kernel_read_undo_snapshot(binding, resolved)
+            before_hash = _sha256_bytes(before_raw) if before_raw is not None else None
+            kernel_remove(binding, resolved)
         _record_undo_delete(
             self._undo_service,
             call,
@@ -158,7 +163,7 @@ class DeleteWorkspaceFileTool:
         )
         lock = await _PATH_LOCKS.acquire(str(resolved.canonical))
         async with lock:
-            before_content = _read_text_or_none(resolved.canonical)
+            before_content, _ = kernel_read_undo_snapshot(binding, resolved)
             receipt = await self._execution_backend.mutate_file(
                 Request(
                     effect_id=f"enforced_delete:{relative}:{run_id}",

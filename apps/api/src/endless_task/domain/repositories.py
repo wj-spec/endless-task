@@ -48,6 +48,18 @@ class InvalidStateError(RepositoryError):
     code = "invalid_state"
 
 
+class RunNotRevivableError(ConflictError):
+    """E3/B：复活一条终态 run 的请求被**指名**拒绝（HTTP 409，`code` 稳定可断言）。
+
+    为什么单独一个类而不是复用 `InvalidStateError`：拒绝有**四种互不相同**的原因
+    （不是 COMPLETED / 没有硬停升级 / 有结果无法确认的工具体 / 该 lane 另有活动 run），
+    调用方（前端按钮、测试、日志）要能只看 `code` 就分流；message 里带原因码 + 人话。
+    继承 `ConflictError` ⇒ `_repository_error_status` 天然映射 409，**不是 500**。
+    """
+
+    code = "run_not_revivable"
+
+
 class ValidationError(RepositoryError):
     code = "validation_error"
 
@@ -62,6 +74,23 @@ class ChatRepository(Protocol):
         *,
         workspace_id: Optional[str] = None,
     ) -> Conversation:
+        ...
+
+    def create_internal_conversation(
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        title: str,
+        workspace_id: Optional[str] = None,
+        provider_profile_id: Optional[str] = None,
+        model_override: Optional[str] = None,
+    ) -> Conversation:
+        ...
+
+    def find_internal_conversation(
+        self, owner_kind: str, owner_id: str
+    ) -> Optional[Conversation]:
         ...
 
     def create_or_reuse_empty_conversation(self) -> Conversation:

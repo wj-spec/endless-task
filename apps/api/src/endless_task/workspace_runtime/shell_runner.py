@@ -8,6 +8,7 @@ OpenHands（软超时：输出无变化即中止）。不做 OS 级沙箱（留 
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import signal
@@ -20,8 +21,46 @@ from endless_task.tooling import ToolError
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120.0
 MAX_SHELL_TIMEOUT_SECONDS = 600.0
 DEFAULT_NO_CHANGE_TIMEOUT_SECONDS = 60.0
+#: 无输出看门狗的**下限**（秒）。它管的是"多久没有任何输出就认为卡死"，
+#: 与总时长墙（`timeout_seconds`）是两件事。低于这个下限的阈值会把正常命令的
+#: 短暂安静误判成卡死（0.2 秒——一条 `git status` 都可能先被杀掉），所以
+#: (0, 下限) 的配置一律钳到这里；要真正关掉看门狗请显式设 0。
+MIN_NO_CHANGE_TIMEOUT_SECONDS = 1.0
 DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 _KILL_GRACE_SECONDS = 3.0
+
+
+def clamp_shell_timeout_seconds(configured: float) -> float:
+    """配置的墙 → **实际生效**的墙：下限 1 秒、上限 `MAX_SHELL_TIMEOUT_SECONDS`。
+
+    为什么抽成函数而不是各写一处表达式：这条墙有两个消费者——内层
+    `run_shell_command`（真跑命令）与外层工具定义的 `timeout_seconds`
+    （`execution_impl/coordinator.py` 读它做 `asyncio.wait(timeout=...)`）。
+    两者必须**同源**，否则就会配出"外层 600、内层 120"这种墙与墙不一致的形态：
+    配置写着 600，命令却在 120 秒被内层杀掉——用户看到的就是"设置调不动"。
+    """
+    return min(max(1.0, float(configured)), MAX_SHELL_TIMEOUT_SECONDS)
+
+
+def resolve_no_change_timeout_seconds(configured: float) -> float:
+    """无输出看门狗阈值的归一化（秒）；返回值 ``<= 0`` 表示**看门狗关闭**。
+
+    语义表（Step 2 要求"0/负/极小都要有明确语义"）：
+    - ``0`` 或负数 → 关闭看门狗（显式 opt-out；命令只剩下总时长墙兜底）；
+    - ``(0, MIN_NO_CHANGE_TIMEOUT_SECONDS)`` → 钳到下限（不许退化成"一有输出
+      延迟就杀"）；
+    - nan/inf → 不是"关闭"的表达方式，回落到默认阈值（**不静默改变语义**）。
+
+    这里只做归一化；"是不是合法配置"由设置层裁决（`AppSettings` 对负数/非有限值
+    **指名报错**，装配期失败）。
+    """
+    value = float(configured)
+    if not math.isfinite(value):
+        return DEFAULT_NO_CHANGE_TIMEOUT_SECONDS
+    if value <= 0:
+        return 0.0
+    return max(value, MIN_NO_CHANGE_TIMEOUT_SECONDS)
+
 
 _CREDENTIAL_KEYS = re.compile(
     r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|API_KEY)", re.IGNORECASE
@@ -67,6 +106,7 @@ async def run_shell_command(
     env: Optional[dict[str, str]] = None,
     on_progress: Optional[Callable[[str, Optional[float]], None]] = None,
     progress_interval_seconds: float = 5.0,
+    clock: Optional[Callable[[], float]] = None,
 ) -> ShellResult:
     if not command or not command.strip():
         raise ToolError("invalid_command", "命令不能为空。", retryable=False)
@@ -74,7 +114,10 @@ async def run_shell_command(
         raise ToolError(
             "command_too_long", "命令过长（超过 16K 字符）。", retryable=False
         )
-    timeout_seconds = min(max(1.0, timeout_seconds), MAX_SHELL_TIMEOUT_SECONDS)
+    timeout_seconds = clamp_shell_timeout_seconds(timeout_seconds)
+    no_change_timeout_seconds = resolve_no_change_timeout_seconds(
+        no_change_timeout_seconds
+    )
     try:
         cwd = cwd.resolve(strict=True)
     except OSError as error:
@@ -83,7 +126,10 @@ async def run_shell_command(
             "工作区根目录不可访问，无法执行命令。",
             retryable=False,
         ) from error
-    started = asyncio.get_running_loop().time()
+    #: 可参数化的时间源（默认事件循环时钟）：让"到点才杀"这类语义可以在测试里用
+    #: 假时钟验证，而不必真等 60/120 秒。生产路径不传 = 与今天逐字一致。
+    now = clock if clock is not None else asyncio.get_running_loop().time
+    started = now()
     last_progress_at = started
     if on_progress is not None:
         on_progress("命令开始执行", 0.0)
@@ -130,6 +176,7 @@ async def run_shell_command(
             on_progress=on_progress,
             progress_interval_seconds=progress_interval_seconds,
             started=started,
+            clock=now,
         )
     except asyncio.CancelledError:
         _terminate_process_group(process)
@@ -161,22 +208,28 @@ async def _wait_with_timeouts(
     on_progress: Optional[Callable[[str, Optional[float]], None]] = None,
     progress_interval_seconds: float = 5.0,
     started: float = 0.0,
+    clock: Optional[Callable[[], float]] = None,
 ) -> tuple[bool, bool]:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
-    last_output = loop.time()
+    now_fn = clock if clock is not None else asyncio.get_running_loop().time
+    deadline = now_fn() + timeout_seconds
+    last_output = now_fn()
     last_total = sum(len(buffer) for buffer in buffers)
-    last_progress_at = loop.time()
+    last_progress_at = now_fn()
     while True:
         if all(task.done() for task in pump_tasks):
             return (False, False)
         await asyncio.sleep(poll_seconds)
         total = sum(len(buffer) for buffer in buffers)
-        now = loop.time()
+        now = now_fn()
         if total != last_total:
             last_total = total
             last_output = now
-        elif now - last_output >= no_change_timeout_seconds:
+        elif (
+            no_change_timeout_seconds > 0
+            and now - last_output >= no_change_timeout_seconds
+        ):
+            # 阈值 <= 0 = 看门狗关闭（见 resolve_no_change_timeout_seconds）：
+            # 今天 0 会在这里"一有输出延迟就杀"，那正是要消掉的退化形态。
             _terminate_process_group(process)
             await _drain_exit(process)
             return (True, True)

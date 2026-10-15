@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Callable, Optional, Sequence
 
 from endless_task.domain.models import Reminder, ReminderStatus
@@ -15,6 +16,62 @@ from .database import Database
 from .sqlite_chat_repository import IdFactory, new_id, utc_now
 
 Clock = Callable[[], str]
+
+
+def insert_reminder_row(
+    connection: sqlite3.Connection,
+    *,
+    reminder_id: str,
+    title: str,
+    commitment: str,
+    due_at: str,
+    source_conversation_id: str,
+    source_turn_id: str,
+    source_proposal_id: Optional[str],
+    now: str,
+) -> None:
+    """`reminders` 表的**唯一**写入器（批次 D R-D4，与 `insert_task_row` 同形）。
+
+    谁建提醒都必须落到这里，否则就会在库里出现第三种行形状：
+
+    - `SqliteReminderRepository.create_reminder`（**显式创建的缝**：HTTP
+      `POST /reminders` 走它）；
+    - `SqliteTaskProposalRepository.accept_proposal_as_reminder`（**提案接受**的
+      缝，此前自己内联了一份**逐字相同**的 INSERT）。
+
+    本函数只负责"一行 `reminders` 怎么写"（列集合、列序、`status` 默认
+    `pending`），**不做**校验与时区归一：`create_reminder` 在调用前完成
+    title/commitment 归一化与非空校验；`accept_proposal_as_reminder` 复用提案在
+    `create_proposal` 时已归一化的值、以及 `reminder_due_to_utc_iso` 算出的
+    UTC 时刻。校验一律发生在**任何写入之前**，因此非法输入不会留下半行。
+
+    调用方必须已经处于自己的事务里：`create_reminder` 用它包住单次 INSERT，
+    `accept_proposal_as_reminder` 用它把"建提醒 + 标记提案 accepted"保持在同一
+    事务中（原子性——不能拆成两个事务，否则崩溃窗口会留下"提醒已建、提案仍
+    pending"，用户再点一次接受就会建出第二条提醒）。
+    """
+    connection.execute(
+        """
+        INSERT INTO reminders (
+            id, title, commitment, due_at, status,
+            source_conversation_id, source_turn_id, source_proposal_id,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            reminder_id,
+            title,
+            commitment,
+            due_at,
+            ReminderStatus.PENDING.value,
+            source_conversation_id,
+            source_turn_id,
+            source_proposal_id,
+            now,
+            now,
+        ),
+    )
 
 
 def reminder_from_row(row) -> Reminder:
@@ -75,27 +132,18 @@ class SqliteReminderRepository:
         now = self._clock()
         reminder_id = self._id_factory("rem")
         with self._database.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO reminders (
-                    id, title, commitment, due_at, status,
-                    source_conversation_id, source_turn_id, source_proposal_id,
-                    created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    reminder_id,
-                    normalized_title,
-                    normalized_commitment,
-                    due_at.strip(),
-                    ReminderStatus.PENDING.value,
-                    source_conversation_id.strip(),
-                    source_turn_id.strip(),
-                    source_proposal_id.strip() if source_proposal_id else None,
-                    now,
-                    now,
+            insert_reminder_row(
+                connection,
+                reminder_id=reminder_id,
+                title=normalized_title,
+                commitment=normalized_commitment,
+                due_at=due_at.strip(),
+                source_conversation_id=source_conversation_id.strip(),
+                source_turn_id=source_turn_id.strip(),
+                source_proposal_id=(
+                    source_proposal_id.strip() if source_proposal_id else None
                 ),
+                now=now,
             )
         return self.get_reminder(reminder_id)
 

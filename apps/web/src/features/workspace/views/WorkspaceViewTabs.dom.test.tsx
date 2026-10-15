@@ -54,6 +54,8 @@ describe("WorkspaceViewTabs「+」菜单（回归：被裁剪）", () => {
     expect(menu!.style.position).not.toBe("absolute");
     expect(menu!.textContent).toContain("终端");
     expect(menu!.textContent).toContain("浏览器");
+    // C4：新 kind 必须出现在用户真正点得到的「+」菜单里。
+    expect(menu!.textContent).toContain("会话");
   });
 
   it("选择菜单项后回调并关闭", () => {

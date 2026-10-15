@@ -52,6 +52,18 @@ def _local_names(node: ast.AST) -> set[str]:
     return names
 
 
+def _target_names(target) -> set[str]:
+    """解包赋值/循环/with 目标里的名字（`a, (b, *c)` 这种也要取全）。"""
+    if target is None:
+        return set()
+    if isinstance(target, ast.Name):
+        return {target.id}
+    names: set[str] = set()
+    for child in ast.iter_child_nodes(target):
+        names |= _target_names(child)
+    return names
+
+
 def _collect_scope_statements(statements) -> set[str]:
     names: set[str] = set()
     for node in statements:
@@ -59,17 +71,33 @@ def _collect_scope_statements(statements) -> set[str]:
             names |= _collect_scope_statements(node.body)
             names |= _collect_scope_statements(node.orelse)
             for handler in getattr(node, "handlers", []):
+                # `except ... as name` 绑定的名字属于**本作用域**。
+                # 缺这一条会让模块级 try/except 的目标名被误报成「未定义名字」
+                # （函数级那边走 _local_names，一直是采集的）—— RK-1 实测踩到。
+                # 同时删掉一行恒为空的死代码（handlers and [] or []）。
+                if handler.name:
+                    names.add(handler.name)
                 names |= _collect_scope_statements(handler.body)
             names |= _collect_scope_statements(getattr(node, "finalbody", []))
-            names |= _collect_scope_statements(
-                getattr(node, "handlers", []) and [] or []
-            )
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            # 模块级 for/with 的目标名同样属于本作用域；缺这两条会把
+            # `for i in ...:` / `with open(...) as fh:` 的 i/fh 误报成未定义
+            # （RK-1 实测：与 except-as 是同一类漏采）。
+            names |= _target_names(node.target)
+            names |= _collect_scope_statements(node.body)
+            names |= _collect_scope_statements(node.orelse)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                names |= _target_names(item.optional_vars)
+            names |= _collect_scope_statements(node.body)
+        elif isinstance(node, ast.While):
+            names |= _collect_scope_statements(node.body)
+            names |= _collect_scope_statements(node.orelse)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    names.add(target.id)
+                names |= _target_names(target)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 names.add((alias.asname or alias.name).split(".")[0])

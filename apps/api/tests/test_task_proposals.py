@@ -12,6 +12,7 @@ import httpx
 from endless_task.api import AppSettings, create_app
 from endless_task.domain.repositories import NotFoundError, ValidationError
 from endless_task.domain.task_schedule import (
+    ReminderDue,
     TaskScheduleKind,
     describe_task_schedule,
     parse_task_schedule,
@@ -42,6 +43,25 @@ TASK_EXTRACTION_JSON = json.dumps(
             "commitment": PERIODIC_COMMITMENT,
             "schedule": WEEKLY_SCHEDULE,
             "reason": "用户明确要求每周重复，Assistant 复述并承担了承诺。",
+        }
+    },
+    ensure_ascii=False,
+)
+
+# 一次性定时事项走 ReminderDue，与 TaskSchedule 是**不同类型**的周期描述。
+REMINDER_USER = "明天下午三点提醒我整理这份文档"
+REMINDER_ANSWER = (
+    "好的，明天下午三点我会提醒你整理这份文档；"
+    "到点后会按你确认的承诺自动执行，不会提前打扰你。"
+)
+REMINDER_AT = "2026-08-26T15:00"
+REMINDER_EXTRACTION_JSON = json.dumps(
+    {
+        "task": {
+            "title": "整理文档",
+            "commitment": "明天下午三点整理这份文档",
+            "schedule": {"kind": "once", "at": REMINDER_AT},
+            "reason": "用户要求一次性定时提醒",
         }
     },
     ensure_ascii=False,
@@ -331,6 +351,84 @@ class TaskProposalServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((), blocked)
         self.assertEqual(
             1, len(fresh_proposals.list_proposals(conversation_id="conv_2"))
+        )
+
+    async def test_one_off_reminder_returns_created_proposal(self) -> None:
+        """提醒提案必须把已落库的提案返回给调用方。
+
+        调用方按返回值决定是否推送 `proposal.pending` 事件（`if created:`）；
+        返回 `()` 会让提醒提案静默落库、角标与桌面通知都不刷新。
+        """
+        provider = TextProvider([REMINDER_EXTRACTION_JSON])
+        service = self._service(provider)
+        created = await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            user_message=REMINDER_USER,
+            assistant_message=REMINDER_ANSWER,
+        )
+        self.assertEqual(1, len(created))
+        self.assertIsInstance(created[0].schedule, ReminderDue)
+        self.assertEqual(
+            1, len(self.proposals.list_proposals(conversation_id="conv_1"))
+        )
+
+    async def test_pending_reminder_does_not_break_task_proposal(self) -> None:
+        """会话里存在待确认的提醒提案时，新的周期任务提案仍须正常返回。"""
+        self.proposals.create_proposal(
+            conversation_id="conv_1",
+            turn_id="turn_rem",
+            title="整理文档",
+            commitment="明天下午三点整理这份文档",
+            schedule=ReminderDue(at=REMINDER_AT),
+            reason="用户要求一次性定时提醒",
+        )
+        provider = TextProvider([TASK_EXTRACTION_JSON])
+        service = self._service(provider)
+        created = await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_1",
+            user_message=PERIODIC_USER,
+            assistant_message=PERIODIC_ANSWER,
+        )
+        self.assertEqual(1, len(created))
+        self.assertEqual(
+            2, len(self.proposals.list_proposals(conversation_id="conv_1"))
+        )
+
+    async def test_reminder_proposal_honours_explicit_supersede(self) -> None:
+        """提醒提案也要支持显式 `supersedes`（否则改时间会残留两条提醒）。"""
+        stale = self.proposals.create_proposal(
+            conversation_id="conv_1",
+            turn_id="turn_rem",
+            title="整理文档",
+            commitment="明天下午三点整理这份文档",
+            schedule=ReminderDue(at=REMINDER_AT),
+            reason="用户要求一次性定时提醒",
+        )
+        payload = json.dumps(
+            {
+                "task": {
+                    "title": "整理文档",
+                    "commitment": "明天下午三点整理这份文档",
+                    "schedule": {"kind": "once", "at": "2026-08-26T16:00"},
+                    "reason": "用户把提醒时间改到下午四点",
+                    "supersedes": stale.id,
+                }
+            },
+            ensure_ascii=False,
+        )
+        provider = TextProvider([payload])
+        service = self._service(provider)
+        created = await service.generate_for_turn(
+            conversation_id="conv_1",
+            turn_id="turn_2",
+            user_message="改成下午四点提醒我",
+            assistant_message=REMINDER_ANSWER,
+        )
+        self.assertEqual(1, len(created))
+        self.assertEqual(
+            "cancelled", self.proposals.get_proposal(stale.id).status.value
         )
 
     async def test_short_answers_are_skipped(self) -> None:
